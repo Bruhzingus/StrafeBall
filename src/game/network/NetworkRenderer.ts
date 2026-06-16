@@ -13,16 +13,19 @@ interface BallVisual {
   mesh: Mesh;
 }
 
+type RemotePlayerDebug = { logTimer: number };
+
 export class NetworkRenderer {
   private readonly players = new Map<string, PlayerVisual>();
+  private readonly playerDebug = new Map<string, RemotePlayerDebug>();
   private readonly balls = new Map<string, BallVisual>();
   private readonly materials = new Map<string, PBRMaterial>();
 
   constructor(private readonly scene: Scene) {}
 
-  update(snapshot: ServerSnapshot, localPlayerId: string): void {
-    this.updatePlayers(Object.values(snapshot.room.players), localPlayerId);
-    this.updateBalls(Object.values(snapshot.room.balls));
+  update(snapshot: ServerSnapshot, localPlayerId: string, dt: number): void {
+    this.updatePlayers(Object.values(snapshot.room.players), localPlayerId, dt);
+    this.updateBalls(Object.values(snapshot.room.balls), dt);
   }
 
   clear(): void {
@@ -33,6 +36,7 @@ export class NetworkRenderer {
       visual.mesh.dispose();
     }
     this.players.clear();
+    this.playerDebug.clear();
     this.balls.clear();
   }
 
@@ -42,35 +46,53 @@ export class NetworkRenderer {
       material.dispose();
     }
     this.materials.clear();
+    this.playerDebug.clear();
   }
 
-  private updatePlayers(players: PlayerState[], localPlayerId: string): void {
+  private updatePlayers(players: PlayerState[], localPlayerId: string, dt: number): void {
     const seen = new Set<string>();
+    // Exponential decay: position converges in ~0.1 s regardless of frame rate.
+    const blend = 1 - Math.exp(-20 * dt);
 
     for (const player of players) {
       if (player.id === localPlayerId) continue;
       seen.add(player.id);
       const visual = this.ensurePlayer(player);
       const target = toVector3(player.movement.position);
-      visual.root.position = Vector3.Lerp(visual.root.position, target, 0.35);
+      visual.root.position = Vector3.Lerp(visual.root.position, target, blend);
       visual.root.rotation.y = player.movement.yawRadians;
+
+      const dbg = this.playerDebug.get(player.id)!;
+      dbg.logTimer += dt;
+      if (dbg.logTimer >= 1.0) {
+        dbg.logTimer = 0;
+        const mp = player.movement.position;
+        const rp = visual.root.position;
+        console.log(
+          `[remote/${player.id.slice(-4)}] target=(${mp.x.toFixed(2)},${mp.y.toFixed(2)},${mp.z.toFixed(2)})` +
+          ` mesh=(${rp.x.toFixed(2)},${rp.y.toFixed(2)},${rp.z.toFixed(2)})`
+        );
+      }
     }
 
     for (const [id, visual] of this.players) {
       if (seen.has(id)) continue;
       visual.root.dispose();
       this.players.delete(id);
+      this.playerDebug.delete(id);
     }
   }
 
-  private updateBalls(balls: BallState[]): void {
+  private updateBalls(balls: BallState[], dt: number): void {
     const seen = new Set<string>();
+    const blendFast = 1 - Math.exp(-30 * dt);  // live/deflected: catch up quickly
+    const blendSlow = 1 - Math.exp(-15 * dt);  // loose/dead/held: gentle slide
 
     for (const ball of balls) {
       seen.add(ball.id);
       const visual = this.ensureBall(ball);
       const target = toVector3(ball.position);
-      const blend = ball.phase === 'live' || ball.phase === 'deflected' ? 0.65 : 1;
+      const blend = ball.phase === 'live' || ball.phase === 'deflected' ? blendFast : blendSlow;
       visual.mesh.position = Vector3.Lerp(visual.mesh.position, target, blend);
       visual.mesh.material = this.material(this.ballMaterialKey(ball));
       visual.mesh.setEnabled(true);
@@ -86,6 +108,7 @@ export class NetworkRenderer {
   private ensurePlayer(player: PlayerState): PlayerVisual {
     const existing = this.players.get(player.id);
     if (existing) return existing;
+    console.log(`[remote] creating mesh for player=${player.id} team=${player.teamId}`);
 
     const root = new TransformNode(`remotePlayer_${player.id}`, this.scene);
     root.position = toVector3(player.movement.position);
@@ -111,6 +134,7 @@ export class NetworkRenderer {
 
     const visual = { root, body, facing };
     this.players.set(player.id, visual);
+    this.playerDebug.set(player.id, { logTimer: 0 });
     return visual;
   }
 

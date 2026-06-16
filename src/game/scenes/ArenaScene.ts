@@ -53,10 +53,10 @@ export class ArenaScene {
   private readonly onlineChargeSeconds: Record<'left' | 'right', number> = { left: 0, right: 0 };
   private lastOnlineScoreByTeamId: Record<string, number> = {};
 
-  // --- Client-side prediction & reconciliation (#3) ---
-  // The local player is simulated immediately via the SAME shared movement sim the server runs,
-  // at a fixed timestep with sequence-numbered inputs. Each snapshot reconciles: adopt the
-  // authoritative state, then replay inputs the server hasn't acknowledged yet.
+  // --- Client-side prediction & reconciliation ---
+  // The local player is simulated via the SAME shared movement sim the server runs, at a fixed
+  // timestep with sequence-numbered inputs. Each snapshot reconciles: adopt the authoritative
+  // state, then replay inputs the server hasn't acknowledged yet.
   private readonly netCollisionBoxes: AABB[] = createGymCollisionBoxes();
   private static readonly NET_FIXED_DT = 1 / 30;
   private netAccumulator = 0;
@@ -66,9 +66,23 @@ export class ArenaScene {
   private predictedInternal: MovementInternalState | null = null;
   private predictedDash: DashState | null = null;
   private lastSentInput: PlayerInput = neutralNetInput(0);
-  // Authoritative server position stored for debug diff — never applied to the local mesh.
-  private debugServerPos: { x: number; y: number; z: number } | null = null;
+  private lastReconciledTick = -1;
   private debugLogTimer = 0;
+
+  // Input latches: accumulate edge-triggered inputs across render frames so they survive to the
+  // next fixed-step packet boundary (render may run faster than the 30 Hz send rate).
+  private latchJumpPressed = false;
+  private latchDashPressed = false;
+  private latchSlidePressed = false;
+  private latchBackflipPressed = false;
+  private latchPickupPressed = false;
+  private latchDropPressed = false;
+  private latchCrouchPressed = false;
+  private latchFakeThrowPressed = false;
+  private latchLeftHandPressed = false;
+  private latchRightHandPressed = false;
+  private latchLeftHandReleased = false;
+  private latchRightHandReleased = false;
 
   constructor(engine: Engine, canvas: HTMLCanvasElement) {
     this.scene = new Scene(engine);
@@ -234,14 +248,26 @@ export class ArenaScene {
   private stepOnline(dt: number): void {
     this.elapsed += dt;
 
-    // Run the full local movement controller — identical to offline mode.
-    // Server state is intentionally NOT applied to the local player's position or camera.
-    // The server still simulates our player from the inputs we send (authority is preserved),
-    // but we never snap the local mesh to the server position.
-    // TODO: Replace with client-side prediction + reconciliation once the basic feel is confirmed.
+    // --- Latch edge-triggered inputs every render frame so none are lost between fixed ticks ---
+    this.latchJumpPressed ||= this.input.wasKeyPressed(CONTROL_KEYS.jump);
+    this.latchDashPressed ||= this.input.wasKeyPressed(CONTROL_KEYS.dash);
+    this.latchSlidePressed ||= this.input.wasKeyPressed(CONTROL_KEYS.slide);
+    this.latchBackflipPressed ||= this.input.wasKeyPressed(CONTROL_KEYS.backflip);
+    this.latchPickupPressed ||= this.input.wasKeyPressed(CONTROL_KEYS.interact);
+    this.latchDropPressed ||= this.input.wasKeyPressed(CONTROL_KEYS.drop);
+    this.latchCrouchPressed ||= this.input.wasKeyPressed(CONTROL_KEYS.crouch);
+    this.latchFakeThrowPressed ||= this.input.wasKeyPressed(CONTROL_KEYS.fakeThrow);
+    this.latchLeftHandPressed ||= this.input.wasMousePressed(MOUSE_BUTTON.leftHand);
+    this.latchRightHandPressed ||= this.input.wasMousePressed(MOUSE_BUTTON.rightHand);
+    this.latchLeftHandReleased ||= this.input.wasMouseReleased(MOUSE_BUTTON.leftHand);
+    this.latchRightHandReleased ||= this.input.wasMouseReleased(MOUSE_BUTTON.rightHand);
+
+    // --- Offline controller: mouse look, viewmodel, arm animations, local effects ---
+    // Movement position from the offline controller is overridden below by the shared-sim
+    // prediction so that the local player tracks the same trajectory the server computes.
     const wasSliding = this.prevSliding;
     const wasBackflipActive = this.prevBackflipActive;
-    this.player.update(dt); // handles mouse look, physics, viewmodel — same as step()
+    this.player.update(dt);
     const snap = this.player.lastMovementSnapshot;
     if (!wasSliding && snap.sliding) this.effects.onSlide();
     if (snap.dashingThisFrame) this.effects.onDash();
@@ -249,61 +275,112 @@ export class ArenaScene {
     this.prevSliding = snap.sliding;
     this.prevBackflipActive = this.player.backflip.active;
 
-    // Sync aim from the player controller so the input packets carry correct look angles.
-    this.networkYaw = this.player.root.rotation.y;
-    this.networkPitch = this.player.camera.rotation.x;
-
-    // Send a full input packet every frame. Server queues them and processes one per tick.
-    this.inputSeq += 1;
-    const input = this.buildNetworkInput(true);
-    this.multiplayer.sendInput(input);
-    this.lastSentInput = input;
-
-    const snapshot = this.multiplayer.latestSnapshot;
-    const local = snapshot?.room.players[this.multiplayer.localPlayerId] ?? null;
-
-    // Hand/pickup/throw/reset go to the server. Local ball manager is cleared in online mode
-    // so player.update()'s internal hand logic above is a harmless no-op.
-    if (this.input.wasKeyPressed(CONTROL_KEYS.interact)) this.multiplayer.requestPickup();
-    if (this.input.wasKeyPressed(CONTROL_KEYS.drop)) this.multiplayer.requestDrop();
-    if (this.input.wasKeyPressed(CONTROL_KEYS.resetMatch)) this.multiplayer.requestReset();
-    if (local) this.sendOnlineHandActions(dt, local);
-    if (this.input.wasKeyPressed(CONTROL_KEYS.fakeThrow)) {
+    if (this.latchFakeThrowPressed) {
       this.onlineCharging.left = false;
       this.onlineCharging.right = false;
       this.onlineChargeSeconds.left = 0;
       this.onlineChargeSeconds.right = 0;
     }
 
-    // Remote players and all balls follow server state. NetworkRenderer skips localPlayerId
-    // so the local mesh is never touched here.
-    if (snapshot) {
-      this.networkRenderer.update(snapshot, this.multiplayer.localPlayerId);
-      this.handleOnlineScoreEvents(snapshot);
+    // Look angles come from the offline controller (mouse-driven) — not predicted.
+    this.networkYaw = this.player.root.rotation.y;
+    this.networkPitch = this.player.camera.rotation.x;
+
+    const snapshot = this.multiplayer.latestSnapshot;
+    const local = snapshot?.room.players[this.multiplayer.localPlayerId] ?? null;
+
+    // Initialise prediction from the first authoritative player state we receive.
+    if (local && !this.predictedMovement) {
+      this.predictedMovement = cloneMovement(local.movement);
+      this.predictedInternal = { ...local.movementInternal };
+      this.predictedDash = { ...local.dash };
     }
 
-    // Cache server position for debug only — not applied to the mesh.
-    if (local) this.debugServerPos = local.movement.position;
+    // Reconcile when a new snapshot tick arrives: adopt server state, replay unacked inputs.
+    if (local && snapshot && snapshot.tick > this.lastReconciledTick) {
+      this.lastReconciledTick = snapshot.tick;
+      this.reconcile(local);
+    }
 
-    // Throttled debug: local vs server position error + movement key state every 0.5 s.
-    // Use this to confirm: (a) the shaking stopped, (b) advanced keys are being sent.
-    this.debugLogTimer += dt;
-    if (this.debugLogTimer >= 0.5 && this.debugServerPos) {
-      this.debugLogTimer = 0;
-      const lp = this.player.root.position;
-      const sp = this.debugServerPos;
-      const ex = lp.x - sp.x, ey = lp.y - sp.y, ez = lp.z - sp.z;
-      console.log(
-        `[net] pos err=${Math.sqrt(ex * ex + ey * ey + ez * ez).toFixed(3)}m` +
-        ` local=(${lp.x.toFixed(2)},${lp.y.toFixed(2)},${lp.z.toFixed(2)})` +
-        ` server=(${sp.x.toFixed(2)},${sp.y.toFixed(2)},${sp.z.toFixed(2)})`
+    // --- Fixed-step prediction: one packet per server tick (33 ms), same shared sim ---
+    this.netAccumulator += dt;
+    while (this.netAccumulator >= ArenaScene.NET_FIXED_DT && this.predictedMovement) {
+      this.netAccumulator -= ArenaScene.NET_FIXED_DT;
+      this.inputSeq += 1;
+
+      const input = this.buildNetworkInput();
+      const prev = this.lastSentInput;
+
+      const res = stepMovement(
+        this.predictedMovement, this.predictedInternal!, this.predictedDash!,
+        input, prev, ArenaScene.NET_FIXED_DT, this.netCollisionBoxes,
+        this.deriveCatchStance(local, input)
       );
-      console.log(
-        `[net] input jump=${Number(input.jumpPressed)}/${Number(input.jumpHeld)}` +
-        ` dash=${Number(input.dashPressed)} slide=${Number(input.slidePressed)}` +
-        ` crouch=${Number(input.crouchHeld)} backflip=${Number(input.backflipPressed)}` +
-        ` yaw=${input.lookYawRadians.toFixed(2)} pitch=${input.lookPitchRadians.toFixed(2)}`
-      );
+      this.predictedMovement = res.movement;
+      this.predictedInternal = res.internal;
+      this.predictedDash = res.dash;
+
+      this.pendingInputs.push({ seq: this.inputSeq, input, prev });
+      if (this.pendingInputs.length > 120) this.pendingInputs.shift();
+
+      this.multiplayer.sendInput(input);
+      this.lastSentInput = input;
+
+      // Clear latches after the packet is sent — edges are now in-flight to the server.
+      this.latchJumpPressed = false;
+      this.latchDashPressed = false;
+      this.latchSlidePressed = false;
+      this.latchBackflipPressed = false;
+      this.latchPickupPressed = false;
+      this.latchDropPressed = false;
+      this.latchCrouchPressed = false;
+      this.latchFakeThrowPressed = false;
+      this.latchLeftHandPressed = false;
+      this.latchRightHandPressed = false;
+      this.latchLeftHandReleased = false;
+      this.latchRightHandReleased = false;
+
+      // Per-packet debug log (throttled to ~1 s).
+      this.debugLogTimer += ArenaScene.NET_FIXED_DT;
+      if (this.debugLogTimer >= 1.0) {
+        this.debugLogTimer = 0;
+        const pm = this.predictedMovement;
+        const sp = local?.movement.position;
+        const ex = sp ? pm.position.x - sp.x : 0;
+        const ey = sp ? pm.position.y - sp.y : 0;
+        const ez = sp ? pm.position.z - sp.z : 0;
+        console.log(
+          `[net/input] seq=${input.sequence} pending=${this.pendingInputs.length}` +
+          ` move=(${input.moveX.toFixed(2)},${input.moveZ.toFixed(2)})` +
+          ` jump=${Number(input.jumpPressed)}/${Number(input.jumpHeld)} dash=${Number(input.dashPressed)}` +
+          ` slide=${Number(input.slidePressed)} backflip=${Number(input.backflipPressed)}` +
+          ` pickup=${Number(input.pickupPressed)} drop=${Number(input.dropPressed)}` +
+          ` yaw=${input.lookYawRadians.toFixed(2)} pitch=${input.lookPitchRadians.toFixed(2)}`
+        );
+        console.log(
+          `[net/pos] predicted=(${pm.position.x.toFixed(2)},${pm.position.y.toFixed(2)},${pm.position.z.toFixed(2)})` +
+          (sp
+            ? ` server=(${sp.x.toFixed(2)},${sp.y.toFixed(2)},${sp.z.toFixed(2)})` +
+              ` err=${Math.sqrt(ex * ex + ey * ey + ez * ez).toFixed(3)}m`
+            : ' server=none')
+        );
+      }
+    }
+
+    // Apply the shared-sim predicted position to the player root.
+    // The camera is parented to root, so it follows automatically; look angles are untouched.
+    if (this.predictedMovement && this.predictedInternal) {
+      this.applyPredicted(this.predictedMovement, this.predictedInternal);
+    }
+
+    // Server-side actions (not in the movement input stream).
+    if (this.input.wasKeyPressed(CONTROL_KEYS.resetMatch)) this.multiplayer.requestReset();
+    if (local) this.sendOnlineHandActions(dt, local);
+
+    // Remote players and balls: rendered from server state.
+    if (snapshot) {
+      this.networkRenderer.update(snapshot, this.multiplayer.localPlayerId, dt);
+      this.handleOnlineScoreEvents(snapshot);
     }
 
     this.effects.update(dt);
@@ -409,8 +486,6 @@ export class ArenaScene {
     this.onlineChargeSeconds.left = 0;
     this.onlineChargeSeconds.right = 0;
     this.resetPrediction();
-    this.debugServerPos = null;
-    this.debugLogTimer = 0;
     this.lastOnlineScoreByTeamId = {};
     this.player.hands.clearHands();
     this.player.resetPosition();
@@ -427,6 +502,20 @@ export class ArenaScene {
     this.predictedInternal = null;
     this.predictedDash = null;
     this.lastSentInput = neutralNetInput(this.networkYaw);
+    this.lastReconciledTick = -1;
+    this.debugLogTimer = 0;
+    this.latchJumpPressed = false;
+    this.latchDashPressed = false;
+    this.latchSlidePressed = false;
+    this.latchBackflipPressed = false;
+    this.latchPickupPressed = false;
+    this.latchDropPressed = false;
+    this.latchCrouchPressed = false;
+    this.latchFakeThrowPressed = false;
+    this.latchLeftHandPressed = false;
+    this.latchRightHandPressed = false;
+    this.latchLeftHandReleased = false;
+    this.latchRightHandReleased = false;
   }
 
   private handleOnlineScoreEvents(snapshot: ServerSnapshot): void {
@@ -478,10 +567,9 @@ export class ArenaScene {
     }
   }
 
-  // Build one network input packet. Held actions are sent as held booleans so the server can
-  // derive consecutive-frame edges. Press edges (jump/dash/slide/backflip/pickup/drop) are only
-  // set true on the frame the key went down so they are never double-counted across ticks.
-  private buildNetworkInput(includeEdges: boolean): PlayerInput {
+  // Build one network input packet for a fixed-step tick. Edge-triggered fields come from
+  // latches (accumulated since the last send) so no key press is lost between ticks.
+  private buildNetworkInput(): PlayerInput {
     const crouchDown = this.input.isKeyDown(CONTROL_KEYS.crouch) || this.input.isKeyDown(CONTROL_KEYS.crouchAlt);
     const moveX = (this.input.isKeyDown(CONTROL_KEYS.right) ? 1 : 0) - (this.input.isKeyDown(CONTROL_KEYS.left) ? 1 : 0);
     const moveZ = (this.input.isKeyDown(CONTROL_KEYS.forward) ? 1 : 0) - (this.input.isKeyDown(CONTROL_KEYS.backward) ? 1 : 0);
@@ -499,24 +587,24 @@ export class ArenaScene {
       dashDirection,
       lookYawRadians: yaw,
       lookPitchRadians: this.networkPitch,
-      jumpPressed: includeEdges && this.input.wasKeyPressed(CONTROL_KEYS.jump),
+      jumpPressed: this.latchJumpPressed,
       jumpHeld: this.input.isKeyDown(CONTROL_KEYS.jump),
-      dashPressed: includeEdges && this.input.wasKeyPressed(CONTROL_KEYS.dash),
-      crouchPressed: includeEdges && this.input.wasKeyPressed(CONTROL_KEYS.crouch),
+      dashPressed: this.latchDashPressed,
+      crouchPressed: this.latchCrouchPressed,
       crouchHeld: crouchDown,
-      slidePressed: includeEdges && this.input.wasKeyPressed(CONTROL_KEYS.slide),
+      slidePressed: this.latchSlidePressed,
       slideHeld: this.input.isKeyDown(CONTROL_KEYS.slide),
-      backflipPressed: includeEdges && this.input.wasKeyPressed(CONTROL_KEYS.backflip),
-      pickupPressed: includeEdges && this.input.wasKeyPressed(CONTROL_KEYS.interact),
-      dropPressed: includeEdges && this.input.wasKeyPressed(CONTROL_KEYS.drop),
-      fakeThrowPressed: includeEdges && this.input.wasKeyPressed(CONTROL_KEYS.fakeThrow),
+      backflipPressed: this.latchBackflipPressed,
+      pickupPressed: this.latchPickupPressed,
+      dropPressed: this.latchDropPressed,
+      fakeThrowPressed: this.latchFakeThrowPressed,
       fakeThrowHeld: this.input.isKeyDown(CONTROL_KEYS.fakeThrow),
-      leftHandPressed: includeEdges && this.input.wasMousePressed(MOUSE_BUTTON.leftHand),
+      leftHandPressed: this.latchLeftHandPressed,
       leftHandHeld: this.input.isMouseDown(MOUSE_BUTTON.leftHand),
-      rightHandPressed: includeEdges && this.input.wasMousePressed(MOUSE_BUTTON.rightHand),
+      rightHandPressed: this.latchRightHandPressed,
       rightHandHeld: this.input.isMouseDown(MOUSE_BUTTON.rightHand),
-      leftHandReleased: includeEdges && this.input.wasMouseReleased(MOUSE_BUTTON.leftHand),
-      rightHandReleased: includeEdges && this.input.wasMouseReleased(MOUSE_BUTTON.rightHand)
+      leftHandReleased: this.latchLeftHandReleased,
+      rightHandReleased: this.latchRightHandReleased
     };
   }
 

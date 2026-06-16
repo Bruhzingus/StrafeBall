@@ -230,9 +230,22 @@ export class ServerGameLoop {
     const player = this.state.players[playerId];
     if (!player) return { ok: false, reason: 'unknown-player' };
 
-    const candidates = Object.values(this.state.balls)
-      .map((ball) => ({ ball, distance: distance(ball.position, player.movement.position) }))
+    const pp = player.movement.position;
+    const allBalls = Object.values(this.state.balls);
+    const candidates = allBalls
+      .map((ball) => ({ ball, distance: distance(ball.position, pp) }))
       .sort((a, b) => a.distance - b.distance);
+
+    this.logger(
+      `pickup attempt player=${playerId} pos=(${pp.x.toFixed(2)},${pp.y.toFixed(2)},${pp.z.toFixed(2)}) balls=${allBalls.length}`
+    );
+    for (const { ball, distance: dist } of candidates.slice(0, 4)) {
+      this.logger(
+        `  ball=${ball.id} phase=${ball.phase} owner=${ball.ownerId ?? 'none'}` +
+        ` pos=(${ball.position.x.toFixed(2)},${ball.position.y.toFixed(2)},${ball.position.z.toFixed(2)})` +
+        ` dist=${dist.toFixed(2)} pickupRadius=${GAME_CONSTANTS.ball.pickupRadius}`
+      );
+    }
 
     for (const { ball } of candidates) {
       const result = tryPickupBall(player, player.hands, ball);
@@ -355,13 +368,8 @@ export class ServerGameLoop {
   handleReset(playerId: string): ActionResult {
     if (!this.state.players[playerId]) return { ok: false, reason: 'unknown-player' };
 
-    // Reset gating (#6): mid-match unilateral resets are griefing. Only allow a rematch once the
-    // match is complete, or while still in warmup (before two players are actively dueling).
-    const connectedCount = this.connectedCount();
-    if (this.state.match.status === 'playing' && connectedCount >= 2) {
-      return { ok: false, reason: 'match-in-progress' };
-    }
-
+    // Reset the entire room: both players, velocities, dash charges, hand states, all balls,
+    // ownership, score, timer, and round state. Any player can trigger a reset at any time.
     const players = Object.values(this.state.players).map((player) =>
       createPlayerState(player.id, player.teamId, player.legalHalf, {
         name: player.name,
@@ -377,6 +385,7 @@ export class ServerGameLoop {
       this.seedInputTracking(player.id, SPAWN_BY_SIDE[player.spawnSide].yawRadians);
     }
     if (players.length === 2) this.startMatch();
+    this.logger(`room reset by player=${playerId} players=${players.length}`);
     return { ok: true };
   }
 
@@ -471,18 +480,22 @@ export class ServerGameLoop {
     if (!this.debugInput) return;
     const now = Date.now();
     const previous = this.lastInputDebugAtByPlayerId.get(playerId) ?? 0;
-    if (now - previous < 500) return;
+
+    // Always log when an edge-triggered action fires so they are never hidden by throttle.
+    const hasEdge = input.jumpPressed || input.dashPressed || input.slidePressed ||
+      input.backflipPressed || input.pickupPressed || input.dropPressed;
+    if (!hasEdge && now - previous < 500) return;
     this.lastInputDebugAtByPlayerId.set(playerId, now);
+
     const pv = preVelocity;
     const mv = postMovement.velocity;
     this.logger(
       `input player=${playerId} seq=${input.sequence}` +
       ` move=(${input.moveX.toFixed(2)},${input.moveZ.toFixed(2)})` +
       ` jump=${Number(input.jumpPressed)}/${Number(input.jumpHeld)}` +
-      ` dash=${Number(input.dashPressed)}` +
-      ` slide=${Number(input.slidePressed)}` +
-      ` crouch=${Number(input.crouchHeld)}` +
-      ` backflip=${Number(input.backflipPressed)}` +
+      ` dash=${Number(input.dashPressed)} slide=${Number(input.slidePressed)}` +
+      ` crouch=${Number(input.crouchHeld)} backflip=${Number(input.backflipPressed)}` +
+      ` pickup=${Number(input.pickupPressed)} drop=${Number(input.dropPressed)}` +
       ` yaw=${input.lookYawRadians.toFixed(2)} pitch=${input.lookPitchRadians.toFixed(2)}`
     );
     this.logger(
@@ -666,7 +679,12 @@ export class ServerGameLoop {
   private nextInputCommand(player: PlayerState): QueuedInput {
     const queue = this.inputQueueByPlayerId.get(player.id);
     if (queue && queue.length > 0) {
-      return queue.shift() as QueuedInput;
+      const command = queue.shift() as QueuedInput;
+      // After consuming a queued input, strip edge-triggered fields from the held-state fallback
+      // so a repeated tick (empty queue) doesn't re-fire jump/dash/pickup/etc.
+      const held = this.lastInputByPlayerId.get(player.id);
+      if (held) this.lastInputByPlayerId.set(player.id, clearEdges(held));
+      return command;
     }
 
     const seq = player.lastProcessedInputSeq;
@@ -902,6 +920,25 @@ function sanitizeVec3(value: Vec3 | undefined, fallback: Vec3): Vec3 {
     x: finiteNumber(value.x, fallback.x),
     y: finiteNumber(value.y, fallback.y),
     z: finiteNumber(value.z, fallback.z)
+  };
+}
+
+/** Clear one-shot edge fields from a held input so fallback ticks don't re-fire them. */
+function clearEdges(input: PlayerInput): PlayerInput {
+  return {
+    ...input,
+    jumpPressed: false,
+    dashPressed: false,
+    slidePressed: false,
+    crouchPressed: false,
+    backflipPressed: false,
+    pickupPressed: false,
+    dropPressed: false,
+    fakeThrowPressed: false,
+    leftHandPressed: false,
+    rightHandPressed: false,
+    leftHandReleased: false,
+    rightHandReleased: false
   };
 }
 
