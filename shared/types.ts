@@ -153,7 +153,7 @@ export interface BallSnapshot extends BallState {
   serverTick: number;
 }
 
-export type MatchStatus = 'warmup' | 'playing' | 'complete';
+export type MatchStatus = 'warmup' | 'countdown' | 'playing' | 'complete';
 
 export interface HalfCourtViolationState {
   illegalCrossCount: number;
@@ -184,6 +184,13 @@ export interface MatchState {
   scoreByTeamId: Record<string, number>;
   winnerTeamId: string | null;
   boundary: MatchBoundaryState;
+  /**
+   * Seconds remaining in the pre-round countdown while `status === 'countdown'`. The server pins
+   * every player to spawn and ignores movement/combat input during this window, then flips to
+   * 'playing' when it hits 0. The client reads it to show the on-screen countdown and to freeze
+   * local prediction. 0 in any non-countdown status.
+   */
+  countdownSeconds: number;
 }
 
 /**

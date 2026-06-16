@@ -3,6 +3,15 @@ import { GAME_CONSTANTS } from '../../shared/constants';
 import { vec3 } from '../../shared/simulation/CollisionMath';
 import { ServerGameLoop } from '../src/simulation/ServerGameLoop';
 
+/**
+ * Skip the pre-round countdown for tests that exercise live combat/hits. A real match now starts in
+ * a 5s 'countdown' (players pinned to spawn); these unit tests assert combat that only resolves once
+ * status is 'playing', so they force it directly. Tests of the countdown itself do NOT call this.
+ */
+function playNow(loop: ServerGameLoop): void {
+  loop.state.match = { ...loop.state.match, status: 'playing', countdownSeconds: 0 };
+}
+
 describe('ServerGameLoop', () => {
   it('assigns two players and rejects a third', () => {
     const loop = new ServerGameLoop('room');
@@ -68,6 +77,7 @@ describe('ServerGameLoop', () => {
     const loop = new ServerGameLoop('room');
     loop.addPlayer('a', 'A');
     loop.addPlayer('b', 'B');
+    playNow(loop);
     loop.state.players.b.movement.position = vec3(0, 0, 0);
 
     loop.handleInput('b', { lookYawRadians: Math.PI, lookPitchRadians: 0.45 }, 1);
@@ -186,6 +196,7 @@ describe('ServerGameLoop', () => {
       const loop = new ServerGameLoop('room');
       loop.addPlayer('a', 'A');
       loop.addPlayer('b', 'B');
+      playNow(loop);
       const mat = firstMat(loop);
       expect(mat.knockedOver).toBe(false);
 
@@ -207,6 +218,7 @@ describe('ServerGameLoop', () => {
     const loop = new ServerGameLoop('room');
     loop.addPlayer('a', 'A');
     loop.addPlayer('b', 'B');
+    playNow(loop);
 
     loop.state.players.a.dash.charges = GAME_CONSTANTS.dash.maxCharges - 1;
     loop.state.balls.ball_0 = {
@@ -230,6 +242,7 @@ describe('ServerGameLoop', () => {
     const loop = new ServerGameLoop('room');
     loop.addPlayer('a', 'A');
     loop.addPlayer('b', 'B');
+    playNow(loop);
 
     loop.state.balls.ball_0 = {
       ...loop.state.balls.ball_0,
@@ -266,6 +279,7 @@ describe('ServerGameLoop', () => {
     const loop = new ServerGameLoop('room');
     loop.addPlayer('a', 'A');
     loop.addPlayer('b', 'B');
+    playNow(loop);
 
     loop.state.balls.ball_0 = {
       ...loop.state.balls.ball_0,
@@ -300,6 +314,7 @@ describe('ServerGameLoop', () => {
     const missLoop = new ServerGameLoop('room');
     missLoop.addPlayer('a', 'A');
     missLoop.addPlayer('b', 'B');
+    playNow(missLoop);
     missLoop.handleInput('b', { crouchHeld: true }, 1);
 
     const crouchHeight = GAME_CONSTANTS.player.height * GAME_CONSTANTS.player.crouchHeightMultiplier;
@@ -323,6 +338,7 @@ describe('ServerGameLoop', () => {
     const hitLoop = new ServerGameLoop('room');
     hitLoop.addPlayer('a', 'A');
     hitLoop.addPlayer('b', 'B');
+    playNow(hitLoop);
     hitLoop.handleInput('b', { crouchHeld: true }, 1);
     hitLoop.state.balls.ball_0 = {
       ...hitLoop.state.balls.ball_0,
@@ -407,6 +423,62 @@ describe('ServerGameLoop', () => {
     expect(loop.state.match.status).toBe('complete');
     expect(loop.state.match.winnerTeamId).toBe(loop.state.players.a.teamId);
     expect(Object.keys(loop.state.players)).toEqual(['a']);
+  });
+
+  describe('pre-round countdown (fixes the post-reset freeze)', () => {
+    it('enters a countdown when the second player joins, then flips to playing after it elapses', () => {
+      const loop = new ServerGameLoop('room');
+      loop.addPlayer('a', 'A');
+      expect(loop.state.match.status).toBe('warmup');
+      loop.addPlayer('b', 'B');
+      expect(loop.state.match.status).toBe('countdown');
+      expect(loop.state.match.countdownSeconds).toBeCloseTo(GAME_CONSTANTS.match.countdownSeconds, 5);
+
+      // Step past the countdown (a little over the configured seconds at the tick rate).
+      const steps = Math.ceil(GAME_CONSTANTS.match.countdownSeconds * loop.tickRate) + 2;
+      for (let i = 0; i < steps; i += 1) loop.step();
+      expect(loop.state.match.status).toBe('playing');
+      expect(loop.state.match.countdownSeconds).toBe(0);
+    });
+
+    it('pins players to spawn and ignores movement input during the countdown', () => {
+      const loop = new ServerGameLoop('room');
+      loop.addPlayer('a', 'A');
+      loop.addPlayer('b', 'B');
+      expect(loop.state.match.status).toBe('countdown');
+
+      const spawnZ = loop.state.players.a.movement.position.z;
+      // Try to walk forward hard during the countdown.
+      loop.handleInput('a', { moveZ: 1, jumpHeld: true, sequence: 1 }, 1);
+      loop.step();
+      // Position is still pinned at spawn (no integration while counting down).
+      expect(loop.state.players.a.movement.position.z).toBeCloseTo(spawnZ, 5);
+      expect(loop.state.players.a.movement.velocity.x).toBe(0);
+      expect(loop.state.players.a.movement.velocity.z).toBe(0);
+    });
+
+    it('a room reset re-enters the countdown (so a 1v1 rematch starts cleanly, not frozen forever)', () => {
+      const loop = new ServerGameLoop('room');
+      loop.addPlayer('a', 'A');
+      loop.addPlayer('b', 'B');
+      // Get into live play first.
+      playNow(loop);
+      expect(loop.state.match.status).toBe('playing');
+      // Both vote → reset → fresh countdown, not a stuck state.
+      loop.handleReset('a');
+      loop.handleReset('b');
+      expect(loop.state.match.status).toBe('countdown');
+      expect(loop.state.match.countdownSeconds).toBeCloseTo(GAME_CONSTANTS.match.countdownSeconds, 5);
+
+      // After the countdown the match is playing and BOTH players can move again (not frozen).
+      const steps = Math.ceil(GAME_CONSTANTS.match.countdownSeconds * loop.tickRate) + 2;
+      for (let i = 0; i < steps; i += 1) loop.step();
+      expect(loop.state.match.status).toBe('playing');
+      const zBefore = loop.state.players.a.movement.position.z;
+      for (let i = 0; i < 10; i += 1) loop.handleInput('a', { moveZ: 1, sequence: 2 + i }, 2 + i);
+      for (let i = 0; i < 10; i += 1) loop.step();
+      expect(loop.state.players.a.movement.position.z).not.toBeCloseTo(zBefore, 2);
+    });
   });
 
   describe('1v1 reset', () => {
@@ -526,6 +598,7 @@ describe('ServerGameLoop', () => {
       const loop = new ServerGameLoop('room');
       loop.addPlayer('a', 'A');
       loop.addPlayer('b', 'B');
+      playNow(loop); // combat tests bypass the pre-round countdown
       loop.state.players.b.movement.position = vec3(0, 0, 0);
       // Aim straight down -Z (yaw π, pitch 0). Send it as input so the server stores it + the sample.
       loop.handleInput('b', { lookYawRadians: Math.PI, lookPitchRadians: 0, sequence: 1 }, 1);
@@ -599,6 +672,7 @@ describe('ServerGameLoop', () => {
       const loop = new ServerGameLoop('room');
       loop.addPlayer('a', 'A');
       loop.addPlayer('b', 'B');
+      playNow(loop);
       loop.state.players.b.movement.position = vec3(0, 0, 0);
       // Defender looks +X, away from the -Z incoming ball.
       loop.handleInput('b', { lookYawRadians: Math.PI / 2, lookPitchRadians: 0, sequence: 1 }, 1);

@@ -13,6 +13,8 @@ export class Hud {
   private readonly bottomLeft: HTMLDivElement;
   private readonly bottomRight: HTMLDivElement;
   private readonly scoreEvent: HTMLDivElement;
+  private readonly countdown: HTMLDivElement;
+  private lastCountdownLabel = '';
   private readonly crosshair: Crosshair;
   // Last rendered markup per panel — we only touch the DOM when the text actually changes,
   // so the HUD doesn't thrash innerHTML 60+ times a second while values are static.
@@ -33,6 +35,10 @@ export class Hud {
     this.scoreEvent = document.createElement('div');
     this.scoreEvent.className = 'score-event';
     this.root.appendChild(this.scoreEvent);
+
+    this.countdown = document.createElement('div');
+    this.countdown.className = 'countdown';
+    this.root.appendChild(this.countdown);
 
     // Controls panel is static — write it once.
     this.bottomRight.innerHTML = `
@@ -72,6 +78,8 @@ export class Hud {
   }
 
   update(player: PlayerController, rules: MatchRules, ballManager: BallManager, fps: number, frameMs: number): void {
+    // No countdown in offline practice.
+    this.updateCountdown('playing', 0);
     const movement = player.lastMovementSnapshot;
     const hands = player.hands;
     const v = movement.velocity;
@@ -159,6 +167,7 @@ export class Hud {
     }
   ): void {
     const room = snapshot.room;
+    this.updateCountdown(room.match.status, room.match.countdownSeconds);
     const local = room.players[localPlayerId];
     const opponent = Object.values(room.players).find((player) => player.id !== localPlayerId);
     const localScore = local ? room.match.scoreByTeamId[local.teamId] ?? 0 : 0;
@@ -220,6 +229,47 @@ export class Hud {
       <div>Balls - ${this.networkBallTally(snapshot)}</div>
       <div style="max-width:320px;white-space:normal">${this.networkBallList(snapshot)}</div>
     `);
+  }
+
+  /**
+   * Drive the big centered pre-round countdown from the authoritative match state. Shows the
+   * remaining whole second (5..1), a brief "GO!" the moment it flips to playing, and nothing
+   * otherwise. The number re-pops each time the displayed digit changes (CSS keyframe restart).
+   */
+  private updateCountdown(status: string, countdownSeconds: number): void {
+    let label = '';
+    if (status === 'countdown') {
+      label = String(Math.max(1, Math.ceil(countdownSeconds)));
+    } else if (this.lastCountdownLabel !== '' && this.lastCountdownLabel !== 'GO!' && status === 'playing') {
+      // Just transitioned out of the countdown → flash GO! once.
+      label = 'GO!';
+    }
+
+    if (label === this.lastCountdownLabel) return;
+
+    if (label === '') {
+      this.countdown.classList.remove('countdown--visible');
+      this.lastCountdownLabel = '';
+      return;
+    }
+
+    this.countdown.textContent = label;
+    this.countdown.classList.toggle('countdown--go', label === 'GO!');
+    // Restart the pop animation for the new digit.
+    this.countdown.classList.remove('countdown--visible');
+    void this.countdown.offsetWidth;
+    this.countdown.classList.add('countdown--visible');
+    this.lastCountdownLabel = label;
+
+    if (label === 'GO!') {
+      // Auto-hide GO! shortly after.
+      window.setTimeout(() => {
+        if (this.lastCountdownLabel === 'GO!') {
+          this.countdown.classList.remove('countdown--visible');
+          this.lastCountdownLabel = '';
+        }
+      }, 700);
+    }
   }
 
   /** Writes markup to a panel only if it changed since last frame (avoids per-frame DOM churn). */

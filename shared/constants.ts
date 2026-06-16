@@ -154,7 +154,11 @@ export const GAME_CONSTANTS = {
     resetVoteSeconds: 20,
     illegalCrossWarningsBeforePenalty: 1,
     penaltyHitValue: 1,
-    halfCourtLineZ: 0.25
+    halfCourtLineZ: 0.25,
+    // Pre-round countdown: players are pinned to spawn (look only) for this long when a match starts
+    // and after every reset, then play begins. Also the deterministic post-reset state that fixes
+    // the old "everyone stuck after a 1v1 reset" bug.
+    countdownSeconds: 5
   },
 
   map: {

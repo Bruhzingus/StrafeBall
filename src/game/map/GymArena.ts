@@ -3,6 +3,7 @@ import { TUNING } from '../config/tuning';
 import { MatObstacle, MAT_DIMENSIONS } from './MatObstacle';
 import { AABB, CollisionWorld } from './Collider';
 import { ModelLoader } from '../assets/ModelLoader';
+import { Scoreboard3D, createSideScoreboards } from './Scoreboard3D';
 import {
   MAT_SPECS,
   createBleacherCollisionBoxes,
@@ -24,6 +25,8 @@ export class GymArena {
   public readonly ballCollision = new CollisionWorld();
   /** The 4th target dummy; oscillates side-to-side each frame for catch/throw practice. */
   public movingDummy: Mesh | null = null;
+  /** Live 3D scoreboards (one per end wall). Driven from match state; buzz on score change. */
+  public readonly scoreboards: Scoreboard3D[] = [];
   private readonly movingDummyAmplitude = 4.5; // meters from center
   private readonly movingDummyPeriod = 3.8;    // seconds per full oscillation
 
@@ -41,7 +44,7 @@ export class GymArena {
     this.createTargetDummies();
     this.createCeiling();
     this.createCeilingLights();
-    this.createScoreboard();
+    this.scoreboards.push(...createSideScoreboards(this.scene));
 
     // The gym is a fixed stage: every mesh built above is static except the moving dummy and the
     // mats (which tip over). Freeze the rest so Babylon stops recomputing their world matrices and
@@ -67,6 +70,10 @@ export class GymArena {
       }
     }
     for (const mat of this.mats) dynamic.add(mat.mesh);
+    // Scoreboards shake on a buzz (their parented meshes move with the root), so never freeze them.
+    for (const board of this.scoreboards) {
+      for (const mesh of board.meshes) dynamic.add(mesh);
+    }
 
     for (const mesh of this.scene.meshes) {
       if (!(mesh instanceof Mesh) || dynamic.has(mesh)) continue;
@@ -433,41 +440,23 @@ export class GymArena {
     }
   }
 
-  /**
-   * 3D scoreboard prop on the north end wall. The actual score numbers live in the HTML HUD;
-   * this is a visual anchor so players have something to look at across the court.
-   */
-  private createScoreboard(): void {
-    const wallZ = TUNING.map.halfLength;
+  /** Advance the scoreboard buzz animations. Call once per frame. */
+  updateScoreboards(dt: number): void {
+    for (const board of this.scoreboards) board.update(dt);
+  }
 
-    // Dark backing board protruding slightly from the wall.
-    this.loader.createVisual('scoreboard', {
-      name: 'scoreboard_backing',
-      size: { width: 5.2, height: 1.9, depth: 0.14 },
-      position: new Vector3(0, 3.1, wallZ - 0.07)
-    });
+  /** Push the current blue/red scores (+ optional banner) to both end-wall scoreboards. */
+  setScoreboardScores(blue: number, red: number, label = ''): void {
+    for (const board of this.scoreboards) board.setScores(blue, red, label);
+  }
 
-    // Near-black LED display face.
-    const faceMat = new StandardMaterial('scoreboard_face_mat', this.scene);
-    faceMat.diffuseColor = new Color3(0.04, 0.06, 0.1);
-    faceMat.emissiveColor = new Color3(0.01, 0.02, 0.05);
-    const face = MeshBuilder.CreateBox('scoreboard_face', {
-      width: 4.75, height: 1.5, depth: 0.07
-    }, this.scene);
-    face.position.set(0, 3.1, wallZ - 0.01);
-    face.material = faceMat;
-    face.isPickable = false;
+  /** Buzz both scoreboards (e.g. on a hit taken). */
+  buzzScoreboards(): void {
+    for (const board of this.scoreboards) board.buzz();
+  }
 
-    // Gold accent rim along the top edge.
-    const rimMat = new StandardMaterial('scoreboard_rim_mat', this.scene);
-    rimMat.diffuseColor = new Color3(1.0, 0.82, 0.1);
-    rimMat.emissiveColor = new Color3(0.52, 0.36, 0.0);
-    const rim = MeshBuilder.CreateBox('scoreboard_rim', {
-      width: 5.2, height: 0.065, depth: 0.15
-    }, this.scene);
-    rim.position.set(0, 3.1 + 0.95 + 0.033, wallZ - 0.07);
-    rim.material = rimMat;
-    rim.isPickable = false;
+  dispose(): void {
+    for (const board of this.scoreboards) board.dispose();
   }
 }
 

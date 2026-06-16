@@ -28,6 +28,7 @@ export function createMatchState(
     teamIds: [...teamIds],
     scoreByTeamId,
     winnerTeamId: null,
+    countdownSeconds: 0,
     boundary: {
       elapsedSeconds: 0,
       noBoundaries: false,

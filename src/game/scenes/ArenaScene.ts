@@ -59,6 +59,9 @@ export class ArenaScene {
   // the server's hand.lastCatchAttemptId catches up, at which point we stop re-sending it.
   private nextCatchAttemptId = 1;
   private readonly pendingCatchAttemptId: Record<'left' | 'right', number> = { left: 0, right: 0 };
+  // True while the authoritative match is in its pre-round countdown: local input is frozen to look
+  // only (movement/combat zeroed) and the HUD shows the countdown. Driven by the snapshot.
+  private countdownActive = false;
   private lastOnlineScoreByTeamId: Record<string, number> = {};
   private lastResetSerial = -1;
   private lastResetVoteKey = '';
@@ -207,6 +210,7 @@ export class ArenaScene {
     this.settingsPanel.dispose();
     this.bot.dispose();
     this.effects.dispose();
+    this.gym.dispose();
     this.sound.dispose();
   }
 
@@ -350,8 +354,11 @@ export class ArenaScene {
     this.rules.boundary.update(dt, this.player.root.position);
     this.effects.update(dt);
 
-    // Advance the moving dummy's oscillation.
+    // Advance the moving dummy's oscillation + the live 3D scoreboards (offline shows practice score:
+    // your dummy hits as BLUE, opponent penalty as RED; setScores buzzes them when a number ticks up).
     this.gym.update(this.elapsed);
+    this.gym.setScoreboardScores(this.rules.scoring.playerHits, this.rules.boundary.opponentPenaltyHits);
+    this.gym.updateScoreboards(dt);
 
     if (this.rules.scoring.isWin()) {
       this.rules.boundary.lastMessage = 'You reached 5 hits. Reset with K.';
@@ -411,6 +418,9 @@ export class ArenaScene {
 
     const snapshot = this.multiplayer.latestSnapshot;
     const local = snapshot?.room.players[this.multiplayer.localPlayerId] ?? null;
+    // Pre-round countdown gate: while the authoritative match is counting down, local input is
+    // frozen to look-only (built in buildNetworkInput) so the player can't move/throw until GO.
+    this.countdownActive = snapshot?.room.match.status === 'countdown';
 
     // Detect a server room reset BEFORE prediction/reconcile this frame. The reset is keyed on
     // resetSerial (not tick), so it is robust even if the tick were ever non-monotonic. Clearing
@@ -550,11 +560,12 @@ export class ArenaScene {
       this.applyPredicted(this.predictedMovement, this.predictedInternal);
     }
 
-    // Server-side actions (not in the movement input stream).
+    // Server-side actions (not in the movement input stream). Reset votes are always allowed.
     if (this.input.wasKeyPressed(CONTROL_KEYS.reset) || this.input.wasKeyPressed(CONTROL_KEYS.resetMatch)) {
       this.multiplayer.requestReset();
     }
-    if (local) this.sendOnlineHandActions(dt, local);
+    // Hand actions (throw/catch) are frozen during the countdown — no combat until GO.
+    if (local && !this.countdownActive) this.sendOnlineHandActions(dt, local);
 
     // Remote players and balls: rendered from server state. Pass the local PREDICTED movement so a
     // ball held by the local player attaches to the present-time hand (no strafe drag) rather than
@@ -567,10 +578,12 @@ export class ArenaScene {
       this.networkRenderer.update(snapshot, this.multiplayer.localPlayerId, dt, this.predictedMovement);
       this.applyOnlineMats(snapshot);
       this.handleOnlineScoreEvents(snapshot);
+      this.updateOnlineScoreboards(snapshot);
     }
 
     this.effects.update(dt);
     this.gym.update(this.elapsed);
+    this.gym.updateScoreboards(dt);
     this.logLocalPositionWriters(dt);
     this.logOnlineRates(dt);
     this.logClientPerf(dt);
@@ -914,6 +927,21 @@ export class ArenaScene {
     this.latchRightHandReleased = false;
   }
 
+  /**
+   * Push the authoritative blue/red scores to the 3D end-wall scoreboards each frame. setScores
+   * buzzes the boards automatically when a number increases (i.e. when a player gets hit). During
+   * the countdown the boards show the ticking number; on a win they show the winner banner.
+   */
+  private updateOnlineScoreboards(snapshot: ServerSnapshot): void {
+    const match = snapshot.room.match;
+    const blue = match.scoreByTeamId.blue ?? 0;
+    const red = match.scoreByTeamId.red ?? 0;
+    let label = '';
+    if (match.status === 'countdown') label = String(Math.max(1, Math.ceil(match.countdownSeconds)));
+    else if (match.winnerTeamId) label = `${match.winnerTeamId.toUpperCase()} WINS`;
+    this.gym.setScoreboardScores(blue, red, label);
+  }
+
   private handleOnlineScoreEvents(snapshot: ServerSnapshot): void {
     const scores = snapshot.room.match.scoreByTeamId;
     if (Object.keys(this.lastOnlineScoreByTeamId).length === 0) {
@@ -1006,6 +1034,15 @@ export class ArenaScene {
   // Build one network input packet for a fixed-step tick. Edge-triggered fields come from
   // latches (accumulated since the last send) so no key press is lost between ticks.
   private buildNetworkInput(): PlayerInput {
+    // During the pre-round countdown the player is frozen to look-only: send a neutral input that
+    // carries just the fresh yaw/pitch (and sequence/time), so movement/combat are inert but the
+    // seq stream + reconciliation keep advancing. The server also pins the player at spawn.
+    if (this.countdownActive) {
+      const frozen = neutralNetInput(this.networkYaw, this.networkPitch);
+      frozen.sequence = this.inputSeq;
+      frozen.clientTimeMs = Date.now();
+      return frozen;
+    }
     const crouchDown = this.input.isKeyDown(CONTROL_KEYS.crouch) || this.input.isKeyDown(CONTROL_KEYS.crouchAlt);
     const moveX = (this.input.isKeyDown(CONTROL_KEYS.right) ? 1 : 0) - (this.input.isKeyDown(CONTROL_KEYS.left) ? 1 : 0);
     const moveZ = (this.input.isKeyDown(CONTROL_KEYS.forward) ? 1 : 0) - (this.input.isKeyDown(CONTROL_KEYS.backward) ? 1 : 0);

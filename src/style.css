@@ -1,10 +1,32 @@
+/* ============================================================================================
+   StrafeBall — high-school "pep-rally cartoon" UI theme.
+   Chunky rounded panels, thick ink outlines, bold marker-style type, and bright school colors.
+   Class names are unchanged so the TS HUD code keeps working; this file only restyles them.
+   ============================================================================================ */
+
+:root {
+  /* School palette */
+  --ink: #15213b;            /* dark navy "ink" for outlines + text */
+  --paper: #fdf6e3;          /* warm cream "paper" panel fill */
+  --paper-2: #fffdf5;
+  --school-red: #ff3b30;
+  --school-blue: #2f7bff;
+  --school-gold: #ffcf2e;
+  --school-green: #36d07a;
+  --pop-purple: #a55bff;
+  --outline: 3px solid var(--ink);
+  --shadow-hard: 4px 4px 0 var(--ink);
+  --shadow-soft: 0 6px 0 rgba(21, 33, 59, 0.18);
+  --font-display: 'Trebuchet MS', 'Segoe UI', Verdana, sans-serif;
+}
+
 html, body {
   margin: 0;
   width: 100%;
   height: 100%;
   overflow: hidden;
-  background: #111;
-  font-family: Arial, Helvetica, sans-serif;
+  background: #0c1326;
+  font-family: var(--font-display);
 }
 
 #gameCanvas {
@@ -18,8 +40,7 @@ html, body {
   position: fixed;
   inset: 0;
   pointer-events: none;
-  color: #f7f7f7;
-  text-shadow: 0 1px 2px rgba(0, 0, 0, 0.8);
+  color: var(--ink);
 }
 
 .hud {
@@ -27,12 +48,13 @@ html, body {
   inset: 0;
 }
 
+/* === Crosshair — chunky cartoon plus === */
 .crosshair {
   position: absolute;
   left: 50%;
   top: 50%;
-  width: 12px;
-  height: 12px;
+  width: 16px;
+  height: 16px;
   transform: translate(-50%, -50%);
 }
 
@@ -40,50 +62,61 @@ html, body {
 .crosshair::after {
   content: "";
   position: absolute;
-  background: rgba(255, 255, 255, 0.95);
+  background: #fff;
+  border: 1.5px solid var(--ink);
+  border-radius: 2px;
 }
 
 .crosshair::before {
-  left: 5px;
+  left: 6px;
   top: 0;
-  width: 2px;
-  height: 12px;
+  width: 4px;
+  height: 16px;
 }
 
 .crosshair::after {
   left: 0;
-  top: 5px;
-  width: 12px;
-  height: 2px;
+  top: 6px;
+  width: 16px;
+  height: 4px;
 }
 
+/* === Panels — sticker-card look === */
 .hud-panel {
   position: absolute;
-  padding: 10px 12px;
-  background: rgba(12, 18, 28, 0.72);
-  border: 1px solid rgba(255, 255, 255, 0.18);
-  border-radius: 8px;
-  backdrop-filter: blur(5px);
+  padding: 11px 13px;
+  background: var(--paper);
+  border: var(--outline);
+  border-radius: 14px;
+  box-shadow: var(--shadow-hard);
   font-size: 13px;
   line-height: 1.45;
+  color: var(--ink);
+  font-weight: 600;
 }
 
-.hud-top-left { top: 14px; left: 14px; }
-.hud-top-center { top: 14px; left: 50%; transform: translateX(-50%); text-align: center; }
-.hud-bottom-left { bottom: 14px; left: 14px; }
-.hud-bottom-right { bottom: 14px; right: 14px; }
+.hud-top-left { top: 16px; left: 16px; transform: rotate(-1.4deg); }
+.hud-top-center { top: 16px; left: 50%; transform: translateX(-50%); text-align: center; }
+.hud-bottom-left { bottom: 16px; left: 16px; transform: rotate(1.1deg); }
+.hud-bottom-right { bottom: 16px; right: 16px; transform: rotate(-1deg); }
 
 .hud-title {
-  font-weight: 700;
+  font-weight: 900;
   letter-spacing: 0.04em;
   text-transform: uppercase;
-  color: #ffd36a;
-  margin-bottom: 4px;
+  color: var(--paper);
+  background: var(--school-blue);
+  border: 2px solid var(--ink);
+  border-radius: 8px;
+  padding: 2px 8px;
+  display: inline-block;
+  margin-bottom: 6px;
+  box-shadow: 2px 2px 0 var(--ink);
 }
 
-.hud-warn { color: #ffcf69; font-weight: 700; }
-.hud-good { color: #8cffb0; font-weight: 700; }
-.hud-bad { color: #ff7777; font-weight: 700; }
+.hud-warn { color: #c98800; font-weight: 900; }
+.hud-good { color: #1ba85a; font-weight: 900; }
+.hud-bad  { color: #e02418; font-weight: 900; }
 
 .hit-flash {
   position: fixed;
@@ -93,48 +126,57 @@ html, body {
   opacity: 0;
 }
 
+/* === Settings panel === */
 .settings-panel {
   position: fixed;
-  top: 14px;
-  right: 14px;
+  top: 16px;
+  right: 16px;
   z-index: 11;
   pointer-events: auto;
-  padding: 10px 12px;
-  min-width: 168px;
-  background: rgba(12, 18, 28, 0.78);
-  border: 1px solid rgba(255, 255, 255, 0.18);
-  border-radius: 8px;
-  color: #f7f7f7;
-  font-family: Arial, Helvetica, sans-serif;
+  padding: 12px 14px;
+  min-width: 172px;
+  background: var(--paper);
+  border: var(--outline);
+  border-radius: 14px;
+  box-shadow: var(--shadow-hard);
+  color: var(--ink);
+  font-family: var(--font-display);
   font-size: 13px;
-  backdrop-filter: blur(5px);
+  font-weight: 600;
 }
 
 .settings-title {
-  font-weight: 700;
+  font-weight: 900;
   letter-spacing: 0.04em;
   text-transform: uppercase;
-  color: #ffd36a;
-  margin-bottom: 6px;
+  color: var(--paper);
+  background: var(--pop-purple);
+  border: 2px solid var(--ink);
+  border-radius: 8px;
+  padding: 2px 8px;
+  display: inline-block;
+  margin-bottom: 8px;
+  box-shadow: 2px 2px 0 var(--ink);
 }
 
 .settings-row {
   display: flex;
   justify-content: space-between;
-  margin-bottom: 4px;
+  margin-bottom: 5px;
 }
 
 .settings-value {
-  color: #8cffb0;
-  font-weight: 700;
+  color: #1ba85a;
+  font-weight: 900;
 }
 
 .settings-panel input[type="range"] {
   width: 100%;
-  accent-color: #ffd36a;
+  accent-color: var(--school-red);
   cursor: pointer;
 }
 
+/* === Lock overlay — big varsity banner === */
 #lock-overlay {
   position: fixed;
   inset: 0;
@@ -143,118 +185,137 @@ html, body {
   flex-direction: column;
   align-items: center;
   justify-content: center;
-  gap: 12px;
-  background: rgba(8, 12, 20, 0.55);
-  color: #ffffff;
-  font-size: 30px;
-  font-weight: 700;
-  letter-spacing: 0.04em;
+  gap: 14px;
+  background: rgba(12, 19, 38, 0.62);
+  color: var(--paper);
+  font-size: 40px;
+  font-weight: 900;
+  letter-spacing: 0.02em;
+  text-transform: uppercase;
   text-align: center;
   cursor: pointer;
-  text-shadow: 0 2px 6px rgba(0, 0, 0, 0.7);
+  text-shadow: 3px 3px 0 var(--ink), -1px -1px 0 var(--ink);
+  -webkit-text-stroke: 1.5px var(--ink);
 }
 
 #lock-overlay span {
-  font-size: 15px;
-  font-weight: 400;
-  opacity: 0.85;
+  font-size: 16px;
+  font-weight: 700;
+  letter-spacing: 0.02em;
+  text-transform: none;
+  opacity: 0.95;
+  -webkit-text-stroke: 0;
+  text-shadow: 0 2px 4px rgba(0, 0, 0, 0.6);
+  background: var(--school-gold);
+  color: var(--ink);
+  border: 3px solid var(--ink);
+  border-radius: 10px;
+  padding: 6px 12px;
+  box-shadow: var(--shadow-hard);
 }
 
 #lock-overlay.hidden {
   display: none;
 }
 
-/* === Scoreboard panel (top-center HUD) === */
+/* === Scoreboard panel (top-center HUD) — gym scoreboard sticker === */
 .hud-top-center {
-  background: rgba(4, 6, 10, 0.92);
-  border-color: rgba(255, 200, 40, 0.45);
-  min-width: 220px;
+  background: var(--ink);
+  border: 4px solid var(--school-gold);
+  border-radius: 16px;
+  box-shadow: 5px 5px 0 rgba(0, 0, 0, 0.45);
+  min-width: 244px;
+  color: var(--paper);
 }
 
 .scoreboard-title {
-  font-size: 10px;
+  font-size: 11px;
   letter-spacing: 0.22em;
   text-transform: uppercase;
-  color: rgba(255, 205, 50, 0.65);
+  color: var(--school-gold);
   text-align: center;
   margin-bottom: 8px;
-  font-weight: 700;
+  font-weight: 900;
 }
 
 .scoreboard-digits {
   display: flex;
   align-items: center;
   justify-content: center;
-  gap: 6px;
-  margin-bottom: 2px;
+  gap: 8px;
+  margin-bottom: 3px;
 }
 
 .scoreboard-team {
-  font-size: 10px;
-  letter-spacing: 0.1em;
-  color: rgba(255, 255, 255, 0.38);
+  font-size: 11px;
+  letter-spacing: 0.08em;
+  color: rgba(255, 255, 255, 0.6);
   text-transform: uppercase;
+  font-weight: 800;
   flex: 1;
   text-align: center;
 }
 
 .scoreboard-num {
-  font-size: 44px;
+  font-size: 46px;
   font-weight: 900;
-  font-family: 'Courier New', monospace;
-  min-width: 46px;
+  font-family: 'Arial Black', 'Trebuchet MS', sans-serif;
+  min-width: 50px;
   text-align: center;
   letter-spacing: -0.02em;
   line-height: 1;
+  -webkit-text-stroke: 2px var(--ink);
 }
 
 .scoreboard-num--red {
-  color: #ff4433;
-  text-shadow: 0 0 18px rgba(255, 60, 40, 0.65);
+  color: var(--school-red);
+  text-shadow: 0 0 18px rgba(255, 60, 40, 0.7);
 }
 
 .scoreboard-num--blue {
-  color: #4490ff;
-  text-shadow: 0 0 18px rgba(60, 140, 255, 0.65);
+  color: var(--school-blue);
+  text-shadow: 0 0 18px rgba(60, 140, 255, 0.7);
 }
 
 .scoreboard-sep {
-  color: rgba(255, 255, 255, 0.2);
-  font-size: 26px;
-  font-weight: 700;
+  color: var(--school-gold);
+  font-size: 28px;
+  font-weight: 900;
 }
 
 .scoreboard-sub {
-  font-size: 10px;
-  color: rgba(255, 255, 255, 0.28);
+  font-size: 11px;
+  color: rgba(255, 255, 255, 0.5);
   text-align: center;
-  margin-top: 1px;
+  margin-top: 2px;
   letter-spacing: 0.06em;
+  font-weight: 700;
 }
 
 .scoreboard-msg {
-  font-size: 11px;
-  color: rgba(255, 255, 255, 0.45);
+  font-size: 12px;
+  color: rgba(255, 255, 255, 0.72);
   text-align: center;
-  margin-top: 3px;
+  margin-top: 4px;
+  font-weight: 700;
 }
 
+/* === Score events — big comic "POW!" callout === */
 .score-event {
   position: absolute;
   left: 50%;
-  top: 31%;
+  top: 30%;
   z-index: 9;
-  min-width: 220px;
-  padding: 12px 18px;
-  transform: translate(-50%, -50%) scale(0.92);
+  min-width: 240px;
+  padding: 14px 22px;
+  transform: translate(-50%, -50%) scale(0.92) rotate(-2deg);
   opacity: 0;
   pointer-events: none;
   text-align: center;
-  background: rgba(5, 8, 14, 0.78);
-  border: 1px solid rgba(255, 255, 255, 0.24);
-  border-radius: 8px;
-  box-shadow: 0 18px 50px rgba(0, 0, 0, 0.38);
-  backdrop-filter: blur(6px);
+  background: var(--paper);
+  border: 4px solid var(--ink);
+  border-radius: 18px;
+  box-shadow: 7px 7px 0 var(--ink);
 }
 
 .score-event--visible {
@@ -262,163 +323,232 @@ html, body {
 }
 
 .score-event-title {
-  font-size: 34px;
+  font-size: 38px;
   line-height: 1;
   font-weight: 900;
   letter-spacing: 0;
   text-transform: uppercase;
+  -webkit-text-stroke: 2px var(--ink);
 }
 
 .score-event-subtitle {
-  margin-top: 6px;
-  font-size: 12px;
-  font-weight: 700;
-  letter-spacing: 0.12em;
+  margin-top: 7px;
+  font-size: 13px;
+  font-weight: 900;
+  letter-spacing: 0.1em;
   text-transform: uppercase;
-  color: rgba(255, 255, 255, 0.64);
+  color: var(--ink);
 }
 
 .score-event--good {
-  border-color: rgba(120, 255, 175, 0.55);
-  color: #8cffb0;
-  text-shadow: 0 0 22px rgba(90, 255, 160, 0.5);
+  background: #d8ffe7;
+  color: var(--school-green);
 }
 
 .score-event--bad {
-  border-color: rgba(255, 115, 115, 0.58);
-  color: #ff7777;
-  text-shadow: 0 0 22px rgba(255, 80, 80, 0.48);
+  background: #ffe0dd;
+  color: var(--school-red);
 }
 
 .score-event--neutral {
-  border-color: rgba(255, 211, 106, 0.5);
-  color: #ffd36a;
-  text-shadow: 0 0 22px rgba(255, 200, 80, 0.42);
+  background: #fff2c9;
+  color: #c98800;
 }
 
 @keyframes score-event-pop {
   0% {
     opacity: 0;
-    transform: translate(-50%, -44%) scale(0.88);
-    filter: blur(3px);
+    transform: translate(-50%, -44%) scale(0.7) rotate(-8deg);
   }
   12% {
     opacity: 1;
-    transform: translate(-50%, -50%) scale(1.04);
-    filter: blur(0);
+    transform: translate(-50%, -50%) scale(1.12) rotate(2deg);
   }
-  28% {
-    transform: translate(-50%, -50%) scale(1);
+  24% {
+    transform: translate(-50%, -50%) scale(0.98) rotate(-2deg);
+  }
+  34% {
+    transform: translate(-50%, -50%) scale(1.02) rotate(-2deg);
   }
   72% {
     opacity: 1;
+    transform: translate(-50%, -50%) scale(1) rotate(-2deg);
   }
   100% {
     opacity: 0;
-    transform: translate(-50%, -58%) scale(0.98);
+    transform: translate(-50%, -58%) scale(0.96) rotate(-2deg);
   }
+}
+
+/* === Big pre-round countdown === */
+.countdown {
+  position: absolute;
+  left: 50%;
+  top: 42%;
+  z-index: 13;
+  transform: translate(-50%, -50%) scale(0.4);
+  opacity: 0;
+  pointer-events: none;
+  font-family: 'Arial Black', 'Trebuchet MS', sans-serif;
+  font-size: 168px;
+  font-weight: 900;
+  line-height: 1;
+  color: var(--school-gold);
+  -webkit-text-stroke: 7px var(--ink);
+  text-shadow: 8px 8px 0 rgba(21, 33, 59, 0.35);
+}
+
+.countdown--go {
+  color: var(--school-green);
+  font-size: 132px;
+  letter-spacing: 0.02em;
+}
+
+.countdown--visible {
+  animation: countdown-pop 0.95s cubic-bezier(0.2, 0.9, 0.2, 1) both;
+}
+
+@keyframes countdown-pop {
+  0%   { opacity: 0; transform: translate(-50%, -50%) scale(0.3) rotate(-10deg); }
+  20%  { opacity: 1; transform: translate(-50%, -50%) scale(1.18) rotate(4deg); }
+  35%  { transform: translate(-50%, -50%) scale(0.96) rotate(-2deg); }
+  100% { opacity: 0.92; transform: translate(-50%, -50%) scale(1) rotate(0deg); }
 }
 
 @media (max-width: 640px) {
   .score-event {
-    min-width: 180px;
-    padding: 10px 14px;
+    min-width: 188px;
+    padding: 11px 16px;
   }
 
   .score-event-title {
-    font-size: 26px;
+    font-size: 28px;
+  }
+
+  .countdown {
+    font-size: 110px;
+    -webkit-text-stroke: 5px var(--ink);
   }
 }
 
+/* === Multiplayer panel — locker-room card === */
 .multiplayer-panel {
   position: fixed;
-  left: 14px;
+  left: 16px;
   top: 50%;
   z-index: 12;
-  width: 210px;
-  transform: translateY(-50%);
-  padding: 10px 12px;
+  width: 216px;
+  transform: translateY(-50%) rotate(-1.2deg);
+  padding: 12px 14px;
   pointer-events: auto;
-  color: #f7f7f7;
-  background: rgba(12, 18, 28, 0.84);
-  border: 1px solid rgba(255, 255, 255, 0.18);
-  border-radius: 8px;
-  backdrop-filter: blur(5px);
+  color: var(--ink);
+  background: var(--paper);
+  border: var(--outline);
+  border-radius: 14px;
+  box-shadow: var(--shadow-hard);
   font-size: 12px;
-  text-shadow: 0 1px 2px rgba(0, 0, 0, 0.65);
+  font-weight: 600;
 }
 
 .multiplayer-title {
-  font-weight: 700;
-  letter-spacing: 0.08em;
+  font-weight: 900;
+  letter-spacing: 0.06em;
   text-transform: uppercase;
-  color: #ffd36a;
-  margin-bottom: 8px;
+  color: var(--paper);
+  background: var(--school-red);
+  border: 2px solid var(--ink);
+  border-radius: 8px;
+  padding: 3px 9px;
+  display: inline-block;
+  margin-bottom: 10px;
+  box-shadow: 2px 2px 0 var(--ink);
 }
 
 .multiplayer-field {
   display: grid;
   gap: 4px;
-  margin-bottom: 8px;
+  margin-bottom: 9px;
 }
 
 .multiplayer-field span,
 .multiplayer-line {
-  color: rgba(255, 255, 255, 0.72);
+  color: var(--ink);
 }
 
 .multiplayer-field input {
   width: 100%;
   box-sizing: border-box;
-  border: 1px solid rgba(255, 255, 255, 0.22);
-  border-radius: 5px;
-  padding: 6px 7px;
-  color: #ffffff;
-  background: rgba(0, 0, 0, 0.25);
+  border: 2.5px solid var(--ink);
+  border-radius: 8px;
+  padding: 7px 8px;
+  color: var(--ink);
+  background: var(--paper-2);
+  font-weight: 700;
+}
+
+.multiplayer-field input:focus {
+  outline: none;
+  border-color: var(--school-blue);
 }
 
 .multiplayer-actions {
   display: flex;
-  gap: 6px;
-  margin-bottom: 8px;
+  gap: 7px;
+  margin-bottom: 9px;
 }
 
 .multiplayer-actions button {
   flex: 1;
   min-width: 0;
-  border: 1px solid rgba(255, 255, 255, 0.2);
-  border-radius: 5px;
-  padding: 6px 7px;
-  color: #081018;
-  background: #ffd36a;
-  font-weight: 700;
+  border: 2.5px solid var(--ink);
+  border-radius: 9px;
+  padding: 7px 8px;
+  color: var(--ink);
+  background: var(--school-gold);
+  font-weight: 900;
+  text-transform: uppercase;
+  letter-spacing: 0.02em;
   cursor: pointer;
+  box-shadow: 2px 2px 0 var(--ink);
+  transition: transform 0.05s ease, box-shadow 0.05s ease;
+}
+
+.multiplayer-actions button:hover:not(:disabled) {
+  transform: translate(-1px, -1px);
+  box-shadow: 3px 3px 0 var(--ink);
+}
+
+.multiplayer-actions button:active:not(:disabled) {
+  transform: translate(2px, 2px);
+  box-shadow: 0 0 0 var(--ink);
 }
 
 .multiplayer-actions button:disabled {
   cursor: default;
-  opacity: 0.45;
+  opacity: 0.5;
+  box-shadow: 1px 1px 0 var(--ink);
 }
 
 .multiplayer-line {
   display: flex;
   justify-content: space-between;
   gap: 8px;
-  margin-top: 4px;
+  margin-top: 5px;
 }
 
 .multiplayer-status,
 .multiplayer-room,
 .multiplayer-ping {
-  color: #8cffb0;
-  font-weight: 700;
+  color: #1ba85a;
+  font-weight: 900;
   text-align: right;
   word-break: break-all;
 }
 
 .multiplayer-error {
   min-height: 15px;
-  margin-top: 6px;
-  color: #ff7777;
+  margin-top: 7px;
+  color: var(--school-red);
+  font-weight: 700;
   line-height: 1.25;
 }

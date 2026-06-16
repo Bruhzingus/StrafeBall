@@ -290,7 +290,9 @@ export class ServerGameLoop {
     const player = this.state.players[playerId];
     if (!player) return;
     const others = Object.values(this.state.players).filter((p) => p.id !== playerId);
-    if (this.state.match.status === 'playing' && others.length === 1) {
+    // A match "in progress" includes the pre-round countdown — leaving during it still forfeits.
+    const matchInProgress = this.state.match.status === 'playing' || this.state.match.status === 'countdown';
+    if (matchInProgress && others.length === 1) {
       this.forfeitTo(others[0].teamId);
       if (this.debug.NET_DEBUG) this.logger(`forfeit win team=${others[0].teamId} (opponent abandoned)`);
     }
@@ -507,11 +509,23 @@ export class ServerGameLoop {
     this.stepNowMs = Date.now();
     this.pruneResetVotes(this.stepNowMs);
 
+    // Advance the pre-round countdown. While counting down, players are frozen (look only) and no
+    // combat resolves; when it elapses, flip to 'playing' so this tick already runs live.
+    this.advanceCountdown(fixedDt);
+
+    const counting = this.state.match.status === 'countdown';
     const active = this.connectedCount() >= 2 && this.state.match.status === 'playing';
 
     for (const playerId in this.state.players) {
       const player = this.state.players[playerId];
       const command = this.nextInputCommand(player);
+      if (counting) {
+        // Frozen at spawn: adopt look angles only, pin position/velocity, still ack the input seq
+        // (so client reconciliation stays in lock-step) and record defense history.
+        this.updatePlayerLookOnly(player, command.input, command.seq);
+        this.recordDefenseSample(player);
+        continue;
+      }
       const preVelocity = player.movement.velocity;
       this.updatePlayer(player, fixedDt, command.input, command.seq);
       // Mat knock-over uses the player's PRE-resolution velocity: the collision solver zeros the
@@ -523,7 +537,8 @@ export class ServerGameLoop {
 
     // Move balls, record their swept positions, and resolve combat per live ball in the correct
     // order (parry → catch → hit). Scoring/hit only counts while the match is active; catch/parry
-    // need an opponent's live ball, which only exists with two players present anyway.
+    // need an opponent's live ball, which only exists with two players present anyway. During the
+    // countdown balls are still settled (so loose balls rest) but no combat is resolved.
     this.updateBalls(fixedDt, active);
 
     if (active) {
@@ -532,6 +547,49 @@ export class ServerGameLoop {
 
     this.syncPlayerScores();
     return this.snapshot();
+  }
+
+  /** Tick the pre-round countdown timer; flip to 'playing' once it reaches 0. */
+  private advanceCountdown(dt: number): void {
+    if (this.state.match.status !== 'countdown') return;
+    const remaining = this.state.match.countdownSeconds - dt;
+    if (remaining > 0) {
+      this.state.match = { ...this.state.match, countdownSeconds: remaining };
+      return;
+    }
+    // Countdown finished → live play. Reset the no-boundaries clock so the round starts fresh.
+    this.state.match = {
+      ...this.state.match,
+      status: 'playing',
+      countdownSeconds: 0,
+      boundary: { ...this.state.match.boundary, elapsedSeconds: 0, noBoundaries: false, lastEvent: { type: 'none' } }
+    };
+  }
+
+  /**
+   * Countdown-frozen player update: keep the player pinned at their spawn (no movement integration,
+   * zero velocity) but DO adopt the freshest look angles from input and advance hand cooldown timers
+   * a touch, and ack the input sequence so the client's reconciliation cursor keeps advancing (this
+   * is what keeps the local player from wedging after a reset). No throws/catches/pickups/drops.
+   */
+  private updatePlayerLookOnly(player: PlayerState, input: PlayerInput, seq: number): void {
+    const spawn = SPAWN_BY_SIDE[player.spawnSide];
+    player.movement = {
+      ...player.movement,
+      position: { ...spawn.position },
+      velocity: vec3(),
+      yawRadians: input.lookYawRadians,
+      pitchRadians: input.lookPitchRadians,
+      facing: facingFromAngles(input.lookYawRadians, input.lookPitchRadians),
+      grounded: true,
+      crouching: false,
+      sliding: false,
+      wallRunning: false,
+      dashingThisFrame: false,
+      speed: 0
+    };
+    player.lastProcessedInputSeq = seq;
+    this.previousInputByPlayerId.set(player.id, input);
   }
 
   /** Drain authoritative throw events accepted since the last drain (room broadcasts them). */
@@ -1196,9 +1254,14 @@ export class ServerGameLoop {
   }
 
   private startMatch(): void {
+    // Begin with a pre-round COUNTDOWN rather than jumping straight to 'playing'. During it the
+    // server pins players to spawn (see pinPlayersToSpawn / step) so the round starts cleanly and
+    // identically every time — this is also the deterministic post-reset state that fixes the old
+    // "everyone stuck after a 1v1 reset" freeze.
     this.state.match = {
       ...this.state.match,
-      status: 'playing',
+      status: 'countdown',
+      countdownSeconds: GAME_CONSTANTS.match.countdownSeconds,
       elapsedSeconds: 0,
       winnerTeamId: null,
       boundary: { ...this.state.match.boundary, elapsedSeconds: 0, noBoundaries: false, lastEvent: { type: 'none' } }
@@ -1300,11 +1363,17 @@ export class ServerGameLoop {
       })
     });
     const match = createMatchState(this.roomId, TEAM_IDS);
+    // Start in warmup until two players are present (#15). With two present we enter the pre-round
+    // COUNTDOWN (startMatch is also called by the reset/join paths and re-affirms this); the match
+    // clock shouldn't run while the creator waits for an opponent.
+    const twoPlayers = players.length >= 2;
     return {
       ...room,
-      // Start in warmup until two players are present (#15) — the match clock shouldn't run while
-      // the creator waits for an opponent.
-      match: { ...match, status: players.length >= 2 ? 'playing' : 'warmup' }
+      match: {
+        ...match,
+        status: twoPlayers ? 'countdown' : 'warmup',
+        countdownSeconds: twoPlayers ? GAME_CONSTANTS.match.countdownSeconds : 0
+      }
     };
   }
 }
