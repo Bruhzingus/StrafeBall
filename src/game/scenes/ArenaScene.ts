@@ -142,8 +142,9 @@ export class ArenaScene {
   }
 
   private resetBalls(): void {
-    // Detach hands first so they don't reference the about-to-be-disposed ball meshes.
+    // Detach hands and the bot first so neither references the about-to-be-disposed ball meshes.
     this.player.hands.clearHands();
+    this.bot.reset();
     this.ballManager.spawnCenterLineBalls();
   }
 

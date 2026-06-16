@@ -173,7 +173,18 @@ export const TUNING = {
     throwHeight: 1.4,
     // Upward bias added to the normalized aim direction before the throw is renormalized, so
     // the ball arcs slightly instead of coming dead flat.
-    arc: 0.14
+    arc: 0.14,
+    // Wind-up: the bot grabs and holds a map ball this long before releasing it (brief, so the
+    // ball is only out of play for the wind-up). Throwing arm cocks back then swings through.
+    windupSeconds: 0.55,
+    armLength: 0.62,
+    armRadius: 0.075,
+    shoulderSide: 0.34,
+    shoulderHeight: 0.5, // local Y above the bot's center (capsule center sits at world y=0.9)
+    restArmAngle: 0.18, // radians: arm hangs slightly forward at rest
+    cockArmAngle: 1.2, // pulled back during wind-up
+    throwArmAngle: -1.25, // extended toward the player at release
+    armSwingSeconds: 0.18 // follow-through duration after release
   }
 } as const;
 
