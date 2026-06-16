@@ -67,7 +67,10 @@ export class CatchController {
     if (!input.pointerLocked) return;
     const hand = this.hands.getHand(side);
     if (hand.ball || hand.cooldown > 0 || movement.dashingThisFrame) return;
-    if (!input.wasMousePressed(button) && !input.wasMouseReleased(button)) return;
+    // Press edge only. Previously this also fired on the RELEASE edge, so the release frame of
+    // a throw (which empties the hand) doubled as a catch input — auto-catching your own throw
+    // and stamping a spurious catch cooldown on whiffs. A catch is a deliberate click.
+    if (!input.wasMousePressed(button)) return;
 
     const candidate = this.findCatchCandidate(false);
     if (!candidate) {
