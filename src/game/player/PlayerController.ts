@@ -39,7 +39,7 @@ export class PlayerController {
     this.hands = new HandController(this.camera, ballManager, this.backflip);
     this.catching = new CatchController(this.camera, ballManager, this.hands, this.movement);
     // Seed a valid snapshot so the HUD never reads `undefined` on a frame before the first
-    // fixed-step tick runs (the accumulator may not reach a full step on frame 1).
+    // sim step has run.
     this.lastMovementSnapshot = this.movement.snapshot();
   }
 

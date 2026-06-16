@@ -136,13 +136,12 @@ export class MovementController {
   }
 
   /**
-   * Jump is HELD, not a one-shot: holding Space auto-bhops on every landing (no cooldown
-   * feel) and chains wall-bounces off walls. Tapping still works. A well-timed landing
-   * (inside the bhop grace window) keeps/builds speed.
+   * Jump is press-based (not auto/held): you must re-press to hop, so bhop stays a timing
+   * skill rather than something you hold. There is no cooldown — you can jump the instant you
+   * land, and a landing inside the bhop grace window keeps/builds speed. A jump while
+   * wall-running becomes a wall-jump.
    */
   private tryJump(input: InputManager, wishDir: Vector3): void {
-    // Press-based (not auto): you must re-press to hop, so bhop stays a timing skill rather
-    // than something you hold. There is no cooldown — you can jump the instant you land.
     if (!input.wasKeyPressed(CONTROL_KEYS.jump)) return;
 
     if (this.wallRunning) {

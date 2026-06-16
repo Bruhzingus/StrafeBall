@@ -1,6 +1,7 @@
 export const TUNING = {
   simulation: {
-    fixedTimeStep: 1 / 60,
+    // The sim runs one variable-length step per rendered frame, clamped to this so a long
+    // hitch (alt-tab, GC) can't produce a huge step that tunnels through collision.
     maxDeltaSeconds: 0.05
   },
 
