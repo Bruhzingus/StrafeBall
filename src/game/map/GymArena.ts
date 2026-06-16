@@ -42,6 +42,40 @@ export class GymArena {
     this.createCeiling();
     this.createCeilingLights();
     this.createScoreboard();
+
+    // The gym is a fixed stage: every mesh built above is static except the moving dummy and the
+    // mats (which tip over). Freeze the rest so Babylon stops recomputing their world matrices and
+    // re-evaluating them for picking/culling every frame — a large per-frame CPU + GC win on a
+    // scene with this many boxes (walls, pads, lines, bleacher tiers/seats/panels, scoreboard).
+    this.freezeStaticMeshes();
+  }
+
+  /**
+   * Freeze world matrices + disable picking on every static mesh in the gym. Skips the moving
+   * dummy and the mat visuals, which animate. `freezeWorldMatrix` stops the per-frame matrix
+   * recompute; `doNotSyncBoundingInfo`/`alwaysSelectAsActiveMesh` skip redundant culling work for
+   * geometry that is always on screen-adjacent and never moves.
+   */
+  private freezeStaticMeshes(): void {
+    const dynamic = new Set<Mesh>();
+    // The moving dummy translates every frame; exclude it AND its parented child parts (a frozen
+    // child of a moving parent would not follow). Mat visuals tip/reset, so exclude those too.
+    if (this.movingDummy) {
+      dynamic.add(this.movingDummy);
+      for (const child of this.movingDummy.getChildMeshes(false)) {
+        if (child instanceof Mesh) dynamic.add(child);
+      }
+    }
+    for (const mat of this.mats) dynamic.add(mat.mesh);
+
+    for (const mesh of this.scene.meshes) {
+      if (!(mesh instanceof Mesh) || dynamic.has(mesh)) continue;
+      // Static target dummies + their child parts get toggled (setEnabled) between practice/online
+      // but never move, so freezing their matrices is safe and they still hide/show correctly.
+      mesh.isPickable = false;
+      mesh.doNotSyncBoundingInfo = true;
+      mesh.freezeWorldMatrix();
+    }
   }
 
   /**

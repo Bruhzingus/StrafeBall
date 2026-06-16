@@ -1,6 +1,6 @@
 import { Color3, Mesh, MeshBuilder, PBRMaterial, Quaternion, Scene, TransformNode, Vector3 } from '@babylonjs/core';
 import type { ServerSnapshot } from '../../../shared/protocol';
-import type { BallState, HandSide, PlayerState } from '../../../shared/types';
+import type { BallState, HandSide, PlayerState, Vec3 } from '../../../shared/types';
 import { TUNING } from '../config/tuning';
 import { computePlayerHandAnchor } from '../../../shared/simulation/HandAnchors';
 import { backflipPitchOffset, lookVectorsFromAngles } from '../../../shared/simulation/AimMath';
@@ -125,6 +125,14 @@ export class NetworkRenderer {
   private metricIntervalCount = 0;
   private metricIntervalMaxMs = 0;
   private debugStats: NetworkRendererDebugStats = emptyDebugStats();
+
+  // Reusable "render player" view, mutated in place each frame in posePlayerVisual instead of
+  // allocating a fresh spread of the PlayerState/movement tree per remote player per frame. Its
+  // movement is a scratch object whose position is pinned to the (flip-adjusted) visual root while
+  // the look angles / crouch flags mirror the live player; hands alias the live player's hands.
+  private readonly renderPlayerPosition: Vec3 = { x: 0, y: 0, z: 0 };
+  private readonly renderPlayerMovement = createScratchMovement(this.renderPlayerPosition);
+  private readonly renderPlayerScratch: PlayerState = createScratchPlayer(this.renderPlayerMovement);
 
   constructor(private readonly scene: Scene) {}
 
@@ -387,12 +395,14 @@ export class NetworkRenderer {
       if (player.id === localPlayerId) continue;
       seen.add(player.id);
       const visual = this.ensurePlayer(player);
-      const target = toVector3(player.movement.position);
-      const error = Vector3.Distance(visual.root.position, target);
-      if (error > NetworkRenderer.HUGE_ERROR_SNAP_METERS && isNetworkRenderDebugEnabled()) {
-        console.log(`[remote/${player.id.slice(-4)}] snap largeError=${error.toFixed(2)}m`);
+      const target = player.movement.position;
+      if (isNetworkRenderDebugEnabled()) {
+        const error = distanceVec3({ x: visual.root.position.x, y: visual.root.position.y, z: visual.root.position.z }, target);
+        if (error > NetworkRenderer.HUGE_ERROR_SNAP_METERS) {
+          console.log(`[remote/${player.id.slice(-4)}] snap largeError=${error.toFixed(2)}m`);
+        }
       }
-      visual.root.position.copyFrom(target);
+      visual.root.position.set(target.x, target.y, target.z);
       visual.root.rotation.y = 0;
       // Backflip body tumble: rotate the whole rig backward about its mid-height so the remote
       // avatar visibly flips. Pivot at body center (not the feet) by lifting the root by the
@@ -451,34 +461,51 @@ export class NetworkRenderer {
       // PREDICTED movement (when supplied) so the ball stays glued to the player's hand instead of
       // dragging ~INTERPOLATION_DELAY_MS behind while strafing. The held<->live transition is a
       // continuity change, so it snaps rather than lerping.
-      let target = toVector3(ball.position);
+      // `target` is a plain {x,y,z}; written into the mesh position at the end (no Vector3 alloc).
+      const target = scratchBallTarget;
+      target.x = ball.position.x;
+      target.y = ball.position.y;
+      target.z = ball.position.z;
       if (ball.heldByPlayerId && ball.heldHand) {
         const holder = findById(players, ball.heldByPlayerId);
         if (ball.heldByPlayerId === localPlayerId && localPredicted && holder) {
-          const predictedHolder: PlayerState = { ...holder, movement: localPredicted };
-          target = toVector3(computePlayerHandAnchor(predictedHolder, ball.heldHand));
+          // Reuse the scratch render-player rather than spreading the holder each frame.
+          this.renderPlayerScratch.movement = localPredicted;
+          const anchor = computePlayerHandAnchor(this.renderPlayerScratch, ball.heldHand);
+          this.renderPlayerScratch.movement = this.renderPlayerMovement; // restore alias
           // Keep the LOCAL held ball in front of the eye so it's always visible: the raw hand anchor
           // can fall beside/behind the camera near-plane (e.g. steep pitch while moving), which made
           // your own ball briefly vanish. Clamp it to a minimum forward distance along the look dir.
-          target = keepInFrontOfEye(target, localPredicted);
+          keepInFrontOfEyeToRef(anchor, localPredicted, target);
         } else if (holder) {
-          target = toVector3(computePlayerHandAnchor(holder, ball.heldHand));
+          const anchor = computePlayerHandAnchor(holder, ball.heldHand);
+          target.x = anchor.x;
+          target.y = anchor.y;
+          target.z = anchor.z;
         }
       }
 
-      const error = Vector3.Distance(visual.mesh.position, target);
-      const continuity = ballContinuity(ball);
       const previous = this.ballRenderContinuity.get(ball.id);
-      const changed = previous !== undefined && !sameBallContinuity(previous, continuity);
-      if ((changed || error > NetworkRenderer.HUGE_ERROR_SNAP_METERS) && isNetworkRenderDebugEnabled()) {
-        console.log(
-          `[net/ball] snap id=${ball.id} phase=${ball.phase} changed=${Number(changed)} error=${error.toFixed(2)}m`
-        );
+      const changed = previous !== undefined && !continuityMatchesBall(previous, ball);
+      if (isNetworkRenderDebugEnabled()) {
+        const mp = visual.mesh.position;
+        const error = distanceVec3({ x: mp.x, y: mp.y, z: mp.z }, target);
+        if (changed || error > NetworkRenderer.HUGE_ERROR_SNAP_METERS) {
+          console.log(
+            `[net/ball] snap id=${ball.id} phase=${ball.phase} changed=${Number(changed)} error=${error.toFixed(2)}m`
+          );
+        }
       }
-      visual.mesh.position.copyFrom(target);
-      visual.mesh.material = getBallMaterial(this.scene, ballVariantForState(ball));
+      visual.mesh.position.set(target.x, target.y, target.z);
+      const desiredMaterial = getBallMaterial(this.scene, ballVariantForState(ball));
+      if (visual.mesh.material !== desiredMaterial) visual.mesh.material = desiredMaterial;
       visual.mesh.setEnabled(true);
-      this.ballRenderContinuity.set(ball.id, continuity);
+      // Update the stored continuity in place (allocate one only the first time we see this ball).
+      if (previous) {
+        copyBallContinuity(previous, ball);
+      } else {
+        this.ballRenderContinuity.set(ball.id, ballContinuity(ball));
+      }
     }
 
     for (const [id, visual] of this.balls) {
@@ -671,18 +698,31 @@ export class NetworkRenderer {
 
   private posePlayerVisual(player: PlayerState, visual: PlayerVisual): void {
     const root = visual.root.position;
-    const renderPlayer: PlayerState = {
-      ...player,
-      movement: {
-        ...player.movement,
-        position: { x: root.x, y: root.y, z: root.z }
-      }
-    };
-    const base = root.clone();
-    const { forward, right } = lookVectorsFromAngles(player.movement.yawRadians, player.movement.pitchRadians);
-    const forwardV = toVector3(forward);
-    const rightV = toVector3(right);
-    const flatForward = flatForwardFrom(forwardV);
+    // Reusable render-player view: same as `player` but with the position pinned to the (possibly
+    // flip-adjusted) visual root. Mutated in place each frame instead of re-spreading the whole
+    // PlayerState tree, which was a per-player-per-frame allocation of several nested objects.
+    const renderPlayer = this.renderPlayerScratch;
+    const m = this.renderPlayerMovement;
+    const pm = player.movement;
+    m.yawRadians = pm.yawRadians;
+    m.pitchRadians = pm.pitchRadians;
+    m.facing = pm.facing;
+    m.velocity = pm.velocity;
+    m.grounded = pm.grounded;
+    m.crouching = pm.crouching;
+    m.sliding = pm.sliding;
+    m.wallRunning = pm.wallRunning;
+    m.dashingThisFrame = pm.dashingThisFrame;
+    m.speed = pm.speed;
+    renderPlayer.hands = player.hands;
+    this.renderPlayerPosition.x = root.x;
+    this.renderPlayerPosition.y = root.y;
+    this.renderPlayerPosition.z = root.z;
+
+    const look = lookVectorsFromAngles(player.movement.yawRadians, player.movement.pitchRadians);
+    const forwardV = scratchForward.set(look.forward.x, look.forward.y, look.forward.z);
+    const rightV = scratchRight.set(look.right.x, look.right.y, look.right.z);
+    const flatForward = flatForwardToRef(forwardV, scratchFlatForward);
     const hitbox = playerHitCapsule(renderPlayer);
     const bodyHeight = hitbox.height;
     const bodyScale = bodyHeight / TUNING.player.height;
@@ -699,10 +739,11 @@ export class NetworkRenderer {
     visual.hitbox.scaling.set(1, bodyScale, 1);
     visual.hitbox.setEnabled(isHitboxDebugEnabled());
 
-    visual.torso.position.copyFrom(flatForward.scale(0.02).add(new Vector3(0, Math.max(0.58, bodyHeight * 0.53), 0)));
+    // torso = flatForward*0.02 + (0, max(0.58, h*0.53), 0)
+    visual.torso.position.set(flatForward.x * 0.02, flatForward.y * 0.02 + Math.max(0.58, bodyHeight * 0.53), flatForward.z * 0.02);
     visual.torso.scaling.set(1, torsoScaleY, 1);
     orientYaw(visual.torso, flatForward);
-    visual.chestStripe.position.copyFrom(flatForward.scale(0.235).add(new Vector3(0, Math.max(0.72, bodyHeight * 0.62), 0)));
+    visual.chestStripe.position.set(flatForward.x * 0.235, flatForward.y * 0.235 + Math.max(0.72, bodyHeight * 0.62), flatForward.z * 0.235);
     visual.chestStripe.scaling.set(1, Math.max(0.8, bodyScale), 1);
     orientYaw(visual.chestStripe, flatForward);
     visual.hips.position.set(0, hipY, 0);
@@ -716,36 +757,38 @@ export class NetworkRenderer {
     this.poseFoot(visual.leftFoot, 'left', flatForward, rightV);
     this.poseFoot(visual.rightFoot, 'right', flatForward, rightV);
 
-    const eye = base.add(new Vector3(0, eyeHeight, 0));
-    const aimEnd = eye.add(forwardV.scale(0.5));
+    // eye = root + (0, eyeHeight, 0); aimEnd = eye + forward*0.5
+    scratchEye.set(root.x, root.y + eyeHeight, root.z);
+    scratchAimEnd.set(scratchEye.x + forwardV.x * 0.5, scratchEye.y + forwardV.y * 0.5, scratchEye.z + forwardV.z * 0.5);
 
     visual.head.position.set(0, headY, 0.015);
-    visual.visor.position.copyFrom(
-      new Vector3(0, headY + 0.035, 0.015)
-        .add(forwardV.scale(0.225))
-    );
-    visual.visor.rotationQuaternion = visual.visor.rotationQuaternion ?? new Quaternion();
-    Quaternion.FromUnitVectorsToRef(new Vector3(0, 0, 1), forwardV.normalizeToNew(), visual.visor.rotationQuaternion);
-    this.poseSegment(visual.facing, eye, aimEnd, root);
+    visual.visor.position.set(forwardV.x * 0.225, headY + 0.035 + forwardV.y * 0.225, 0.015 + forwardV.z * 0.225);
+    visual.visor.rotationQuaternion ??= new Quaternion();
+    Quaternion.FromUnitVectorsToRef(SCRATCH_FWD_Z, forwardV, visual.visor.rotationQuaternion);
+    this.poseSegment(visual.facing, scratchEye, scratchAimEnd, root);
     this.poseArm(renderPlayer, visual.leftArm, 'left', root, forwardV, rightV);
     this.poseArm(renderPlayer, visual.rightArm, 'right', root, forwardV, rightV);
   }
 
   private poseStaticSidePart(mesh: Mesh, side: HandSide, y: number, forward: Vector3, right: Vector3): void {
     const sign = side === 'left' ? -1 : 1;
-    mesh.position.copyFrom(right.scale(sign * 0.28).add(forward.scale(0.015)).add(new Vector3(0, y, 0)));
+    // pos = right*sign*0.28 + forward*0.015 + (0, y, 0)
+    const p = mesh.position;
+    p.set(right.x * sign * 0.28 + forward.x * 0.015, right.y * sign * 0.28 + forward.y * 0.015 + y, right.z * sign * 0.28 + forward.z * 0.015);
     orientYaw(mesh, forward);
   }
 
   private poseLeg(mesh: Mesh, side: HandSide, height: number, right: Vector3): void {
     const sign = side === 'left' ? -1 : 1;
-    mesh.position.copyFrom(right.scale(sign * 0.16).add(new Vector3(0, Math.max(0.22, height * 0.52), 0.035)));
+    const p = mesh.position;
+    p.set(right.x * sign * 0.16, right.y * sign * 0.16 + Math.max(0.22, height * 0.52), right.z * sign * 0.16 + 0.035);
     mesh.scaling.y = height / 0.72;
   }
 
   private poseFoot(mesh: Mesh, side: HandSide, forward: Vector3, right: Vector3): void {
     const sign = side === 'left' ? -1 : 1;
-    mesh.position.copyFrom(right.scale(sign * 0.16).add(forward.scale(0.08)).add(new Vector3(0, 0.045, 0)));
+    const p = mesh.position;
+    p.set(right.x * sign * 0.16 + forward.x * 0.08, right.y * sign * 0.16 + forward.y * 0.08 + 0.045, right.z * sign * 0.16 + forward.z * 0.08);
     orientYaw(mesh, forward);
   }
 
@@ -759,39 +802,51 @@ export class NetworkRenderer {
   ): void {
     const sign = side === 'left' ? -1 : 1;
     const handState = player.hands[side];
-    const base = toVector3(player.movement.position);
+    const pos = player.movement.position;
     const shoulderHeight = Math.max(0.56, Math.min(playerHitCapsule(player).height - 0.32, playerAimOriginHeight(player.movement) - 0.34));
-    const shoulder = base
-      .add(new Vector3(0, shoulderHeight, 0))
-      .add(right.scale(sign * 0.36))
-      .add(forward.scale(-0.03));
-    let hand = toVector3(computePlayerHandAnchor(player, side));
+    // shoulder = pos + (0, shoulderHeight, 0) + right*sign*0.36 + forward*-0.03
+    const shoulder = scratchShoulder;
+    shoulder.set(
+      pos.x + right.x * sign * 0.36 + forward.x * -0.03,
+      pos.y + shoulderHeight + right.y * sign * 0.36 + forward.y * -0.03,
+      pos.z + right.z * sign * 0.36 + forward.z * -0.03
+    );
 
+    const anchor = computePlayerHandAnchor(player, side);
+    const hand = scratchHand.set(anchor.x, anchor.y, anchor.z);
     if (handState.mode === 'charging') {
       const charge = Math.min(1, handState.chargeSeconds / TUNING.ball.maxChargeSeconds);
-      hand = hand.subtract(forward.scale(0.18 * charge)).add(new Vector3(0, 0.08 * charge, 0));
+      hand.set(hand.x - forward.x * 0.18 * charge, hand.y - forward.y * 0.18 * charge + 0.08 * charge, hand.z - forward.z * 0.18 * charge);
     } else if (!handState.heldBallId && handState.mode === 'empty') {
-      hand = hand.subtract(new Vector3(0, 0.12, 0)).subtract(forward.scale(0.08));
+      hand.set(hand.x - forward.x * 0.08, hand.y - 0.12 - forward.y * 0.08, hand.z - forward.z * 0.08);
     }
 
-    const elbow = Vector3.Lerp(shoulder, hand, 0.52)
-      .add(new Vector3(0, -0.04, 0))
-      .add(right.scale(sign * 0.05));
+    // elbow = lerp(shoulder, hand, 0.52) + (0, -0.04, 0) + right*sign*0.05
+    const elbow = scratchElbow;
+    elbow.set(
+      shoulder.x + (hand.x - shoulder.x) * 0.52 + right.x * sign * 0.05,
+      shoulder.y + (hand.y - shoulder.y) * 0.52 - 0.04 + right.y * sign * 0.05,
+      shoulder.z + (hand.z - shoulder.z) * 0.52 + right.z * sign * 0.05
+    );
 
     this.poseSegment(arm.upper, shoulder, elbow, root);
     this.poseSegment(arm.lower, elbow, hand, root);
-    arm.hand.position.copyFrom(hand.subtract(root));
+    arm.hand.position.set(hand.x - root.x, hand.y - root.y, hand.z - root.z);
     arm.hand.material = this.material(side === 'left' ? 'leftHand' : 'rightHand');
   }
 
   private poseSegment(mesh: Mesh, start: Vector3, end: Vector3, root: Vector3): void {
-    const delta = end.subtract(start);
-    const length = Math.max(0.001, delta.length());
-    const direction = delta.scale(1 / length);
-    mesh.position.copyFrom(start.add(end).scale(0.5).subtract(root));
+    // delta = end - start (scratchA), reused as the normalized direction.
+    end.subtractToRef(start, scratchA);
+    const length = Math.max(0.001, scratchA.length());
+    scratchA.scaleInPlace(1 / length); // now the unit direction
+    // position = midpoint(start, end) - root.
+    start.addToRef(end, scratchB);
+    scratchB.scaleInPlace(0.5);
+    scratchB.subtractToRef(root, mesh.position);
     mesh.scaling.y = length;
-    mesh.rotationQuaternion = mesh.rotationQuaternion ?? new Quaternion();
-    Quaternion.FromUnitVectorsToRef(new Vector3(0, 1, 0), direction, mesh.rotationQuaternion);
+    mesh.rotationQuaternion ??= new Quaternion();
+    Quaternion.FromUnitVectorsToRef(SCRATCH_UP, scratchA, mesh.rotationQuaternion);
   }
 
   private ensureBall(ball: BallState): BallVisual {
@@ -823,6 +878,58 @@ export class NetworkRenderer {
   }
 }
 
+/** Scratch movement whose `position` aliases the supplied ref; other fields are overwritten/aliased
+ * each frame in posePlayerVisual. Only the fields the renderer's pose math reads are meaningful. */
+function createScratchMovement(positionRef: Vec3): PlayerState['movement'] {
+  return {
+    position: positionRef,
+    velocity: { x: 0, y: 0, z: 0 },
+    yawRadians: 0,
+    pitchRadians: 0,
+    facing: { x: 0, y: 0, z: 1 },
+    grounded: true,
+    crouching: false,
+    sliding: false,
+    wallRunning: false,
+    dashingThisFrame: false,
+    speed: 0
+  };
+}
+
+/** Scratch player wrapping the scratch movement; `hands` is aliased to the live player each frame. */
+function createScratchPlayer(movement: PlayerState['movement']): PlayerState {
+  return {
+    id: '',
+    name: '',
+    teamId: '',
+    spawnSide: 'negativeZ',
+    legalHalf: 'negativeZ',
+    movement,
+    movementInternal: {
+      slideTimer: 0,
+      jumpGraceTimer: 0,
+      wallRunTimer: 0,
+      wallReattachCooldown: 0,
+      dashActiveTimer: 0,
+      catchBoostTimer: 0,
+      groundHeight: 0,
+      lastWallNormalX: 0,
+      lastWallNormalZ: 0,
+      backflipActive: false,
+      backflipTimer: 0,
+      backflipCooldown: 0
+    },
+    hands: {
+      left: { side: 'left', heldBallId: null, mode: 'empty', chargeSeconds: 0, cooldownSeconds: 0, catchTrackingSecondsByBallId: {} },
+      right: { side: 'right', heldBallId: null, mode: 'empty', chargeSeconds: 0, cooldownSeconds: 0, catchTrackingSecondsByBallId: {} }
+    },
+    dash: { charges: 0, rechargeTimerSeconds: 0, cooldownSeconds: 0 },
+    score: 0,
+    connected: true,
+    lastProcessedInputSeq: 0
+  };
+}
+
 function emptyDebugStats(): NetworkRendererDebugStats {
   return {
     remoteInterpolationBufferSize: 0,
@@ -840,6 +947,27 @@ function toVector3(v: { x: number; y: number; z: number }): Vector3 {
   return new Vector3(v.x, v.y, v.z);
 }
 
+// --- Per-frame scratch vectors (module-level, reused) -------------------------------------------
+// The pose math below runs every frame for every remote player and used to allocate dozens of
+// Vector3/Quaternion objects per player per frame (each .add()/.scale()/.subtract()/clone()/Lerp
+// returns a NEW Vector3). That allocation churn is a primary GC pressure source. These scratch
+// instances let the hot pose path do all its vector math in place with the Babylon *ToRef APIs.
+// They are NOT reentrant — only ever touched synchronously from the single render-loop update.
+const SCRATCH_UP = new Vector3(0, 1, 0);
+const SCRATCH_FWD_Z = new Vector3(0, 0, 1);
+const scratchForward = new Vector3();
+const scratchRight = new Vector3();
+const scratchFlatForward = new Vector3();
+const scratchA = new Vector3();
+const scratchB = new Vector3();
+const scratchShoulder = new Vector3();
+const scratchHand = new Vector3();
+const scratchElbow = new Vector3();
+const scratchEye = new Vector3();
+const scratchAimEnd = new Vector3();
+// Held-ball target is a plain Vec3 (never a Babylon Vector3) so the math stays alloc-free.
+const scratchBallTarget: Vec3 = { x: 0, y: 0, z: 0 };
+
 /**
  * Keep a held-ball anchor in front of the local eye. Projects the anchor onto the camera look
  * direction; if its forward component is below MIN_FORWARD it is pushed out to MIN_FORWARD (the
@@ -847,27 +975,41 @@ function toVector3(v: { x: number; y: number; z: number }): Vector3 {
  * visible — it can never sit beside or behind the near clip plane — without affecting throw
  * direction/origin (computed separately from the camera) or any remote/authoritative state.
  */
-function keepInFrontOfEye(anchor: Vector3, movement: PlayerState['movement']): Vector3 {
+function keepInFrontOfEyeToRef(anchor: Vec3, movement: PlayerState['movement'], out: Vec3): void {
   const MIN_FORWARD = 0.45; // meters in front of the eye
   const eyeHeight = playerAimOriginHeight(movement);
-  const eye = new Vector3(movement.position.x, movement.position.y + eyeHeight, movement.position.z);
+  const eyeX = movement.position.x;
+  const eyeY = movement.position.y + eyeHeight;
+  const eyeZ = movement.position.z;
   const f = lookVectorsFromAngles(movement.yawRadians, movement.pitchRadians).forward;
-  const forward = new Vector3(f.x, f.y, f.z);
-  const rel = anchor.subtract(eye);
-  const along = Vector3.Dot(rel, forward);
-  if (along >= MIN_FORWARD) return anchor;
+  const relX = anchor.x - eyeX;
+  const relY = anchor.y - eyeY;
+  const relZ = anchor.z - eyeZ;
+  const along = relX * f.x + relY * f.y + relZ * f.z;
+  if (along >= MIN_FORWARD) {
+    out.x = anchor.x;
+    out.y = anchor.y;
+    out.z = anchor.z;
+    return;
+  }
   // Shift the anchor forward along the look direction by the shortfall, preserving its offset.
-  return anchor.add(forward.scale(MIN_FORWARD - along));
+  const shift = MIN_FORWARD - along;
+  out.x = anchor.x + f.x * shift;
+  out.y = anchor.y + f.y * shift;
+  out.z = anchor.z + f.z * shift;
 }
 
-function flatForwardFrom(forward: Vector3): Vector3 {
-  const flat = new Vector3(forward.x, 0, forward.z);
-  return flat.lengthSquared() > 0.0001 ? flat.normalize() : new Vector3(0, 0, 1);
+/** Flatten `forward` onto the XZ plane and normalize, writing into `out` (no allocation). */
+function flatForwardToRef(forward: Vector3, out: Vector3): Vector3 {
+  out.set(forward.x, 0, forward.z);
+  if (out.lengthSquared() > 0.0001) out.normalize();
+  else out.set(0, 0, 1);
+  return out;
 }
 
 function orientYaw(mesh: Mesh, forward: Vector3): void {
-  mesh.rotationQuaternion = mesh.rotationQuaternion ?? new Quaternion();
-  Quaternion.FromUnitVectorsToRef(new Vector3(0, 0, 1), forward, mesh.rotationQuaternion);
+  mesh.rotationQuaternion ??= new Quaternion();
+  Quaternion.FromUnitVectorsToRef(SCRATCH_FWD_Z, forward, mesh.rotationQuaternion);
 }
 
 function clonePlayerState(player: PlayerState): PlayerState {
@@ -975,7 +1117,7 @@ function interpolatePlayerState(before: PlayerState, after: PlayerState, t: numb
 }
 
 function interpolateBallState(before: BallState, after: BallState, t: number): BallState {
-  if (!sameBallContinuity(ballContinuity(before), ballContinuity(after))) {
+  if (!sameBallContinuityState(before, after)) {
     return cloneBallState(after);
   }
   if (distanceVec3(before.position, after.position) > NetworkRenderer.HUGE_ERROR_SNAP_METERS) {
@@ -999,7 +1141,28 @@ function ballContinuity(ball: BallState): BallRenderContinuity {
   };
 }
 
-function sameBallContinuity(a: BallRenderContinuity, b: BallRenderContinuity): boolean {
+/** True when the stored continuity record still matches the ball — no allocation (vs building a
+ * fresh BallRenderContinuity each frame just to compare). */
+function continuityMatchesBall(c: BallRenderContinuity, ball: BallState): boolean {
+  return (
+    c.phase === ball.phase &&
+    c.ownerKind === ball.ownerKind &&
+    c.ownerId === ball.ownerId &&
+    c.heldByPlayerId === ball.heldByPlayerId &&
+    c.heldHand === ball.heldHand
+  );
+}
+
+function copyBallContinuity(c: BallRenderContinuity, ball: BallState): void {
+  c.phase = ball.phase;
+  c.ownerKind = ball.ownerKind;
+  c.ownerId = ball.ownerId;
+  c.heldByPlayerId = ball.heldByPlayerId;
+  c.heldHand = ball.heldHand;
+}
+
+/** Compare two balls' continuity directly without allocating two BallRenderContinuity records. */
+function sameBallContinuityState(a: BallState, b: BallState): boolean {
   return (
     a.phase === b.phase &&
     a.ownerKind === b.ownerKind &&
