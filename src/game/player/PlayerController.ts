@@ -8,6 +8,7 @@ import { DashController } from './DashController';
 import { BackflipController } from './BackflipController';
 import { CatchController } from './CatchController';
 import { CollisionWorld } from '../map/Collider';
+import { Effects } from '../effects/Effects';
 
 export class PlayerController {
   public readonly root: TransformNode;
@@ -23,7 +24,7 @@ export class PlayerController {
   private yaw = 0;
   private readonly mouseSensitivity = 0.0022;
 
-  constructor(scene: Scene, private readonly input: InputManager, ballManager: BallManager, collision: CollisionWorld) {
+  constructor(scene: Scene, private readonly input: InputManager, ballManager: BallManager, collision: CollisionWorld, effects: Effects) {
     this.root = new TransformNode('playerRoot', scene);
     this.root.position = new Vector3(0, 0, -12);
 
@@ -36,8 +37,8 @@ export class PlayerController {
     scene.activeCamera = this.camera;
 
     this.movement = new MovementController(this.root, this.camera, this.dash, this.backflip, collision);
-    this.hands = new HandController(this.camera, ballManager, this.backflip);
-    this.catching = new CatchController(this.camera, ballManager, this.hands, this.movement);
+    this.hands = new HandController(this.camera, ballManager, this.backflip, effects);
+    this.catching = new CatchController(this.camera, ballManager, this.hands, this.movement, effects);
     // Seed a valid snapshot so the HUD never reads `undefined` on a frame before the first
     // sim step has run.
     this.lastMovementSnapshot = this.movement.snapshot();

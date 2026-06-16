@@ -139,6 +139,19 @@ export const TUNING = {
     halfLength: 18,
     wallHeight: 4.5,
     ballCount: 6
+  },
+
+  // Practice bot: an always-on thrower for catch/block practice. It never spawns balls — it
+  // grabs the nearest free (loose/dead) ball on the map and lobs it at the player.
+  bot: {
+    position: { x: 0, y: 0.9, z: 11 },
+    throwIntervalSeconds: 2.0,
+    throwSpeed: 17,
+    // Absolute world height the throw originates from (chest height), so lobs read as catchable.
+    throwHeight: 1.4,
+    // Upward bias added to the normalized aim direction before the throw is renormalized, so
+    // the ball arcs slightly instead of coming dead flat.
+    arc: 0.14
   }
 } as const;
 

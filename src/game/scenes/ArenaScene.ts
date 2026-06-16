@@ -4,10 +4,14 @@ import { PlayerController } from '../player/PlayerController';
 import { GymArena } from '../map/GymArena';
 import { ModelLoader } from '../assets/ModelLoader';
 import { BallManager } from '../ball/BallManager';
+import { BallState } from '../ball/BallState';
 import { Hud } from '../ui/Hud';
 import { MatchRules } from '../rules/MatchRules';
 import { TUNING } from '../config/tuning';
 import { CONTROL_KEYS } from '../config/controls';
+import { SoundManager } from '../audio/SoundManager';
+import { Effects } from '../effects/Effects';
+import { PracticeBot } from '../bot/PracticeBot';
 
 export class ArenaScene {
   public readonly scene: Scene;
@@ -18,6 +22,9 @@ export class ArenaScene {
   private readonly hud: Hud;
   private readonly rules = new MatchRules();
   private readonly targetDummies: Mesh[] = [];
+  private readonly sound: SoundManager;
+  private readonly effects: Effects;
+  private readonly bot: PracticeBot;
 
   constructor(engine: Engine, canvas: HTMLCanvasElement) {
     this.scene = new Scene(engine);
@@ -34,7 +41,11 @@ export class ArenaScene {
     this.ballManager = new BallManager(loader, gym.collision);
     this.ballManager.spawnCenterLineBalls();
 
-    this.player = new PlayerController(this.scene, this.input, this.ballManager, gym.collision);
+    this.sound = new SoundManager();
+    this.effects = new Effects(this.scene, this.sound);
+
+    this.player = new PlayerController(this.scene, this.input, this.ballManager, gym.collision, this.effects);
+    this.bot = new PracticeBot(loader, this.ballManager);
 
     const hudRoot = document.getElementById('hud-root');
     if (!hudRoot) throw new Error('Missing HUD root.');
@@ -59,19 +70,55 @@ export class ArenaScene {
   dispose(): void {
     this.input.dispose();
     this.hud.dispose();
+    this.bot.dispose();
+    this.effects.dispose();
+    this.sound.dispose();
+  }
+
+  /**
+   * A bot-thrown ball that reaches the player (i.e. the player failed to catch or block it)
+   * counts as a hit: kill the ball and fire hit feedback. The player is approximated as an
+   * upright capsule of radius `player.radius` from the feet (root) up to `player.height`.
+   * Caught/parried balls leave the Live state before reaching here, so they never register.
+   */
+  private checkBotHitsPlayer(): void {
+    const feet = this.player.root.position;
+    const reach = TUNING.player.radius + TUNING.ball.radius;
+    const reachSq = reach * reach;
+
+    for (const ball of this.ballManager.balls) {
+      if (ball.state !== BallState.Live || ball.owner !== 'bot') continue;
+      const b = ball.mesh.position;
+      if (b.y < feet.y + 0.2 || b.y > feet.y + TUNING.player.height) continue;
+      const dx = b.x - feet.x;
+      const dz = b.z - feet.z;
+      if (dx * dx + dz * dz > reachSq) continue;
+
+      ball.makeDead();
+      this.effects.onPlayerHit(b);
+    }
   }
 
   private step(dt: number): void {
     this.player.update(dt);
+
+    // Practice bot lobs a map ball at the player's head each interval (for catch/block drills).
+    if (this.bot.update(dt, this.player.camera.globalPosition)) {
+      this.effects.botThrow();
+    }
+
     this.ballManager.update(dt);
+    this.checkBotHitsPlayer();
 
     // Each landed hit grants the thrower one dash charge (locked rule).
     const hits = this.rules.scoring.updateAgainstDummies(this.ballManager.balls, this.targetDummies);
     for (let i = 0; i < hits; i += 1) {
       this.player.dash.addChargeFromHit();
+      this.effects.onDummyHit();
     }
 
     this.rules.boundary.update(dt, this.player.root.position);
+    this.effects.update(dt);
 
     if (this.rules.scoring.isWin()) {
       this.rules.boundary.lastMessage = 'You reached 5 hits. Reset with K.';

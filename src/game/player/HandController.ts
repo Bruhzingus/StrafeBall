@@ -10,6 +10,7 @@ import { cameraForward } from '../utils/vector';
 import { safeNormalize } from '../utils/math';
 import { MovementSnapshot } from './MovementController';
 import { BackflipController } from './BackflipController';
+import { Effects } from '../effects/Effects';
 
 export interface HandState {
   ball: Ball | null;
@@ -33,7 +34,12 @@ export class HandController {
   private readonly throwSystem = new ThrowSystem();
   private elapsed = 0;
 
-  constructor(private readonly camera: FreeCamera, private readonly ballManager: BallManager, private readonly backflip: BackflipController) {}
+  constructor(
+    private readonly camera: FreeCamera,
+    private readonly ballManager: BallManager,
+    private readonly backflip: BackflipController,
+    private readonly effects: Effects
+  ) {}
 
   update(dt: number, input: InputManager, movement: MovementSnapshot): void {
     this.elapsed += dt;
@@ -230,5 +236,6 @@ export class HandController {
     hand.charging = false;
     hand.chargeSeconds = 0;
     this.lastThrowTime = this.elapsed;
+    this.effects.playerThrow();
   }
 }

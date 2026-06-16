@@ -85,6 +85,14 @@ html, body {
 .hud-good { color: #8cffb0; font-weight: 700; }
 .hud-bad { color: #ff7777; font-weight: 700; }
 
+.hit-flash {
+  position: fixed;
+  inset: 0;
+  z-index: 5;
+  pointer-events: none;
+  opacity: 0;
+}
+
 #lock-overlay {
   position: fixed;
   inset: 0;

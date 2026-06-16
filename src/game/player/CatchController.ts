@@ -9,6 +9,7 @@ import { InputManager } from '../input/InputManager';
 import { MOUSE_BUTTON } from '../config/controls';
 import { HandController } from './HandController';
 import { MovementController, MovementSnapshot } from './MovementController';
+import { Effects } from '../effects/Effects';
 
 export class CatchController {
   private trackingTimeByBall = new Map<number, number>();
@@ -18,7 +19,8 @@ export class CatchController {
     private readonly camera: FreeCamera,
     private readonly ballManager: BallManager,
     private readonly hands: HandController,
-    private readonly movement: MovementController
+    private readonly movement: MovementController,
+    private readonly effects: Effects
   ) {}
 
   update(dt: number, input: InputManager, movement: MovementSnapshot): void {
@@ -84,6 +86,7 @@ export class CatchController {
     this.hands.forceCatchBall(side, candidate);
     this.movement.addCatchBoost();
     this.trackingTimeByBall.delete(candidate.id);
+    this.effects.onCatch();
   }
 
   private tryAutoParry(movement: MovementSnapshot, forward: Vector3, threats: Ball[]): void {
@@ -104,6 +107,7 @@ export class CatchController {
       ball.velocity = forward.scale(incomingSpeed * TUNING.parry.deflectSpeedMultiplier).add(new Vector3(0, 1.5, 0));
       ball.state = BallState.Dead;
       this.parryCooldown = TUNING.parry.cooldownSeconds;
+      this.effects.onParry();
 
       if (wasSuper) {
         this.hands.dropOneBall(movement.position);

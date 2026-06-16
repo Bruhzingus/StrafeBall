@@ -83,12 +83,34 @@ export class BallManager {
     );
   }
 
+  /**
+   * Nearest ball already settled on the map (loose or dead) to a point, ignoring distance.
+   * Used by the practice bot to re-arm from balls in play — it never spawns new ones. Returns
+   * null when every ball is held or in flight, in which case the bot simply waits.
+   */
+  findNearestFreeBall(position: Vector3): Ball | null {
+    let best: Ball | null = null;
+    let bestSq = Number.POSITIVE_INFINITY;
+    for (const ball of this.balls) {
+      if (ball.state !== BallState.Loose && ball.state !== BallState.Dead) continue;
+      const dx = ball.mesh.position.x - position.x;
+      const dy = ball.mesh.position.y - position.y;
+      const dz = ball.mesh.position.z - position.z;
+      const distSq = dx * dx + dy * dy + dz * dz;
+      if (distSq < bestSq) {
+        best = ball;
+        bestSq = distSq;
+      }
+    }
+    return best;
+  }
+
   throwBall(
     ball: Ball,
     origin: Vector3,
     direction: Vector3,
     speed: number,
-    owner: 'player' | 'launcher',
+    owner: 'player' | 'launcher' | 'bot',
     isSuper: boolean,
     dropScale = 1,
     curveAccel?: Vector3
