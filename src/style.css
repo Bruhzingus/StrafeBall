@@ -1,0 +1,115 @@
+html, body {
+  margin: 0;
+  width: 100%;
+  height: 100%;
+  overflow: hidden;
+  background: #111;
+  font-family: Arial, Helvetica, sans-serif;
+}
+
+#gameCanvas {
+  width: 100vw;
+  height: 100vh;
+  display: block;
+  touch-action: none;
+}
+
+#hud-root {
+  position: fixed;
+  inset: 0;
+  pointer-events: none;
+  color: #f7f7f7;
+  text-shadow: 0 1px 2px rgba(0, 0, 0, 0.8);
+}
+
+.hud {
+  position: absolute;
+  inset: 0;
+}
+
+.crosshair {
+  position: absolute;
+  left: 50%;
+  top: 50%;
+  width: 12px;
+  height: 12px;
+  transform: translate(-50%, -50%);
+}
+
+.crosshair::before,
+.crosshair::after {
+  content: "";
+  position: absolute;
+  background: rgba(255, 255, 255, 0.95);
+}
+
+.crosshair::before {
+  left: 5px;
+  top: 0;
+  width: 2px;
+  height: 12px;
+}
+
+.crosshair::after {
+  left: 0;
+  top: 5px;
+  width: 12px;
+  height: 2px;
+}
+
+.hud-panel {
+  position: absolute;
+  padding: 10px 12px;
+  background: rgba(12, 18, 28, 0.72);
+  border: 1px solid rgba(255, 255, 255, 0.18);
+  border-radius: 8px;
+  backdrop-filter: blur(5px);
+  font-size: 13px;
+  line-height: 1.45;
+}
+
+.hud-top-left { top: 14px; left: 14px; }
+.hud-top-center { top: 14px; left: 50%; transform: translateX(-50%); text-align: center; }
+.hud-bottom-left { bottom: 14px; left: 14px; }
+.hud-bottom-right { bottom: 14px; right: 14px; }
+
+.hud-title {
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: #ffd36a;
+  margin-bottom: 4px;
+}
+
+.hud-warn { color: #ffcf69; font-weight: 700; }
+.hud-good { color: #8cffb0; font-weight: 700; }
+.hud-bad { color: #ff7777; font-weight: 700; }
+
+#lock-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 10;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 12px;
+  background: rgba(8, 12, 20, 0.55);
+  color: #ffffff;
+  font-size: 30px;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  text-align: center;
+  cursor: pointer;
+  text-shadow: 0 2px 6px rgba(0, 0, 0, 0.7);
+}
+
+#lock-overlay span {
+  font-size: 15px;
+  font-weight: 400;
+  opacity: 0.85;
+}
+
+#lock-overlay.hidden {
+  display: none;
+}
