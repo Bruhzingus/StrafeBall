@@ -516,4 +516,170 @@ describe('ServerGameLoop', () => {
       expect(loop.state.resetVote.requiredVotes).toBe(1);
     });
   });
+
+  describe('combat — catch attempts, auto-parry, interaction order', () => {
+    const eye = GAME_CONSTANTS.player.eyeHeight;
+
+    // Put defender 'b' at the origin facing -Z (yaw π) and seed their look angles via input so the
+    // recorded defense sample aims down -Z. Returns the loop with both players present + active.
+    function defenderFacingIncoming(): ServerGameLoop {
+      const loop = new ServerGameLoop('room');
+      loop.addPlayer('a', 'A');
+      loop.addPlayer('b', 'B');
+      loop.state.players.b.movement.position = vec3(0, 0, 0);
+      // Aim straight down -Z (yaw π, pitch 0). Send it as input so the server stores it + the sample.
+      loop.handleInput('b', { lookYawRadians: Math.PI, lookPitchRadians: 0, sequence: 1 }, 1);
+      loop.step();
+      return loop;
+    }
+
+    // A slow live ball owned by 'a', positioned just in front of 'b' (toward -Z) at eye height,
+    // drifting toward 'b'. Inside catch cone+range of a -Z-facing defender.
+    function placeIncomingBall(loop: ServerGameLoop, zDistance = 2): void {
+      loop.state.balls.ball_0 = {
+        ...loop.state.balls.ball_0,
+        phase: 'live',
+        ownerKind: 'player',
+        ownerId: 'a',
+        heldByPlayerId: null,
+        heldHand: null,
+        position: vec3(0, eye, -zDistance),
+        velocity: vec3(0, 0, 4),
+        bounceCount: 0,
+        throwId: 1
+      };
+    }
+
+    it('a timed catch attempt with an empty hand, aimed at a slow live ball, catches it', () => {
+      const loop = defenderFacingIncoming();
+      placeIncomingBall(loop);
+
+      // 'b' clicks to attempt a catch on the left hand: a fresh latched attempt id in the input.
+      loop.handleInput('b', { lookYawRadians: Math.PI, leftCatchAttemptId: 1, sequence: 2 }, 2);
+      loop.step();
+
+      const ball = loop.state.balls.ball_0;
+      expect(ball.phase).toBe('held');
+      expect(ball.heldByPlayerId).toBe('b');
+      expect(loop.state.players.b.hands.left.heldBallId).toBe('ball_0');
+      // No score: a caught ball never counts as a hit.
+      expect(loop.state.match.scoreByTeamId.blue).toBe(0);
+    });
+
+    it('acknowledges a catch attempt on the hand state even if it ultimately whiffs', () => {
+      const loop = defenderFacingIncoming();
+      // No ball in front — the attempt cannot catch, but the server must still ack the id so the
+      // client stops re-latching it.
+      loop.handleInput('b', { lookYawRadians: Math.PI, rightCatchAttemptId: 7, sequence: 2 }, 2);
+      loop.step();
+      expect(loop.state.players.b.hands.right.lastCatchAttemptId).toBe(7);
+      expect(loop.state.players.b.hands.right.heldBallId).toBeNull();
+    });
+
+    it('does not catch while dashing (empty hand + aim are not enough)', () => {
+      const loop = defenderFacingIncoming();
+      placeIncomingBall(loop);
+      // Trigger a REAL dash this tick (dashPressed + a dash direction) so the recorded defense
+      // sample shows dashing=true, alongside the catch attempt. Catch must be denied.
+      loop.handleInput('b', {
+        lookYawRadians: Math.PI,
+        dashPressed: true,
+        dashDirection: vec3(1, 0, 0),
+        moveX: 1,
+        leftCatchAttemptId: 1,
+        sequence: 2
+      }, 2);
+      loop.step();
+      expect(loop.state.players.b.movement.dashingThisFrame).toBe(true); // sanity: really dashed
+      const ball = loop.state.balls.ball_0;
+      expect(ball.heldByPlayerId).not.toBe('b');
+    });
+
+    it('does not catch a ball aimed away from the defender (cone gate)', () => {
+      const loop = new ServerGameLoop('room');
+      loop.addPlayer('a', 'A');
+      loop.addPlayer('b', 'B');
+      loop.state.players.b.movement.position = vec3(0, 0, 0);
+      // Defender looks +X, away from the -Z incoming ball.
+      loop.handleInput('b', { lookYawRadians: Math.PI / 2, lookPitchRadians: 0, sequence: 1 }, 1);
+      loop.step();
+      loop.state.balls.ball_0 = {
+        ...loop.state.balls.ball_0,
+        phase: 'live', ownerKind: 'player', ownerId: 'a',
+        position: vec3(0, eye, -2), velocity: vec3(0, 0, 4), bounceCount: 0, throwId: 1
+      };
+      loop.handleInput('b', { lookYawRadians: Math.PI / 2, leftCatchAttemptId: 1, sequence: 2 }, 2);
+      loop.step();
+      expect(loop.state.balls.ball_0.heldByPlayerId).not.toBe('b');
+    });
+
+    it('auto-parries an incoming live ball when the defender holds two balls and aims at it', () => {
+      const loop = defenderFacingIncoming();
+      // Give 'b' two held balls so they are in the parry stance.
+      loop.state.players.b.hands.left.heldBallId = 'ball_4';
+      loop.state.players.b.hands.right.heldBallId = 'ball_5';
+      loop.state.balls.ball_4 = { ...loop.state.balls.ball_4, phase: 'held', heldByPlayerId: 'b', heldHand: 'left', ownerId: 'b' };
+      loop.state.balls.ball_5 = { ...loop.state.balls.ball_5, phase: 'held', heldByPlayerId: 'b', heldHand: 'right', ownerId: 'b' };
+      // Re-record the two-balls sample, then bring in a close incoming ball (parry range is short).
+      loop.handleInput('b', { lookYawRadians: Math.PI, sequence: 2 }, 2);
+      loop.step();
+      loop.state.balls.ball_0 = {
+        ...loop.state.balls.ball_0,
+        phase: 'live', ownerKind: 'player', ownerId: 'a',
+        position: vec3(0, eye, -0.6), velocity: vec3(0, 0, 6), bounceCount: 0, throwId: 2
+      };
+      loop.step();
+      const ball = loop.state.balls.ball_0;
+      expect(ball.phase).toBe('deflected');
+      expect(ball.ownerId).toBe('b');
+      // No score from the deflected ball for the original thrower.
+      expect(loop.state.match.scoreByTeamId.blue).toBe(0);
+    });
+
+    it('a successful catch prevents the hit from also applying that tick (order: catch before hit)', () => {
+      const loop = defenderFacingIncoming();
+      // Ball positioned so it is both catchable AND on a hit path to 'b'. Catch must win.
+      loop.state.balls.ball_0 = {
+        ...loop.state.balls.ball_0,
+        phase: 'live', ownerKind: 'player', ownerId: 'a',
+        position: vec3(0, eye, -1.2), velocity: vec3(0, 0, 24), bounceCount: 0, throwId: 1
+      };
+      loop.handleInput('b', { lookYawRadians: Math.PI, leftCatchAttemptId: 1, sequence: 2 }, 2);
+      loop.step();
+      expect(loop.state.balls.ball_0.heldByPlayerId).toBe('b');
+      expect(loop.state.match.scoreByTeamId.blue).toBe(0); // hit did NOT also fire
+    });
+
+    it('a throw assigns a unique incrementing throwId and emits a drainable throw event', () => {
+      const loop = new ServerGameLoop('room');
+      loop.addPlayer('a', 'A');
+      loop.addPlayer('b', 'B');
+      loop.state.players.a.movement.position = vec3(0, 0, 0);
+      expect(loop.handlePickup('a').ok).toBe(true);
+      expect(loop.handleThrow('a', { hand: 'left' }).ok).toBe(true);
+
+      const events = loop.drainThrowEvents();
+      expect(events).toHaveLength(1);
+      expect(events[0].type).toBe('throw-event');
+      expect(events[0].throwId).toBeGreaterThan(0);
+      const live = Object.values(loop.state.balls).find((b) => b.phase === 'live');
+      expect(live?.throwId).toBe(events[0].throwId);
+      // Draining again yields nothing (events are consumed once).
+      expect(loop.drainThrowEvents()).toHaveLength(0);
+    });
+
+    it('a crouch throw produces a sideways curve acceleration (deterministic curve)', () => {
+      const loop = new ServerGameLoop('room');
+      loop.addPlayer('a', 'A');
+      loop.state.players.a.movement.position = vec3(0, 0, 0);
+      // Crouch + face +Z. The curve must be perpendicular to aim (along X), not zero.
+      loop.handleInput('a', { lookYawRadians: 0, lookPitchRadians: 0, crouchHeld: true, sequence: 1 }, 1);
+      loop.step();
+      expect(loop.handlePickup('a').ok).toBe(true);
+      expect(loop.handleThrow('a', { hand: 'left' }).ok).toBe(true);
+      const live = Object.values(loop.state.balls).find((b) => b.phase === 'live');
+      expect(Math.abs(live!.curveAccel.x)).toBeGreaterThan(1);
+      expect(Math.abs(live!.curveAccel.z)).toBeLessThan(0.01); // perpendicular to +Z aim
+    });
+  });
 });

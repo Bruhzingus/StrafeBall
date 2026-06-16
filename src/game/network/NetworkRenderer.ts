@@ -1,6 +1,7 @@
 import { Color3, Mesh, MeshBuilder, PBRMaterial, Quaternion, Scene, TransformNode, Vector3 } from '@babylonjs/core';
-import type { ServerSnapshot } from '../../../shared/protocol';
+import type { ServerSnapshot, ThrowEvent } from '../../../shared/protocol';
 import type { BallState, HandSide, PlayerState, Vec3 } from '../../../shared/types';
+import { BallPredictor } from './BallPredictor';
 import { TUNING } from '../config/tuning';
 import { computePlayerHandAnchor } from '../../../shared/simulation/HandAnchors';
 import { backflipPitchOffset, lookVectorsFromAngles } from '../../../shared/simulation/AimMath';
@@ -97,6 +98,8 @@ export class NetworkRenderer {
   private readonly players = new Map<string, PlayerVisual>();
   private readonly playerDebug = new Map<string, RemotePlayerDebug>();
   private readonly balls = new Map<string, BallVisual>();
+  // Deterministic visual prediction for live thrown balls (seeded by throw events). Visual only.
+  private readonly ballPredictor = new BallPredictor();
   private readonly materials = new Map<string, PBRMaterial>();
   // Reused per-frame "seen this update" sets — cleared in place each frame instead of reallocated.
   private readonly seenPlayers = new Set<string>();
@@ -155,7 +158,20 @@ export class NetworkRenderer {
     if (!renderSnapshot) return;
     this.refreshDebugStats(dt);
     this.updatePlayers(renderSnapshot.players, localPlayerId, dt);
-    this.updateBalls(renderSnapshot.balls, renderSnapshot.players, localPlayerId, localPredicted ?? null);
+    // Live thrown balls render at PRESENT server time via deterministic prediction, reconciled
+    // against the newest authoritative snapshot; everything else uses the interpolated render snapshot.
+    const newest = this.snapshotBuffer[this.snapshotBuffer.length - 1];
+    this.updateBalls(renderSnapshot.balls, renderSnapshot.players, localPlayerId, localPredicted ?? null, newest);
+  }
+
+  /** Seed/refresh live-ball visual prediction from authoritative throw events (called by the scene). */
+  applyThrowEvents(events: readonly ThrowEvent[]): void {
+    for (const event of events) {
+      this.ballPredictor.applyThrowEvent(event);
+      if (isBallPredictDebugEnabled()) {
+        console.log(`[ball/predict] seed ballId=${event.ballId} throwId=${event.throwId} owner=${event.ownerId.slice(-4)} curve=${Number(event.isCurve)}`);
+      }
+    }
   }
 
   getDebugStats(): NetworkRendererDebugStats {
@@ -182,6 +198,7 @@ export class NetworkRenderer {
     this.seenBalls.clear();
     this.snapshotBuffer.length = 0;
     this.ballRenderContinuity.clear();
+    this.ballPredictor.clear();
     this.lastBufferedTick = -1;
     this.lastBufferedResetSerial = -1;
     this.latestSnapshotReceivedAtMs = 0;
@@ -205,10 +222,12 @@ export class NetworkRenderer {
       if (this.lastBufferedResetSerial !== -1 && isNetworkRenderDebugEnabled()) {
         console.log(`[net/render-buffer] reset serial ${this.lastBufferedResetSerial} -> ${resetSerial}; clearing interpolation buffer`);
       }
-      // resetSerial change: clear buffer + continuity, and resync the render clock so the cursor
-      // re-locks to the fresh timeline instead of dragging the old one through the discontinuity.
+      // resetSerial change: clear buffer + continuity + ball prediction, and resync the render clock
+      // so the cursor re-locks to the fresh timeline instead of dragging the old one through the
+      // discontinuity. Dropping predictions prevents a stale throwId carrying across the reset.
       this.snapshotBuffer.length = 0;
       this.ballRenderContinuity.clear();
+      this.ballPredictor.clear();
       this.lastBufferedTick = -1;
       this.lastBufferedResetSerial = resetSerial;
       this.resetRenderClock();
@@ -447,10 +466,12 @@ export class NetworkRenderer {
     balls: BallState[],
     players: PlayerState[],
     localPlayerId: string,
-    localPredicted: PlayerState['movement'] | null
+    localPredicted: PlayerState['movement'] | null,
+    newest: BufferedSnapshot | undefined
   ): void {
     const seen = this.seenBalls;
     seen.clear();
+    const presentTimeMs = newest ? newest.serverTimeMs : 0;
 
     for (const ball of balls) {
       seen.add(ball.id);
@@ -466,7 +487,21 @@ export class NetworkRenderer {
       target.x = ball.position.x;
       target.y = ball.position.y;
       target.z = ball.position.z;
-      if (ball.heldByPlayerId && ball.heldHand) {
+      // Instant local throw detach (Phase 3): if this (interpolation-delayed) render snapshot still
+      // shows the ball HELD but a throw event already seeded prediction, the ball has LEFT the hand
+      // on the server. Bridge with a visual-only advance so the thrower's ball detaches immediately
+      // on release rather than staying glued for ~half-RTT. The normal live branch takes over the
+      // instant the authoritative snapshot flips to live.
+      const heldBridge = newest && ball.heldByPlayerId !== null && this.ballPredictor.has(ball.id)
+        ? this.ballPredictor.advanceVisualOnly(ball.id, presentTimeMs)
+        : null;
+      if (heldBridge) {
+        target.x = heldBridge.x;
+        target.y = heldBridge.y;
+        target.z = heldBridge.z;
+      } else if (ball.heldByPlayerId && ball.heldHand) {
+        // Held ball never predicts; forget any stale prediction so a re-throw reseeds cleanly.
+        this.ballPredictor.forget(ball.id);
         const holder = findById(players, ball.heldByPlayerId);
         if (ball.heldByPlayerId === localPlayerId && localPredicted && holder) {
           // Reuse the scratch render-player rather than spreading the holder each frame.
@@ -483,6 +518,28 @@ export class NetworkRenderer {
           target.y = anchor.y;
           target.z = anchor.z;
         }
+      } else if ((ball.phase === 'live' || ball.phase === 'deflected') && newest) {
+        // Live/deflected balls: render the deterministic prediction at PRESENT server time when one
+        // is seeded (reconciled against the newest authoritative ball state), else fall back to the
+        // interpolated snapshot position. Prediction is visual only — gameplay outcomes are the
+        // server's. The predictor reconciles against the newest snapshot, not the delayed interp one.
+        const authoritative = findById(newest.balls, ball.id) ?? ball;
+        const result = this.ballPredictor.predict(authoritative, presentTimeMs);
+        if (result) {
+          target.x = result.position.x;
+          target.y = result.position.y;
+          target.z = result.position.z;
+          if (isBallPredictDebugEnabled() && (result.snapped || result.errorM > 0.5)) {
+            console.log(
+              `[ball/predict] id=${ball.id} throwId=${result.throwId} mode=${ball.phase}` +
+              ` err=${result.errorM.toFixed(2)}m corrections=${result.correctionCount}` +
+              `${result.snapReason ? ` snap=${result.snapReason}` : ''}`
+            );
+          }
+        }
+      } else {
+        // Loose/dead/resting: no prediction; drop any stale entry.
+        this.ballPredictor.forget(ball.id);
       }
 
       const previous = this.ballRenderContinuity.get(ball.id);
@@ -920,8 +977,8 @@ function createScratchPlayer(movement: PlayerState['movement']): PlayerState {
       backflipCooldown: 0
     },
     hands: {
-      left: { side: 'left', heldBallId: null, mode: 'empty', chargeSeconds: 0, cooldownSeconds: 0, catchTrackingSecondsByBallId: {} },
-      right: { side: 'right', heldBallId: null, mode: 'empty', chargeSeconds: 0, cooldownSeconds: 0, catchTrackingSecondsByBallId: {} }
+      left: { side: 'left', heldBallId: null, mode: 'empty', chargeSeconds: 0, cooldownSeconds: 0, catchTrackingSecondsByBallId: {}, lastCatchAttemptId: 0 },
+      right: { side: 'right', heldBallId: null, mode: 'empty', chargeSeconds: 0, cooldownSeconds: 0, catchTrackingSecondsByBallId: {}, lastCatchAttemptId: 0 }
     },
     dash: { charges: 0, rechargeTimerSeconds: 0, cooldownSeconds: 0 },
     score: 0,
@@ -1260,6 +1317,15 @@ function isNetworkRenderDebugEnabled(): boolean {
 function isHitboxDebugEnabled(): boolean {
   try {
     return window.localStorage.getItem('strafeball.debug.hitboxes') === '1';
+  } catch {
+    return false;
+  }
+}
+
+/** Ball-prediction debug gate (Phase 13). Enable with localStorage strafeball.debug.ballPredict=1. */
+function isBallPredictDebugEnabled(): boolean {
+  try {
+    return window.localStorage.getItem('strafeball.debug.ballPredict') === '1';
   } catch {
     return false;
   }

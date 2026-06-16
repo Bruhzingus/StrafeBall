@@ -15,6 +15,31 @@ export interface ServerSnapshot {
   room: RoomState;
 }
 
+/**
+ * Authoritative throw event (Phase 4). Broadcast the instant the server accepts a throw, BEFORE the
+ * next snapshot, so the client can start deterministic visual prediction of the live ball from the
+ * exact origin/velocity/curve the server simulated. Purely informational — the ball's real state
+ * still flows in snapshots; this only seeds + identifies the prediction. `throwId` is unique per
+ * throw so the client can ignore stale events and snap on identity changes.
+ */
+export interface ThrowEvent {
+  type: 'throw-event';
+  throwId: number;
+  ballId: string;
+  ownerId: string;
+  hand: HandSide;
+  serverTick: number;
+  serverTimeMs: number;
+  origin: Vec3;
+  velocity: Vec3;
+  curveAccel: Vec3;
+  dropScale: number;
+  isSuper: boolean;
+  isCurve: boolean;
+  charge01: number;
+  resetSerial: number;
+}
+
 export interface PickupRequest {
   type: 'pickup';
   playerId: string;
@@ -59,6 +84,7 @@ export type ClientMessage =
 
 export type ServerMessage =
   | ServerSnapshot
+  | ThrowEvent
   | { type: 'joined-room'; room: RoomState; playerId: string }
   | { type: 'player-joined'; playerId: string }
   | { type: 'player-left'; playerId: string }

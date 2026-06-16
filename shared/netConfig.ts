@@ -153,6 +153,10 @@ export interface DebugFlags {
   PICKUP_DEBUG: boolean;
   THROW_DEBUG: boolean;
   COLLISION_DEBUG: boolean;
+  // Combat correctness channels (Phase 13). All per-tick; default OFF for real playtests.
+  CATCH_DEBUG: boolean;
+  PARRY_DEBUG: boolean;
+  BALL_PREDICT_DEBUG: boolean;
 }
 
 /**
@@ -167,7 +171,10 @@ export const DEBUG_DEFAULTS: DebugFlags = {
   BALL_DEBUG: false,
   PICKUP_DEBUG: false,
   THROW_DEBUG: false,
-  COLLISION_DEBUG: false
+  COLLISION_DEBUG: false,
+  CATCH_DEBUG: false,
+  PARRY_DEBUG: false,
+  BALL_PREDICT_DEBUG: false
 };
 
 /** Throttle for the periodic server [perf] report (and client perf line). 5 s per the spec. */
@@ -186,7 +193,10 @@ export function resolveServerDebugFlags(env: Record<string, string | undefined> 
     BALL_DEBUG: all || on(env.BALL_DEBUG),
     PICKUP_DEBUG: all || on(env.PICKUP_DEBUG),
     THROW_DEBUG: all || on(env.THROW_DEBUG),
-    COLLISION_DEBUG: all || on(env.COLLISION_DEBUG)
+    COLLISION_DEBUG: all || on(env.COLLISION_DEBUG),
+    CATCH_DEBUG: all || on(env.CATCH_DEBUG),
+    PARRY_DEBUG: all || on(env.PARRY_DEBUG),
+    BALL_PREDICT_DEBUG: all || on(env.BALL_PREDICT_DEBUG)
   };
 }
 

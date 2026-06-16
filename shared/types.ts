@@ -37,6 +37,16 @@ export interface PlayerInput {
   rightHandHeld: boolean;
   leftHandReleased: boolean;
   rightHandReleased: boolean;
+  /**
+   * Catch-attempt ids (server-authoritative timed catch). When the local player clicks an EMPTY
+   * hand, the client assigns that hand a new monotonically-increasing attempt id and stamps it on
+   * every input packet until the server acknowledges it (latched re-send so the trigger is never
+   * lost to packet loss). 0 = no pending attempt for that hand. The server treats a strictly-larger
+   * id than the last it processed for that player+hand as a fresh attempt and opens a catch window
+   * anchored at this packet's sequence/clientTimeMs. Duplicates/older ids are ignored (stale-attempt).
+   */
+  leftCatchAttemptId: number;
+  rightCatchAttemptId: number;
 }
 
 export type PlayerHandMode = 'empty' | 'holding' | 'charging' | 'catching';
@@ -48,6 +58,12 @@ export interface HandState {
   chargeSeconds: number;
   cooldownSeconds: number;
   catchTrackingSecondsByBallId: Record<string, number>;
+  /**
+   * Highest catch-attempt id the server has consumed for this hand (see PlayerInput.*CatchAttemptId).
+   * Travels in snapshots so the client knows its attempt was acknowledged and can stop re-latching
+   * it. Independent of whether the catch succeeded — it only means "the server saw this attempt".
+   */
+  lastCatchAttemptId: number;
 }
 
 export type PlayerHandsState = Record<HandSide, HandState>;
@@ -124,6 +140,13 @@ export interface BallState {
   dropScale: number;
   curveAccel: Vec3;
   lastTouchedByPlayerId: string | null;
+  /**
+   * Monotonic id incremented every time this ball enters `live` from a throw (and on deflect). The
+   * client uses it to (a) detect a fresh throw to start visual prediction, (b) ignore stale throw
+   * events, and (c) force a snap when the throw identity changes mid-flight (re-throw/deflect/reset).
+   * 0 means "never thrown live since creation/reset".
+   */
+  throwId: number;
 }
 
 export interface BallSnapshot extends BallState {

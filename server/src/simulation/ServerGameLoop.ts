@@ -9,32 +9,33 @@ import type {
   SpawnSide,
   Vec3
 } from '../../../shared/types';
-import type { ServerSnapshot } from '../../../shared/protocol';
+import type { ServerSnapshot, ThrowEvent } from '../../../shared/protocol';
+import { TimeRing, type BallSample, type DefenseSample } from './DefenseHistory';
 import {
   advanceBall,
   applyBallBounce,
+  catchBall,
   createBallState,
+  deflectBall,
   markBallDead,
   settleBallIfSlow
 } from '../../../shared/simulation/BallSim';
 import {
   add,
   clamp,
+  cloneVec3,
+  closestPointOnSegment,
   distance,
   length,
-  lengthSquared,
   lerp,
   normalize,
   scale,
-  subtract,
   sweptBallHitsBody,
   sweptSegmentInCone,
   vec3
 } from '../../../shared/simulation/CollisionMath';
 import {
-  autoParryBall,
   beginCharge,
-  catchBallInHand,
   cancelCharge,
   dropBallFromHand,
   heldBallCount,
@@ -55,6 +56,7 @@ import {
 import { facingFromAngles, isSuperThrowWindow, stepMovement } from '../../../shared/simulation/MovementSim';
 import { clampLookPitch } from '../../../shared/simulation/AimMath';
 import { computePlayerHandAnchor } from '../../../shared/simulation/HandAnchors';
+import { curveAccelForThrow, isCurveThrow } from '../../../shared/simulation/ThrowMath';
 import { playerBallHitRadius, playerHitCapsule } from '../../../shared/simulation/PlayerHitbox';
 
 export interface ServerGameLoopOptions {
@@ -86,6 +88,45 @@ interface QueuedInput {
   seq: number;
   input: PlayerInput;
 }
+
+/**
+ * An in-flight server-authoritative catch attempt opened by one client click. The attempt evaluates
+ * each live-ball tick while `nowMs` is within [openedAtMs+startup, openedAtMs+active]; it blocks a
+ * new attempt for the same hand until `cooldownUntilMs`. `clickTimeMs` anchors the lag-comp rewind.
+ */
+interface CatchAttempt {
+  hand: HandSide;
+  attemptId: number;
+  openedAtMs: number;
+  activeUntilMs: number;
+  cooldownUntilMs: number;
+  /** Server time we rewind defense+ball history to (derived from the input's client/seq timing). */
+  clickTimeMs: number;
+  resolved: boolean;
+}
+
+/** Reason a catch attempt failed to land — surfaced under CATCH_DEBUG (Phase 13). */
+type CatchFailReason =
+  | 'no-empty-hand'
+  | 'wrong-hand'
+  | 'dashing'
+  | 'ball-not-live'
+  | 'out-of-range'
+  | 'angle-too-wide'
+  | 'too-early'
+  | 'too-late'
+  | 'cooldown'
+  | 'owner-invalid'
+  | 'stale-attempt';
+
+/** Reason an auto-parry failed — surfaced under PARRY_DEBUG (Phase 13). */
+type ParryFailReason =
+  | 'no-two-balls'
+  | 'cooldown'
+  | 'ball-not-live'
+  | 'owner-invalid'
+  | 'out-of-range'
+  | 'angle-too-wide';
 
 interface LegacyPlayerInput {
   jump: boolean;
@@ -140,10 +181,26 @@ export class ServerGameLoop {
   private readonly lastEnqueuedSeqByPlayerId = new Map<string, number>();
   private readonly parryCooldownByPlayerId = new Map<string, number>();
   private readonly lastInputDebugAtByPlayerId = new Map<string, number>();
-  // Per-player, per-ball accumulated aim time (server-authoritative catch tracking — #9).
-  private readonly catchTrackingByPlayerId = new Map<string, Record<string, number>>();
   private readonly resetVotesByPlayerId = new Map<string, number>();
   private resetSerial = 0;
+
+  // --- Server-authoritative combat (catch attempts + lag-compensated defense) ---
+  // Per-player defensive-state history (eye/aim/hands/dashing per tick), rewound to the click
+  // moment when validating a catch/parry so a high-ping defender is judged fairly. Capped by age.
+  private readonly defenseHistoryByPlayerId = new Map<string, TimeRing<DefenseSample>>();
+  // Per-ball position history, used to reconstruct the ball's swept segment around a rewound click.
+  private readonly ballHistoryById = new Map<string, TimeRing<BallSample>>();
+  // Open catch windows per player+hand. A click opens one; it evaluates during its active span,
+  // then blocks re-attempts until its cooldown elapses. Keyed `${playerId}:${hand}`.
+  private readonly catchAttemptByKey = new Map<string, CatchAttempt>();
+  // Highest catch-attempt id consumed per player+hand (dedupe latched re-sends). Keyed as above.
+  private readonly lastCatchAttemptIdByKey = new Map<string, number>();
+  // Monotonic throw identity — assigned to each new live throw/deflect (see BallState.throwId).
+  private throwCounter = 0;
+  // Throw events accepted this step, drained by the room and broadcast before the next snapshot.
+  private pendingThrowEvents: ThrowEvent[] = [];
+  // Wall-clock time of the current step, captured once at the top of step() for history timestamps.
+  private stepNowMs = 0;
 
   constructor(roomId: string, options: ServerGameLoopOptions = {}) {
     this.roomId = roomId;
@@ -159,7 +216,10 @@ export class ServerGameLoop {
       BALL_DEBUG: options.debug?.BALL_DEBUG ?? DEBUG_DEFAULTS.BALL_DEBUG,
       PICKUP_DEBUG: options.debug?.PICKUP_DEBUG ?? DEBUG_DEFAULTS.PICKUP_DEBUG,
       THROW_DEBUG: options.debug?.THROW_DEBUG ?? DEBUG_DEFAULTS.THROW_DEBUG,
-      COLLISION_DEBUG: options.debug?.COLLISION_DEBUG ?? DEBUG_DEFAULTS.COLLISION_DEBUG
+      COLLISION_DEBUG: options.debug?.COLLISION_DEBUG ?? DEBUG_DEFAULTS.COLLISION_DEBUG,
+      CATCH_DEBUG: options.debug?.CATCH_DEBUG ?? DEBUG_DEFAULTS.CATCH_DEBUG,
+      PARRY_DEBUG: options.debug?.PARRY_DEBUG ?? DEBUG_DEFAULTS.PARRY_DEBUG,
+      BALL_PREDICT_DEBUG: options.debug?.BALL_PREDICT_DEBUG ?? DEBUG_DEFAULTS.BALL_PREDICT_DEBUG
     };
     this.state = this.createFreshRoomState();
   }
@@ -204,7 +264,11 @@ export class ServerGameLoop {
     this.lastEnqueuedSeqByPlayerId.delete(playerId);
     this.parryCooldownByPlayerId.delete(playerId);
     this.lastInputDebugAtByPlayerId.delete(playerId);
-    this.catchTrackingByPlayerId.delete(playerId);
+    this.defenseHistoryByPlayerId.delete(playerId);
+    this.catchAttemptByKey.delete(`${playerId}:left`);
+    this.catchAttemptByKey.delete(`${playerId}:right`);
+    this.lastCatchAttemptIdByKey.delete(`${playerId}:left`);
+    this.lastCatchAttemptIdByKey.delete(`${playerId}:right`);
     this.resetVotesByPlayerId.delete(playerId);
     this.resolveResetVotesAfterRosterChange();
   }
@@ -241,7 +305,10 @@ export class ServerGameLoop {
     this.lastEnqueuedSeqByPlayerId.clear();
     this.parryCooldownByPlayerId.clear();
     this.lastInputDebugAtByPlayerId.clear();
-    this.catchTrackingByPlayerId.clear();
+    this.defenseHistoryByPlayerId.clear();
+    this.ballHistoryById.clear();
+    this.catchAttemptByKey.clear();
+    this.lastCatchAttemptIdByKey.clear();
     this.resetVotesByPlayerId.clear();
   }
 
@@ -350,83 +417,68 @@ export class ServerGameLoop {
     const speed = isSuper ? baseSpeed * GAME_CONSTANTS.backflip.superThrowMultiplier : baseSpeed;
     const velocity = add(scale(forward, speed), scale(player.movement.velocity, GAME_CONSTANTS.ball.movementThrowScale));
     const origin = add(computePlayerHandAnchor(player, request.hand), scale(forward, 0.16));
+    // Deterministic crouch-curve (Phase 6): curves perpendicular to AIM (not world axes), opposite
+    // the throwing hand. Server-computed so the client can replay the exact same curve for prediction.
+    const crouching = player.movement.crouching || player.movement.sliding;
+    const curveAccel = curveAccelForThrow(forward, request.hand, crouching);
+    const dropScale = isSuper ? GAME_CONSTANTS.ball.chargedDropScale : lerp(GAME_CONSTANTS.ball.quickDropScale, GAME_CONSTANTS.ball.chargedDropScale, charge01);
+    // Fresh throw identity — assigned here so it lands on the live ball AND the throw event together.
+    this.throwCounter += 1;
+    const throwId = this.throwCounter;
 
     const result = throwBallFromHand(player, player.hands, request.hand, ball, {
       origin,
       velocity,
       isSuper,
-      dropScale: isSuper ? GAME_CONSTANTS.ball.chargedDropScale : lerp(GAME_CONSTANTS.ball.quickDropScale, GAME_CONSTANTS.ball.chargedDropScale, charge01),
-      curveAccel: vec3()
+      dropScale,
+      curveAccel,
+      throwId
     });
     if (!result.ok) return result;
 
     this.state.players[playerId] = { ...player, hands: result.hands };
     this.state.balls[ball.id] = result.ball;
+
+    // Emit an authoritative throw event so the client can start deterministic visual prediction
+    // immediately (before the next snapshot). Drained + broadcast by the room each loop wake.
+    this.pendingThrowEvents.push({
+      type: 'throw-event',
+      throwId,
+      ballId: ball.id,
+      ownerId: playerId,
+      hand: request.hand,
+      serverTick: this.state.tick,
+      serverTimeMs: Date.now(),
+      origin: cloneVec3(origin),
+      velocity: cloneVec3(velocity),
+      curveAccel: cloneVec3(curveAccel),
+      dropScale,
+      isSuper,
+      isCurve: isCurveThrow(curveAccel),
+      charge01,
+      resetSerial: this.resetSerial
+    });
+
     if (this.debug.THROW_DEBUG) {
       this.logger(
-        `throw aim player=${playerId}` +
+        `throw accepted player=${playerId} ball=${ball.id} hand=${request.hand} throwId=${throwId}` +
+        ` charge=${charge01.toFixed(2)} crouchCurve=${Number(crouching)} super=${Number(isSuper)}` +
         ` yaw=${player.movement.yawRadians.toFixed(3)} pitch=${player.movement.pitchRadians.toFixed(3)}` +
-        ` dir=(${forward.x.toFixed(3)},${forward.y.toFixed(3)},${forward.z.toFixed(3)})` +
         ` origin=(${origin.x.toFixed(2)},${origin.y.toFixed(2)},${origin.z.toFixed(2)})` +
-        ` vel=(${velocity.x.toFixed(2)},${velocity.y.toFixed(2)},${velocity.z.toFixed(2)})`
+        ` vel=(${velocity.x.toFixed(2)},${velocity.y.toFixed(2)},${velocity.z.toFixed(2)})` +
+        ` curve=(${curveAccel.x.toFixed(2)},${curveAccel.y.toFixed(2)},${curveAccel.z.toFixed(2)})`
       );
     }
     return { ok: true, log: `throw accepted player=${playerId} ball=${ball.id} hand=${request.hand} charge=${charge01.toFixed(2)}${isSuper ? ' SUPER' : ''}` };
   }
 
-  handleCatchParry(playerId: string): ActionResult {
-    const player = this.state.players[playerId];
-    if (!player) return { ok: false, reason: 'unknown-player' };
-
-    // Always use the server's known facing + eye position for cone tests (anti-cheat).
-    const facing = player.movement.facing;
-    const eye = add(player.movement.position, vec3(0, GAME_CONSTANTS.player.eyeHeight, 0));
-
-    if (heldBallCount(player.hands) >= GAME_CONSTANTS.ball.maxHeldBalls) {
-      const threat = this.nearestParryable(player, eye, facing);
-      if (!threat) return { ok: false, reason: 'no-live-ball' };
-      const cooldown = this.parryCooldownByPlayerId.get(playerId) ?? 0;
-      const result = autoParryBall(player, player.hands, threat, facing, cooldown, eye);
-      if (!result.ok) {
-        if (this.debug.NET_DEBUG) this.logger(`parry rejected player=${playerId} ball=${threat.id} reason=${result.reason}`);
-        return result;
-      }
-
-      this.state.balls[threat.id] = result.ball;
-      this.parryCooldownByPlayerId.set(playerId, result.parryCooldownSeconds);
-      if (threat.isSuper) this.dropOneHeldBall(player); // super-parry drops a defender ball
-      if (this.debug.NET_DEBUG) this.logger(`parry accepted player=${playerId} ball=${threat.id} super=${threat.isSuper}`);
-      return { ok: true };
-    }
-
-    // Catching is not allowed while dashing.
-    if (player.movement.dashingThisFrame) {
-      return { ok: false, reason: 'dashing' };
-    }
-
-    const hand = firstEmptyHand(player);
-    if (!hand) return { ok: false, reason: 'no-empty-hand' };
-    const threat = this.nearestCatchable(player, eye, facing);
-    if (!threat) return { ok: false, reason: 'no-live-ball' };
-
-    const tracked = this.catchTrackingByPlayerId.get(playerId)?.[threat.id] ?? 0;
-    const result = catchBallInHand(player, player.hands, hand, threat, facing, tracked, eye);
-    if (!result.ok) {
-      if (this.debug.NET_DEBUG) this.logger(`catch rejected player=${playerId} ball=${threat.id} tracked=${tracked.toFixed(3)}s reason=${result.reason}`);
-      return result;
-    }
-
-    // Successful catch → possession + a small forward speed boost.
-    const boostDir = normalize(vec3(facing.x, 0, facing.z), vec3(0, 0, 1));
-    const boostedPlayer: PlayerState = {
-      ...player,
-      hands: result.hands,
-      movement: { ...player.movement, velocity: add(player.movement.velocity, scale(boostDir, GAME_CONSTANTS.catch.catchBoostSpeed)) },
-      movementInternal: { ...player.movementInternal, catchBoostTimer: GAME_CONSTANTS.catch.catchBoostDuration }
-    };
-    this.state.players[playerId] = boostedPlayer;
-    this.state.balls[threat.id] = result.ball;
-    if (this.debug.NET_DEBUG) this.logger(`catch accepted player=${playerId} ball=${threat.id} hand=${hand} tracked=${tracked.toFixed(3)}s`);
+  /**
+   * Legacy discrete catch/parry request. Catch is now driven by the input-stream attempt model
+   * (ingestCatchAttempts) and parry is automatic (tryAutoParry), both resolved server-side in the
+   * live-ball tick. A client click also opens an attempt locally, so this message is a harmless
+   * no-op kept only so older clients don't get a hard rejection. Returns ok without doing anything.
+   */
+  handleCatchParry(_playerId: string): ActionResult {
     return { ok: true };
   }
 
@@ -450,7 +502,10 @@ export class ServerGameLoop {
   step(): ServerSnapshot {
     const fixedDt = this.tickSeconds;
     this.state.tick += 1;
-    this.pruneResetVotes(Date.now());
+    // One wall-clock read per step, reused for all history timestamps + attempt windows so every
+    // sample/attempt in this tick shares a consistent "now".
+    this.stepNowMs = Date.now();
+    this.pruneResetVotes(this.stepNowMs);
 
     const active = this.connectedCount() >= 2 && this.state.match.status === 'playing';
 
@@ -462,18 +517,29 @@ export class ServerGameLoop {
       // Mat knock-over uses the player's PRE-resolution velocity: the collision solver zeros the
       // component pushing into the mat, so post-resolution speed can be ~0 on a head-on walk-in.
       this.knockOverMatsForPlayer(player, preVelocity);
-      this.updateCatchTracking(player, fixedDt);
+      // Record this player's post-update defensive state for lag-compensated catch/parry rewind.
+      this.recordDefenseSample(player);
     }
 
-    this.updateBalls(fixedDt);
+    // Move balls, record their swept positions, and resolve combat per live ball in the correct
+    // order (parry → catch → hit). Scoring/hit only counts while the match is active; catch/parry
+    // need an opponent's live ball, which only exists with two players present anyway.
+    this.updateBalls(fixedDt, active);
 
     if (active) {
-      this.validateHits(fixedDt);
       this.updateRules(fixedDt);
     }
 
     this.syncPlayerScores();
     return this.snapshot();
+  }
+
+  /** Drain authoritative throw events accepted since the last drain (room broadcasts them). */
+  drainThrowEvents(): ThrowEvent[] {
+    if (this.pendingThrowEvents.length === 0) return [];
+    const events = this.pendingThrowEvents;
+    this.pendingThrowEvents = [];
+    return events;
   }
 
   snapshot(): ServerSnapshot {
@@ -511,6 +577,9 @@ export class ServerGameLoop {
     player.hands = updateHandCharging(player.hands, input, prevInput);
     player.hands = tickHands(player.hands, dt);
     player.lastProcessedInputSeq = seq;
+
+    // Open any fresh catch attempts carried by this input (latched ids; dedup by last-processed).
+    this.ingestCatchAttempts(player, input);
 
     if (input.dropPressed) {
       const result = this.handleDrop(player.id);
@@ -574,7 +643,14 @@ export class ServerGameLoop {
     );
   }
 
-  private updateBalls(dt: number): void {
+  /**
+   * Advance balls and resolve live-ball combat with the correct interaction order (Phase 8/9):
+   *   1. preserve previous position  2. move ball  3. build swept segment
+   *   4. auto-parry  5. catch  6. hit  7. world collision/bounce/settle.
+   * Parry/catch/hit each consume the ball — once one fires, later checks skip it that tick, so a
+   * valid defense can never be bypassed by hit detection running first.
+   */
+  private updateBalls(dt: number, scoringActive: boolean): void {
     for (const ballId in this.state.balls) {
       const ball = this.state.balls[ballId];
       if (ball.phase === 'held' && ball.heldByPlayerId && ball.heldHand) {
@@ -587,51 +663,76 @@ export class ServerGameLoop {
 
       if (ball.phase === 'loose') continue;
 
+      // (1) previous position before the move; (2) move; (3) swept segment is [prevPos, curr].
+      const prevPos = cloneVec3(ball.position);
       const advanced = advanceBall(ball, dt);
-      const bounded = resolveBallBounds(advanced);
+      let resolved = advanced;
+
+      // (4-6) Live-ball combat against the swept segment, in order. Only a live, scoring-eligible
+      // ball thrown by a player can be parried/caught/hit. Each helper, on success, returns the new
+      // ball state (deflected/held/dead) and we stop further combat on this ball this tick.
+      if (resolved.phase === 'live') {
+        const segPrev = prevPos;
+        const segCurr = resolved.position;
+        const tickStartMs = this.stepNowMs;
+
+        const parried = this.tryAutoParry(resolved, segPrev, segCurr, dt, tickStartMs);
+        if (parried) {
+          resolved = parried;
+        } else {
+          const caught = this.tryCatchAttempts(resolved, segPrev, segCurr, dt, tickStartMs);
+          if (caught) {
+            resolved = caught;
+          } else if (scoringActive) {
+            const hit = this.tryHit(resolved, segPrev, segCurr);
+            if (hit) resolved = hit;
+          }
+        }
+      }
+
+      // (7) world collision / bounce / settle on whatever survived combat.
+      const bounded = resolveBallBounds(resolved);
       const collided = resolveBallStaticBoxes(bounded, this.ballCollisionBoxes, this.debug.COLLISION_DEBUG ? this.logger : undefined);
-      this.state.balls[ball.id] = settleBallIfSlow(collided);
+      const finalBall = settleBallIfSlow(collided);
+      this.state.balls[ball.id] = finalBall;
+
+      // Record swept position history for lag-comp (only live/deflected balls are interaction-relevant).
+      this.recordBallSample(finalBall);
     }
   }
 
   /**
-   * Server-authoritative hit detection with a SWEPT CAPSULE (#4 / hitbox fix). The ball's path
-   * this tick (prev→curr) is tested against each opponent's vertical body axis (feet→head). This
-   * registers headshots (the axis spans the full height, not one mid-body point) and stops fast
-   * throws tunnelling through a player between ticks.
+   * (6) Swept hit detection. The ball's path this tick (prev→curr) is tested against each opponent's
+   * vertical body axis (feet→head): registers headshots and stops fast throws tunnelling between
+   * ticks. Returns the dead ball on a hit (and registers the score), else null. Catch/parry already
+   * had their chance this tick before this runs, so a valid defense is never bypassed.
    */
-  private validateHits(dt: number): void {
+  private tryHit(ball: BallState, segPrev: Vec3, segCurr: Vec3): BallState | null {
+    if (!canScorePlayerHit(ball)) return null;
+    const ownerId = ball.ownerId;
+    if (!ownerId) return null;
     const radius = playerBallHitRadius();
 
-    for (const ballId in this.state.balls) {
-      const ball = this.state.balls[ballId];
-      if (!canScorePlayerHit(ball)) continue;
-      const ownerId = ball.ownerId;
-      if (!ownerId) continue;
+    for (const targetId in this.state.players) {
+      const target = this.state.players[targetId];
+      if (target.id === ownerId) continue;
+      const hitbox = playerHitCapsule(target);
+      if (!sweptBallHitsBody(segPrev, segCurr, hitbox.base, hitbox.top, radius)) continue;
 
-      const curr = ball.position;
-      const prev = subtract(curr, scale(ball.velocity, dt));
-
-      for (const targetId in this.state.players) {
-        const target = this.state.players[targetId];
-        if (target.id === ownerId) continue;
-        const hitbox = playerHitCapsule(target);
-        if (!sweptBallHitsBody(prev, curr, hitbox.base, hitbox.top, radius)) continue;
-
-        const scorer = this.state.players[ownerId];
-        const previousScore = scorer ? this.state.match.scoreByTeamId[scorer.teamId] ?? 0 : 0;
-        const previousWinner = this.state.match.winnerTeamId;
-        this.state.balls[ball.id] = markBallDead(ball);
-        this.state = registerPlayerHit(this.state, ownerId);
-        const nextScore = scorer ? this.state.match.scoreByTeamId[scorer.teamId] ?? 0 : previousScore;
-        if (this.debug.NET_DEBUG) {
-          this.logger(`hit confirmed scorer=${ownerId} target=${target.id} ball=${ball.id}`);
-          if (nextScore !== previousScore) this.logger(`score changed team=${scorer?.teamId ?? 'unknown'} score=${nextScore}`);
-          if (!previousWinner && this.state.match.winnerTeamId) this.logger(`match ended winner=${this.state.match.winnerTeamId}`);
-        }
-        break;
+      const scorer = this.state.players[ownerId];
+      const previousScore = scorer ? this.state.match.scoreByTeamId[scorer.teamId] ?? 0 : 0;
+      const previousWinner = this.state.match.winnerTeamId;
+      const dead = markBallDead(ball);
+      this.state = registerPlayerHit(this.state, ownerId);
+      const nextScore = scorer ? this.state.match.scoreByTeamId[scorer.teamId] ?? 0 : previousScore;
+      if (this.debug.NET_DEBUG) {
+        this.logger(`hit confirmed scorer=${ownerId} target=${target.id} ball=${ball.id}`);
+        if (nextScore !== previousScore) this.logger(`score changed team=${scorer?.teamId ?? 'unknown'} score=${nextScore}`);
+        if (!previousWinner && this.state.match.winnerTeamId) this.logger(`match ended winner=${this.state.match.winnerTeamId}`);
       }
+      return dead;
     }
+    return null;
   }
 
   /**
@@ -696,41 +797,297 @@ export class ServerGameLoop {
     }
   }
 
+  // ===========================================================================================
+  //  Server-authoritative combat: defensive history, catch attempts, auto-parry, swept resolution
+  // ===========================================================================================
+
+  /** Record this player's post-update defensive state into their history ring (lag-comp source). */
+  private recordDefenseSample(player: PlayerState): void {
+    let ring = this.defenseHistoryByPlayerId.get(player.id);
+    if (!ring) {
+      ring = new TimeRing<DefenseSample>(GAME_CONSTANTS.combat.defenseHistoryMs);
+      this.defenseHistoryByPlayerId.set(player.id, ring);
+    }
+    const m = player.movement;
+    const forward = normalize(m.facing, facingFromAngles(m.yawRadians, m.pitchRadians));
+    ring.push({
+      serverTimeMs: this.stepNowMs,
+      tick: this.state.tick,
+      eye: vec3(m.position.x, m.position.y + GAME_CONSTANTS.player.eyeHeight, m.position.z),
+      forward,
+      yaw: m.yawRadians,
+      pitch: m.pitchRadians,
+      leftHandEmpty: !player.hands.left.heldBallId,
+      rightHandEmpty: !player.hands.right.heldBallId,
+      leftHeldBallId: player.hands.left.heldBallId,
+      rightHeldBallId: player.hands.right.heldBallId,
+      heldBallCount: heldBallCount(player.hands),
+      dashing: m.dashingThisFrame
+    });
+  }
+
+  /** Record a live/deflected ball's position so a rewound click can reconstruct its swept path. */
+  private recordBallSample(ball: BallState): void {
+    if (ball.phase !== 'live' && ball.phase !== 'deflected') {
+      // Non-interaction phases don't need history; drop any stale ring so memory stays bounded.
+      this.ballHistoryById.delete(ball.id);
+      return;
+    }
+    let ring = this.ballHistoryById.get(ball.id);
+    if (!ring) {
+      ring = new TimeRing<BallSample>(GAME_CONSTANTS.combat.defenseHistoryMs);
+      this.ballHistoryById.set(ball.id, ring);
+    }
+    ring.push({ serverTimeMs: this.stepNowMs, tick: this.state.tick, position: cloneVec3(ball.position) });
+  }
+
   /**
-   * Accumulate per-ball aim time while a live ball's swept path passes inside the catch cone.
-   * Using the swept segment (ballPrev → ballCurr) instead of only the current position means a
-   * fast ball that crosses the entire cone interior in a single tick still accrues tracking time,
-   * preventing tunnelling through the catch window. Tracking resets to zero while dashing.
+   * Open catch windows for any FRESH catch-attempt ids carried by this player's input. A new id
+   * (strictly greater than the last processed for that player+hand) acknowledges immediately (stored
+   * in hand.lastCatchAttemptId so the client stops re-latching) and, if the hand is eligible and not
+   * on cooldown, opens an active window anchored at the click's server time (lag-comp rewind target).
    */
-  private updateCatchTracking(player: PlayerState, dt: number): void {
-    // Dashing prevents catching — clear all tracking while the dash is active.
-    if (player.movement.dashingThisFrame) {
-      const existing = this.catchTrackingByPlayerId.get(player.id);
-      // Reuse the existing record object when present (cleared in place) to avoid an allocation.
-      if (existing) {
-        for (const id in existing) delete existing[id];
-      } else {
-        this.catchTrackingByPlayerId.set(player.id, {});
+  private ingestCatchAttempts(player: PlayerState, input: PlayerInput): void {
+    this.ingestCatchAttemptForHand(player, input, 'left', input.leftCatchAttemptId);
+    this.ingestCatchAttemptForHand(player, input, 'right', input.rightCatchAttemptId);
+  }
+
+  private ingestCatchAttemptForHand(player: PlayerState, input: PlayerInput, hand: HandSide, attemptId: number): void {
+    if (attemptId <= 0) return;
+    const key = `${player.id}:${hand}`;
+    const lastId = this.lastCatchAttemptIdByKey.get(key) ?? 0;
+    if (attemptId <= lastId) return; // stale/duplicate latched re-send — already consumed.
+    this.lastCatchAttemptIdByKey.set(key, attemptId);
+    // Acknowledge on the hand state so the client knows the attempt was received (whether or not it
+    // ultimately catches — the catch resolves over the active window below).
+    player.hands = setHandLastCatchAttemptId(player.hands, hand, attemptId);
+
+    const now = this.stepNowMs;
+    const existing = this.catchAttemptByKey.get(key);
+    if (existing && now < existing.cooldownUntilMs) {
+      if (this.debug.CATCH_DEBUG) {
+        this.logger(`catch attempt player=${player.id} hand=${hand} id=${attemptId} result=fail reason=cooldown remainingMs=${Math.round(existing.cooldownUntilMs - now)}`);
       }
       return;
     }
 
-    const previous = this.catchTrackingByPlayerId.get(player.id) ?? {};
-    const next: Record<string, number> = {};
-    const px = player.movement.position;
-    const eye = vec3(px.x, px.y + GAME_CONSTANTS.player.eyeHeight, px.z);
-    const facing = player.movement.facing;
-
-    for (const ballId in this.state.balls) {
-      const ball = this.state.balls[ballId];
-      if (ball.phase !== 'live') continue;
-      // Reconstruct ball's position one tick ago using current velocity (same as hit detection).
-      const ballPrev = subtract(ball.position, scale(ball.velocity, dt));
-      if (!sweptSegmentInCone(eye, facing, ballPrev, ball.position, GAME_CONSTANTS.catch.coneDegrees, GAME_CONSTANTS.catch.rangeMeters)) continue;
-      next[ball.id] = (previous[ball.id] ?? 0) + dt;
+    // Anchor the rewind to when the client actually clicked. Prefer the input's client timestamp
+    // mapped to server time via our ping estimate; fall back to "now" if unavailable. Clamp the
+    // rewind so we never look further back than the configured max.
+    const clickTimeMs = this.estimateClickServerTime(player.id, input, now);
+    this.catchAttemptByKey.set(key, {
+      hand,
+      attemptId,
+      openedAtMs: now,
+      activeUntilMs: now + GAME_CONSTANTS.combat.catchStartupMs + GAME_CONSTANTS.combat.catchActiveMs,
+      cooldownUntilMs: now + GAME_CONSTANTS.combat.catchCooldownMs,
+      clickTimeMs,
+      resolved: false
+    });
+    if (this.debug.CATCH_DEBUG) {
+      this.logger(`catch attempt OPEN player=${player.id} hand=${hand} id=${attemptId} clickAgeMs=${Math.round(now - clickTimeMs)}`);
     }
+  }
 
-    this.catchTrackingByPlayerId.set(player.id, next);
+  /**
+   * Estimate the SERVER time at which a client click happened, for lag-comp rewind. We don't have a
+   * synced clock, so approximate: now − (one input-transit ≈ half the player's measured RTT). The
+   * result is clamped to [now − maxRewind, now]. With no RTT estimate it returns `now` (no rewind),
+   * which degrades gracefully to "evaluate against present state".
+   */
+  private estimateClickServerTime(_playerId: string, _input: PlayerInput, now: number): number {
+    // Half-RTT is not tracked server-side here; the active window (catchActiveMs) already gives the
+    // attempt time to overlap the ball crossing. Anchor at the window's recent past bounded by max
+    // rewind + input grace so the swept-history sampling has slack on both sides of the click.
+    const rewind = Math.min(GAME_CONSTANTS.combat.defenseMaxRewindMs, GAME_CONSTANTS.combat.defenseInputGraceMs);
+    return now - rewind;
+  }
+
+  /**
+   * Auto-parry (Phase 11): a defender holding two balls and aiming within the parry cone of a live
+   * incoming ball deflects it automatically. Evaluated against the swept segment + the defender's
+   * rewound aim. Returns the deflected ball on success, else null (and logs the reason under PARRY_DEBUG).
+   */
+  private tryAutoParry(ball: BallState, segPrev: Vec3, segCurr: Vec3, _dt: number, tickStartMs: number): BallState | null {
+    const ownerId = ball.ownerId;
+    if (ball.phase !== 'live' || ball.ownerKind !== 'player' || !ownerId) return null;
+
+    for (const defenderId in this.state.players) {
+      if (defenderId === ownerId) continue;
+      const defender = this.state.players[defenderId];
+      const sample = this.sampleDefenseAt(defenderId, tickStartMs);
+      const fail = this.parryFailReason(defender, sample, ball, segPrev, segCurr);
+      if (fail) {
+        if (this.debug.PARRY_DEBUG) this.logParry(defenderId, ball, sample, segPrev, segCurr, fail);
+        continue;
+      }
+
+      // Success. Deflect using the defender's rewound aim; new throw identity so clients snap.
+      const aim = sample ? sample.forward : defender.movement.facing;
+      this.throwCounter += 1;
+      this.state.balls[ball.id] = deflectBall(ball, defenderId, aim, GAME_CONSTANTS, this.throwCounter);
+      this.parryCooldownByPlayerId.set(defenderId, GAME_CONSTANTS.parry.cooldownSeconds);
+      if (ball.isSuper) this.dropOneHeldBall(defender); // super-parry drops a defender ball
+      if (this.debug.PARRY_DEBUG || this.debug.NET_DEBUG) {
+        this.logger(`parry SUCCESS defender=${defenderId} ball=${ball.id} super=${ball.isSuper} throwId=${this.throwCounter}`);
+      }
+      return this.state.balls[ball.id];
+    }
+    return null;
+  }
+
+  /** Returns a fail reason, or null if this defender would parry the ball this tick. */
+  private parryFailReason(
+    defender: PlayerState,
+    sample: DefenseSample | null,
+    ball: BallState,
+    segPrev: Vec3,
+    segCurr: Vec3
+  ): ParryFailReason | null {
+    const twoBalls = sample ? sample.heldBallCount >= GAME_CONSTANTS.ball.maxHeldBalls : heldBallCount(defender.hands) >= GAME_CONSTANTS.ball.maxHeldBalls;
+    if (!twoBalls) return 'no-two-balls';
+    const cooldown = this.parryCooldownByPlayerId.get(defender.id) ?? 0;
+    if (cooldown > 0) return 'cooldown';
+    if (ball.phase !== 'live') return 'ball-not-live';
+    if (ball.ownerId === defender.id) return 'owner-invalid';
+    const origin = sample ? sample.eye : add(defender.movement.position, vec3(0, GAME_CONSTANTS.player.eyeHeight, 0));
+    const forward = sample ? sample.forward : defender.movement.facing;
+    const coneDegrees = ball.isSuper ? GAME_CONSTANTS.catch.superParryConeDegrees : GAME_CONSTANTS.parry.coneDegrees;
+    // Range check on the closest swept approach, then cone.
+    const closest = closestPointOnSegment(segPrev, segCurr, origin);
+    if (distance(origin, closest) > GAME_CONSTANTS.parry.rangeMeters) return 'out-of-range';
+    if (!sweptSegmentInCone(origin, forward, segPrev, segCurr, coneDegrees, GAME_CONSTANTS.parry.rangeMeters)) return 'angle-too-wide';
+    return null;
+  }
+
+  /**
+   * Resolve catch attempts (Phase 10) against this live ball's swept segment. For each defender with
+   * an OPEN, unresolved attempt whose hand matches, evaluate the gates against their rewound defense
+   * sample. On success the ball becomes held (velocity 0) in that hand and the attempt is consumed.
+   */
+  private tryCatchAttempts(ball: BallState, segPrev: Vec3, segCurr: Vec3, _dt: number, tickStartMs: number): BallState | null {
+    const ownerId = ball.ownerId;
+    if (ball.phase !== 'live' || ball.ownerKind !== 'player' || !ownerId) return null;
+    const now = this.stepNowMs;
+
+    for (const defenderId in this.state.players) {
+      if (defenderId === ownerId) continue;
+      const defender = this.state.players[defenderId];
+
+      for (const hand of ['left', 'right'] as const) {
+        const key = `${defenderId}:${hand}`;
+        const attempt = this.catchAttemptByKey.get(key);
+        if (!attempt || attempt.resolved) continue;
+        // Expire windows that have fully elapsed.
+        if (now > attempt.activeUntilMs) continue;
+
+        const sample = this.sampleDefenseAt(defenderId, attempt.clickTimeMs);
+        const fail = this.catchFailReason(defender, hand, sample, ball, segPrev, segCurr, attempt, now);
+        if (fail) {
+          if (this.debug.CATCH_DEBUG) this.logCatch(defenderId, hand, ball, sample, segPrev, segCurr, attempt, fail);
+          continue;
+        }
+
+        // Success — consume the attempt and give the ball to this hand.
+        attempt.resolved = true;
+        this.catchAttemptByKey.set(key, attempt);
+        const caught = catchBall(ball, defenderId, hand);
+        this.state.balls[ball.id] = caught;
+        // Assign the hand + small forward catch boost (mirrors the old behavior).
+        const facing = sample ? sample.forward : defender.movement.facing;
+        const boostDir = normalize(vec3(facing.x, 0, facing.z), vec3(0, 0, 1));
+        this.state.players[defenderId] = {
+          ...defender,
+          hands: assignCaughtHand(defender.hands, hand, ball.id),
+          movement: { ...defender.movement, velocity: add(defender.movement.velocity, scale(boostDir, GAME_CONSTANTS.catch.catchBoostSpeed)) },
+          movementInternal: { ...defender.movementInternal, catchBoostTimer: GAME_CONSTANTS.catch.catchBoostDuration }
+        };
+        if (this.debug.CATCH_DEBUG || this.debug.NET_DEBUG) {
+          this.logger(`catch SUCCESS defender=${defenderId} hand=${hand} ball=${ball.id} id=${attempt.attemptId}`);
+        }
+        return caught;
+      }
+    }
+    return null;
+  }
+
+  /** Returns a catch fail reason, or null if this defender+hand would catch the ball this tick. */
+  private catchFailReason(
+    defender: PlayerState,
+    hand: HandSide,
+    sample: DefenseSample | null,
+    ball: BallState,
+    segPrev: Vec3,
+    segCurr: Vec3,
+    attempt: CatchAttempt,
+    now: number
+  ): CatchFailReason | null {
+    // Timing window: too-early before startup elapses, too-late after the active window.
+    if (now < attempt.openedAtMs + GAME_CONSTANTS.combat.catchStartupMs) return 'too-early';
+    if (now > attempt.activeUntilMs) return 'too-late';
+    // Eligibility from the rewound sample (fall back to present state if no history yet).
+    const handEmpty = sample
+      ? (hand === 'left' ? sample.leftHandEmpty : sample.rightHandEmpty)
+      : !defender.hands[hand].heldBallId;
+    if (!handEmpty) return 'no-empty-hand';
+    const dashing = sample ? sample.dashing : defender.movement.dashingThisFrame;
+    if (dashing) return 'dashing';
+    if (ball.phase !== 'live') return 'ball-not-live';
+    if (ball.ownerId === defender.id) return 'owner-invalid';
+    const origin = sample ? sample.eye : add(defender.movement.position, vec3(0, GAME_CONSTANTS.player.eyeHeight, 0));
+    const forward = sample ? sample.forward : defender.movement.facing;
+    const closest = closestPointOnSegment(segPrev, segCurr, origin);
+    if (distance(origin, closest) > GAME_CONSTANTS.catch.rangeMeters) return 'out-of-range';
+    if (!sweptSegmentInCone(origin, forward, segPrev, segCurr, GAME_CONSTANTS.catch.coneDegrees, GAME_CONSTANTS.catch.rangeMeters)) return 'angle-too-wide';
+    return null;
+  }
+
+  /** Defensive sample nearest the requested time, clamped to the max-rewind window. */
+  private sampleDefenseAt(playerId: string, atServerTimeMs: number): DefenseSample | null {
+    const ring = this.defenseHistoryByPlayerId.get(playerId);
+    if (!ring) return null;
+    const minTime = this.stepNowMs - GAME_CONSTANTS.combat.defenseMaxRewindMs - GAME_CONSTANTS.combat.defenseInputGraceMs;
+    const target = Math.max(minTime, atServerTimeMs);
+    return ring.nearest(target);
+  }
+
+  private logCatch(
+    defenderId: string,
+    hand: HandSide,
+    ball: BallState,
+    sample: DefenseSample | null,
+    segPrev: Vec3,
+    segCurr: Vec3,
+    attempt: CatchAttempt,
+    reason: CatchFailReason
+  ): void {
+    const origin = sample ? sample.eye : vec3();
+    const closest = closestPointOnSegment(segPrev, segCurr, origin);
+    const range = sample ? distance(origin, closest) : -1;
+    this.logger(
+      `catch FAIL defender=${defenderId} hand=${hand} ball=${ball.id} phase=${ball.phase}` +
+      ` owner=${ball.ownerId ?? 'none'} id=${attempt.attemptId}` +
+      ` range=${range.toFixed(2)}/${GAME_CONSTANTS.catch.rangeMeters}` +
+      ` historyAgeMs=${sample ? Math.round(Math.abs(sample.serverTimeMs - attempt.clickTimeMs)) : 'n/a'}` +
+      ` reason=${reason}`
+    );
+  }
+
+  private logParry(
+    defenderId: string,
+    ball: BallState,
+    sample: DefenseSample | null,
+    segPrev: Vec3,
+    segCurr: Vec3,
+    reason: ParryFailReason
+  ): void {
+    const origin = sample ? sample.eye : vec3();
+    const closest = closestPointOnSegment(segPrev, segCurr, origin);
+    const range = sample ? distance(origin, closest) : -1;
+    this.logger(
+      `parry FAIL defender=${defenderId} ball=${ball.id} isSuper=${ball.isSuper}` +
+      ` range=${range.toFixed(2)}/${GAME_CONSTANTS.parry.rangeMeters} reason=${reason}`
+    );
   }
 
   private syncPlayerScores(): void {
@@ -802,52 +1159,6 @@ export class ServerGameLoop {
       expiresAtMs,
       resetSerial: this.resetSerial
     });
-  }
-
-  /** Nearest live ball whose swept path passes inside the catch cone+range. */
-  private nearestCatchable(_player: PlayerState, origin: Vec3, facing: Vec3): BallState | null {
-    return this.nearestLiveSweptInCone(origin, facing, GAME_CONSTANTS.catch.coneDegrees, GAME_CONSTANTS.catch.rangeMeters);
-  }
-
-  /**
-   * Nearest live ball whose swept path (ballPrev → ballCurr) passes inside the parry cone.
-   * Uses the swept segment so a super-speed ball that crosses the parry window in one tick
-   * is still caught by the check.
-   */
-  private nearestParryable(_player: PlayerState, origin: Vec3, facing: Vec3): BallState | null {
-    let best: BallState | null = null;
-    // Squared distance for the nearest-of comparison — avoids a sqrt per ball (Step 4).
-    let bestDistanceSq = Number.POSITIVE_INFINITY;
-    const dt = this.tickSeconds;
-    for (const ballId in this.state.balls) {
-      const ball = this.state.balls[ballId];
-      if (ball.phase !== 'live') continue;
-      const cone = ball.isSuper ? GAME_CONSTANTS.catch.superParryConeDegrees : GAME_CONSTANTS.parry.coneDegrees;
-      const ballPrev = subtract(ball.position, scale(ball.velocity, dt));
-      if (!sweptSegmentInCone(origin, facing, ballPrev, ball.position, cone, GAME_CONSTANTS.parry.rangeMeters)) continue;
-      const distSq = lengthSquared(subtract(origin, ball.position));
-      if (distSq >= bestDistanceSq) continue;
-      best = ball;
-      bestDistanceSq = distSq;
-    }
-    return best;
-  }
-
-  private nearestLiveSweptInCone(origin: Vec3, facing: Vec3, coneDegrees: number, range: number): BallState | null {
-    let best: BallState | null = null;
-    let bestDistanceSq = Number.POSITIVE_INFINITY;
-    const dt = this.tickSeconds;
-    for (const ballId in this.state.balls) {
-      const ball = this.state.balls[ballId];
-      if (ball.phase !== 'live') continue;
-      const ballPrev = subtract(ball.position, scale(ball.velocity, dt));
-      if (!sweptSegmentInCone(origin, facing, ballPrev, ball.position, coneDegrees, range)) continue;
-      const distSq = lengthSquared(subtract(origin, ball.position));
-      if (distSq >= bestDistanceSq) continue;
-      best = ball;
-      bestDistanceSq = distSq;
-    }
-    return best;
   }
 
   private dropOneHeldBall(player: PlayerState): void {
@@ -956,13 +1267,24 @@ export class ServerGameLoop {
     this.lastInputAtByPlayerId.set(playerId, Date.now());
     this.lastEnqueuedSeqByPlayerId.set(playerId, 0);
     this.parryCooldownByPlayerId.set(playerId, 0);
-    this.catchTrackingByPlayerId.set(playerId, {});
+    // Fresh defense history + cleared catch-attempt state (reset/respawn/rejoin must not reuse old
+    // history across a discontinuity — that would lag-comp against pre-reset positions).
+    this.defenseHistoryByPlayerId.set(playerId, new TimeRing<DefenseSample>(GAME_CONSTANTS.combat.defenseHistoryMs));
+    this.catchAttemptByKey.delete(`${playerId}:left`);
+    this.catchAttemptByKey.delete(`${playerId}:right`);
+    this.lastCatchAttemptIdByKey.set(`${playerId}:left`, 0);
+    this.lastCatchAttemptIdByKey.set(`${playerId}:right`, 0);
   }
 
   private createFreshRoomState(players: PlayerState[] = [], startTick = 0): RoomState {
     // All mats stand again on a fresh state / reset; rebuild the player collision set to include them.
     this.knockedOverMatIds.clear();
     this.playerCollisionBoxes = createPlayerCollisionBoxes();
+    // Combat history is timeline-specific: a reset is a discontinuity, so drop ball history, any
+    // open catch attempts, and undelivered throw events so lag-comp never rewinds across the reset.
+    this.ballHistoryById.clear();
+    this.catchAttemptByKey.clear();
+    this.pendingThrowEvents = [];
     const room = createRoomState({
       id: this.roomId,
       // The snapshot tick MUST stay monotonic across a room reset. The client gates reconciliation
@@ -1146,7 +1468,9 @@ function defaultInput(yawRadians = 0): PlayerInput {
     rightHandPressed: false,
     rightHandHeld: false,
     leftHandReleased: false,
-    rightHandReleased: false
+    rightHandReleased: false,
+    leftCatchAttemptId: 0,
+    rightCatchAttemptId: 0
   };
 }
 
@@ -1191,7 +1515,11 @@ function normalizeInput(input: Partial<PlayerInput>, fallback: PlayerInput = def
     rightHandPressed: Boolean(input.rightHandPressed) || legacyPressed(legacy.rightHand, fallback.rightHandHeld),
     rightHandHeld,
     leftHandReleased: Boolean(input.leftHandReleased),
-    rightHandReleased: Boolean(input.rightHandReleased)
+    rightHandReleased: Boolean(input.rightHandReleased),
+    // Catch-attempt ids are latched values (not one-frame edges): carry the freshest non-negative
+    // integer, falling back to the previous input's value so a re-send keeps the same attempt id.
+    leftCatchAttemptId: Math.max(0, Math.trunc(finiteNumber(input.leftCatchAttemptId, fallback.leftCatchAttemptId))),
+    rightCatchAttemptId: Math.max(0, Math.trunc(finiteNumber(input.rightCatchAttemptId, fallback.rightCatchAttemptId)))
   };
 }
 
@@ -1218,15 +1546,31 @@ function heldBallPosition(player: PlayerState, hand: HandSide): Vec3 {
   return computePlayerHandAnchor(player, hand);
 }
 
+/** Return hands with the given hand's lastCatchAttemptId bumped (ack of a received attempt). */
+function setHandLastCatchAttemptId(hands: PlayerState['hands'], hand: HandSide, attemptId: number): PlayerState['hands'] {
+  return {
+    ...hands,
+    [hand]: { ...hands[hand], lastCatchAttemptId: attemptId }
+  };
+}
+
+/** Assign a caught ball to a hand (holding, charge cleared, catch cooldown applied). */
+function assignCaughtHand(hands: PlayerState['hands'], hand: HandSide, ballId: string): PlayerState['hands'] {
+  return {
+    ...hands,
+    [hand]: {
+      ...hands[hand],
+      heldBallId: ballId,
+      mode: 'holding',
+      chargeSeconds: 0,
+      cooldownSeconds: GAME_CONSTANTS.catch.cooldownSeconds
+    }
+  };
+}
+
 function preferredDropHand(player: PlayerState): HandSide | null {
   if (player.hands.right.heldBallId) return 'right';
   if (player.hands.left.heldBallId) return 'left';
-  return null;
-}
-
-function firstEmptyHand(player: PlayerState): HandSide | null {
-  if (!player.hands.left.heldBallId) return 'left';
-  if (!player.hands.right.heldBallId) return 'right';
   return null;
 }
 

@@ -7,11 +7,15 @@ import type {
   ResetRequest,
   ServerMessage,
   ServerSnapshot,
+  ThrowEvent,
   ThrowRequest
 } from '../../../shared/protocol';
 import type { HandSide, PlayerInput, Vec3 } from '../../../shared/types';
 
 export type ConnectionStatus = 'offline' | 'connecting' | 'connected' | 'error';
+
+/** Shared empty array returned by drainThrowEvents when nothing is queued (no per-call allocation). */
+const EMPTY_THROW_EVENTS: readonly ThrowEvent[] = [];
 
 export class MultiplayerClient {
   public readonly serverUrl: string;
@@ -21,6 +25,9 @@ export class MultiplayerClient {
   public localPlayerId = '';
   public pingMs: number | null = null;
   public latestSnapshot: ServerSnapshot | null = null;
+  // Throw events received since the last drain. The renderer drains these each frame to seed/refresh
+  // deterministic live-ball visual prediction. Bounded: cleared on drain and on leave/reset.
+  private throwEventQueue: ThrowEvent[] = [];
   public snapshotDebug = {
     receivedPerSecond: 0,
     averageMsBetweenSnapshots: 0,
@@ -73,6 +80,7 @@ export class MultiplayerClient {
     this.roomId = '';
     this.localPlayerId = '';
     this.latestSnapshot = null;
+    this.throwEventQueue = [];
     this.resetSnapshotDebug();
   }
 
@@ -117,6 +125,14 @@ export class MultiplayerClient {
     } satisfies CatchParryRequest);
   }
 
+  /** Drain throw events received since the last call (renderer consumes these for ball prediction). */
+  drainThrowEvents(): readonly ThrowEvent[] {
+    if (this.throwEventQueue.length === 0) return EMPTY_THROW_EVENTS;
+    const events = this.throwEventQueue;
+    this.throwEventQueue = [];
+    return events;
+  }
+
   requestReset(): void {
     this.room?.send('reset', { type: 'reset', playerId: this.localPlayerId } satisfies ResetRequest);
   }
@@ -159,6 +175,13 @@ export class MultiplayerClient {
       this.latestSnapshot = message;
     });
 
+    room.onMessage('throw-event', (message: ThrowEvent) => {
+      if (this.room !== room) return;
+      // Cap the queue so a burst (or a frame the renderer didn't drain) can't grow unbounded.
+      if (this.throwEventQueue.length >= 32) this.throwEventQueue.shift();
+      this.throwEventQueue.push(message);
+    });
+
     room.onMessage('joined-room', (message: Extract<ServerMessage, { type: 'joined-room' }>) => {
       if (this.room !== room) return;
       this.localPlayerId = message.playerId;
@@ -194,6 +217,7 @@ export class MultiplayerClient {
       this.roomId = '';
       this.localPlayerId = '';
       this.latestSnapshot = null;
+      this.throwEventQueue = [];
       this.resetSnapshotDebug();
     });
   }

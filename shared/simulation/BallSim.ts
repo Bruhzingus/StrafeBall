@@ -20,6 +20,8 @@ export interface ThrowBallRequest {
   isSuper?: boolean;
   dropScale?: number;
   curveAccel?: Vec3;
+  /** Fresh throw identity assigned by the server (see BallState.throwId). */
+  throwId?: number;
 }
 
 export type ThrowValidationReason = 'ball-not-held' | 'wrong-player' | 'wrong-hand';
@@ -38,7 +40,8 @@ export function createBallState(id: string, position: Vec3 = vec3(), overrides: 
     isSuper: false,
     dropScale: 1,
     curveAccel: vec3(),
-    lastTouchedByPlayerId: null
+    lastTouchedByPlayerId: null,
+    throwId: 0
   };
 
   return {
@@ -138,7 +141,8 @@ export function throwHeldBall(ball: BallState, request: ThrowBallRequest): { ok:
       isSuper: request.isSuper ?? false,
       dropScale: request.dropScale ?? 1,
       curveAccel: cloneVec3(request.curveAccel ?? vec3()),
-      lastTouchedByPlayerId: request.playerId
+      lastTouchedByPlayerId: request.playerId,
+      throwId: request.throwId ?? ball.throwId
     }
   };
 }
@@ -147,7 +151,7 @@ export function catchBall(ball: BallState, playerId: string, hand: HandSide): Ba
   return holdBall(ball, playerId, hand);
 }
 
-export function deflectBall(ball: BallState, defenderPlayerId: string, forward: Vec3, constants: GameConstants = GAME_CONSTANTS): BallState {
+export function deflectBall(ball: BallState, defenderPlayerId: string, forward: Vec3, constants: GameConstants = GAME_CONSTANTS, throwId?: number): BallState {
   const incomingSpeed = length(ball.velocity);
   const deflectForward = normalize(forward, vec3(0, 0, 1));
   const deflectedVelocity = add(
@@ -165,7 +169,10 @@ export function deflectBall(ball: BallState, defenderPlayerId: string, forward: 
     heldHand: null,
     bounceCount: 0,
     isSuper: false,
-    lastTouchedByPlayerId: defenderPlayerId
+    curveAccel: vec3(),
+    lastTouchedByPlayerId: defenderPlayerId,
+    // A deflect is a new live identity — bump throwId so the client snaps its prediction.
+    throwId: throwId ?? ball.throwId
   };
 }
 

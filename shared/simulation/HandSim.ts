@@ -47,6 +47,7 @@ export function createHandState(side: HandSide, overrides: Partial<HandState> = 
     chargeSeconds: 0,
     cooldownSeconds: 0,
     catchTrackingSecondsByBallId: {},
+    lastCatchAttemptId: 0,
     ...overrides
   };
 }

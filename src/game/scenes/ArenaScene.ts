@@ -54,6 +54,11 @@ export class ArenaScene {
   private networkPitch = 0;
   private readonly onlineCharging: Record<'left' | 'right', boolean> = { left: false, right: false };
   private readonly onlineChargeSeconds: Record<'left' | 'right', number> = { left: 0, right: 0 };
+  // Catch-attempt ids (server-authoritative timed catch). A click on an EMPTY hand assigns a fresh
+  // id; the latched id is stamped on every input packet (so the trigger survives packet loss) until
+  // the server's hand.lastCatchAttemptId catches up, at which point we stop re-sending it.
+  private nextCatchAttemptId = 1;
+  private readonly pendingCatchAttemptId: Record<'left' | 'right', number> = { left: 0, right: 0 };
   private lastOnlineScoreByTeamId: Record<string, number> = {};
   private lastResetSerial = -1;
   private lastResetVoteKey = '';
@@ -556,6 +561,9 @@ export class ArenaScene {
     // the interpolation-delayed network position.
     if (snapshot) {
       this.handleOnlineResetEvents(snapshot);
+      // Seed live-ball visual prediction from any throw events that arrived this frame BEFORE the
+      // renderer update so a freshly-thrown ball predicts from its very first rendered frame.
+      this.networkRenderer.applyThrowEvents(this.multiplayer.drainThrowEvents());
       this.networkRenderer.update(snapshot, this.multiplayer.localPlayerId, dt, this.predictedMovement);
       this.applyOnlineMats(snapshot);
       this.handleOnlineScoreEvents(snapshot);
@@ -870,6 +878,9 @@ export class ArenaScene {
     this.predictedDash = null;
     this.lastSentInput = neutralNetInput(this.networkYaw, this.networkPitch);
     this.lastReconciledTick = -1;
+    // Drop any in-flight catch attempt across a prediction reset (enter/exit online, server reset).
+    this.pendingCatchAttemptId.left = 0;
+    this.pendingCatchAttemptId.right = 0;
     this.debugLogTimer = 0;
     this.lastAckedSeq = 0;
     this.lastAckedInputClientTimeMs = 0;
@@ -1029,7 +1040,10 @@ export class ArenaScene {
       rightHandPressed: this.latchRightHandPressed,
       rightHandHeld: this.input.isMouseDown(MOUSE_BUTTON.rightHand),
       leftHandReleased: this.latchLeftHandReleased,
-      rightHandReleased: this.latchRightHandReleased
+      rightHandReleased: this.latchRightHandReleased,
+      // Latched catch-attempt ids (0 = none pending). Re-sent every packet until the server acks.
+      leftCatchAttemptId: this.pendingCatchAttemptId.left,
+      rightCatchAttemptId: this.pendingCatchAttemptId.right
     };
   }
 
@@ -1051,10 +1065,22 @@ export class ArenaScene {
     const pressed = this.input.wasMousePressed(button);
     const released = this.input.wasMouseReleased(button);
 
+    // Stop re-latching an attempt once the server has acknowledged it (ack travels in hand state).
+    if (this.pendingCatchAttemptId[side] !== 0 && hand.lastCatchAttemptId >= this.pendingCatchAttemptId[side]) {
+      this.pendingCatchAttemptId[side] = 0;
+    }
+
     if (!hand.heldBallId) {
       this.onlineCharging[side] = false;
       this.onlineChargeSeconds[side] = 0;
-      if (pressed) this.multiplayer.requestCatchParry(side, facing);
+      // Empty-hand click = a server-authoritative timed CATCH attempt. Assign a fresh latched id
+      // (carried on every input packet until acked) and play instant local catch feedback. The
+      // server decides success against history; the client never decides the catch itself.
+      if (pressed) {
+        this.pendingCatchAttemptId[side] = this.nextCatchAttemptId;
+        this.nextCatchAttemptId += 1;
+        this.effects.onCatchAttempt(side);
+      }
       return;
     }
 
@@ -1070,6 +1096,10 @@ export class ArenaScene {
     if (this.onlineCharging[side] && released) {
       const charge01 = Math.min(1, this.onlineChargeSeconds[side] / TUNING.ball.maxChargeSeconds);
       this.multiplayer.requestThrow(side, facing, charge01);
+      // Instant local throw feedback (Phase 3): play the release whoosh immediately rather than
+      // waiting for the server snapshot. The authoritative live ball + its visual prediction follow
+      // from the server throw event; the held-ball visual releases as soon as that arrives.
+      this.effects.playerThrow();
       this.onlineCharging[side] = false;
       this.onlineChargeSeconds[side] = 0;
     }
@@ -1178,6 +1208,8 @@ function neutralNetInput(yawRadians: number, pitchRadians = 0): PlayerInput {
     rightHandPressed: false,
     rightHandHeld: false,
     leftHandReleased: false,
-    rightHandReleased: false
+    rightHandReleased: false,
+    leftCatchAttemptId: 0,
+    rightCatchAttemptId: 0
   };
 }

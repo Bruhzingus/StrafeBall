@@ -192,6 +192,11 @@ export class DuelRoom extends Room {
         this.latestSnapshot = this.game.step();
         this.recordSimulationTick(performance.now() - startedAt);
 
+        // Broadcast any authoritative throw events accepted this step BEFORE the snapshot, so the
+        // client can seed deterministic live-ball prediction the instant a throw lands.
+        const throwEvents = this.game.drainThrowEvents();
+        for (const event of throwEvents) this.broadcast('throw-event', event);
+
         // Coupled fast path (mode A/C, snapshots == sim): broadcast every step, exactly the old
         // behavior — lowest latency, no snapshot accumulator drift.
         if (this.snapshotCoupledToTick) {

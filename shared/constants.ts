@@ -90,22 +90,45 @@ export const GAME_CONSTANTS = {
   catch: {
     coneDegrees: 25,
     superParryConeDegrees: 10,
-    // No dwell time required — charged/fast throws were impossible to "track" before they hit you.
-    // Catching now succeeds on a single in-cone tick; the aim-cone check is the only gate.
+    // Hold-to-catch was removed (it didn't suit the game's feel). Catch is now a server-authoritative
+    // timed "catch attempt": one click opens a short active window (see `combat`), and the catch
+    // succeeds if a live ball's swept path crosses the hand's catch zone during that window. This
+    // field is retained at 0 for any legacy callers but no longer gates the attempt model.
     trackingSeconds: 0,
-    // Extended +3 ft (0.914 m) from 2.4 → 3.31 m so fast throws can be caught with more reach.
-    rangeMeters: 3.31,
+    // Extended again +1 ft (0.305 m) from 3.31 → 3.62 m so fast throws can be caught with more reach.
+    rangeMeters: 3.62,
     cooldownSeconds: 0.45,
     catchBoostSpeed: 3,
     catchBoostDuration: 0.25
   },
 
   parry: {
-    coneDegrees: 30,
+    // Auto-parry stays automatic while aiming within this cone of an incoming live ball. Tightened
+    // 30 → 20° so it's still skillful (you must actually look at the ball) but reliable online.
+    coneDegrees: 20,
     rangeMeters: 0.925,
     cooldownSeconds: 1,
     deflectSpeedMultiplier: 0.75,
     deflectUpVelocity: 1.5
+  },
+
+  /**
+   * Server-authoritative "catch attempt" model (replaces hold-to-catch). One click opens a window:
+   *   [press, press+startup)            — startup: too-early to land a catch
+   *   [press+startup, press+active end) — ACTIVE: a swept in-cone live ball is caught
+   *   [press, press+cooldown)           — recovery: a new attempt is rejected (cooldown)
+   * The server evaluates the ACTIVE window against per-player/ball HISTORY, rewound to the click
+   * time (sequence/clientTime) and clamped to maxRewindMs, with a small inputGraceMs slack so a
+   * click that arrives a touch early/late around the in-cone moment still lands. This makes a
+   * single well-timed click reliably catch online without becoming a free block or being spammable.
+   */
+  combat: {
+    catchStartupMs: 0,       // 0–30ms: earliest the attempt can catch (0 = lands on the click tick)
+    catchActiveMs: 150,      // ~120–180ms active window the swept ball must cross the cone within
+    catchCooldownMs: 320,    // ~250–400ms recovery before another attempt is allowed
+    defenseMaxRewindMs: 150, // never rewind history further than this from "now"
+    defenseInputGraceMs: 60, // slack around the click moment when sampling history
+    defenseHistoryMs: 320    // how much recent defensive/ball history the server retains
   },
 
   dash: {
