@@ -62,6 +62,10 @@ export class BallManager {
   }
 
   canPickup(ball: Ball): boolean {
+    // A ball already held in a hand is never a pickup candidate. It sits in front of the
+    // camera at zero velocity, so without this guard holding the interact key would re-grab
+    // the same ball into the second hand (the "ball in both hands" bug).
+    if (ball.state === BallState.Held) return false;
     if (ball.state === BallState.Loose || ball.state === BallState.Dead) return true;
     return ball.velocity.length() <= TUNING.ball.slowPickupSpeed;
   }

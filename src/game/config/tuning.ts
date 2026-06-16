@@ -8,8 +8,8 @@ export const TUNING = {
     height: 1.75,
     eyeHeight: 1.58,
     radius: 0.42,
-    groundAcceleration: 48,
-    airAcceleration: 22,
+    groundAcceleration: 24,
+    airAcceleration: 11,
     // Air "wish speed" cap (Source-style airspeedcap). Small on purpose: the projection in
     // accelerate() means only velocity perpendicular to your current motion can be added,
     // which is exactly what lets mouse-turning while strafing build speed (air-strafing).
