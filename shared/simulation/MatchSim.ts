@@ -1,12 +1,29 @@
-import type { BallState, PlayerState, ResetVoteState, RoomState } from '../types';
+import type { BallState, MatState, PlayerState, ResetVoteState, RoomState } from '../types';
 import { grantDashCharge } from './PlayerSim';
 import { applyScore, createMatchState } from './RuleSim';
+import { MAT_SPECS } from './MapGeometry';
+
+/** Fresh, all-standing mat state keyed by id (the start-of-match / post-reset layout). */
+export function createMatStates(): Record<string, MatState> {
+  const mats: Record<string, MatState> = {};
+  for (const spec of MAT_SPECS) {
+    mats[spec.id] = {
+      id: spec.id,
+      position: { x: spec.x, y: spec.y, z: spec.z },
+      yawRadians: spec.yawRadians,
+      knockedOver: false,
+      knockDirection: { x: 0, y: 0, z: 0 }
+    };
+  }
+  return mats;
+}
 
 export function createRoomState(options: {
   id?: string;
   tick?: number;
   players?: PlayerState[];
   balls?: BallState[];
+  mats?: Record<string, MatState>;
   resetVote?: ResetVoteState;
 } = {}): RoomState {
   const players: Record<string, PlayerState> = {};
@@ -28,6 +45,7 @@ export function createRoomState(options: {
     match: createMatchState('match', teamIds.length > 0 ? teamIds : ['player', 'opponent']),
     players,
     balls,
+    mats: options.mats ?? createMatStates(),
     resetVote: options.resetVote ?? createResetVoteState()
   };
 }

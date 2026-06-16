@@ -80,6 +80,129 @@ describe('ServerGameLoop', () => {
     expect(downward?.velocity.z).toBeLessThan(0);
   });
 
+  describe('Step 7 — side-wall / ceiling 1-bounce rule', () => {
+    // Drive a single live ball toward a target surface and run sim steps until it leaves the
+    // 'live'/'deflected' phase (or a step cap), returning how it ended up.
+    function settleBall(loop: ServerGameLoop, ballId: string, maxSteps = 240): { phase: string; bounceCount: number } {
+      for (let i = 0; i < maxSteps; i += 1) {
+        loop.step();
+        const b = loop.state.balls[ballId];
+        if (b.phase !== 'live' && b.phase !== 'deflected') return { phase: b.phase, bounceCount: b.bounceCount };
+      }
+      const b = loop.state.balls[ballId];
+      return { phase: b.phase, bounceCount: b.bounceCount };
+    }
+
+    it('keeps a live ball alive through its FIRST side-wall bounce, then kills it on the second', () => {
+      const loop = new ServerGameLoop('room');
+      loop.addPlayer('a', 'A');
+      // A flat, fast ball near the +X wall aimed straight at it. Start close so the first wall
+      // contact happens before gravity drops it to the floor (the floor would kill it first).
+      loop.state.balls.ball_0 = {
+        ...loop.state.balls.ball_0,
+        phase: 'live',
+        ownerKind: 'player',
+        ownerId: 'a',
+        position: vec3(GAME_CONSTANTS.map.halfWidth - 1, 3, 0),
+        velocity: vec3(40, 0, 0),
+        bounceCount: 0
+      };
+
+      // Step until the first wall contact: the ball must SURVIVE it (still live, bounceCount === 1,
+      // reflected back toward -X).
+      let sawFirstBounce = false;
+      for (let i = 0; i < 30; i += 1) {
+        loop.step();
+        const b = loop.state.balls.ball_0;
+        if (b.bounceCount >= 1) {
+          expect(b.phase).toBe('live');
+          expect(b.bounceCount).toBe(1);
+          expect(b.velocity.x).toBeLessThan(0);
+          sawFirstBounce = true;
+          break;
+        }
+      }
+      expect(sawFirstBounce).toBe(true);
+
+      // It is now heading back across the court; the SECOND wall/ceiling contact must kill it.
+      const ended = settleBall(loop, 'ball_0');
+      expect(ended.phase).not.toBe('live');
+      expect(ended.bounceCount).toBeGreaterThanOrEqual(2);
+    });
+
+    it('kills a live ball on its FIRST floor bounce (floor is not part of the survive rule)', () => {
+      const loop = new ServerGameLoop('room');
+      loop.addPlayer('a', 'A');
+      loop.state.balls.ball_0 = {
+        ...loop.state.balls.ball_0,
+        phase: 'live',
+        ownerKind: 'player',
+        ownerId: 'a',
+        position: vec3(0, 0.5, 0),
+        velocity: vec3(0, -8, 0),
+        bounceCount: 0
+      };
+
+      // First contact is the floor → dead immediately (becomes dead/loose), not a surviving bounce.
+      const ended = settleBall(loop, 'ball_0', 30);
+      expect(ended.phase).not.toBe('live');
+    });
+  });
+
+  describe('mats — immune to balls, knocked over by players', () => {
+    // Pick a mat from the authoritative state to aim at.
+    function firstMat(loop: ServerGameLoop) {
+      const id = Object.keys(loop.state.mats)[0];
+      return loop.state.mats[id];
+    }
+
+    it('lets a live ball pass straight through a mat (mats are immune to balls)', () => {
+      const loop = new ServerGameLoop('room');
+      loop.addPlayer('a', 'A');
+      const mat = firstMat(loop);
+
+      // A flat, fast ball fired straight through the mat center along +X. If mats blocked balls it
+      // would bounce/die at the mat; instead it should sail past with x beyond the mat.
+      loop.state.balls.ball_0 = {
+        ...loop.state.balls.ball_0,
+        phase: 'live',
+        ownerKind: 'player',
+        ownerId: 'a',
+        position: vec3(mat.position.x - 1.5, mat.position.y, mat.position.z),
+        velocity: vec3(50, 0, 0),
+        bounceCount: 0
+      };
+
+      // One step moves ~0.83 m at 50 m/s; after 2 steps it has crossed the 0.18 m-thick mat without
+      // any bounce being counted (a mat bounce would have incremented bounceCount).
+      loop.step();
+      loop.step();
+      const b = loop.state.balls.ball_0;
+      expect(b.bounceCount).toBe(0);
+      expect(b.position.x).toBeGreaterThan(mat.position.x);
+    });
+
+    it('knocks a mat over (and stays down) when a player walks into it', () => {
+      const loop = new ServerGameLoop('room');
+      loop.addPlayer('a', 'A');
+      loop.addPlayer('b', 'B');
+      const mat = firstMat(loop);
+      expect(mat.knockedOver).toBe(false);
+
+      // Place the player right at the mat's standing face with into-mat velocity, then step. step()
+      // captures the pre-resolution velocity (what the knock-over rule uses) before movement runs.
+      loop.state.players.a.movement.position = vec3(mat.position.x, 0, mat.position.z - 0.6);
+      loop.state.players.a.movement.velocity = vec3(0, 0, 4);
+
+      loop.step();
+
+      const after = loop.state.mats[mat.id];
+      expect(after.knockedOver).toBe(true);
+      // knockDirection points the way the player pushed (toward +Z here), normalized.
+      expect(after.knockDirection.z).toBeGreaterThan(0.5);
+    });
+  });
+
   it('server-side hit validation grants score and dash charge', () => {
     const loop = new ServerGameLoop('room');
     loop.addPlayer('a', 'A');
@@ -352,6 +475,27 @@ describe('ServerGameLoop', () => {
       for (const ball of Object.values(loop.state.balls)) {
         expect(ball.heldByPlayerId).toBeNull();
       }
+    });
+
+    it('keeps the snapshot tick monotonic across a reset (prevents the client reconcile freeze)', () => {
+      const loop = new ServerGameLoop('room');
+      loop.addPlayer('a', 'A');
+      loop.addPlayer('b', 'B');
+
+      // Advance the sim so the tick is well above zero before the reset.
+      for (let i = 0; i < 50; i += 1) loop.step();
+      const tickBeforeReset = loop.state.tick;
+      expect(tickBeforeReset).toBeGreaterThanOrEqual(50);
+
+      loop.handleReset('a');
+      loop.handleReset('b');
+
+      // The tick must NOT fall back to 0 — the client gates reconciliation on tick > lastReconciled,
+      // so a backward tick would wedge prediction and freeze the local player after a reset.
+      expect(loop.state.tick).toBeGreaterThanOrEqual(tickBeforeReset);
+      const tickAfterReset = loop.state.tick;
+      loop.step();
+      expect(loop.state.tick).toBeGreaterThan(tickAfterReset);
     });
 
     it('recomputes the required votes immediately when one of the two players disconnects', () => {

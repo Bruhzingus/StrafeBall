@@ -163,6 +163,20 @@ export interface MatchState {
   boundary: MatchBoundaryState;
 }
 
+/**
+ * Authoritative state of one gym mat. Mats are upright cover panels that balls pass through but
+ * players collide with; a player walking into a standing mat knocks it flat (knockedOver = true),
+ * after which it lies on the floor and no longer blocks movement. `knockDirection` is the unit XZ
+ * direction the player pushed it, so the client can tip it over the correct way (no launch).
+ */
+export interface MatState {
+  id: string;
+  position: Vec3;
+  yawRadians: number;
+  knockedOver: boolean;
+  knockDirection: Vec3;
+}
+
 export interface ResetVoteState {
   votesByPlayerId: Record<string, true>;
   voteCount: number;
@@ -177,6 +191,7 @@ export interface RoomState {
   match: MatchState;
   players: Record<string, PlayerState>;
   balls: Record<string, BallState>;
+  mats: Record<string, MatState>;
   resetVote: ResetVoteState;
 }
 

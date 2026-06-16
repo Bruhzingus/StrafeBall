@@ -22,6 +22,7 @@ import {
   clamp,
   distance,
   length,
+  lengthSquared,
   lerp,
   normalize,
   scale,
@@ -44,7 +45,13 @@ import {
 import { createResetVoteState, createRoomState, registerPlayerHit } from '../../../shared/simulation/MatchSim';
 import { createPlayerState } from '../../../shared/simulation/PlayerSim';
 import { advanceNoBoundariesTimer, applyHalfCourtRule, createMatchState } from '../../../shared/simulation/RuleSim';
-import { createGymCollisionBoxes, type AABB } from '../../../shared/simulation/MapGeometry';
+import {
+  MAT_SPECS,
+  createBallCollisionBoxes,
+  createPlayerCollisionBoxes,
+  matCollisionBox,
+  type AABB
+} from '../../../shared/simulation/MapGeometry';
 import { facingFromAngles, isSuperThrowWindow, stepMovement } from '../../../shared/simulation/MovementSim';
 import { clampLookPitch } from '../../../shared/simulation/AimMath';
 import { computePlayerHandAnchor } from '../../../shared/simulation/HandAnchors';
@@ -120,7 +127,11 @@ export class ServerGameLoop {
   private readonly tickSeconds: number;
   private readonly logger: (message: string) => void;
   private readonly debug: DebugFlags;
-  private readonly collisionBoxes = createGymCollisionBoxes();
+  // Players collide with bleachers + STANDING mats; rebuilt whenever a mat is knocked over so a
+  // downed mat becomes walkable. Balls collide with bleachers ONLY (mats are immune to balls).
+  private playerCollisionBoxes = createPlayerCollisionBoxes();
+  private readonly ballCollisionBoxes = createBallCollisionBoxes();
+  private readonly knockedOverMatIds = new Set<string>();
 
   private readonly inputQueueByPlayerId = new Map<string, QueuedInput[]>();
   private readonly lastInputByPlayerId = new Map<string, PlayerInput>();
@@ -147,7 +158,8 @@ export class ServerGameLoop {
       PERF_DEBUG: options.debug?.PERF_DEBUG ?? DEBUG_DEFAULTS.PERF_DEBUG,
       BALL_DEBUG: options.debug?.BALL_DEBUG ?? DEBUG_DEFAULTS.BALL_DEBUG,
       PICKUP_DEBUG: options.debug?.PICKUP_DEBUG ?? DEBUG_DEFAULTS.PICKUP_DEBUG,
-      THROW_DEBUG: options.debug?.THROW_DEBUG ?? DEBUG_DEFAULTS.THROW_DEBUG
+      THROW_DEBUG: options.debug?.THROW_DEBUG ?? DEBUG_DEFAULTS.THROW_DEBUG,
+      COLLISION_DEBUG: options.debug?.COLLISION_DEBUG ?? DEBUG_DEFAULTS.COLLISION_DEBUG
     };
     this.state = this.createFreshRoomState();
   }
@@ -442,9 +454,14 @@ export class ServerGameLoop {
 
     const active = this.connectedCount() >= 2 && this.state.match.status === 'playing';
 
-    for (const player of Object.values(this.state.players)) {
+    for (const playerId in this.state.players) {
+      const player = this.state.players[playerId];
       const command = this.nextInputCommand(player);
+      const preVelocity = player.movement.velocity;
       this.updatePlayer(player, fixedDt, command.input, command.seq);
+      // Mat knock-over uses the player's PRE-resolution velocity: the collision solver zeros the
+      // component pushing into the mat, so post-resolution speed can be ~0 on a head-on walk-in.
+      this.knockOverMatsForPlayer(player, preVelocity);
       this.updateCatchTracking(player, fixedDt);
     }
 
@@ -484,7 +501,7 @@ export class ServerGameLoop {
       input,
       prevInput,
       dt,
-      this.collisionBoxes,
+      this.playerCollisionBoxes,
       catchStanceActive
     );
     player.movement = result.movement;
@@ -558,7 +575,8 @@ export class ServerGameLoop {
   }
 
   private updateBalls(dt: number): void {
-    for (const ball of Object.values(this.state.balls)) {
+    for (const ballId in this.state.balls) {
+      const ball = this.state.balls[ballId];
       if (ball.phase === 'held' && ball.heldByPlayerId && ball.heldHand) {
         const owner = this.state.players[ball.heldByPlayerId];
         this.state.balls[ball.id] = owner
@@ -571,7 +589,7 @@ export class ServerGameLoop {
 
       const advanced = advanceBall(ball, dt);
       const bounded = resolveBallBounds(advanced);
-      const collided = resolveBallStaticBoxes(bounded, this.collisionBoxes, this.debug.BALL_DEBUG ? this.logger : undefined);
+      const collided = resolveBallStaticBoxes(bounded, this.ballCollisionBoxes, this.debug.COLLISION_DEBUG ? this.logger : undefined);
       this.state.balls[ball.id] = settleBallIfSlow(collided);
     }
   }
@@ -585,7 +603,8 @@ export class ServerGameLoop {
   private validateHits(dt: number): void {
     const radius = playerBallHitRadius();
 
-    for (const ball of Object.values(this.state.balls)) {
+    for (const ballId in this.state.balls) {
+      const ball = this.state.balls[ballId];
       if (!canScorePlayerHit(ball)) continue;
       const ownerId = ball.ownerId;
       if (!ownerId) continue;
@@ -593,7 +612,8 @@ export class ServerGameLoop {
       const curr = ball.position;
       const prev = subtract(curr, scale(ball.velocity, dt));
 
-      for (const target of Object.values(this.state.players)) {
+      for (const targetId in this.state.players) {
+        const target = this.state.players[targetId];
         if (target.id === ownerId) continue;
         const hitbox = playerHitCapsule(target);
         if (!sweptBallHitsBody(prev, curr, hitbox.base, hitbox.top, radius)) continue;
@@ -614,9 +634,58 @@ export class ServerGameLoop {
     }
   }
 
+  /**
+   * Knock a standing mat flat when a player walks into it. Balls never touch mats. Detection is
+   * contact-based: the player's body circle (radius) must reach the mat footprint (small contact
+   * margin) within the mat's height band, and the player must be moving INTO the mat. A knocked
+   * mat is removed from the player collision set (becomes walkable) and stays down until reset; the
+   * recorded knockDirection is the player's horizontal motion so the client tips it the right way
+   * (no impulse is applied to anything — the mat just falls, nothing goes flying).
+   */
+  private knockOverMatsForPlayer(player: PlayerState, preVelocity: Vec3): void {
+    // Only an actively-walking player knocks a mat over (not someone resting against it). Use the
+    // pre-resolution velocity since the collision solver zeros the into-mat component.
+    const horizSpeedSq = preVelocity.x * preVelocity.x + preVelocity.z * preVelocity.z;
+    if (horizSpeedSq <= 0.04) return; // ~0.2 m/s threshold
+
+    const r = GAME_CONSTANTS.player.radius;
+    const reach = r + 0.18; // body radius + a small contact margin past the wall push-out line
+    const reachSq = reach * reach;
+    const pos = player.movement.position;
+    let knockedAny = false;
+
+    for (const spec of MAT_SPECS) {
+      if (this.knockedOverMatIds.has(spec.id)) continue;
+      const box = matCollisionBox(spec);
+      // Vertical band: the player's body must overlap the mat height (feet below top, head above base).
+      if (pos.y > box.maxY || pos.y + GAME_CONSTANTS.player.height < box.minY) continue;
+      // Closest point on the mat footprint to the player; contact if within radius + margin.
+      const dx = pos.x - clamp(pos.x, box.minX, box.maxX);
+      const dz = pos.z - clamp(pos.z, box.minZ, box.maxZ);
+      if (dx * dx + dz * dz > reachSq) continue;
+
+      // knockDirection = the player's horizontal heading (normalized); fall back to mat→player so it
+      // always tips away from the player. No impulse is applied anywhere — the mat simply falls.
+      const dir = normalize(
+        vec3(preVelocity.x, 0, preVelocity.z),
+        normalize(vec3(pos.x - spec.x, 0, pos.z - spec.z), vec3(0, 0, 1))
+      );
+      this.state.mats[spec.id] = { ...this.state.mats[spec.id], knockedOver: true, knockDirection: dir };
+      this.knockedOverMatIds.add(spec.id);
+      knockedAny = true;
+      if (this.debug.COLLISION_DEBUG) this.logger(`mat knocked over id=${spec.id} by player=${player.id}`);
+    }
+
+    // Rebuild the player collision set once if anything changed, so downed mats become walkable.
+    if (knockedAny) {
+      this.playerCollisionBoxes = createPlayerCollisionBoxes(this.knockedOverMatIds);
+    }
+  }
+
   private updateRules(dt: number): void {
     this.state.match = advanceNoBoundariesTimer(this.state.match, dt);
-    for (const player of Object.values(this.state.players)) {
+    for (const playerId in this.state.players) {
+      const player = this.state.players[playerId];
       this.state.match = applyHalfCourtRule(
         this.state.match,
         player.id,
@@ -634,18 +703,26 @@ export class ServerGameLoop {
    * preventing tunnelling through the catch window. Tracking resets to zero while dashing.
    */
   private updateCatchTracking(player: PlayerState, dt: number): void {
-    const eye = add(player.movement.position, vec3(0, GAME_CONSTANTS.player.eyeHeight, 0));
-    const facing = player.movement.facing;
-    const previous = this.catchTrackingByPlayerId.get(player.id) ?? {};
-    const next: Record<string, number> = {};
-
     // Dashing prevents catching — clear all tracking while the dash is active.
     if (player.movement.dashingThisFrame) {
-      this.catchTrackingByPlayerId.set(player.id, next);
+      const existing = this.catchTrackingByPlayerId.get(player.id);
+      // Reuse the existing record object when present (cleared in place) to avoid an allocation.
+      if (existing) {
+        for (const id in existing) delete existing[id];
+      } else {
+        this.catchTrackingByPlayerId.set(player.id, {});
+      }
       return;
     }
 
-    for (const ball of Object.values(this.state.balls)) {
+    const previous = this.catchTrackingByPlayerId.get(player.id) ?? {};
+    const next: Record<string, number> = {};
+    const px = player.movement.position;
+    const eye = vec3(px.x, px.y + GAME_CONSTANTS.player.eyeHeight, px.z);
+    const facing = player.movement.facing;
+
+    for (const ballId in this.state.balls) {
+      const ball = this.state.balls[ballId];
       if (ball.phase !== 'live') continue;
       // Reconstruct ball's position one tick ago using current velocity (same as hit detection).
       const ballPrev = subtract(ball.position, scale(ball.velocity, dt));
@@ -657,7 +734,8 @@ export class ServerGameLoop {
   }
 
   private syncPlayerScores(): void {
-    for (const player of Object.values(this.state.players)) {
+    for (const playerId in this.state.players) {
+      const player = this.state.players[playerId];
       player.score = this.state.match.scoreByTeamId[player.teamId] ?? 0;
     }
   }
@@ -675,7 +753,8 @@ export class ServerGameLoop {
 
     this.resetSerial += 1;
     this.resetVotesByPlayerId.clear();
-    this.state = this.createFreshRoomState(players);
+    // Preserve the running tick so it stays monotonic across the reset (see createFreshRoomState).
+    this.state = this.createFreshRoomState(players, this.state.tick);
     for (const player of players) {
       this.seedInputTracking(player.id, SPAWN_BY_SIDE[player.spawnSide].yawRadians);
     }
@@ -737,33 +816,36 @@ export class ServerGameLoop {
    */
   private nearestParryable(_player: PlayerState, origin: Vec3, facing: Vec3): BallState | null {
     let best: BallState | null = null;
-    let bestDistance = Number.POSITIVE_INFINITY;
+    // Squared distance for the nearest-of comparison — avoids a sqrt per ball (Step 4).
+    let bestDistanceSq = Number.POSITIVE_INFINITY;
     const dt = this.tickSeconds;
-    for (const ball of Object.values(this.state.balls)) {
+    for (const ballId in this.state.balls) {
+      const ball = this.state.balls[ballId];
       if (ball.phase !== 'live') continue;
       const cone = ball.isSuper ? GAME_CONSTANTS.catch.superParryConeDegrees : GAME_CONSTANTS.parry.coneDegrees;
       const ballPrev = subtract(ball.position, scale(ball.velocity, dt));
       if (!sweptSegmentInCone(origin, facing, ballPrev, ball.position, cone, GAME_CONSTANTS.parry.rangeMeters)) continue;
-      const dist = distance(origin, ball.position);
-      if (dist >= bestDistance) continue;
+      const distSq = lengthSquared(subtract(origin, ball.position));
+      if (distSq >= bestDistanceSq) continue;
       best = ball;
-      bestDistance = dist;
+      bestDistanceSq = distSq;
     }
     return best;
   }
 
   private nearestLiveSweptInCone(origin: Vec3, facing: Vec3, coneDegrees: number, range: number): BallState | null {
     let best: BallState | null = null;
-    let bestDistance = Number.POSITIVE_INFINITY;
+    let bestDistanceSq = Number.POSITIVE_INFINITY;
     const dt = this.tickSeconds;
-    for (const ball of Object.values(this.state.balls)) {
+    for (const ballId in this.state.balls) {
+      const ball = this.state.balls[ballId];
       if (ball.phase !== 'live') continue;
       const ballPrev = subtract(ball.position, scale(ball.velocity, dt));
       if (!sweptSegmentInCone(origin, facing, ballPrev, ball.position, coneDegrees, range)) continue;
-      const dist = distance(origin, ball.position);
-      if (dist >= bestDistance) continue;
+      const distSq = lengthSquared(subtract(origin, ball.position));
+      if (distSq >= bestDistanceSq) continue;
       best = ball;
-      bestDistance = dist;
+      bestDistanceSq = distSq;
     }
     return best;
   }
@@ -795,7 +877,11 @@ export class ServerGameLoop {
   }
 
   private connectedCount(): number {
-    return Object.values(this.state.players).filter((p) => p.connected !== false).length;
+    let count = 0;
+    for (const playerId in this.state.players) {
+      if (this.state.players[playerId].connected !== false) count += 1;
+    }
+    return count;
   }
 
   private startMatch(): void {
@@ -873,9 +959,17 @@ export class ServerGameLoop {
     this.catchTrackingByPlayerId.set(playerId, {});
   }
 
-  private createFreshRoomState(players: PlayerState[] = []): RoomState {
+  private createFreshRoomState(players: PlayerState[] = [], startTick = 0): RoomState {
+    // All mats stand again on a fresh state / reset; rebuild the player collision set to include them.
+    this.knockedOverMatIds.clear();
+    this.playerCollisionBoxes = createPlayerCollisionBoxes();
     const room = createRoomState({
       id: this.roomId,
+      // The snapshot tick MUST stay monotonic across a room reset. The client gates reconciliation
+      // on `snapshot.tick > lastReconciledTick`; if the tick fell back to 0 here, every post-reset
+      // snapshot would fail that guard and the local player would freeze (never re-adopting server
+      // state). Carry the running tick forward; resetSerial is what signals a reset to the client.
+      tick: startTick,
       players,
       balls: createInitialBalls(),
       resetVote: createResetVoteState({
@@ -903,6 +997,15 @@ function createInitialBalls(): BallState[] {
   return balls;
 }
 
+/**
+ * Resolve a ball against the arena bounds.
+ *
+ * Step 7 — the direct side walls (±X) and the ceiling (+Y) let a live/deflected ball SURVIVE one
+ * bounce (for variety: you can play a ball off the wall once). The ball dies on its SECOND such
+ * wall/ceiling bounce. Every OTHER surface keeps the original behavior of killing on the first
+ * bounce: the floor (−Y) must NOT keep the ball alive, and the back walls (±Z) and static objects
+ * (bleachers/mats, handled in resolveBallStaticBoxes) are unchanged. Dead/loose balls just reflect.
+ */
 function resolveBallBounds(ball: BallState): BallState {
   const r = GAME_CONSTANTS.ball.radius;
   const e = GAME_CONSTANTS.ball.bounceRestitution;
@@ -910,28 +1013,59 @@ function resolveBallBounds(ball: BallState): BallState {
   const maxX = GAME_CONSTANTS.map.halfWidth - r;
   const minZ = -GAME_CONSTANTS.map.halfLength + r;
   const maxZ = GAME_CONSTANTS.map.halfLength - r;
+  const maxY = GAME_CONSTANTS.map.wallHeight - r;
   const position = { ...ball.position };
   const velocity = { ...ball.velocity };
-  let bounced = false;
+  // Side walls (±X) + ceiling (+Y): the ball may survive ONE of these bounces.
+  let hitWallOrCeiling = false;
+  // Floor (−Y) + back walls (±Z): kill on first bounce, exactly as before.
+  let hitKillNow = false;
 
   if (position.y < r) {
     position.y = r;
     velocity.y = Math.abs(velocity.y) * e;
-    bounced = true;
+    hitKillNow = true;
+  }
+  if (position.y > maxY) {
+    position.y = maxY;
+    velocity.y = -Math.abs(velocity.y) * e;
+    hitWallOrCeiling = true;
   }
   if (position.x < minX || position.x > maxX) {
     position.x = clamp(position.x, minX, maxX);
     velocity.x *= -e;
-    bounced = true;
+    hitWallOrCeiling = true;
   }
   if (position.z < minZ || position.z > maxZ) {
     position.z = clamp(position.z, minZ, maxZ);
     velocity.z *= -e;
-    bounced = true;
+    hitKillNow = true;
   }
 
+  if (!hitWallOrCeiling && !hitKillNow) return ball;
+
   const resolved = { ...ball, position, velocity };
-  return bounced ? applyBallBounce(resolved) : resolved;
+  // A floor / back-wall contact always wins (kills now). Otherwise it was a side-wall/ceiling-only
+  // contact: let the ball survive its first such bounce, die on the second.
+  if (hitKillNow) return applyBallBounce(resolved);
+  return applyWallCeilingBounce(resolved);
+}
+
+/**
+ * Side-wall / ceiling bounce: a live/deflected ball survives its FIRST such bounce and dies on the
+ * SECOND. Implemented by counting wall/ceiling bounces in bounceCount and only killing once the
+ * count exceeds 1. Non-live phases just advance the count (mirrors applyBallBounce's tail).
+ */
+function applyWallCeilingBounce(ball: BallState): BallState {
+  if (ball.phase !== 'live' && ball.phase !== 'deflected') {
+    return { ...ball, bounceCount: ball.bounceCount + 1 };
+  }
+  const bounceCount = ball.bounceCount + 1;
+  // Allow exactly one wall/ceiling bounce; the second one kills.
+  if (bounceCount > 1) {
+    return { ...markBallDead(ball), bounceCount };
+  }
+  return { ...ball, bounceCount };
 }
 
 function resolveBallStaticBoxes(ball: BallState, boxes: AABB[], logger?: (message: string) => void): BallState {

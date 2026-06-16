@@ -12,12 +12,14 @@ export const GAME_CONSTANTS = {
     airAcceleration: 11,
     airStrafeMaxSpeed: 1.3,
     friction: 10,
-    maxGroundSpeed: 8.5,
+    // Strafe/ground top speed reduced 30% (8.5 → 5.95) for tighter, more deliberate movement.
+    maxGroundSpeed: 5.95,
     softSpeedLimit: 18,
     softLimitBleedRate: 1.2,
     gravity: 22,
     fallGravityMultiplier: 1.45,
-    jumpSpeed: 8.2,
+    // Jump impulse reduced 35% (8.2 → 5.33) — lower hops.
+    jumpSpeed: 5.33,
     bhopGraceSeconds: 0.12,
     bhopSpeedBonus: 1.035,
     crouchHeightMultiplier: 0.62,
@@ -88,9 +90,11 @@ export const GAME_CONSTANTS = {
   catch: {
     coneDegrees: 25,
     superParryConeDegrees: 10,
-    trackingSeconds: 0.2,
-    // Slight lag cushion for online catch validation: +0.48 m / ~1.6 ft from the original.
-    rangeMeters: 2.4,
+    // No dwell time required — charged/fast throws were impossible to "track" before they hit you.
+    // Catching now succeeds on a single in-cone tick; the aim-cone check is the only gate.
+    trackingSeconds: 0,
+    // Extended +3 ft (0.914 m) from 2.4 → 3.31 m so fast throws can be caught with more reach.
+    rangeMeters: 3.31,
     cooldownSeconds: 0.45,
     catchBoostSpeed: 3,
     catchBoostDuration: 0.25
@@ -107,8 +111,8 @@ export const GAME_CONSTANTS = {
   dash: {
     maxCharges: 3,
     rechargeSeconds: 3,
-    // Reduced from 15 → shorter dash distance.
-    impulse: 11,
+    // Reduced from 15 → shorter dash distance. Then a further 35% cut (11 → 7.15).
+    impulse: 7.15,
     cooldownBetweenDashes: 0.18,
     // Reduced from 0.22 → friction reclaims the dash sooner → shorter carry.
     activeSeconds: 0.16,
@@ -133,6 +137,10 @@ export const GAME_CONSTANTS = {
   map: {
     halfWidth: 13,
     halfLength: 18,
+    // Ceiling height (meters). Used by the ball ceiling clamp + the side-wall/ceiling 1-bounce rule.
+    // Mirrored by the client TUNING.map.wallHeight so server and client agree on the bounce surface.
+    // Raised 1.5× (4.5 → 6.75) so the walls are taller and the ceiling sits higher above play.
+    wallHeight: 6.75,
     ballCount: 6
   }
 } as const;

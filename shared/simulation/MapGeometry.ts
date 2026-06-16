@@ -33,7 +33,38 @@ export function aabbFromCenter(
 }
 
 // Mirrors MAT_DIMENSIONS in the client MatObstacle so server and client agree on mat collision.
-const MAT_DIMENSIONS = { width: 2.1, height: 1.35, depth: 0.18 };
+export const MAT_DIMENSIONS = { width: 2.1, height: 1.35, depth: 0.18 };
+
+/**
+ * Canonical mat layout — the single source of truth for both the server's authoritative mat state
+ * and the client visuals. Mats are upright cover panels. Orientation: the broad 2.1 m face runs
+ * along X and the thin 0.18 m depth along Z, so the panel faces down-court (toward ±Z) and acts as
+ * cover from throws — yawRadians = 0 (NOT quarter-turned). When knocked over a mat lies flat and
+ * stops colliding, so its footprint is omitted from the player collision set.
+ */
+export interface MatSpec {
+  id: string;
+  x: number;
+  y: number;
+  z: number;
+  /** Standing yaw about Y. 0 = broad face toward ±Z (down-court cover). */
+  yawRadians: number;
+}
+
+export const MAT_SPECS: readonly MatSpec[] = [
+  { id: 'mat_-4.5_-5.5', x: -4.5, y: MAT_DIMENSIONS.height / 2, z: -5.5, yawRadians: 0 },
+  { id: 'mat_4.5_-5.5', x: 4.5, y: MAT_DIMENSIONS.height / 2, z: -5.5, yawRadians: 0 },
+  { id: 'mat_-4.5_5.5', x: -4.5, y: MAT_DIMENSIONS.height / 2, z: 5.5, yawRadians: 0 },
+  { id: 'mat_4.5_5.5', x: 4.5, y: MAT_DIMENSIONS.height / 2, z: 5.5, yawRadians: 0 }
+];
+
+/** Standing-mat collision AABB for a spec. Quarter-turned mats swap width/depth extents. */
+export function matCollisionBox(spec: MatSpec): AABB {
+  const quarterTurned = Math.abs(Math.round(spec.yawRadians / (Math.PI / 2))) % 2 === 1;
+  const halfX = (quarterTurned ? MAT_DIMENSIONS.depth : MAT_DIMENSIONS.width) / 2;
+  const halfZ = (quarterTurned ? MAT_DIMENSIONS.width : MAT_DIMENSIONS.depth) / 2;
+  return aabbFromCenter(spec.x, spec.y, spec.z, halfX, MAT_DIMENSIONS.height / 2, halfZ, { kind: 'mat', id: spec.id });
+}
 export const BLEACHER_LAYOUT = {
   tierCount: 5,
   tierRun: 0.54,
@@ -175,20 +206,30 @@ export function createBleacherCollisionBoxes(): AABB[] {
  */
 export function createGymCollisionBoxes(): AABB[] {
   const boxes: AABB[] = createBleacherCollisionBoxes();
-
-  // Mats: rotated a quarter turn, so width/depth extents swap.
-  const matPositions: [number, number, number][] = [
-    [-4.5, 0.72, -5.5],
-    [4.5, 0.72, -5.5],
-    [-4.5, 0.72, 5.5],
-    [4.5, 0.72, 5.5]
-  ];
-  const matHalfX = MAT_DIMENSIONS.depth / 2;
-  const matHalfZ = MAT_DIMENSIONS.width / 2;
-  const matHalfY = MAT_DIMENSIONS.height / 2;
-  for (const [x, y, z] of matPositions) {
-    boxes.push(aabbFromCenter(x, y, z, matHalfX, matHalfY, matHalfZ, { kind: 'mat', id: `mat_${x}_${z}` }));
+  for (const spec of MAT_SPECS) {
+    boxes.push(matCollisionBox(spec));
   }
-
   return boxes;
+}
+
+/**
+ * Player collision boxes given the live mat state: bleachers always collide; a mat collides only
+ * while it is still standing. Knocked-over mats lie flat and become walkable, so they are omitted.
+ * `knockedOverMatIds` is the set of mats currently down (empty = all standing).
+ */
+export function createPlayerCollisionBoxes(knockedOverMatIds?: ReadonlySet<string>): AABB[] {
+  const boxes: AABB[] = createBleacherCollisionBoxes();
+  for (const spec of MAT_SPECS) {
+    if (knockedOverMatIds?.has(spec.id)) continue;
+    boxes.push(matCollisionBox(spec));
+  }
+  return boxes;
+}
+
+/**
+ * Collision boxes balls bounce off: bleachers ONLY. Mats are immune to balls (a thrown ball passes
+ * straight through a mat) — they are cover that affects players, not a ball obstacle.
+ */
+export function createBallCollisionBoxes(): AABB[] {
+  return createBleacherCollisionBoxes();
 }

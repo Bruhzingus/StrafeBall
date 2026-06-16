@@ -10,6 +10,7 @@ import type { PlayerInput } from '../../../shared/types';
 import {
   MAX_ACCUMULATOR_CLAMP_MS,
   MAX_ACCUMULATOR_STEPS,
+  PERF_REPORT_INTERVAL_MS,
   ROOM_LOOP_WAKE_INTERVAL_MS,
   SERVER_STEP_MS,
   SERVER_TICK_RATE,
@@ -66,6 +67,11 @@ export class DuelRoom extends Room {
   private snapshotsThisWindow = 0;
   private simTickMsTotal = 0;
   private simTickMsMax = 0;
+  private stepCapHitsThisWindow = 0;
+  // Approximate snapshot payload size, sampled cheaply (only when PERF_DEBUG is on) once per window.
+  private snapshotPayloadBytesTotal = 0;
+  private snapshotPayloadBytesMax = 0;
+  private snapshotPayloadSamples = 0;
   // Two independent accumulators: one drains fixed sim steps, the other gates snapshot broadcasts
   // so snapshots run at SNAPSHOT_RATE decoupled from the sim tick (mode B = 60 sim / 30 snapshots).
   private simulationAccumulatorMs = 0;
@@ -190,16 +196,14 @@ export class DuelRoom extends Room {
         // behavior — lowest latency, no snapshot accumulator drift.
         if (this.snapshotCoupledToTick) {
           this.broadcast('snapshot', this.latestSnapshot);
-          this.recordSnapshot();
+          this.recordSnapshot(this.latestSnapshot);
         }
       }
 
       // Step cap hit with backlog remaining: discard the backlog (don't time-warp) and report only
       // under PERF_DEBUG so a real playtest stays silent.
       if (steps >= MAX_ACCUMULATOR_STEPS && this.simulationAccumulatorMs >= SERVER_STEP_MS) {
-        if (this.debug.PERF_DEBUG) {
-          this.log(`[perf] step cap hit (${steps}) — discarding ${this.simulationAccumulatorMs.toFixed(1)}ms backlog`);
-        }
+        this.stepCapHitsThisWindow += 1;
         this.simulationAccumulatorMs = SERVER_STEP_MS;
       }
 
@@ -211,7 +215,7 @@ export class DuelRoom extends Room {
           this.snapshotAccumulatorMs -= SNAPSHOT_INTERVAL_MS;
           if (this.snapshotAccumulatorMs > SNAPSHOT_INTERVAL_MS) this.snapshotAccumulatorMs = SNAPSHOT_INTERVAL_MS;
           this.broadcast('snapshot', this.latestSnapshot);
-          this.recordSnapshot();
+          this.recordSnapshot(this.latestSnapshot);
         }
       }
     }, ROOM_LOOP_WAKE_INTERVAL_MS);
@@ -292,34 +296,67 @@ export class DuelRoom extends Room {
     this.simTickMsMax = Math.max(this.simTickMsMax, simTickMs);
 
     const elapsedMs = now - this.rateWindowStartedAtMs;
-    if (elapsedMs < 5000) return;
+    if (elapsedMs < PERF_REPORT_INTERVAL_MS) return;
 
-    if (this.debug.PERF_DEBUG) {
-      const elapsedSeconds = elapsedMs / 1000;
-      const inputRates = [...this.inputPacketsThisWindowByPlayerId.entries()]
-        .map(([playerId, count]) => `${playerId.slice(-4)}:${(count / elapsedSeconds).toFixed(1)}/s`)
-        .join(',');
-      const avgSimTickMs = this.simTicksThisWindow > 0 ? this.simTickMsTotal / this.simTicksThisWindow : 0;
-      this.log(
-        `[rates] simTicks=${(this.simTicksThisWindow / elapsedSeconds).toFixed(1)}/s ` +
-        `snapshots=${(this.snapshotsThisWindow / elapsedSeconds).toFixed(1)}/s ` +
-        `patchRate=${formatPatchRate(COLYSEUS_PATCH_RATE_MS)} ` +
-        `inputPackets={${inputRates || 'none'}} ` +
-        `simTickMs avg=${avgSimTickMs.toFixed(2)} max=${this.simTickMsMax.toFixed(2)}`
-      );
-    }
+    if (this.debug.PERF_DEBUG) this.emitPerfReport(elapsedMs);
 
     this.rateWindowStartedAtMs = now;
     this.simTicksThisWindow = 0;
     this.snapshotsThisWindow = 0;
     this.simTickMsTotal = 0;
     this.simTickMsMax = 0;
+    this.stepCapHitsThisWindow = 0;
+    this.snapshotPayloadBytesTotal = 0;
+    this.snapshotPayloadBytesMax = 0;
+    this.snapshotPayloadSamples = 0;
     this.inputPacketsThisWindowByPlayerId.clear();
   }
 
-  /** Record one snapshot broadcast for the [rates] summary (decoupled from sim ticks in mode B). */
-  private recordSnapshot(): void {
+  /** Emit the throttled (every PERF_REPORT_INTERVAL_MS) server [perf] report. PERF_DEBUG-gated. */
+  private emitPerfReport(elapsedMs: number): void {
+    const elapsedSeconds = elapsedMs / 1000;
+    const inputRates = [...this.inputPacketsThisWindowByPlayerId.entries()]
+      .map(([playerId, count]) => `${playerId.slice(-4)}:${(count / elapsedSeconds).toFixed(1)}/s`)
+      .join(',');
+    const avgSimTickMs = this.simTicksThisWindow > 0 ? this.simTickMsTotal / this.simTicksThisWindow : 0;
+
+    const balls = Object.values(this.game.state.balls);
+    let liveBalls = 0;
+    for (const ball of balls) if (ball.phase === 'live' || ball.phase === 'deflected') liveBalls += 1;
+    const players = Object.keys(this.game.state.players).length;
+
+    const mem = process.memoryUsage();
+    const mb = (bytes: number): string => (bytes / 1048576).toFixed(1);
+
+    const avgPayload = this.snapshotPayloadSamples > 0
+      ? Math.round(this.snapshotPayloadBytesTotal / this.snapshotPayloadSamples)
+      : 0;
+
+    this.log(
+      `[perf] simTicks=${(this.simTicksThisWindow / elapsedSeconds).toFixed(1)}/s ` +
+      `snapshots=${(this.snapshotsThisWindow / elapsedSeconds).toFixed(1)}/s ` +
+      `simTickMs avg=${avgSimTickMs.toFixed(2)} max=${this.simTickMsMax.toFixed(2)} ` +
+      `players=${players} balls=${balls.length} liveBalls=${liveBalls} ` +
+      `inputPackets={${inputRates || 'none'}} ` +
+      `stepCapHits=${this.stepCapHitsThisWindow} ` +
+      `snapshotBytes avg=${avgPayload} max=${this.snapshotPayloadBytesMax} ` +
+      `mem heapUsed=${mb(mem.heapUsed)}MB heapTotal=${mb(mem.heapTotal)}MB rss=${mb(mem.rss)}MB`
+    );
+  }
+
+  /**
+   * Record one snapshot broadcast for the [perf] summary (decoupled from sim ticks in mode B).
+   * The payload-size sample uses JSON.stringify, which is expensive — so it runs at most ONCE per
+   * report window, and only when PERF_DEBUG is on. Real playtests with PERF_DEBUG off pay nothing.
+   */
+  private recordSnapshot(snapshot: ServerSnapshot): void {
     this.snapshotsThisWindow += 1;
+    if (this.debug.PERF_DEBUG && this.snapshotPayloadSamples === 0) {
+      const bytes = JSON.stringify(snapshot).length;
+      this.snapshotPayloadBytesTotal += bytes;
+      this.snapshotPayloadBytesMax = Math.max(this.snapshotPayloadBytesMax, bytes);
+      this.snapshotPayloadSamples += 1;
+    }
   }
 
   /** Token-bucket rate limit per client per message type (#11). Returns false if over limit. */

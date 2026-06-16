@@ -20,8 +20,9 @@ import { NetworkRenderer } from '../network/NetworkRenderer';
 import type { ServerSnapshot } from '../../../shared/protocol';
 import type { DashState, MovementInternalState, PlayerInput, PlayerMovementState, PlayerState, Vec3 } from '../../../shared/types';
 import { stepMovement, facingFromAngles } from '../../../shared/simulation/MovementSim';
-import { CLIENT_FIXED_DT, PENDING_INPUT_LIMIT, MAX_ACCUMULATOR_STEPS } from '../../../shared/netConfig';
-import { createGymCollisionBoxes, type AABB } from '../../../shared/simulation/MapGeometry';
+import { backflipPitchOffset } from '../../../shared/simulation/AimMath';
+import { CLIENT_FIXED_DT, PENDING_INPUT_LIMIT, MAX_ACCUMULATOR_STEPS, PERF_REPORT_INTERVAL_MS } from '../../../shared/netConfig';
+import { createPlayerCollisionBoxes, type AABB } from '../../../shared/simulation/MapGeometry';
 import { sweptBallHitsBody } from '../../../shared/simulation/CollisionMath';
 import { playerBallHitRadius, playerHitCapsule } from '../../../shared/simulation/PlayerHitbox';
 
@@ -61,7 +62,11 @@ export class ArenaScene {
   // The local player is simulated via the SAME shared movement sim the server runs, at a fixed
   // timestep with sequence-numbered inputs. Each snapshot reconciles: adopt the authoritative
   // state, then replay inputs the server hasn't acknowledged yet.
-  private readonly netCollisionBoxes: AABB[] = createGymCollisionBoxes();
+  // Client prediction collision set. Mirrors the server's player collision (bleachers + standing
+  // mats); rebuilt from snapshot mat state when a mat is knocked over so prediction stays in sync.
+  private netCollisionBoxes: AABB[] = createPlayerCollisionBoxes();
+  // Set of mat ids currently reflected in netCollisionBoxes — avoids rebuilding every frame.
+  private readonly knockedNetMatIds = new Set<string>();
   // Fixed timestep for input send + prediction + reconciliation replay. Driven entirely by the
   // shared net config (must equal the server's fixed dt for reconciliation residual ≈ 0). At the
   // active A_60_60_60 mode this is 1/60; the fixed-step loop below then sends at 60Hz.
@@ -93,6 +98,11 @@ export class ArenaScene {
   private onlineRateLogTimer = 0;
   private onlineRateLogFrameCount = 0;
   private onlineRateLogInputCount = 0;
+  // Separate 5s window for the always-on client [perf] line (mirrors the server PERF_DEBUG report).
+  private perfReportTimer = 0;
+  private perfReportFrameCount = 0;
+  private perfReportInputCount = 0;
+  private perfReportFrameMsTotal = 0;
 
   // Input latches: accumulate edge-triggered inputs across render frames so they survive to the
   // next fixed-step packet boundary. They survive whether render runs faster OR slower than the
@@ -124,7 +134,8 @@ export class ArenaScene {
     // All meshes with targetDummy metadata — includes both static and the moving dummy.
     this.targetDummies = this.scene.meshes.filter((mesh): mesh is Mesh => mesh instanceof Mesh && !!mesh.metadata?.targetDummy);
 
-    this.ballManager = new BallManager(loader, this.gym.collision);
+    // Balls collide with bleachers only (mats are immune to balls — they pass through).
+    this.ballManager = new BallManager(loader, this.gym.ballCollision);
     this.ballManager.spawnCenterLineBalls();
 
     this.sound = new SoundManager();
@@ -231,6 +242,68 @@ export class ArenaScene {
     }
   }
 
+  /**
+   * Offline: knock a standing mat flat when the local player walks into it (mirrors the server's
+   * contact-based rule). A downed mat's collision box is spliced out of the PLAYER collision world
+   * so it becomes walkable; balls already ignore mats (separate ballCollision world).
+   */
+  private updateOfflineMats(): void {
+    const p = this.player.root.position;
+    const v = this.player.movement.velocity;
+    const r = TUNING.player.radius;
+    const reach = r + 0.12;
+
+    for (const mat of this.gym.mats) {
+      if (mat.knockedOver) continue;
+      const box = mat.getAABB();
+      if (p.y > box.maxY || p.y + TUNING.player.height < box.minY) continue;
+      const cx = Math.max(box.minX, Math.min(p.x, box.maxX));
+      const cz = Math.max(box.minZ, Math.min(p.z, box.maxZ));
+      const dx = p.x - cx;
+      const dz = p.z - cz;
+      if (dx * dx + dz * dz > reach * reach) continue;
+      const toMatX = (box.minX + box.maxX) * 0.5 - p.x;
+      const toMatZ = (box.minZ + box.maxZ) * 0.5 - p.z;
+      if (v.x * toMatX + v.z * toMatZ <= 0.01) continue;
+
+      const dir = new Vector3(v.x, 0, v.z);
+      // Remove the box BEFORE laying the mat flat (getAABB returns the standing footprint, which is
+      // what was added to the collision world). Then it no longer blocks movement.
+      this.gym.removeMatCollision(mat);
+      mat.knockOver(dir.lengthSquared() > 1e-4 ? dir : new Vector3(toMatX, 0, toMatZ));
+    }
+  }
+
+  /**
+   * Online: drive the gym mat visuals from authoritative snapshot mat state. The server decides
+   * when a mat is knocked over (and the direction); the client just tips the matching visual.
+   */
+  private applyOnlineMats(snapshot: ServerSnapshot): void {
+    const mats = snapshot.room.mats;
+    if (!mats) return;
+    let knockedChanged = false;
+
+    for (const mat of this.gym.mats) {
+      const state = mats[mat.id];
+      if (!state) continue;
+      if (state.knockedOver && !mat.knockedOver) {
+        mat.knockOver(new Vector3(state.knockDirection.x, 0, state.knockDirection.z));
+        this.knockedNetMatIds.add(mat.id);
+        knockedChanged = true;
+      } else if (!state.knockedOver && mat.knockedOver) {
+        // Server reset the mat (e.g. room reset): stand it back up.
+        mat.reset();
+        this.knockedNetMatIds.delete(mat.id);
+        knockedChanged = true;
+      }
+    }
+
+    // Keep the prediction collision set in sync with the server: a downed mat stops blocking.
+    if (knockedChanged) {
+      this.netCollisionBoxes = createPlayerCollisionBoxes(this.knockedNetMatIds);
+    }
+  }
+
   private step(dt: number): void {
     this.elapsed += dt;
 
@@ -257,6 +330,7 @@ export class ArenaScene {
 
     this.ballManager.update(dt);
     this.checkBotHitsPlayer(dt);
+    this.updateOfflineMats();
 
     // Each landed hit grants the thrower one dash charge (locked rule).
     const hits = this.rules.scoring.updateAgainstDummies(this.ballManager.balls, this.targetDummies, dt);
@@ -298,6 +372,8 @@ export class ArenaScene {
   private stepOnline(dt: number): void {
     this.elapsed += dt;
     this.onlineRateLogFrameCount += 1;
+    this.perfReportFrameCount += 1;
+    this.perfReportFrameMsTotal += dt * 1000;
 
     // --- Latch edge-triggered inputs every render frame so none are lost between fixed ticks ---
     this.latchJumpPressed ||= this.input.wasKeyPressed(CONTROL_KEYS.jump);
@@ -330,6 +406,13 @@ export class ArenaScene {
 
     const snapshot = this.multiplayer.latestSnapshot;
     const local = snapshot?.room.players[this.multiplayer.localPlayerId] ?? null;
+
+    // Detect a server room reset BEFORE prediction/reconcile this frame. The reset is keyed on
+    // resetSerial (not tick), so it is robust even if the tick were ever non-monotonic. Clearing
+    // prediction here — before the reconcile block below — guarantees the very next reconcile
+    // adopts the fresh spawn state instead of replaying stale pre-reset inputs against it (the old
+    // ordering ran reconcile first and only cleared afterward, which is what made reset glitchy).
+    if (snapshot) this.detectServerReset(snapshot);
 
     // Track snapshot receive rate and prediction error for the debug HUD.
     if (snapshot && snapshot.tick !== this.lastSeenSnapshotTick) {
@@ -434,6 +517,7 @@ export class ArenaScene {
       this.sentInputClientTimeBySeq.set(input.sequence, input.clientTimeMs);
       this.multiplayer.sendInput(input);
       this.onlineRateLogInputCount += 1;
+      this.perfReportInputCount += 1;
       this.lastSentInput = input;
     }
 
@@ -467,10 +551,13 @@ export class ArenaScene {
     }
     if (local) this.sendOnlineHandActions(dt, local);
 
-    // Remote players and balls: rendered from server state.
+    // Remote players and balls: rendered from server state. Pass the local PREDICTED movement so a
+    // ball held by the local player attaches to the present-time hand (no strafe drag) rather than
+    // the interpolation-delayed network position.
     if (snapshot) {
       this.handleOnlineResetEvents(snapshot);
-      this.networkRenderer.update(snapshot, this.multiplayer.localPlayerId, dt);
+      this.networkRenderer.update(snapshot, this.multiplayer.localPlayerId, dt, this.predictedMovement);
+      this.applyOnlineMats(snapshot);
       this.handleOnlineScoreEvents(snapshot);
     }
 
@@ -478,6 +565,44 @@ export class ArenaScene {
     this.gym.update(this.elapsed);
     this.logLocalPositionWriters(dt);
     this.logOnlineRates(dt);
+    this.logClientPerf(dt);
+  }
+
+  /**
+   * Always-on (unless silenced) client [perf] line, every PERF_REPORT_INTERVAL_MS. Mirrors the
+   * server [perf] report so before/after comparisons line up. Distinct from logOnlineRates, which
+   * is the verbose 1 s NET_DEBUG diagnostic. The counters reset every window regardless of the gate
+   * so they never accumulate across an off period.
+   */
+  private logClientPerf(dt: number): void {
+    if (!this.onlineModeActive) return;
+    this.perfReportTimer += dt;
+    if (this.perfReportTimer < PERF_REPORT_INTERVAL_MS / 1000) return;
+
+    if (isPerfDebugEnabled()) {
+      const elapsed = this.perfReportTimer;
+      const snap = this.multiplayer.snapshotDebug;
+      const render = this.networkRenderer.getDebugStats();
+      const avgFrameMs = this.perfReportFrameCount > 0 ? this.perfReportFrameMsTotal / this.perfReportFrameCount : 0;
+      const fps = avgFrameMs > 0 ? 1000 / avgFrameMs : 0;
+      const activeMeshes = this.scene.getActiveMeshes ? this.scene.getActiveMeshes().length : this.scene.meshes.length;
+      console.log(
+        `[perf] fps=${fps.toFixed(1)} avgFrameMs=${avgFrameMs.toFixed(2)}` +
+        ` snapshots=${snap.receivedPerSecond.toFixed(1)}/s` +
+        ` snapMs avg=${snap.averageMsBetweenSnapshots.toFixed(1)} max=${snap.maxMsBetweenSnapshots.toFixed(1)}` +
+        ` inputPackets=${(this.perfReportInputCount / elapsed).toFixed(1)}/s` +
+        ` pendingInputs=${this.pendingInputs.length}` +
+        ` residualAfterReplay=${this.residualAfterReplayM.toFixed(3)}m` +
+        ` remoteUnderruns=${render.bufferUnderrunsPerSec.toFixed(1)}/s` +
+        ` ballBuffer=${render.ballInterpolationBufferSize}` +
+        ` activeMeshes=${activeMeshes}`
+      );
+    }
+
+    this.perfReportTimer = 0;
+    this.perfReportFrameCount = 0;
+    this.perfReportInputCount = 0;
+    this.perfReportFrameMsTotal = 0;
   }
 
   private updatePredictionDebugMetrics(local: PlayerState | null): void {
@@ -576,9 +701,16 @@ export class ArenaScene {
     const v = movement.velocity;
     this.player.root.position.set(p.x, p.y, p.z);
     this.player.root.rotation.y = this.networkYaw;
-    this.player.camera.rotation.x = this.networkPitch;
+    // Backflip view animation: add a full backward pitch rotation over the flip so the first-person
+    // view tumbles with the move. Driven by the predicted backflip timer so it stays in sync with
+    // the authoritative state. Offline mode applies the same offset in PlayerController.updateLook.
+    this.player.camera.rotation.x = this.networkPitch + backflipPitchOffset(internal.backflipActive, internal.backflipTimer);
     this.player.camera.rotation.y = 0;
     this.player.camera.rotation.z = 0;
+    // Crouch/slide lowers the eye height so the view follows the (shortened) body. Online mode
+    // skips the offline MovementController, so the camera Y must be driven here from the predicted
+    // crouch state. Smoothed exponentially toward the target so it dips/rises instead of snapping.
+    this.applyCrouchCameraHeight(movement.crouching || movement.sliding);
     this.player.movement.velocity.set(v.x, v.y, v.z);
     this.player.movement.grounded = movement.grounded;
     this.player.movement.crouching = movement.crouching;
@@ -605,6 +737,22 @@ export class ArenaScene {
             : 'normal'
     };
     this.player.camera.getViewMatrix(true);
+  }
+
+  /**
+   * Smoothly move the local camera's local-Y between standing and crouched eye height. Uses an
+   * exponential approach with the real frame delta so the dip is framerate-independent and reads as
+   * a quick, natural crouch rather than a teleport.
+   */
+  private applyCrouchCameraHeight(lowered: boolean): void {
+    const stand = TUNING.player.eyeHeight;
+    const crouch = TUNING.player.eyeHeight * TUNING.player.crouchHeightMultiplier;
+    const target = lowered ? crouch : stand;
+    const frameDt = Math.min(this.scene.getEngine().getDeltaTime() / 1000, TUNING.simulation.maxDeltaSeconds);
+    // ~18/s smoothing rate matches the viewmodel's feel; 1 - e^(-k*dt) is the stable per-frame step.
+    const k = 1 - Math.exp(-18 * frameDt);
+    const current = this.player.camera.position.y;
+    this.player.camera.position.y = current + (target - current) * k;
   }
 
   private markLocalPositionWriter(name: string): void {
@@ -679,6 +827,10 @@ export class ArenaScene {
     this.bot.reset();
     this.setPracticePropsEnabled(false);
     this.ballManager.clear();
+    // Mats start upright online; server mat state then drives them via applyOnlineMats.
+    this.gym.resetMats();
+    this.knockedNetMatIds.clear();
+    this.netCollisionBoxes = createPlayerCollisionBoxes();
     this.lastOnlineScoreByTeamId = {};
     this.lastResetSerial = -1;
     this.lastResetVoteKey = '';
@@ -701,10 +853,13 @@ export class ArenaScene {
     this.bot.reset();
     this.setPracticePropsEnabled(true);
     this.ballManager.spawnCenterLineBalls();
+    // Restore upright mats + their player collision when returning to practice.
+    this.gym.resetMats();
+    this.knockedNetMatIds.clear();
   }
 
   private resetPrediction(reason = 'reset'): void {
-    if (this.inputSeq > 0 || this.pendingInputs.length > 0) {
+    if ((this.inputSeq > 0 || this.pendingInputs.length > 0) && isNetDebugEnabled()) {
       console.log(`[net/seq] reset reason=${reason} oldSeq=${this.inputSeq} oldPending=${this.pendingInputs.length}`);
     }
     this.netAccumulator = 0;
@@ -725,6 +880,10 @@ export class ArenaScene {
     this.onlineRateLogTimer = 0;
     this.onlineRateLogFrameCount = 0;
     this.onlineRateLogInputCount = 0;
+    this.perfReportTimer = 0;
+    this.perfReportFrameCount = 0;
+    this.perfReportInputCount = 0;
+    this.perfReportFrameMsTotal = 0;
     this.snapshotReceiveCount = 0;
     this.snapshotRateTimer = 0;
     this.snapshotRateHz = 0;
@@ -760,23 +919,36 @@ export class ArenaScene {
     this.lastOnlineScoreByTeamId = { ...scores };
   }
 
+  /**
+   * Reset detection — runs at the TOP of the frame, before reconcile/prediction. Keyed on
+   * resetSerial so a room reset is caught exactly once regardless of tick values. On a fresh
+   * reset it hard-clears prediction (so the next reconcile adopts the spawn state cleanly), clears
+   * hand/charge state, and snaps the interpolation buffers via lastResetSerial bookkeeping.
+   */
+  private detectServerReset(snapshot: ServerSnapshot): void {
+    const serial = snapshot.room.resetVote.resetSerial;
+    if (this.lastResetSerial < 0) {
+      // First snapshot of this session: adopt the baseline serial without firing a reset.
+      this.lastResetSerial = serial;
+      return;
+    }
+    if (serial === this.lastResetSerial) return;
+
+    this.lastResetSerial = serial;
+    this.lastResetVoteKey = '';
+    this.resetPrediction('server-reset');
+    this.onlineCharging.left = false;
+    this.onlineCharging.right = false;
+    this.onlineChargeSeconds.left = 0;
+    this.onlineChargeSeconds.right = 0;
+    this.player.hands.clearHands();
+    this.lastOnlineScoreByTeamId = {};
+    this.hud.showScoreEvent('RESET', 'Room reset', 'neutral');
+  }
+
+  /** Reset-vote HUD feedback only (the reset action itself is handled by detectServerReset). */
   private handleOnlineResetEvents(snapshot: ServerSnapshot): void {
     const vote = snapshot.room.resetVote;
-    if (this.lastResetSerial < 0) {
-      this.lastResetSerial = vote.resetSerial;
-    } else if (vote.resetSerial !== this.lastResetSerial) {
-      this.lastResetSerial = vote.resetSerial;
-      this.lastResetVoteKey = '';
-      this.resetPrediction('server-reset');
-      this.onlineCharging.left = false;
-      this.onlineCharging.right = false;
-      this.onlineChargeSeconds.left = 0;
-      this.onlineChargeSeconds.right = 0;
-      this.player.hands.clearHands();
-      this.lastOnlineScoreByTeamId = {};
-      this.hud.showScoreEvent('RESET', 'Room reset', 'neutral');
-    }
-
     const voterIds = Object.keys(vote.votesByPlayerId).sort().join(',');
     const voteKey = `${vote.resetSerial}:${vote.voteCount}/${vote.requiredVotes}:${voterIds}`;
     if (voteKey === this.lastResetVoteKey) return;
@@ -964,6 +1136,19 @@ function isNetDebugEnabled(): boolean {
     return window.localStorage.getItem('strafeball.debug.net') === '1';
   } catch {
     return false;
+  }
+}
+
+/**
+ * Perf-line gate. Defaults ON (mirrors the server PERF_DEBUG default) so the throttled 5 s client
+ * [perf] line shows during playtests; silence it explicitly with
+ * `localStorage.setItem('strafeball.debug.perf', '0')`. try/catch so a denied localStorage can't throw.
+ */
+function isPerfDebugEnabled(): boolean {
+  try {
+    return window.localStorage.getItem('strafeball.debug.perf') !== '0';
+  } catch {
+    return true;
   }
 }
 

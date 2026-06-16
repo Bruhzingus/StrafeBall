@@ -3,7 +3,7 @@ import type { ServerSnapshot } from '../../../shared/protocol';
 import type { BallState, HandSide, PlayerState } from '../../../shared/types';
 import { TUNING } from '../config/tuning';
 import { computePlayerHandAnchor } from '../../../shared/simulation/HandAnchors';
-import { lookVectorsFromAngles } from '../../../shared/simulation/AimMath';
+import { backflipPitchOffset, lookVectorsFromAngles } from '../../../shared/simulation/AimMath';
 import { playerAimOriginHeight, playerHitCapsule } from '../../../shared/simulation/PlayerHitbox';
 import { ballVariantForState, createBallMesh, getBallMaterial } from '../ball/BallVisualFactory';
 import {
@@ -98,6 +98,9 @@ export class NetworkRenderer {
   private readonly playerDebug = new Map<string, RemotePlayerDebug>();
   private readonly balls = new Map<string, BallVisual>();
   private readonly materials = new Map<string, PBRMaterial>();
+  // Reused per-frame "seen this update" sets — cleared in place each frame instead of reallocated.
+  private readonly seenPlayers = new Set<string>();
+  private readonly seenBalls = new Set<string>();
   private readonly snapshotBuffer: BufferedSnapshot[] = [];
   private readonly ballRenderContinuity = new Map<string, BallRenderContinuity>();
   private lastBufferedTick = -1;
@@ -125,7 +128,18 @@ export class NetworkRenderer {
 
   constructor(private readonly scene: Scene) {}
 
-  update(snapshot: ServerSnapshot, localPlayerId: string, dt: number): void {
+  /**
+   * @param localPredicted the local player's present-time PREDICTED movement (from ArenaScene's
+   *   client-side prediction). When provided, a ball held by the local player attaches to this
+   *   present-time hand anchor instead of the ~INTERPOLATION_DELAY_MS-old interpolated one — without
+   *   it the local player's own held ball visibly drags behind while strafing.
+   */
+  update(
+    snapshot: ServerSnapshot,
+    localPlayerId: string,
+    dt: number,
+    localPredicted?: PlayerState['movement'] | null
+  ): void {
     this.bufferSnapshot(snapshot);
     const targetTimeMs = this.advanceRenderClock(dt);
     if (targetTimeMs === null) return;
@@ -133,7 +147,7 @@ export class NetworkRenderer {
     if (!renderSnapshot) return;
     this.refreshDebugStats(dt);
     this.updatePlayers(renderSnapshot.players, localPlayerId, dt);
-    this.updateBalls(renderSnapshot.balls, renderSnapshot.players);
+    this.updateBalls(renderSnapshot.balls, renderSnapshot.players, localPlayerId, localPredicted ?? null);
   }
 
   getDebugStats(): NetworkRendererDebugStats {
@@ -156,6 +170,8 @@ export class NetworkRenderer {
     this.players.clear();
     this.playerDebug.clear();
     this.balls.clear();
+    this.seenPlayers.clear();
+    this.seenBalls.clear();
     this.snapshotBuffer.length = 0;
     this.ballRenderContinuity.clear();
     this.lastBufferedTick = -1;
@@ -364,7 +380,8 @@ export class NetworkRenderer {
   }
 
   private updatePlayers(players: PlayerState[], localPlayerId: string, dt: number): void {
-    const seen = new Set<string>();
+    const seen = this.seenPlayers;
+    seen.clear();
 
     for (const player of players) {
       if (player.id === localPlayerId) continue;
@@ -377,6 +394,17 @@ export class NetworkRenderer {
       }
       visual.root.position.copyFrom(target);
       visual.root.rotation.y = 0;
+      // Backflip body tumble: rotate the whole rig backward about its mid-height so the remote
+      // avatar visibly flips. Pivot at body center (not the feet) by lifting the root by the
+      // rotated half-height offset, so the body spins in place instead of swinging from the floor.
+      const flip = backflipPitchOffset(player.movementInternal.backflipActive, player.movementInternal.backflipTimer);
+      visual.root.rotation.x = flip;
+      if (flip !== 0) {
+        const half = TUNING.player.height * 0.5;
+        // Lift so the rotation pivots around mid-body: feet stay roughly under the center.
+        visual.root.position.y = target.y + half - half * Math.cos(flip);
+        visual.root.position.z = target.z - half * Math.sin(flip);
+      }
       this.posePlayerVisual(player, visual);
 
       const dbg = this.playerDebug.get(player.id)!;
@@ -405,20 +433,33 @@ export class NetworkRenderer {
     }
   }
 
-  private updateBalls(balls: BallState[], players: PlayerState[]): void {
-    const seen = new Set<string>();
+  private updateBalls(
+    balls: BallState[],
+    players: PlayerState[],
+    localPlayerId: string,
+    localPredicted: PlayerState['movement'] | null
+  ): void {
+    const seen = this.seenBalls;
+    seen.clear();
 
     for (const ball of balls) {
       seen.add(ball.id);
       const visual = this.ensureBall(ball);
 
-      // Held balls: attach to the holder's hand anchor computed from the INTERPOLATED holder state
-      // so the ball rides the smooth avatar rather than the snapshot-cadence ball.position. The
-      // held<->live transition is already a continuity change, so it snaps rather than lerping.
+      // Held balls: attach to the holder's hand anchor. For a REMOTE holder, use the interpolated
+      // holder state so the ball rides the smooth avatar. For the LOCAL holder, use the present-time
+      // PREDICTED movement (when supplied) so the ball stays glued to the player's hand instead of
+      // dragging ~INTERPOLATION_DELAY_MS behind while strafing. The held<->live transition is a
+      // continuity change, so it snaps rather than lerping.
       let target = toVector3(ball.position);
       if (ball.heldByPlayerId && ball.heldHand) {
-        const holder = players.find((p) => p.id === ball.heldByPlayerId);
-        if (holder) target = toVector3(computePlayerHandAnchor(holder, ball.heldHand));
+        const holder = findById(players, ball.heldByPlayerId);
+        if (ball.heldByPlayerId === localPlayerId && localPredicted && holder) {
+          const predictedHolder: PlayerState = { ...holder, movement: localPredicted };
+          target = toVector3(computePlayerHandAnchor(predictedHolder, ball.heldHand));
+        } else if (holder) {
+          target = toVector3(computePlayerHandAnchor(holder, ball.heldHand));
+        }
       }
 
       const error = Vector3.Distance(visual.mesh.position, target);
@@ -839,23 +880,29 @@ function cloneBallState(ball: BallState): BallState {
 }
 
 function interpolateSnapshots(before: BufferedSnapshot, after: BufferedSnapshot, t: number, targetTimeMs: number): BufferedSnapshot {
-  const playersBefore = new Map(before.players.map((player) => [player.id, player]));
-  const ballsBefore = new Map(before.balls.map((ball) => [ball.id, ball]));
-
+  // The arrays are tiny (≤2 players, ≤6 balls), so a linear find by id is cheaper per frame than
+  // building two Maps (plus their intermediate [id, value] arrays) on every render frame.
   return {
     tick: after.tick,
     resetSerial: after.resetSerial,
     receivedAtMs: targetTimeMs,
     serverTimeMs: lerpNumber(before.serverTimeMs, after.serverTimeMs, t),
     players: after.players.map((player) => {
-      const previous = playersBefore.get(player.id);
+      const previous = findById(before.players, player.id);
       return previous ? interpolatePlayerState(previous, player, t) : clonePlayerState(player);
     }),
     balls: after.balls.map((ball) => {
-      const previous = ballsBefore.get(ball.id);
+      const previous = findById(before.balls, ball.id);
       return previous ? interpolateBallState(previous, ball, t) : cloneBallState(ball);
     })
   };
+}
+
+function findById<T extends { id: string }>(items: T[], id: string): T | undefined {
+  for (let i = 0; i < items.length; i += 1) {
+    if (items[i].id === id) return items[i];
+  }
+  return undefined;
 }
 
 function extrapolateSnapshot(snapshot: BufferedSnapshot, deltaMs: number): BufferedSnapshot {

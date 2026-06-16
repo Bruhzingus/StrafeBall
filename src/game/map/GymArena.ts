@@ -1,9 +1,10 @@
 import { Color3, Material, Mesh, MeshBuilder, PBRMaterial, PointLight, Scene, StandardMaterial, Vector3 } from '@babylonjs/core';
 import { TUNING } from '../config/tuning';
 import { MatObstacle, MAT_DIMENSIONS } from './MatObstacle';
-import { CollisionWorld } from './Collider';
+import { AABB, CollisionWorld } from './Collider';
 import { ModelLoader } from '../assets/ModelLoader';
 import {
+  MAT_SPECS,
   createBleacherCollisionBoxes,
   createBleacherPanelSpecs,
   createBleacherTierSpecs
@@ -17,7 +18,10 @@ import {
  */
 export class GymArena {
   public readonly mats: MatObstacle[] = [];
+  // Player collision: bleachers + standing mats. Balls use a separate world (bleachers only) so a
+  // thrown ball passes straight through a mat (mats are cover that affects players, not balls).
   public readonly collision = new CollisionWorld();
+  public readonly ballCollision = new CollisionWorld();
   /** The 4th target dummy; oscillates side-to-side each frame for catch/throw practice. */
   public movingDummy: Mesh | null = null;
   private readonly movingDummyAmplitude = 4.5; // meters from center
@@ -35,8 +39,31 @@ export class GymArena {
     this.createBleachers();
     this.createMats();
     this.createTargetDummies();
+    this.createCeiling();
     this.createCeilingLights();
     this.createScoreboard();
+  }
+
+  /**
+   * Solid ceiling slab capping the gym at TUNING.map.wallHeight — the same plane the server uses
+   * for the ball ceiling clamp + the side-wall/ceiling 1-bounce rule, so the visual lid matches the
+   * gameplay surface. Visual only; the ball ceiling bounce is enforced authoritatively server-side.
+   */
+  private createCeiling(): void {
+    const h = TUNING.map.wallHeight;
+    const t = 0.35;
+    const ceilingMat = new StandardMaterial('gym_ceiling_mat', this.scene);
+    ceilingMat.diffuseColor = new Color3(0.16, 0.17, 0.2);
+    ceilingMat.specularColor = new Color3(0.04, 0.04, 0.05);
+
+    const ceiling = MeshBuilder.CreateBox('gym_ceiling', {
+      width: TUNING.map.halfWidth * 2 + t * 2,
+      height: t,
+      depth: TUNING.map.halfLength * 2 + t * 2
+    }, this.scene);
+    ceiling.position.set(0, h + t / 2, 0);
+    ceiling.material = ceilingMat;
+    ceiling.isPickable = false;
   }
 
   private createFloor(): void {
@@ -209,25 +236,52 @@ export class GymArena {
 
     for (const box of createBleacherCollisionBoxes()) {
       this.collision.add(box);
+      this.ballCollision.add(box);
     }
   }
 
   private createMats(): void {
-    const positions = [
-      new Vector3(-4.5, 0.72, -5.5),
-      new Vector3(4.5, 0.72, -5.5),
-      new Vector3(-4.5, 0.72, 5.5),
-      new Vector3(4.5, 0.72, 5.5)
-    ];
-
-    for (const pos of positions) {
+    // Built from the shared MAT_SPECS so the offline scene matches the server's mat layout AND
+    // orientation (yaw 0 = broad face down-court; was incorrectly quarter-turned before). Mats are
+    // added to the PLAYER collision world only — balls pass through them (ballCollision excludes mats).
+    for (const spec of MAT_SPECS) {
       const visual = this.loader.createVisual('mat', {
         size: { width: MAT_DIMENSIONS.width, height: MAT_DIMENSIONS.height, depth: MAT_DIMENSIONS.depth }
       });
-      const mat = new MatObstacle(visual, pos, Math.PI / 2);
+      const mat = new MatObstacle(spec.id, visual, new Vector3(spec.x, spec.y, spec.z), spec.yawRadians);
       this.mats.push(mat);
       this.collision.add(mat.getAABB());
     }
+  }
+
+  /**
+   * Remove a knocked-over mat's collision box from the PLAYER world so it becomes walkable. Matched
+   * by footprint (mats sit at fixed, distinct positions). Balls are unaffected (separate world).
+   */
+  removeMatCollision(mat: MatObstacle): void {
+    const box = mat.getAABB();
+    const idx = this.collision.boxes.findIndex((b) =>
+      b.minX === box.minX && b.maxX === box.maxX && b.minZ === box.minZ && b.maxZ === box.maxZ
+    );
+    if (idx >= 0) this.collision.boxes.splice(idx, 1);
+  }
+
+  /** Reset every mat to upright AND restore the player collision world (leave online / reset practice). */
+  resetMats(): void {
+    for (const mat of this.mats) mat.reset();
+    // Rebuild player collision: keep all non-mat boxes, then re-add every (now standing) mat box.
+    const nonMat = this.collision.boxes.filter((b) => !this.isMatBox(b));
+    this.collision.boxes.length = 0;
+    for (const b of nonMat) this.collision.boxes.push(b);
+    for (const mat of this.mats) this.collision.add(mat.getAABB());
+  }
+
+  private isMatBox(box: AABB): boolean {
+    for (const mat of this.mats) {
+      const m = mat.getAABB();
+      if (m.minX === box.minX && m.maxX === box.maxX && m.minZ === box.minZ && m.maxZ === box.maxZ) return true;
+    }
+    return false;
   }
 
   private createTargetDummies(): void {

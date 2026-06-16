@@ -19,7 +19,9 @@ export const TUNING = {
     // which is exactly what lets mouse-turning while strafing build speed (air-strafing).
     airStrafeMaxSpeed: 1.3,
     friction: 10,
-    maxGroundSpeed: 8.5,
+    // Mirrors GAME_CONSTANTS.player.maxGroundSpeed (strafe top speed −30%). Kept in sync so offline
+    // practice feels the same as the server-authoritative online movement.
+    maxGroundSpeed: GAME_CONSTANTS.player.maxGroundSpeed,
     softSpeedLimit: 18,
     // Rate (per second) that speed above the soft limit bleeds off. dt-scaled so it's
     // frame-rate independent.
@@ -27,7 +29,8 @@ export const TUNING = {
     gravity: 22,
     // Gravity is stronger while falling so jumps feel snappy and weighty, not floaty.
     fallGravityMultiplier: 1.45,
-    jumpSpeed: 8.2,
+    // Mirrors GAME_CONSTANTS.player.jumpSpeed (jump −35%). Kept in sync with the server sim.
+    jumpSpeed: GAME_CONSTANTS.player.jumpSpeed,
     bhopGraceSeconds: 0.12,
     bhopPerfectWindowSeconds: 0.07,
     bhopSpeedBonus: 1.035,
@@ -164,7 +167,8 @@ export const TUNING = {
   map: {
     halfWidth: GAME_CONSTANTS.map.halfWidth,
     halfLength: GAME_CONSTANTS.map.halfLength,
-    wallHeight: 4.5,
+    // Mirrors GAME_CONSTANTS.map.wallHeight so the client ceiling/walls match the server bounce rule.
+    wallHeight: GAME_CONSTANTS.map.wallHeight,
     ballCount: GAME_CONSTANTS.map.ballCount
   },
 

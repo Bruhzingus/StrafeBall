@@ -152,27 +152,41 @@ export interface DebugFlags {
   BALL_DEBUG: boolean;
   PICKUP_DEBUG: boolean;
   THROW_DEBUG: boolean;
+  COLLISION_DEBUG: boolean;
 }
 
+/**
+ * PERF_DEBUG defaults ON: it only drives the throttled (every PERF_REPORT_INTERVAL_MS) server
+ * [perf] report, which is cheap and is the one diagnostic worth keeping during a real playtest.
+ * Every other channel defaults OFF — they gate per-tick/per-frame logging that would dominate
+ * CPU and GC if left on. A normal 1v1 must not spam the terminal or browser console.
+ */
 export const DEBUG_DEFAULTS: DebugFlags = {
   NET_DEBUG: false,
-  PERF_DEBUG: false,
+  PERF_DEBUG: true,
   BALL_DEBUG: false,
   PICKUP_DEBUG: false,
-  THROW_DEBUG: false
+  THROW_DEBUG: false,
+  COLLISION_DEBUG: false
 };
+
+/** Throttle for the periodic server [perf] report (and client perf line). 5 s per the spec. */
+export const PERF_REPORT_INTERVAL_MS = 5000;
 
 /** Resolve server-side debug flags from env (1/true enables). Returns all-off if env is absent. */
 export function resolveServerDebugFlags(env: Record<string, string | undefined> = processEnv()): DebugFlags {
   const on = (v: string | undefined): boolean => v === '1' || v === 'true';
+  const off = (v: string | undefined): boolean => v === '0' || v === 'false';
   // DEBUG_GAMEPLAY=1 is a convenience switch that turns the gameplay-related channels on at once.
   const all = on(env.DEBUG_GAMEPLAY);
   return {
     NET_DEBUG: all || on(env.NET_DEBUG),
-    PERF_DEBUG: all || on(env.PERF_DEBUG),
+    // PERF_DEBUG defaults ON (cheap throttled report); allow PERF_DEBUG=0 to silence it explicitly.
+    PERF_DEBUG: (all || on(env.PERF_DEBUG) || DEBUG_DEFAULTS.PERF_DEBUG) && !off(env.PERF_DEBUG),
     BALL_DEBUG: all || on(env.BALL_DEBUG),
     PICKUP_DEBUG: all || on(env.PICKUP_DEBUG),
-    THROW_DEBUG: all || on(env.THROW_DEBUG)
+    THROW_DEBUG: all || on(env.THROW_DEBUG),
+    COLLISION_DEBUG: all || on(env.COLLISION_DEBUG)
   };
 }
 

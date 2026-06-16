@@ -12,6 +12,7 @@ import { Effects } from '../effects/Effects';
 import { settings } from '../config/Settings';
 import { Viewmodel } from './Viewmodel';
 import { TUNING } from '../config/tuning';
+import { backflipPitchOffset } from '../../../shared/simulation/AimMath';
 
 export class PlayerController {
   public readonly root: TransformNode;
@@ -94,7 +95,9 @@ export class PlayerController {
     this.pitch += dy * settings.mouseSensitivity;
     this.pitch = Math.max(-TUNING.player.lookPitchLimitRadians, Math.min(TUNING.player.lookPitchLimitRadians, this.pitch));
     this.root.rotation.y = this.yaw;
-    this.camera.rotation.x = this.pitch;
+    // Backflip view tumble: add a full backward pitch rotation over the flip (shared easing with
+    // online so the move reads identically in both modes).
+    this.camera.rotation.x = this.pitch + backflipPitchOffset(this.backflip.active, this.backflip.timer);
     this.camera.rotation.y = 0;
     this.camera.rotation.z = 0;
   }
