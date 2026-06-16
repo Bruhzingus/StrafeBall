@@ -50,7 +50,7 @@ export class DuelRoom extends Room {
     this.game = new ServerGameLoop(this.roomId, {
       tickRate: TICK_RATE,
       logger: (message) => this.log(message),
-      debugInput: process.env.DEBUG_INPUT === '1'
+      debugInput: process.env.DEBUG_INPUT === '1' || process.env.DEBUG_GAMEPLAY === '1'
     });
     this.log('room created');
 
@@ -60,7 +60,7 @@ export class DuelRoom extends Room {
         ? (message as Partial<InputCommand>)
         : undefined;
       const input = wrapped ? wrapped.input : (message as Partial<PlayerInput> | undefined);
-      const seq = (message as { sequence?: number } | undefined)?.sequence ?? 0;
+      const seq = wrapped?.sequence ?? wrapped?.input?.sequence ?? (message as { sequence?: number } | undefined)?.sequence ?? 0;
       if (!this.game.handleInput(client.sessionId, input, seq)) {
         this.reject(client, 'input', 'unknown-player');
       }

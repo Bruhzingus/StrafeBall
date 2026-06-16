@@ -26,6 +26,7 @@ import {
   scale,
   subtract,
   sweptBallHitsBody,
+  sweptSegmentInCone,
   vec3
 } from '../../../shared/simulation/CollisionMath';
 import {
@@ -39,11 +40,13 @@ import {
   throwBallFromHand,
   tryPickupBall
 } from '../../../shared/simulation/HandSim';
-import { createRoomState, registerPlayerHit } from '../../../shared/simulation/MatchSim';
+import { createResetVoteState, createRoomState, registerPlayerHit } from '../../../shared/simulation/MatchSim';
 import { createPlayerState } from '../../../shared/simulation/PlayerSim';
 import { advanceNoBoundariesTimer, applyHalfCourtRule, createMatchState } from '../../../shared/simulation/RuleSim';
-import { createGymCollisionBoxes } from '../../../shared/simulation/MapGeometry';
+import { createGymCollisionBoxes, type AABB } from '../../../shared/simulation/MapGeometry';
 import { facingFromAngles, isSuperThrowWindow, stepMovement } from '../../../shared/simulation/MovementSim';
+import { clampLookPitch } from '../../../shared/simulation/AimMath';
+import { computePlayerHandAnchor } from '../../../shared/simulation/HandAnchors';
 
 export interface ServerGameLoopOptions {
   tickRate?: number;
@@ -93,11 +96,14 @@ const SPAWN_BY_SIDE: Record<SpawnSide, { position: Vec3; yawRadians: number }> =
 };
 
 const TEAM_IDS = ['blue', 'red'];
-// Max inputs buffered per player before we drop the oldest (bounds added latency / replay cost).
-const MAX_INPUT_QUEUE = 6;
+// Max inputs buffered per player before we drop the oldest.
+// At 30 Hz, 30 slots = 1 s of buffer — enough headroom for typical internet RTTs without
+// letting a malicious or frozen client build infinite queue.
+const MAX_INPUT_QUEUE = 30;
 // If no fresh input arrives for this long, the player's input is treated as neutral (so a
 // backgrounded/frozen tab doesn't keep walking or charging on the last-held input).
 const STALE_INPUT_MS = 1000;
+const RESET_VOTE_TTL_MS = GAME_CONSTANTS.match.resetVoteSeconds * 1000;
 
 export class ServerGameLoop {
   public readonly tickRate: number;
@@ -118,6 +124,8 @@ export class ServerGameLoop {
   private readonly lastInputDebugAtByPlayerId = new Map<string, number>();
   // Per-player, per-ball accumulated aim time (server-authoritative catch tracking — #9).
   private readonly catchTrackingByPlayerId = new Map<string, Record<string, number>>();
+  private readonly resetVotesByPlayerId = new Map<string, number>();
+  private resetSerial = 0;
 
   constructor(roomId: string, options: ServerGameLoopOptions = {}) {
     this.roomId = roomId;
@@ -151,6 +159,7 @@ export class ServerGameLoop {
     if (Object.keys(this.state.players).length === 2 && this.state.match.status !== 'complete') {
       this.startMatch();
     }
+    this.syncResetVoteState();
     return player;
   }
 
@@ -168,6 +177,8 @@ export class ServerGameLoop {
     this.parryCooldownByPlayerId.delete(playerId);
     this.lastInputDebugAtByPlayerId.delete(playerId);
     this.catchTrackingByPlayerId.delete(playerId);
+    this.resetVotesByPlayerId.delete(playerId);
+    this.resolveResetVotesAfterRosterChange();
   }
 
   /** Mark a player connected/disconnected (drives match pause + the connected flag). */
@@ -176,6 +187,7 @@ export class ServerGameLoop {
     if (!player) return;
     player.connected = connected;
     if (connected) this.lastInputAtByPlayerId.set(playerId, Date.now());
+    this.resolveResetVotesAfterRosterChange();
   }
 
   /**
@@ -202,6 +214,7 @@ export class ServerGameLoop {
     this.parryCooldownByPlayerId.clear();
     this.lastInputDebugAtByPlayerId.clear();
     this.catchTrackingByPlayerId.clear();
+    this.resetVotesByPlayerId.clear();
   }
 
   /** Enqueue a client input. `seq` lets the client reconcile; out-of-order/dupes are ignored. */
@@ -299,14 +312,14 @@ export class ServerGameLoop {
 
     // Direction is the SERVER's known facing (derived from validated look angles), so a client
     // can't throw anywhere but where it is actually aiming (#7 — anti-aimbot).
-    const forward = player.movement.facing;
+    const forward = normalize(player.movement.facing, facingFromAngles(player.movement.yawRadians, player.movement.pitchRadians));
     const isSuper = isSuperThrowWindow(player.movementInternal);
     const baseSpeed = charge01 <= 0.05
       ? GAME_CONSTANTS.ball.quickThrowSpeed
       : lerp(GAME_CONSTANTS.ball.quickThrowSpeed, GAME_CONSTANTS.ball.chargedThrowSpeed, charge01);
     const speed = isSuper ? baseSpeed * GAME_CONSTANTS.backflip.superThrowMultiplier : baseSpeed;
     const velocity = add(scale(forward, speed), scale(player.movement.velocity, GAME_CONSTANTS.ball.movementThrowScale));
-    const origin = add(player.movement.position, add(scale(forward, 0.8), vec3(0, 1.35, 0)));
+    const origin = add(computePlayerHandAnchor(player, request.hand), scale(forward, 0.16));
 
     const result = throwBallFromHand(player, player.hands, request.hand, ball, {
       origin,
@@ -319,6 +332,13 @@ export class ServerGameLoop {
 
     this.state.players[playerId] = { ...player, hands: result.hands };
     this.state.balls[ball.id] = result.ball;
+    this.logger(
+      `throw aim player=${playerId}` +
+      ` yaw=${player.movement.yawRadians.toFixed(3)} pitch=${player.movement.pitchRadians.toFixed(3)}` +
+      ` dir=(${forward.x.toFixed(3)},${forward.y.toFixed(3)},${forward.z.toFixed(3)})` +
+      ` origin=(${origin.x.toFixed(2)},${origin.y.toFixed(2)},${origin.z.toFixed(2)})` +
+      ` vel=(${velocity.x.toFixed(2)},${velocity.y.toFixed(2)},${velocity.z.toFixed(2)})`
+    );
     return { ok: true, log: `throw accepted player=${playerId} ball=${ball.id} hand=${request.hand} charge=${charge01.toFixed(2)}${isSuper ? ' SUPER' : ''}` };
   }
 
@@ -326,7 +346,7 @@ export class ServerGameLoop {
     const player = this.state.players[playerId];
     if (!player) return { ok: false, reason: 'unknown-player' };
 
-    // Always use the server's known facing + eye position for cone tests (#8 — anti-cheat).
+    // Always use the server's known facing + eye position for cone tests (anti-cheat).
     const facing = player.movement.facing;
     const eye = add(player.movement.position, vec3(0, GAME_CONSTANTS.player.eyeHeight, 0));
 
@@ -335,12 +355,21 @@ export class ServerGameLoop {
       if (!threat) return { ok: false, reason: 'no-live-ball' };
       const cooldown = this.parryCooldownByPlayerId.get(playerId) ?? 0;
       const result = autoParryBall(player, player.hands, threat, facing, cooldown, eye);
-      if (!result.ok) return result;
+      if (!result.ok) {
+        this.logger(`parry rejected player=${playerId} ball=${threat.id} reason=${result.reason}`);
+        return result;
+      }
 
       this.state.balls[threat.id] = result.ball;
       this.parryCooldownByPlayerId.set(playerId, result.parryCooldownSeconds);
       if (threat.isSuper) this.dropOneHeldBall(player); // super-parry drops a defender ball
+      this.logger(`parry accepted player=${playerId} ball=${threat.id} super=${threat.isSuper}`);
       return { ok: true };
+    }
+
+    // Catching is not allowed while dashing.
+    if (player.movement.dashingThisFrame) {
+      return { ok: false, reason: 'dashing' };
     }
 
     const hand = firstEmptyHand(player);
@@ -350,7 +379,10 @@ export class ServerGameLoop {
 
     const tracked = this.catchTrackingByPlayerId.get(playerId)?.[threat.id] ?? 0;
     const result = catchBallInHand(player, player.hands, hand, threat, facing, tracked, eye);
-    if (!result.ok) return result;
+    if (!result.ok) {
+      this.logger(`catch rejected player=${playerId} ball=${threat.id} tracked=${tracked.toFixed(3)}s reason=${result.reason}`);
+      return result;
+    }
 
     // Successful catch → possession + a small forward speed boost.
     const boostDir = normalize(vec3(facing.x, 0, facing.z), vec3(0, 0, 1));
@@ -362,36 +394,31 @@ export class ServerGameLoop {
     };
     this.state.players[playerId] = boostedPlayer;
     this.state.balls[threat.id] = result.ball;
+    this.logger(`catch accepted player=${playerId} ball=${threat.id} hand=${hand} tracked=${tracked.toFixed(3)}s`);
     return { ok: true };
   }
 
   handleReset(playerId: string): ActionResult {
     if (!this.state.players[playerId]) return { ok: false, reason: 'unknown-player' };
 
-    // Reset the entire room: both players, velocities, dash charges, hand states, all balls,
-    // ownership, score, timer, and round state. Any player can trigger a reset at any time.
-    const players = Object.values(this.state.players).map((player) =>
-      createPlayerState(player.id, player.teamId, player.legalHalf, {
-        name: player.name,
-        spawnSide: player.spawnSide,
-        score: 0,
-        connected: player.connected,
-        movement: this.spawnMovement(player.spawnSide)
-      })
-    );
+    this.pruneResetVotes(Date.now());
+    this.resetVotesByPlayerId.set(playerId, Date.now() + RESET_VOTE_TTL_MS);
+    this.syncResetVoteState();
 
-    this.state = this.createFreshRoomState(players);
-    for (const player of players) {
-      this.seedInputTracking(player.id, SPAWN_BY_SIDE[player.spawnSide].yawRadians);
+    const vote = this.state.resetVote;
+    this.logger(`reset vote player=${playerId} votes=${vote.voteCount}/${vote.requiredVotes}`);
+    if (vote.requiredVotes > 0 && vote.voteCount >= vote.requiredVotes) {
+      this.performRoomReset(playerId);
+      return { ok: true, log: `room reset approved player=${playerId}` };
     }
-    if (players.length === 2) this.startMatch();
-    this.logger(`room reset by player=${playerId} players=${players.length}`);
-    return { ok: true };
+
+    return { ok: true, log: `reset vote pending player=${playerId} votes=${vote.voteCount}/${vote.requiredVotes}` };
   }
 
   step(): ServerSnapshot {
     const fixedDt = this.tickSeconds;
     this.state.tick += 1;
+    this.pruneResetVotes(Date.now());
 
     const active = this.connectedCount() >= 2 && this.state.match.status === 'playing';
 
@@ -496,7 +523,9 @@ export class ServerGameLoop {
       ` dash=${Number(input.dashPressed)} slide=${Number(input.slidePressed)}` +
       ` crouch=${Number(input.crouchHeld)} backflip=${Number(input.backflipPressed)}` +
       ` pickup=${Number(input.pickupPressed)} drop=${Number(input.dropPressed)}` +
-      ` yaw=${input.lookYawRadians.toFixed(2)} pitch=${input.lookPitchRadians.toFixed(2)}`
+      ` yaw=${input.lookYawRadians.toFixed(2)} pitch=${input.lookPitchRadians.toFixed(2)}` +
+      ` storedYaw=${postMovement.yawRadians.toFixed(2)} storedPitch=${postMovement.pitchRadians.toFixed(2)}` +
+      ` facing=(${postMovement.facing.x.toFixed(2)},${postMovement.facing.y.toFixed(2)},${postMovement.facing.z.toFixed(2)})`
     );
     this.logger(
       `veloc player=${playerId}` +
@@ -518,7 +547,10 @@ export class ServerGameLoop {
 
       if (ball.phase === 'loose') continue;
 
-      this.state.balls[ball.id] = settleBallIfSlow(resolveBallBounds(advanceBall(ball, dt)));
+      const advanced = advanceBall(ball, dt);
+      const bounded = resolveBallBounds(advanced);
+      const collided = resolveBallStaticBoxes(bounded, this.collisionBoxes, this.debugInput ? this.logger : undefined);
+      this.state.balls[ball.id] = settleBallIfSlow(collided);
     }
   }
 
@@ -571,16 +603,29 @@ export class ServerGameLoop {
     }
   }
 
-  /** Accumulate per-ball aim time while a live ball sits inside the catch cone (#9). */
+  /**
+   * Accumulate per-ball aim time while a live ball's swept path passes inside the catch cone.
+   * Using the swept segment (ballPrev → ballCurr) instead of only the current position means a
+   * fast ball that crosses the entire cone interior in a single tick still accrues tracking time,
+   * preventing tunnelling through the catch window. Tracking resets to zero while dashing.
+   */
   private updateCatchTracking(player: PlayerState, dt: number): void {
     const eye = add(player.movement.position, vec3(0, GAME_CONSTANTS.player.eyeHeight, 0));
     const facing = player.movement.facing;
     const previous = this.catchTrackingByPlayerId.get(player.id) ?? {};
     const next: Record<string, number> = {};
 
+    // Dashing prevents catching — clear all tracking while the dash is active.
+    if (player.movement.dashingThisFrame) {
+      this.catchTrackingByPlayerId.set(player.id, next);
+      return;
+    }
+
     for (const ball of Object.values(this.state.balls)) {
       if (ball.phase !== 'live') continue;
-      if (!isWithinCone(eye, facing, ball.position, GAME_CONSTANTS.catch.coneDegrees, GAME_CONSTANTS.catch.rangeMeters)) continue;
+      // Reconstruct ball's position one tick ago using current velocity (same as hit detection).
+      const ballPrev = subtract(ball.position, scale(ball.velocity, dt));
+      if (!sweptSegmentInCone(eye, facing, ballPrev, ball.position, GAME_CONSTANTS.catch.coneDegrees, GAME_CONSTANTS.catch.rangeMeters)) continue;
       next[ball.id] = (previous[ball.id] ?? 0) + dt;
     }
 
@@ -593,18 +638,88 @@ export class ServerGameLoop {
     }
   }
 
-  /** Nearest live ball inside the catch cone+range of `origin`/`facing` (#10). */
-  private nearestCatchable(player: PlayerState, origin: Vec3, facing: Vec3): BallState | null {
-    return this.nearestLiveInCone(origin, facing, GAME_CONSTANTS.catch.coneDegrees, GAME_CONSTANTS.catch.rangeMeters);
+  private performRoomReset(triggerPlayerId: string): void {
+    const players = Object.values(this.state.players).map((player) =>
+      createPlayerState(player.id, player.teamId, player.legalHalf, {
+        name: player.name,
+        spawnSide: player.spawnSide,
+        score: 0,
+        connected: player.connected,
+        movement: this.spawnMovement(player.spawnSide)
+      })
+    );
+
+    this.resetSerial += 1;
+    this.resetVotesByPlayerId.clear();
+    this.state = this.createFreshRoomState(players);
+    for (const player of players) {
+      this.seedInputTracking(player.id, SPAWN_BY_SIDE[player.spawnSide].yawRadians);
+    }
+    if (players.length === 2) this.startMatch();
+    this.syncResetVoteState();
+    this.logger(`room reset by player=${triggerPlayerId} players=${players.length} serial=${this.resetSerial}`);
   }
 
+  private resolveResetVotesAfterRosterChange(): void {
+    this.pruneResetVotes(Date.now());
+    this.syncResetVoteState();
+    const vote = this.state.resetVote;
+    if (vote.requiredVotes > 0 && vote.voteCount >= vote.requiredVotes && vote.voteCount > 0) {
+      const triggerPlayerId = Object.keys(vote.votesByPlayerId)[0] ?? 'roster-change';
+      this.performRoomReset(triggerPlayerId);
+    }
+  }
+
+  private pruneResetVotes(now: number): void {
+    let changed = false;
+    for (const [playerId, expiresAtMs] of this.resetVotesByPlayerId) {
+      const player = this.state.players[playerId];
+      if (!player || player.connected === false || expiresAtMs <= now) {
+        this.resetVotesByPlayerId.delete(playerId);
+        changed = true;
+      }
+    }
+    if (changed) this.syncResetVoteState();
+  }
+
+  private syncResetVoteState(): void {
+    const votesByPlayerId: Record<string, true> = {};
+    let expiresAtMs: number | null = null;
+
+    for (const [playerId, expiry] of this.resetVotesByPlayerId) {
+      if (!this.state.players[playerId] || this.state.players[playerId].connected === false) continue;
+      votesByPlayerId[playerId] = true;
+      expiresAtMs = expiresAtMs === null ? expiry : Math.min(expiresAtMs, expiry);
+    }
+
+    this.state.resetVote = createResetVoteState({
+      votesByPlayerId,
+      voteCount: Object.keys(votesByPlayerId).length,
+      requiredVotes: this.connectedCount(),
+      expiresAtMs,
+      resetSerial: this.resetSerial
+    });
+  }
+
+  /** Nearest live ball whose swept path passes inside the catch cone+range. */
+  private nearestCatchable(_player: PlayerState, origin: Vec3, facing: Vec3): BallState | null {
+    return this.nearestLiveSweptInCone(origin, facing, GAME_CONSTANTS.catch.coneDegrees, GAME_CONSTANTS.catch.rangeMeters);
+  }
+
+  /**
+   * Nearest live ball whose swept path (ballPrev → ballCurr) passes inside the parry cone.
+   * Uses the swept segment so a super-speed ball that crosses the parry window in one tick
+   * is still caught by the check.
+   */
   private nearestParryable(_player: PlayerState, origin: Vec3, facing: Vec3): BallState | null {
     let best: BallState | null = null;
     let bestDistance = Number.POSITIVE_INFINITY;
+    const dt = this.tickSeconds;
     for (const ball of Object.values(this.state.balls)) {
       if (ball.phase !== 'live') continue;
       const cone = ball.isSuper ? GAME_CONSTANTS.catch.superParryConeDegrees : GAME_CONSTANTS.parry.coneDegrees;
-      if (!isWithinCone(origin, facing, ball.position, cone, GAME_CONSTANTS.parry.rangeMeters)) continue;
+      const ballPrev = subtract(ball.position, scale(ball.velocity, dt));
+      if (!sweptSegmentInCone(origin, facing, ballPrev, ball.position, cone, GAME_CONSTANTS.parry.rangeMeters)) continue;
       const dist = distance(origin, ball.position);
       if (dist >= bestDistance) continue;
       best = ball;
@@ -613,12 +728,14 @@ export class ServerGameLoop {
     return best;
   }
 
-  private nearestLiveInCone(origin: Vec3, facing: Vec3, coneDegrees: number, range: number): BallState | null {
+  private nearestLiveSweptInCone(origin: Vec3, facing: Vec3, coneDegrees: number, range: number): BallState | null {
     let best: BallState | null = null;
     let bestDistance = Number.POSITIVE_INFINITY;
+    const dt = this.tickSeconds;
     for (const ball of Object.values(this.state.balls)) {
       if (ball.phase !== 'live') continue;
-      if (!isWithinCone(origin, facing, ball.position, coneDegrees, range)) continue;
+      const ballPrev = subtract(ball.position, scale(ball.velocity, dt));
+      if (!sweptSegmentInCone(origin, facing, ballPrev, ball.position, coneDegrees, range)) continue;
       const dist = distance(origin, ball.position);
       if (dist >= bestDistance) continue;
       best = ball;
@@ -733,7 +850,15 @@ export class ServerGameLoop {
   }
 
   private createFreshRoomState(players: PlayerState[] = []): RoomState {
-    const room = createRoomState({ id: this.roomId, players, balls: createInitialBalls() });
+    const room = createRoomState({
+      id: this.roomId,
+      players,
+      balls: createInitialBalls(),
+      resetVote: createResetVoteState({
+        requiredVotes: players.filter((player) => player.connected !== false).length,
+        resetSerial: this.resetSerial
+      })
+    });
     const match = createMatchState(this.roomId, TEAM_IDS);
     return {
       ...room,
@@ -783,6 +908,50 @@ function resolveBallBounds(ball: BallState): BallState {
 
   const resolved = { ...ball, position, velocity };
   return bounced ? applyBallBounce(resolved) : resolved;
+}
+
+function resolveBallStaticBoxes(ball: BallState, boxes: AABB[], logger?: (message: string) => void): BallState {
+  const r = GAME_CONSTANTS.ball.radius;
+  const e = GAME_CONSTANTS.ball.bounceRestitution;
+  const position = { ...ball.position };
+  const velocity = { ...ball.velocity };
+  let bounced = false;
+  let hitBox: AABB | null = null;
+
+  for (const box of boxes) {
+    if (position.x < box.minX - r || position.x > box.maxX + r) continue;
+    if (position.y < box.minY - r || position.y > box.maxY + r) continue;
+    if (position.z < box.minZ - r || position.z > box.maxZ + r) continue;
+
+    const penX = Math.min(position.x - (box.minX - r), (box.maxX + r) - position.x);
+    const penY = Math.min(position.y - (box.minY - r), (box.maxY + r) - position.y);
+    const penZ = Math.min(position.z - (box.minZ - r), (box.maxZ + r) - position.z);
+
+    if (penX <= penY && penX <= penZ) {
+      position.x = position.x < (box.minX + box.maxX) * 0.5 ? box.minX - r : box.maxX + r;
+      velocity.x *= -e;
+    } else if (penY <= penZ) {
+      position.y = position.y < (box.minY + box.maxY) * 0.5 ? box.minY - r : box.maxY + r;
+      velocity.y *= -e;
+    } else {
+      position.z = position.z < (box.minZ + box.maxZ) * 0.5 ? box.minZ - r : box.maxZ + r;
+      velocity.z *= -e;
+    }
+
+    bounced = true;
+    hitBox = box;
+  }
+
+  if (!bounced) return ball;
+  const resolved = applyBallBounce({ ...ball, position, velocity });
+  if (hitBox?.kind === 'bleacher') {
+    logger?.(
+      `bleacher collision ball=${ball.id} box=${hitBox.id ?? 'unknown'}` +
+      ` pos=(${position.x.toFixed(2)},${position.y.toFixed(2)},${position.z.toFixed(2)})` +
+      ` vel=(${velocity.x.toFixed(2)},${velocity.y.toFixed(2)},${velocity.z.toFixed(2)})`
+    );
+  }
+  return resolved;
 }
 
 function defaultInput(yawRadians = 0): PlayerInput {
@@ -838,7 +1007,7 @@ function normalizeInput(input: Partial<PlayerInput>, fallback: PlayerInput = def
     moveZ: clampNumber(input.moveZ, -1, 1, fallback.moveZ),
     dashDirection,
     lookYawRadians: finiteNumber(input.lookYawRadians, fallback.lookYawRadians),
-    lookPitchRadians: finiteNumber(input.lookPitchRadians, fallback.lookPitchRadians),
+    lookPitchRadians: clampLookPitch(finiteNumber(input.lookPitchRadians, fallback.lookPitchRadians)),
     jumpPressed: Boolean(input.jumpPressed) || legacyPressed(legacy.jump, fallback.jumpHeld),
     jumpHeld,
     dashPressed: Boolean(input.dashPressed) || Boolean(legacy.dash),
@@ -880,8 +1049,7 @@ function updateHandCharge(hands: PlayerState['hands'], side: HandSide, pressed: 
 }
 
 function heldBallPosition(player: PlayerState, hand: HandSide): Vec3 {
-  const sideOffset = hand === 'left' ? -0.35 : 0.35;
-  return add(player.movement.position, vec3(sideOffset, 1.15, 0.45 * (player.spawnSide === 'negativeZ' ? 1 : -1)));
+  return computePlayerHandAnchor(player, hand);
 }
 
 function preferredDropHand(player: PlayerState): HandSide | null {

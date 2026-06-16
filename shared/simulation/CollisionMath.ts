@@ -81,12 +81,48 @@ export function isWithinCone(origin: Vec3, forward: Vec3, target: Vec3, coneDegr
   return angleBetweenDegrees(forward, toTarget) <= coneDegrees;
 }
 
+export function distXZ(a: Vec3, b: Vec3): number {
+  const dx = a.x - b.x, dz = a.z - b.z;
+  return Math.sqrt(dx * dx + dz * dz);
+}
+
 export function isMovingToward(origin: Vec3, velocity: Vec3, target: Vec3, minDot = 0.35): boolean {
   const toTarget = subtract(target, origin);
   const toTargetLengthSq = lengthSquared(toTarget);
   const velocityLengthSq = lengthSquared(velocity);
   if (toTargetLengthSq <= EPSILON || velocityLengthSq <= EPSILON) return false;
   return dot(toTarget, velocity) / Math.sqrt(toTargetLengthSq * velocityLengthSq) > minDot;
+}
+
+/**
+ * Closest point on segment [a, b] to point p. Used for swept cone checks: instead of testing
+ * only the ball's current position, we find where along the ball's path it was closest to the
+ * cone origin, giving correct catch/parry checks even when a fast ball crosses the cone in one
+ * tick without landing on a tick boundary inside it.
+ */
+export function closestPointOnSegment(a: Vec3, b: Vec3, p: Vec3): Vec3 {
+  const ab = subtract(b, a);
+  const abLenSq = dot(ab, ab);
+  if (abLenSq <= EPSILON) return cloneVec3(a);
+  const t = clamp(dot(subtract(p, a), ab) / abLenSq, 0, 1);
+  return add(a, scale(ab, t));
+}
+
+/**
+ * True if the swept ball path [ballPrev → ballCurr] passes within `coneDegrees` of `forward`
+ * as seen from `origin`, AND the closest approach point is within `maxRange`. Uses the closest
+ * point on the segment so fast balls that cross the cone in a single tick are still caught.
+ */
+export function sweptSegmentInCone(
+  origin: Vec3,
+  forward: Vec3,
+  ballPrev: Vec3,
+  ballCurr: Vec3,
+  coneDegrees: number,
+  maxRange: number
+): boolean {
+  const closest = closestPointOnSegment(ballPrev, ballCurr, origin);
+  return isWithinCone(origin, forward, closest, coneDegrees, maxRange);
 }
 
 /**

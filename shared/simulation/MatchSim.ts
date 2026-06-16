@@ -1,4 +1,4 @@
-import type { BallState, PlayerState, RoomState } from '../types';
+import type { BallState, PlayerState, ResetVoteState, RoomState } from '../types';
 import { grantDashCharge } from './PlayerSim';
 import { applyScore, createMatchState } from './RuleSim';
 
@@ -7,6 +7,7 @@ export function createRoomState(options: {
   tick?: number;
   players?: PlayerState[];
   balls?: BallState[];
+  resetVote?: ResetVoteState;
 } = {}): RoomState {
   const players: Record<string, PlayerState> = {};
   const balls: Record<string, BallState> = {};
@@ -26,7 +27,19 @@ export function createRoomState(options: {
     tick: options.tick ?? 0,
     match: createMatchState('match', teamIds.length > 0 ? teamIds : ['player', 'opponent']),
     players,
-    balls
+    balls,
+    resetVote: options.resetVote ?? createResetVoteState()
+  };
+}
+
+export function createResetVoteState(overrides: Partial<ResetVoteState> = {}): ResetVoteState {
+  return {
+    votesByPlayerId: {},
+    voteCount: 0,
+    requiredVotes: 0,
+    expiresAtMs: null,
+    resetSerial: 0,
+    ...overrides
   };
 }
 

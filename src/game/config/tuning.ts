@@ -11,6 +11,7 @@ export const TUNING = {
     height: GAME_CONSTANTS.player.height,
     eyeHeight: 1.58,
     radius: GAME_CONSTANTS.player.radius,
+    lookPitchLimitRadians: GAME_CONSTANTS.player.lookPitchLimitRadians,
     groundAcceleration: 24,
     airAcceleration: 11,
     // Air "wish speed" cap (Source-style airspeedcap). Small on purpose: the projection in
@@ -155,6 +156,7 @@ export const TUNING = {
   match: {
     scoreLimit: GAME_CONSTANTS.match.scoreLimit,
     noBoundariesSeconds: GAME_CONSTANTS.match.noBoundariesSeconds,
+    resetVoteSeconds: GAME_CONSTANTS.match.resetVoteSeconds,
     illegalCrossWarningsBeforePenalty: GAME_CONSTANTS.match.illegalCrossWarningsBeforePenalty,
     penaltyHitValue: GAME_CONSTANTS.match.penaltyHitValue
   },

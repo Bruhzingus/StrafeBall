@@ -84,8 +84,8 @@ export const ASSET_MANIFEST: Record<AssetKey, ModelAsset> = {
   bleacher: {
     key: 'bleacher',
     glb: null,
-    // Warm pine bleacher steps.
-    material: { diffuse: [0.68, 0.52, 0.32], roughness: 0.62 },
+    // Grey aluminum-style bleacher risers.
+    material: { diffuse: [0.52, 0.54, 0.54], metallic: 0.08, roughness: 0.5 },
     primitive: { kind: 'box' }
   },
   mat: {

@@ -1,8 +1,13 @@
 import { Color3, Material, Mesh, MeshBuilder, PBRMaterial, PointLight, Scene, StandardMaterial, Vector3 } from '@babylonjs/core';
 import { TUNING } from '../config/tuning';
 import { MatObstacle, MAT_DIMENSIONS } from './MatObstacle';
-import { CollisionWorld, aabbFromCenter } from './Collider';
+import { CollisionWorld } from './Collider';
 import { ModelLoader } from '../assets/ModelLoader';
+import {
+  createBleacherCollisionBoxes,
+  createBleacherPanelSpecs,
+  createBleacherTierSpecs
+} from '../../../shared/simulation/MapGeometry';
 
 /**
  * Builds the gym. Each piece is split into two independent concerns:
@@ -169,34 +174,41 @@ export class GymArena {
   }
 
   private createBleachers(): void {
-    const width = 2.0;
-    const height = 0.35;
-    const depth = TUNING.map.halfLength * 1.3;
-
     const seatMat = new StandardMaterial('bleacher_seat_mat', this.scene);
-    seatMat.diffuseColor = new Color3(0.76, 0.6, 0.38);
+    seatMat.diffuseColor = new Color3(0.7, 0.72, 0.7);
 
-    for (const side of [-1, 1]) {
-      for (let step = 0; step < 4; step += 1) {
-        const cx = side * (TUNING.map.halfWidth - 1.2 - step * 0.42);
-        const cy = 0.17 + step * 0.28;
-        this.loader.createVisual('bleacher', {
-          name: `bleacher_${side}_${step}`,
-          size: { width, height, depth },
-          position: new Vector3(cx, cy, 0)
-        });
-        this.collision.add(aabbFromCenter(cx, cy, 0, width / 2, height / 2, depth / 2));
+    const panelMat = new StandardMaterial('bleacher_panel_mat', this.scene);
+    panelMat.diffuseColor = new Color3(0.38, 0.4, 0.42);
 
-        // Seat-plank strip on top of each tier (slightly lighter warm wood).
-        const seat = MeshBuilder.CreateBox(`bleacher_seat_${side}_${step}`, {
-          width: width - 0.06,
-          height: 0.04,
-          depth: depth - 0.06
-        }, this.scene);
-        seat.position.set(cx, cy + height / 2 + 0.02, 0);
-        seat.material = seatMat;
-        seat.isPickable = false;
-      }
+    const railMat = new StandardMaterial('bleacher_rail_mat', this.scene);
+    railMat.diffuseColor = new Color3(0.82, 0.84, 0.82);
+
+    for (const tier of createBleacherTierSpecs()) {
+      this.loader.createVisual('bleacher', {
+        name: `bleacher_${tier.side}_${tier.step}`,
+        size: tier.size,
+        position: new Vector3(tier.center.x, tier.center.y, tier.center.z)
+      });
+
+      const seat = MeshBuilder.CreateBox(`bleacher_seat_${tier.side}_${tier.step}`, {
+        width: tier.size.width - 0.045,
+        height: 0.045,
+        depth: tier.size.depth - 0.08
+      }, this.scene);
+      seat.position.set(tier.center.x, tier.center.y + tier.size.height * 0.5 + 0.023, tier.center.z);
+      seat.material = seatMat;
+      seat.isPickable = false;
+    }
+
+    for (const panel of createBleacherPanelSpecs()) {
+      const mesh = MeshBuilder.CreateBox(`bleacher_${panel.name}_${panel.side}`, panel.size, this.scene);
+      mesh.position.set(panel.center.x, panel.center.y, panel.center.z);
+      mesh.material = panel.name === 'back' ? panelMat : railMat;
+      mesh.isPickable = false;
+    }
+
+    for (const box of createBleacherCollisionBoxes()) {
+      this.collision.add(box);
     }
   }
 

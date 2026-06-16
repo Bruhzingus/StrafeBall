@@ -52,6 +52,8 @@ export class ArenaScene {
   private readonly onlineCharging: Record<'left' | 'right', boolean> = { left: false, right: false };
   private readonly onlineChargeSeconds: Record<'left' | 'right', number> = { left: 0, right: 0 };
   private lastOnlineScoreByTeamId: Record<string, number> = {};
+  private lastResetSerial = -1;
+  private lastResetVoteKey = '';
 
   // --- Client-side prediction & reconciliation ---
   // The local player is simulated via the SAME shared movement sim the server runs, at a fixed
@@ -68,6 +70,13 @@ export class ArenaScene {
   private lastSentInput: PlayerInput = neutralNetInput(0);
   private lastReconciledTick = -1;
   private debugLogTimer = 0;
+
+  // --- Debug / diagnostics ---
+  private snapshotReceiveCount = 0;
+  private snapshotRateTimer = 0;
+  private snapshotRateHz = 0;
+  private predictionErrorM = 0;
+  private lastSeenSnapshotTick = -1;
 
   // Input latches: accumulate edge-triggered inputs across render frames so they survive to the
   // next fixed-step packet boundary (render may run faster than the 30 Hz send rate).
@@ -133,7 +142,15 @@ export class ArenaScene {
           this.multiplayer.localPlayerId,
           engine.getFps(),
           frameMs,
-          this.multiplayer.pingMs
+          this.multiplayer.pingMs,
+          {
+            snapshotRateHz: this.snapshotRateHz,
+            inputSeq: this.inputSeq,
+            lastAckedSeq: this.multiplayer.latestSnapshot.room.players[this.multiplayer.localPlayerId]?.lastProcessedInputSeq ?? 0,
+            pendingInputs: this.pendingInputs.length,
+            predictionErrorM: this.predictionErrorM,
+            predictionActive: this.predictedMovement !== null,
+          }
         );
       }
     } else {
@@ -262,18 +279,9 @@ export class ArenaScene {
     this.latchLeftHandReleased ||= this.input.wasMouseReleased(MOUSE_BUTTON.leftHand);
     this.latchRightHandReleased ||= this.input.wasMouseReleased(MOUSE_BUTTON.rightHand);
 
-    // --- Offline controller: mouse look, viewmodel, arm animations, local effects ---
-    // Movement position from the offline controller is overridden below by the shared-sim
-    // prediction so that the local player tracks the same trajectory the server computes.
-    const wasSliding = this.prevSliding;
-    const wasBackflipActive = this.prevBackflipActive;
-    this.player.update(dt);
-    const snap = this.player.lastMovementSnapshot;
-    if (!wasSliding && snap.sliding) this.effects.onSlide();
-    if (snap.dashingThisFrame) this.effects.onDash();
-    if (!wasBackflipActive && this.player.backflip.active) this.effects.onBackflip();
-    this.prevSliding = snap.sliding;
-    this.prevBackflipActive = this.player.backflip.active;
+    // Mouse look + viewmodel only — physics and hand sim are server-authoritative.
+    // Effect callbacks fire from predicted state after the fixed-step loop below.
+    this.player.updateOnline(dt);
 
     if (this.latchFakeThrowPressed) {
       this.onlineCharging.left = false;
@@ -288,6 +296,24 @@ export class ArenaScene {
 
     const snapshot = this.multiplayer.latestSnapshot;
     const local = snapshot?.room.players[this.multiplayer.localPlayerId] ?? null;
+
+    // Track snapshot receive rate and prediction error for the debug HUD.
+    if (snapshot && snapshot.tick !== this.lastSeenSnapshotTick) {
+      this.lastSeenSnapshotTick = snapshot.tick;
+      this.snapshotReceiveCount += 1;
+    }
+    this.snapshotRateTimer += dt;
+    if (this.snapshotRateTimer >= 1.0) {
+      this.snapshotRateHz = this.snapshotReceiveCount / this.snapshotRateTimer;
+      this.snapshotReceiveCount = 0;
+      this.snapshotRateTimer = 0;
+    }
+    if (this.predictedMovement && local) {
+      const sp = local.movement.position;
+      const pp = this.predictedMovement.position;
+      const ex = pp.x - sp.x, ey = pp.y - sp.y, ez = pp.z - sp.z;
+      this.predictionErrorM = Math.sqrt(ex * ex + ey * ey + ez * ez);
+    }
 
     // Initialise prediction from the first authoritative player state we receive.
     if (local && !this.predictedMovement) {
@@ -323,10 +349,7 @@ export class ArenaScene {
       this.pendingInputs.push({ seq: this.inputSeq, input, prev });
       if (this.pendingInputs.length > 120) this.pendingInputs.shift();
 
-      this.multiplayer.sendInput(input);
-      this.lastSentInput = input;
-
-      // Clear latches after the packet is sent — edges are now in-flight to the server.
+      // Clear latches after the packet is built; the immutable input object carries the edges.
       this.latchJumpPressed = false;
       this.latchDashPressed = false;
       this.latchSlidePressed = false;
@@ -350,7 +373,7 @@ export class ArenaScene {
         const ey = sp ? pm.position.y - sp.y : 0;
         const ez = sp ? pm.position.z - sp.z : 0;
         console.log(
-          `[net/input] seq=${input.sequence} pending=${this.pendingInputs.length}` +
+          `[net/input/send] seq=${input.sequence} pending=${this.pendingInputs.length}` +
           ` move=(${input.moveX.toFixed(2)},${input.moveZ.toFixed(2)})` +
           ` jump=${Number(input.jumpPressed)}/${Number(input.jumpHeld)} dash=${Number(input.dashPressed)}` +
           ` slide=${Number(input.slidePressed)} backflip=${Number(input.backflipPressed)}` +
@@ -365,6 +388,20 @@ export class ArenaScene {
             : ' server=none')
         );
       }
+
+      this.multiplayer.sendInput(input);
+      this.lastSentInput = input;
+    }
+
+    // Fire one-shot effects from predicted state transitions (replaces offline controller callbacks).
+    if (this.predictedMovement && this.predictedInternal) {
+      const nowSliding = this.predictedMovement.sliding;
+      const nowBackflip = this.predictedInternal.backflipActive;
+      if (!this.prevSliding && nowSliding) this.effects.onSlide();
+      if (this.predictedMovement.dashingThisFrame) this.effects.onDash();
+      if (!this.prevBackflipActive && nowBackflip) this.effects.onBackflip();
+      this.prevSliding = nowSliding;
+      this.prevBackflipActive = nowBackflip;
     }
 
     // Apply the shared-sim predicted position to the player root.
@@ -374,11 +411,14 @@ export class ArenaScene {
     }
 
     // Server-side actions (not in the movement input stream).
-    if (this.input.wasKeyPressed(CONTROL_KEYS.resetMatch)) this.multiplayer.requestReset();
+    if (this.input.wasKeyPressed(CONTROL_KEYS.reset) || this.input.wasKeyPressed(CONTROL_KEYS.resetMatch)) {
+      this.multiplayer.requestReset();
+    }
     if (local) this.sendOnlineHandActions(dt, local);
 
     // Remote players and balls: rendered from server state.
     if (snapshot) {
+      this.handleOnlineResetEvents(snapshot);
       this.networkRenderer.update(snapshot, this.multiplayer.localPlayerId, dt);
       this.handleOnlineScoreEvents(snapshot);
     }
@@ -422,8 +462,6 @@ export class ArenaScene {
     return (leftEmpty && input.leftHandHeld) || (rightEmpty && input.rightHandHeld);
   }
 
-  // Kept for when client-side prediction is re-introduced. Not called in the current
-  // prototype build — local player position comes from PlayerController.update() directly.
   private applyPredicted(movement: PlayerMovementState, internal: MovementInternalState): void {
     const p = movement.position;
     const v = movement.velocity;
@@ -475,6 +513,8 @@ export class ArenaScene {
     this.setPracticePropsEnabled(false);
     this.ballManager.clear();
     this.lastOnlineScoreByTeamId = {};
+    this.lastResetSerial = -1;
+    this.lastResetVoteKey = '';
   }
 
   private exitOnlineMode(): void {
@@ -487,6 +527,8 @@ export class ArenaScene {
     this.onlineChargeSeconds.right = 0;
     this.resetPrediction();
     this.lastOnlineScoreByTeamId = {};
+    this.lastResetSerial = -1;
+    this.lastResetVoteKey = '';
     this.player.hands.clearHands();
     this.player.resetPosition();
     this.bot.reset();
@@ -501,9 +543,14 @@ export class ArenaScene {
     this.predictedMovement = null;
     this.predictedInternal = null;
     this.predictedDash = null;
-    this.lastSentInput = neutralNetInput(this.networkYaw);
+    this.lastSentInput = neutralNetInput(this.networkYaw, this.networkPitch);
     this.lastReconciledTick = -1;
     this.debugLogTimer = 0;
+    this.snapshotReceiveCount = 0;
+    this.snapshotRateTimer = 0;
+    this.snapshotRateHz = 0;
+    this.predictionErrorM = 0;
+    this.lastSeenSnapshotTick = -1;
     this.latchJumpPressed = false;
     this.latchDashPressed = false;
     this.latchSlidePressed = false;
@@ -532,6 +579,33 @@ export class ArenaScene {
     }
 
     this.lastOnlineScoreByTeamId = { ...scores };
+  }
+
+  private handleOnlineResetEvents(snapshot: ServerSnapshot): void {
+    const vote = snapshot.room.resetVote;
+    if (this.lastResetSerial < 0) {
+      this.lastResetSerial = vote.resetSerial;
+    } else if (vote.resetSerial !== this.lastResetSerial) {
+      this.lastResetSerial = vote.resetSerial;
+      this.lastResetVoteKey = '';
+      this.resetPrediction();
+      this.onlineCharging.left = false;
+      this.onlineCharging.right = false;
+      this.onlineChargeSeconds.left = 0;
+      this.onlineChargeSeconds.right = 0;
+      this.player.hands.clearHands();
+      this.lastOnlineScoreByTeamId = {};
+      this.hud.showScoreEvent('RESET', 'Room reset', 'neutral');
+    }
+
+    const voterIds = Object.keys(vote.votesByPlayerId).sort().join(',');
+    const voteKey = `${vote.resetSerial}:${vote.voteCount}/${vote.requiredVotes}:${voterIds}`;
+    if (voteKey === this.lastResetVoteKey) return;
+    this.lastResetVoteKey = voteKey;
+
+    if (vote.voteCount > 0 && vote.requiredVotes > 0) {
+      this.hud.showScoreEvent('RESET VOTE', `${vote.voteCount}/${vote.requiredVotes}`, 'neutral');
+    }
   }
 
   private showOnlineScoreEvent(snapshot: ServerSnapshot, scoringTeamId: string, score: number, delta: number): void {
@@ -689,7 +763,7 @@ function cloneMovement(movement: PlayerMovementState): PlayerMovementState {
   };
 }
 
-function neutralNetInput(yawRadians: number): PlayerInput {
+function neutralNetInput(yawRadians: number, pitchRadians = 0): PlayerInput {
   return {
     sequence: 0,
     clientTimeMs: 0,
@@ -697,7 +771,7 @@ function neutralNetInput(yawRadians: number): PlayerInput {
     moveZ: 0,
     dashDirection: { x: 0, y: 0, z: 0 },
     lookYawRadians: yawRadians,
-    lookPitchRadians: 0,
+    lookPitchRadians: pitchRadians,
     jumpPressed: false,
     jumpHeld: false,
     dashPressed: false,

@@ -2,7 +2,10 @@ import { GAME_CONSTANTS, type GameConstants } from '../constants';
 import type { DashState, MovementInternalState, PlayerInput, PlayerMovementState, Vec3 } from '../types';
 import type { AABB } from './MapGeometry';
 import { DEG2RAD, clamp } from './CollisionMath';
+import { clampLookPitch, facingFromAngles } from './AimMath';
 import { advanceDashState, tryDash } from './PlayerSim';
+
+export { facingFromAngles } from './AimMath';
 
 export { createMovementInternalState } from './PlayerSim';
 
@@ -67,7 +70,7 @@ export function stepMovement(
   let dash = dashIn;
 
   const yaw = input.lookYawRadians;
-  const pitch = clamp(input.lookPitchRadians, -Math.PI / 2, Math.PI / 2);
+  const pitch = clampLookPitch(input.lookPitchRadians, c);
   const moveX = clampUnit(input.moveX);
   const moveZ = clampUnit(input.moveZ);
   const fwdX = Math.sin(yaw);
@@ -382,15 +385,6 @@ function sanitizeDashDirection(direction: Vec3 | undefined): { x: number; z: num
   const len = Math.hypot(x, z);
   if (len <= EPS) return null;
   return { x: x / len, z: z / len };
-}
-
-export function facingFromAngles(yawRadians: number, pitchRadians: number): Vec3 {
-  const pitchCos = Math.cos(pitchRadians);
-  const x = Math.sin(yawRadians) * pitchCos;
-  const y = Math.sin(pitchRadians);
-  const z = Math.cos(yawRadians) * pitchCos;
-  const len = Math.sqrt(x * x + y * y + z * z) || 1;
-  return { x: x / len, y: y / len, z: z / len };
 }
 
 function clampUnit(value: number): number {

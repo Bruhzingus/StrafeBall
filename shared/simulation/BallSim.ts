@@ -4,6 +4,7 @@ import {
   add,
   cloneVec3,
   distance,
+  distXZ,
   length,
   normalize,
   scale,
@@ -64,7 +65,13 @@ export function isBallPickupEligible(
   playerPosition: Vec3,
   constants: GameConstants = GAME_CONSTANTS
 ): boolean {
-  return isBallPickupStateEligible(ball, constants) && distance(ball.position, playerPosition) <= constants.ball.pickupRadius;
+  if (!isBallPickupStateEligible(ball, constants)) return false;
+  // Use XZ + vertical separately: a ball at the player's feet on the floor should be
+  // reachable even if the 3D distance is inflated by height difference, and a ball at
+  // the same XZ but far above should not be reachable via floor pickup.
+  if (distXZ(ball.position, playerPosition) > constants.ball.pickupRadius) return false;
+  if (Math.abs(ball.position.y - playerPosition.y) > constants.ball.pickupVerticalTolerance) return false;
+  return true;
 }
 
 export function holdBall(ball: BallState, playerId: string, hand: HandSide): BallState {
@@ -205,9 +212,17 @@ export function advanceBall(ball: BallState, dt: number, constants: GameConstant
   const firstLiveFlight = ball.phase === 'live' && ball.bounceCount === 0;
   const gravityScale = firstLiveFlight ? ball.dropScale : 1;
   const velocityWithGravity = add(ball.velocity, vec3(0, -constants.ball.gravity * gravityScale * dt, 0));
-  const velocity = firstLiveFlight
+  let velocity = firstLiveFlight
     ? add(velocityWithGravity, scale(ball.curveAccel, dt))
     : velocityWithGravity;
+
+  // Apply floor friction to dead/loose balls resting on or near the ground so they don't
+  // slide forever. Only damp the XZ plane when the ball is on the floor (y ≈ radius).
+  if ((ball.phase === 'dead' || ball.phase === 'loose') && ball.position.y <= constants.ball.radius + 0.05) {
+    const friction = constants.ball.looseFriction;
+    const frictionFactor = Math.max(0, 1 - friction * dt);
+    velocity = vec3(velocity.x * frictionFactor, velocity.y, velocity.z * frictionFactor);
+  }
 
   return {
     ...ball,

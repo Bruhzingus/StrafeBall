@@ -7,6 +7,7 @@ import { safeNormalize } from '../utils/math';
 import { CollisionWorld } from '../map/Collider';
 import { ModelLoader } from '../assets/ModelLoader';
 import { isBallPickupStateEligible } from '../../../shared/simulation/BallSim';
+import { ballVariantForState, createBallMesh, getBallMaterial } from './BallVisualFactory';
 
 export class BallManager {
   public readonly balls: Ball[] = [];
@@ -24,7 +25,7 @@ export class BallManager {
 
     for (let i = 0; i < count; i += 1) {
       const position = new Vector3(start + i * spacing, TUNING.ball.radius + 0.05, 0);
-      const visual = this.loader.createVisual('ball', { name: `ball_${i}`, size: { diameter: TUNING.ball.radius * 2 }, position });
+      const visual = createBallMesh(this.loader.scene, `ball_${i}`, position);
       this.balls.push(new Ball(visual, position));
     }
   }
@@ -38,12 +39,10 @@ export class BallManager {
 
   update(dt: number): void {
     // Super balls glow; swap the shared material based on live state (cheap, cached materials).
-    const ballMaterial = this.loader.material('ball');
-    const superBallMaterial = this.loader.material('superBall');
     for (const ball of this.balls) {
       // Only reassign when it actually changes (on a throw/catch transition) so we don't dirty
       // Babylon's render state / break sub-mesh batching every frame.
-      const desired = ball.isSuper ? superBallMaterial : ballMaterial;
+      const desired = getBallMaterial(ball.mesh.getScene(), ballVariantForState({ phase: ball.state, isSuper: ball.isSuper }));
       if (ball.mesh.material !== desired) ball.mesh.material = desired;
       ball.update(dt, this.collision);
     }

@@ -163,12 +163,21 @@ export interface MatchState {
   boundary: MatchBoundaryState;
 }
 
+export interface ResetVoteState {
+  votesByPlayerId: Record<string, true>;
+  voteCount: number;
+  requiredVotes: number;
+  expiresAtMs: number | null;
+  resetSerial: number;
+}
+
 export interface RoomState {
   id: string;
   tick: number;
   match: MatchState;
   players: Record<string, PlayerState>;
   balls: Record<string, BallState>;
+  resetVote: ResetVoteState;
 }
 
 export type ValidationResult<Reason extends string = string> =

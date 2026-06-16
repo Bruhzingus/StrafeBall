@@ -49,6 +49,37 @@ describe('ServerGameLoop', () => {
     expect(ballId).toBeTruthy();
   });
 
+  it('uses authoritative pitch when creating throw velocity', () => {
+    const loop = new ServerGameLoop('room');
+    loop.addPlayer('a', 'A');
+    loop.state.players.a.movement.position = vec3(0, 0, 0);
+
+    loop.handleInput('a', { lookYawRadians: 0, lookPitchRadians: -0.5 }, 1);
+    loop.step();
+    expect(loop.handlePickup('a').ok).toBe(true);
+    expect(loop.handleThrow('a', { hand: 'left' }).ok).toBe(true);
+
+    const upward = Object.values(loop.state.balls).find((ball) => ball.phase === 'live');
+    expect(upward?.velocity.y).toBeGreaterThan(0);
+    expect(upward?.velocity.z).toBeGreaterThan(0);
+  });
+
+  it('uses yaw and pitch correctly from the opposite spawn side', () => {
+    const loop = new ServerGameLoop('room');
+    loop.addPlayer('a', 'A');
+    loop.addPlayer('b', 'B');
+    loop.state.players.b.movement.position = vec3(0, 0, 0);
+
+    loop.handleInput('b', { lookYawRadians: Math.PI, lookPitchRadians: 0.45 }, 1);
+    loop.step();
+    expect(loop.handlePickup('b').ok).toBe(true);
+    expect(loop.handleThrow('b', { hand: 'left' }).ok).toBe(true);
+
+    const downward = Object.values(loop.state.balls).find((ball) => ball.phase === 'live');
+    expect(downward?.velocity.y).toBeLessThan(0);
+    expect(downward?.velocity.z).toBeLessThan(0);
+  });
+
   it('server-side hit validation grants score and dash charge', () => {
     const loop = new ServerGameLoop('room');
     loop.addPlayer('a', 'A');
@@ -72,26 +103,63 @@ describe('ServerGameLoop', () => {
     expect(loop.state.balls.ball_0.phase).toBe('dead');
   });
 
-  it('blocks mid-match reset but allows a rematch once the match is complete', () => {
+  it('resets immediately with one player', () => {
+    const loop = new ServerGameLoop('room');
+    loop.addPlayer('a', 'A');
+    loop.state.match.scoreByTeamId.blue = 3;
+    loop.state.players.a.score = 3;
+
+    const reset = loop.handleReset('a');
+
+    expect(reset.ok).toBe(true);
+    expect(loop.state.match.scoreByTeamId.blue).toBe(0);
+    expect(loop.state.players.a.score).toBe(0);
+    expect(loop.state.resetVote.voteCount).toBe(0);
+    expect(loop.state.resetVote.requiredVotes).toBe(1);
+    expect(loop.state.resetVote.resetSerial).toBe(1);
+  });
+
+  it('requires all connected players to vote for a room reset', () => {
     const loop = new ServerGameLoop('room');
     loop.addPlayer('a', 'A');
     loop.addPlayer('b', 'B');
     loop.state.match.scoreByTeamId.blue = 3;
     loop.state.players.a.score = 3;
 
-    // Unilateral reset mid-duel is griefing and is rejected (#6).
-    expect(loop.handleReset('a').ok).toBe(false);
+    const first = loop.handleReset('a');
+
+    expect(first.ok).toBe(true);
     expect(loop.state.match.scoreByTeamId.blue).toBe(3);
+    expect(loop.state.resetVote.voteCount).toBe(1);
+    expect(loop.state.resetVote.requiredVotes).toBe(2);
 
-    // Once the match is complete, either player may start a rematch.
-    loop.state.match.status = 'complete';
-    const reset = loop.handleReset('a');
+    const second = loop.handleReset('b');
 
-    expect(reset.ok).toBe(true);
+    expect(second.ok).toBe(true);
     expect(Object.keys(loop.state.players)).toEqual(['a', 'b']);
     expect(Object.keys(loop.state.balls)).toHaveLength(GAME_CONSTANTS.map.ballCount);
     expect(loop.state.match.scoreByTeamId.blue).toBe(0);
     expect(loop.state.players.a.score).toBe(0);
+    expect(loop.state.resetVote.voteCount).toBe(0);
+    expect(loop.state.resetVote.requiredVotes).toBe(2);
+  });
+
+  it('recomputes reset votes when a player leaves', () => {
+    const loop = new ServerGameLoop('room');
+    loop.addPlayer('a', 'A');
+    loop.addPlayer('b', 'B');
+    loop.state.match.scoreByTeamId.blue = 3;
+
+    expect(loop.handleReset('a').ok).toBe(true);
+    expect(loop.state.resetVote.voteCount).toBe(1);
+    expect(loop.state.resetVote.requiredVotes).toBe(2);
+
+    loop.removePlayer('b');
+
+    expect(Object.keys(loop.state.players)).toEqual(['a']);
+    expect(loop.state.match.scoreByTeamId.blue).toBe(0);
+    expect(loop.state.resetVote.voteCount).toBe(0);
+    expect(loop.state.resetVote.requiredVotes).toBe(1);
   });
 
   it('forfeits to the remaining player when an opponent abandons mid-match', () => {

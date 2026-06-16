@@ -21,7 +21,7 @@ export class ModelLoader {
   private readonly materials = new Map<string, PBRMaterial>();
 
   constructor(
-    private readonly scene: Scene,
+    public readonly scene: Scene,
     private readonly manifest: Record<AssetKey, ModelAsset> = ASSET_MANIFEST
   ) {}
 

@@ -40,7 +40,7 @@ export class Hud {
       <div>Click canvas for pointer lock</div>
       <div>M1/M2 hands | E pickup | R drop | F fake</div>
       <div>Shift dash | C/Ctrl slide | Q backflip</div>
-      <div>K reset pos | J reset balls | U reset match</div>
+      <div>K reset/vote | J reset balls | U reset match</div>
       <div>L launch test ball | Tab debug</div>
     `;
   }
@@ -140,25 +140,43 @@ export class Hud {
     `);
   }
 
-  updateNetwork(snapshot: ServerSnapshot, localPlayerId: string, fps: number, frameMs: number, pingMs: number | null): void {
+  updateNetwork(
+    snapshot: ServerSnapshot,
+    localPlayerId: string,
+    fps: number,
+    frameMs: number,
+    pingMs: number | null,
+    netDebug: {
+      snapshotRateHz: number;
+      inputSeq: number;
+      lastAckedSeq: number;
+      pendingInputs: number;
+      predictionErrorM: number;
+      predictionActive: boolean;
+    }
+  ): void {
     const room = snapshot.room;
     const local = room.players[localPlayerId];
     const opponent = Object.values(room.players).find((player) => player.id !== localPlayerId);
     const localScore = local ? room.match.scoreByTeamId[local.teamId] ?? 0 : 0;
     const opponentScore = opponent ? room.match.scoreByTeamId[opponent.teamId] ?? 0 : 0;
     const noBoundariesTime = Math.max(0, TUNING.match.noBoundariesSeconds - room.match.boundary.elapsedSeconds);
+    const resetVoteText = room.resetVote.voteCount > 0
+      ? `<div class="scoreboard-msg hud-warn">Reset vote: ${room.resetVote.voteCount}/${room.resetVote.requiredVotes}</div>`
+      : '';
 
     if (this.debugVisible) {
+      const errColor = netDebug.predictionErrorM > 0.5 ? 'hud-bad' : netDebug.predictionErrorM > 0.1 ? 'hud-warn' : 'hud-good';
       this.setHtml(this.topLeft, `
         <div class="hud-title">Online <span style="font-weight:400;opacity:0.45;font-size:10px">[Tab]</span></div>
         <div>FPS <span class="hud-good">${Math.round(fps)}</span> &middot; ${frameMs.toFixed(1)} ms</div>
-        <div>Room: <span class="hud-good">${escapeHtml(room.id)}</span></div>
-        <div>Ping: <span class="hud-good">${pingMs === null ? '-' : `${pingMs} ms`}</span></div>
-        <div>Local: ${escapeHtml(localPlayerId || '-')}</div>
-        <div>Players: ${Object.keys(room.players).length}/2</div>
-        <div>Tick: ${snapshot.tick}</div>
-        ${local ? `<div>Speed: <span class="hud-good">${local.movement.speed.toFixed(1)}</span> m/s</div>` : ''}
-        ${local ? `<div>Vel: ${local.movement.velocity.x.toFixed(1)}, ${local.movement.velocity.y.toFixed(1)}, ${local.movement.velocity.z.toFixed(1)}</div>` : ''}
+        <div>Room: <span class="hud-good">${escapeHtml(room.id)}</span> · Players: ${Object.keys(room.players).length}/2</div>
+        <div>Ping: <span class="hud-good">${pingMs === null ? '-' : `${pingMs} ms`}</span> · Tick: ${snapshot.tick}</div>
+        <div>Snap rate: <span class="hud-good">${netDebug.snapshotRateHz.toFixed(1)} Hz</span></div>
+        <div>Input seq: ${netDebug.inputSeq} · Acked: ${netDebug.lastAckedSeq} · Pending: ${netDebug.pendingInputs}</div>
+        <div>Pred err: <span class="${errColor}">${netDebug.predictionErrorM.toFixed(3)} m</span> · Active: ${netDebug.predictionActive ? '<span class="hud-good">yes</span>' : '<span class="hud-bad">no</span>'}</div>
+        <div>Interp remote: <span class="hud-good">yes (exp-20)</span> · Balls: <span class="hud-good">yes (exp-30/15)</span></div>
+        ${local ? `<div>Speed: <span class="hud-good">${local.movement.speed.toFixed(1)}</span> m/s · Vel: ${local.movement.velocity.x.toFixed(1)}, ${local.movement.velocity.y.toFixed(1)}, ${local.movement.velocity.z.toFixed(1)}</div>` : ''}
       `);
     }
 
@@ -179,15 +197,21 @@ export class Hud {
       <div class="${room.match.boundary.noBoundaries ? 'hud-bad' : 'hud-warn'}" style="text-align:center;margin-top:3px">
         ${room.match.boundary.noBoundaries ? 'NO BOUNDARIES' : `Half-court: ${noBoundariesTime.toFixed(0)}s`}
       </div>
+      ${resetVoteText}
       ${winner}
     `);
 
     const left = local?.hands.left;
     const right = local?.hands.right;
+    const leftTrack = left ? this.bestTrackingTime(left.catchTrackingSecondsByBallId) : 0;
+    const rightTrack = right ? this.bestTrackingTime(right.catchTrackingSecondsByBallId) : 0;
+    const trackRequired = TUNING.catch.trackingSeconds;
+    const leftTrackHtml = left?.heldBallId ? '—' : `<span class="${leftTrack >= trackRequired ? 'hud-good' : ''}">${leftTrack.toFixed(2)}s/${trackRequired.toFixed(2)}s</span>`;
+    const rightTrackHtml = right?.heldBallId ? '—' : `<span class="${rightTrack >= trackRequired ? 'hud-good' : ''}">${rightTrack.toFixed(2)}s/${trackRequired.toFixed(2)}s</span>`;
     this.setHtml(this.bottomLeft, `
       <div class="hud-title">Server State</div>
-      <div>M1 L [${escapeHtml(left?.heldBallId ?? '-')}]: ${escapeHtml(left?.mode ?? 'empty')}</div>
-      <div>M2 R [${escapeHtml(right?.heldBallId ?? '-')}]: ${escapeHtml(right?.mode ?? 'empty')}</div>
+      <div>M1 L [${escapeHtml(left?.heldBallId ?? '-')}]: ${escapeHtml(left?.mode ?? 'empty')} · track ${leftTrackHtml}</div>
+      <div>M2 R [${escapeHtml(right?.heldBallId ?? '-')}]: ${escapeHtml(right?.mode ?? 'empty')} · track ${rightTrackHtml}</div>
       <div>Dash: <span class="hud-good">${local?.dash.charges ?? '-'}/${TUNING.dash.maxCharges}</span></div>
       <div>Balls - ${this.networkBallTally(snapshot)}</div>
       <div style="max-width:320px;white-space:normal">${this.networkBallList(snapshot)}</div>
@@ -237,8 +261,21 @@ export class Hud {
 
   private networkBallList(snapshot: ServerSnapshot): string {
     return Object.values(snapshot.room.balls)
-      .map((ball) => `${escapeHtml(ball.id)}:${escapeHtml(ball.phase)}${ball.heldByPlayerId ? `(${escapeHtml(ball.heldByPlayerId.slice(0, 4))}/${escapeHtml(ball.heldHand ?? '-')})` : ''}`)
-      .join(' ');
+      .map((ball) => {
+        const spd = Math.sqrt(ball.velocity.x ** 2 + ball.velocity.y ** 2 + ball.velocity.z ** 2);
+        const owner = ball.heldByPlayerId ? `(${escapeHtml(ball.heldByPlayerId.slice(0, 4))}/${escapeHtml(ball.heldHand ?? '-')})` : '';
+        return `${escapeHtml(ball.id)}:${escapeHtml(ball.phase)}${owner}${ball.isSuper ? '★' : ''} ${spd.toFixed(0)}m/s`;
+      })
+      .join(' · ');
+  }
+
+  private bestTrackingTime(trackingByBallId: Record<string, number> | undefined): number {
+    if (!trackingByBallId) return 0;
+    let best = 0;
+    for (const t of Object.values(trackingByBallId)) {
+      if (t > best) best = t;
+    }
+    return best;
   }
 
   dispose(): void {

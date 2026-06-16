@@ -11,6 +11,7 @@ import { CollisionWorld } from '../map/Collider';
 import { Effects } from '../effects/Effects';
 import { settings } from '../config/Settings';
 import { Viewmodel } from './Viewmodel';
+import { TUNING } from '../config/tuning';
 
 export class PlayerController {
   public readonly root: TransformNode;
@@ -68,6 +69,17 @@ export class PlayerController {
     }
   }
 
+  /**
+   * Online-mode update: only mouse look + viewmodel. Physics and hand sim are server-authoritative
+   * so we skip MovementController/HandController/CatchController here. Position is written by
+   * ArenaScene.applyPredicted() after this returns.
+   */
+  updateOnline(dt: number): void {
+    this.updateLook();
+    this.viewmodel.update(dt, this.hands);
+    this.camera.getViewMatrix(true);
+  }
+
   resetPosition(): void {
     this.root.position.set(0, 0, -12);
     this.movement.velocity.setAll(0);
@@ -80,7 +92,7 @@ export class PlayerController {
     const { dx, dy } = this.input.consumeMouseDelta();
     this.yaw += dx * settings.mouseSensitivity;
     this.pitch += dy * settings.mouseSensitivity;
-    this.pitch = Math.max(-1.45, Math.min(1.45, this.pitch));
+    this.pitch = Math.max(-TUNING.player.lookPitchLimitRadians, Math.min(TUNING.player.lookPitchLimitRadians, this.pitch));
     this.root.rotation.y = this.yaw;
     this.camera.rotation.x = this.pitch;
     this.camera.rotation.y = 0;

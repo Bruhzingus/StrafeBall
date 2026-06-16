@@ -6,6 +6,7 @@ export const GAME_CONSTANTS = {
   player: {
     height: 1.75,
     radius: 0.42,
+    lookPitchLimitRadians: 1.45,
     eyeHeight: 1.58,
     groundAcceleration: 24,
     airAcceleration: 11,
@@ -78,14 +79,17 @@ export const GAME_CONSTANTS = {
     deadAfterBounces: 1,
     deflectedDeadAfterBounces: 1,
     settleSpeed: 0.2,
-    hitRadius: 0.7
+    hitRadius: 0.7,
+    looseFriction: 3.5,
+    pickupVerticalTolerance: 1.2
   },
 
   catch: {
-    coneDegrees: 30,
+    coneDegrees: 25,
     superParryConeDegrees: 10,
-    trackingSeconds: 0.14,
-    rangeMeters: 1.92,
+    trackingSeconds: 0.2,
+    // Slight lag cushion for online catch validation: +0.48 m / ~1.6 ft from the original.
+    rangeMeters: 2.4,
     cooldownSeconds: 0.45,
     catchBoostSpeed: 3,
     catchBoostDuration: 0.25
@@ -119,6 +123,7 @@ export const GAME_CONSTANTS = {
   match: {
     scoreLimit: 5,
     noBoundariesSeconds: 120,
+    resetVoteSeconds: 20,
     illegalCrossWarningsBeforePenalty: 1,
     penaltyHitValue: 1,
     halfCourtLineZ: 0.25
