@@ -457,6 +457,10 @@ export class NetworkRenderer {
         if (ball.heldByPlayerId === localPlayerId && localPredicted && holder) {
           const predictedHolder: PlayerState = { ...holder, movement: localPredicted };
           target = toVector3(computePlayerHandAnchor(predictedHolder, ball.heldHand));
+          // Keep the LOCAL held ball in front of the eye so it's always visible: the raw hand anchor
+          // can fall beside/behind the camera near-plane (e.g. steep pitch while moving), which made
+          // your own ball briefly vanish. Clamp it to a minimum forward distance along the look dir.
+          target = keepInFrontOfEye(target, localPredicted);
         } else if (holder) {
           target = toVector3(computePlayerHandAnchor(holder, ball.heldHand));
         }
@@ -834,6 +838,26 @@ function emptyDebugStats(): NetworkRendererDebugStats {
 
 function toVector3(v: { x: number; y: number; z: number }): Vector3 {
   return new Vector3(v.x, v.y, v.z);
+}
+
+/**
+ * Keep a held-ball anchor in front of the local eye. Projects the anchor onto the camera look
+ * direction; if its forward component is below MIN_FORWARD it is pushed out to MIN_FORWARD (the
+ * lateral/vertical offset is preserved). This guarantees the local player's own held ball stays
+ * visible — it can never sit beside or behind the near clip plane — without affecting throw
+ * direction/origin (computed separately from the camera) or any remote/authoritative state.
+ */
+function keepInFrontOfEye(anchor: Vector3, movement: PlayerState['movement']): Vector3 {
+  const MIN_FORWARD = 0.45; // meters in front of the eye
+  const eyeHeight = playerAimOriginHeight(movement);
+  const eye = new Vector3(movement.position.x, movement.position.y + eyeHeight, movement.position.z);
+  const f = lookVectorsFromAngles(movement.yawRadians, movement.pitchRadians).forward;
+  const forward = new Vector3(f.x, f.y, f.z);
+  const rel = anchor.subtract(eye);
+  const along = Vector3.Dot(rel, forward);
+  if (along >= MIN_FORWARD) return anchor;
+  // Shift the anchor forward along the look direction by the shortfall, preserving its offset.
+  return anchor.add(forward.scale(MIN_FORWARD - along));
 }
 
 function flatForwardFrom(forward: Vector3): Vector3 {
