@@ -1,4 +1,4 @@
-import { Color3, Mesh, MeshBuilder, Scene, StandardMaterial, TransformNode, Vector3 } from '@babylonjs/core';
+import { Color3, Mesh, MeshBuilder, PBRMaterial, Scene, TransformNode, Vector3 } from '@babylonjs/core';
 import { ASSET_MANIFEST, AssetKey, ModelAsset, PrimitiveSize } from './AssetManifest';
 
 export interface VisualOptions {
@@ -18,7 +18,7 @@ export interface VisualOptions {
  * whenever `glb` is null (i.e. always, for now).
  */
 export class ModelLoader {
-  private readonly materials = new Map<string, StandardMaterial>();
+  private readonly materials = new Map<string, PBRMaterial>();
 
   constructor(
     private readonly scene: Scene,
@@ -26,13 +26,15 @@ export class ModelLoader {
   ) {}
 
   /** Shared material for an asset key, built lazily from the manifest. */
-  material(key: AssetKey): StandardMaterial {
+  material(key: AssetKey): PBRMaterial {
     const existing = this.materials.get(key);
     if (existing) return existing;
 
     const spec = this.manifest[key].material;
-    const material = new StandardMaterial(`${key}_material`, this.scene);
-    material.diffuseColor = new Color3(...spec.diffuse);
+    const material = new PBRMaterial(`${key}_material`, this.scene);
+    material.albedoColor = new Color3(...spec.diffuse);
+    material.metallic = spec.metallic ?? 0;
+    material.roughness = spec.roughness ?? 0.56;
     if (spec.emissive) material.emissiveColor = new Color3(...spec.emissive);
     this.materials.set(key, material);
     return material;

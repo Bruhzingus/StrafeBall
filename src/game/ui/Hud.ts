@@ -12,10 +12,12 @@ export class Hud {
   private readonly topCenter: HTMLDivElement;
   private readonly bottomLeft: HTMLDivElement;
   private readonly bottomRight: HTMLDivElement;
+  private readonly scoreEvent: HTMLDivElement;
   private readonly crosshair: Crosshair;
   // Last rendered markup per panel — we only touch the DOM when the text actually changes,
   // so the HUD doesn't thrash innerHTML 60+ times a second while values are static.
   private readonly lastHtml = new Map<HTMLDivElement, string>();
+  private scoreEventTimer: number | null = null;
   private debugVisible = true;
 
   constructor(parent: HTMLElement) {
@@ -28,6 +30,9 @@ export class Hud {
     this.topCenter = this.panel('hud-top-center');
     this.bottomLeft = this.panel('hud-bottom-left');
     this.bottomRight = this.panel('hud-bottom-right');
+    this.scoreEvent = document.createElement('div');
+    this.scoreEvent.className = 'score-event';
+    this.root.appendChild(this.scoreEvent);
 
     // Controls panel is static — write it once.
     this.bottomRight.innerHTML = `
@@ -43,6 +48,27 @@ export class Hud {
   toggleDebug(): void {
     this.debugVisible = !this.debugVisible;
     this.topLeft.style.display = this.debugVisible ? '' : 'none';
+  }
+
+  showScoreEvent(title: string, subtitle: string, variant: 'good' | 'bad' | 'neutral' = 'neutral'): void {
+    if (this.scoreEventTimer !== null) {
+      window.clearTimeout(this.scoreEventTimer);
+      this.scoreEventTimer = null;
+    }
+
+    this.scoreEvent.className = `score-event score-event--${variant}`;
+    this.scoreEvent.innerHTML = `
+      <div class="score-event-title">${escapeHtml(title)}</div>
+      <div class="score-event-subtitle">${escapeHtml(subtitle)}</div>
+    `;
+
+    // Restart the CSS keyframe when consecutive hits land within the same animation window.
+    void this.scoreEvent.offsetWidth;
+    this.scoreEvent.classList.add('score-event--visible');
+    this.scoreEventTimer = window.setTimeout(() => {
+      this.scoreEvent.classList.remove('score-event--visible');
+      this.scoreEventTimer = null;
+    }, 1150);
   }
 
   update(player: PlayerController, rules: MatchRules, ballManager: BallManager, fps: number, frameMs: number): void {
@@ -216,6 +242,10 @@ export class Hud {
   }
 
   dispose(): void {
+    if (this.scoreEventTimer !== null) {
+      window.clearTimeout(this.scoreEventTimer);
+      this.scoreEventTimer = null;
+    }
     this.root.remove();
   }
 

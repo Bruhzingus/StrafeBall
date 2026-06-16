@@ -239,6 +239,97 @@ html, body {
   margin-top: 3px;
 }
 
+.score-event {
+  position: absolute;
+  left: 50%;
+  top: 31%;
+  z-index: 9;
+  min-width: 220px;
+  padding: 12px 18px;
+  transform: translate(-50%, -50%) scale(0.92);
+  opacity: 0;
+  pointer-events: none;
+  text-align: center;
+  background: rgba(5, 8, 14, 0.78);
+  border: 1px solid rgba(255, 255, 255, 0.24);
+  border-radius: 8px;
+  box-shadow: 0 18px 50px rgba(0, 0, 0, 0.38);
+  backdrop-filter: blur(6px);
+}
+
+.score-event--visible {
+  animation: score-event-pop 1.15s cubic-bezier(0.18, 0.86, 0.24, 1) both;
+}
+
+.score-event-title {
+  font-size: 34px;
+  line-height: 1;
+  font-weight: 900;
+  letter-spacing: 0;
+  text-transform: uppercase;
+}
+
+.score-event-subtitle {
+  margin-top: 6px;
+  font-size: 12px;
+  font-weight: 700;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  color: rgba(255, 255, 255, 0.64);
+}
+
+.score-event--good {
+  border-color: rgba(120, 255, 175, 0.55);
+  color: #8cffb0;
+  text-shadow: 0 0 22px rgba(90, 255, 160, 0.5);
+}
+
+.score-event--bad {
+  border-color: rgba(255, 115, 115, 0.58);
+  color: #ff7777;
+  text-shadow: 0 0 22px rgba(255, 80, 80, 0.48);
+}
+
+.score-event--neutral {
+  border-color: rgba(255, 211, 106, 0.5);
+  color: #ffd36a;
+  text-shadow: 0 0 22px rgba(255, 200, 80, 0.42);
+}
+
+@keyframes score-event-pop {
+  0% {
+    opacity: 0;
+    transform: translate(-50%, -44%) scale(0.88);
+    filter: blur(3px);
+  }
+  12% {
+    opacity: 1;
+    transform: translate(-50%, -50%) scale(1.04);
+    filter: blur(0);
+  }
+  28% {
+    transform: translate(-50%, -50%) scale(1);
+  }
+  72% {
+    opacity: 1;
+  }
+  100% {
+    opacity: 0;
+    transform: translate(-50%, -58%) scale(0.98);
+  }
+}
+
+@media (max-width: 640px) {
+  .score-event {
+    min-width: 180px;
+    padding: 10px 14px;
+  }
+
+  .score-event-title {
+    font-size: 26px;
+  }
+}
+
 .multiplayer-panel {
   position: fixed;
   left: 14px;

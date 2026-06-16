@@ -1,4 +1,4 @@
-import { Color3, Mesh, MeshBuilder, PointLight, Scene, StandardMaterial, Vector3 } from '@babylonjs/core';
+import { Color3, Material, Mesh, MeshBuilder, PBRMaterial, PointLight, Scene, StandardMaterial, Vector3 } from '@babylonjs/core';
 import { TUNING } from '../config/tuning';
 import { MatObstacle, MAT_DIMENSIONS } from './MatObstacle';
 import { CollisionWorld, aabbFromCenter } from './Collider';
@@ -221,34 +221,76 @@ export class GymArena {
   private createTargetDummies(): void {
     const positions = [new Vector3(-3, 0.9, 8), new Vector3(0, 0.9, 9.5), new Vector3(3, 0.9, 8)];
     const dummyMat = this.loader.material('dummy');
+    const dummyTrimMat = createPbrMaterial(this.scene, 'dummy_trim_mat', new Color3(0.09, 0.11, 0.16), {
+      metallic: 0.12,
+      roughness: 0.38
+    });
 
     for (const pos of positions) {
       const dummy = this.loader.createVisual('dummy', { name: 'target_dummy', position: pos });
       dummy.metadata = { targetDummy: true, hitCount: 0 };
 
-      // Head sphere parented to the body for a more readable humanoid silhouette.
-      // Not marked targetDummy so hit detection (radius check vs body center) isn't duplicated.
-      const head = MeshBuilder.CreateSphere(`dummy_head_${pos.x}`, { diameter: 0.42, segments: 10 }, this.scene);
-      head.parent = dummy;
-      head.position.set(0, 1.08, 0); // local Y: top of capsule + half head radius
-      head.material = dummyMat;
-      head.isPickable = false;
+      this.buildTargetDummyDetails(dummy, dummyMat, dummyTrimMat, `static_${pos.x}`);
     }
 
     // Moving dummy — oscillates left-right at the back of the opponent's side.
     // Bright teal material so it's visually distinct from the static ones.
-    const movingMat = new StandardMaterial('moving_dummy_mat', this.scene);
-    movingMat.diffuseColor = new Color3(0.0, 0.78, 0.72);
-    movingMat.emissiveColor = new Color3(0.0, 0.18, 0.16);
+    const movingMat = createPbrMaterial(this.scene, 'moving_dummy_mat', new Color3(0.0, 0.78, 0.72), {
+      roughness: 0.34,
+      emissive: new Color3(0.0, 0.08, 0.07)
+    });
+    const movingTrimMat = createPbrMaterial(this.scene, 'moving_dummy_trim_mat', new Color3(0.02, 0.14, 0.16), {
+      metallic: 0.12,
+      roughness: 0.32,
+      emissive: new Color3(0, 0.02, 0.025)
+    });
     const movingMesh = this.loader.createVisual('dummy', { name: 'moving_dummy', position: new Vector3(0, 0.9, 7.5) });
     movingMesh.material = movingMat;
     movingMesh.metadata = { targetDummy: true, hitCount: 0 };
-    const movingHead = MeshBuilder.CreateSphere('dummy_head_moving', { diameter: 0.42, segments: 10 }, this.scene);
-    movingHead.parent = movingMesh;
-    movingHead.position.set(0, 1.08, 0);
-    movingHead.material = movingMat;
-    movingHead.isPickable = false;
+    this.buildTargetDummyDetails(movingMesh, movingMat, movingTrimMat, 'moving');
     this.movingDummy = movingMesh;
+  }
+
+  private buildTargetDummyDetails(root: Mesh, bodyMat: Material, trimMat: Material, suffix: string): void {
+    const head = MeshBuilder.CreateSphere(`dummy_head_${suffix}`, { diameter: 0.44, segments: 14 }, this.scene);
+    head.parent = root;
+    head.position.set(0, 1.08, 0);
+    head.scaling.set(1.0, 0.86, 0.95);
+    head.material = bodyMat;
+    head.isPickable = false;
+
+    const torso = MeshBuilder.CreateBox(`dummy_torso_${suffix}`, { width: 0.58, height: 0.62, depth: 0.18 }, this.scene);
+    torso.parent = root;
+    torso.position.set(0, 0.2, -0.27);
+    torso.material = trimMat;
+    torso.isPickable = false;
+
+    const hips = MeshBuilder.CreateBox(`dummy_hips_${suffix}`, { width: 0.5, height: 0.18, depth: 0.34 }, this.scene);
+    hips.parent = root;
+    hips.position.set(0, -0.48, 0);
+    hips.material = trimMat;
+    hips.isPickable = false;
+
+    for (const sign of [-1, 1]) {
+      const shoulder = MeshBuilder.CreateBox(`dummy_shoulder_${suffix}_${sign}`, { width: 0.34, height: 0.14, depth: 0.34 }, this.scene);
+      shoulder.parent = root;
+      shoulder.position.set(sign * 0.44, 0.48, -0.02);
+      shoulder.rotation.z = -sign * 0.16;
+      shoulder.material = trimMat;
+      shoulder.isPickable = false;
+
+      const leg = MeshBuilder.CreateCapsule(`dummy_leg_${suffix}_${sign}`, { height: 0.68, radius: 0.085 }, this.scene);
+      leg.parent = root;
+      leg.position.set(sign * 0.16, -0.8, 0);
+      leg.material = bodyMat;
+      leg.isPickable = false;
+
+      const foot = MeshBuilder.CreateBox(`dummy_foot_${suffix}_${sign}`, { width: 0.24, height: 0.09, depth: 0.36 }, this.scene);
+      foot.parent = root;
+      foot.position.set(sign * 0.16, -1.16, -0.08);
+      foot.material = trimMat;
+      foot.isPickable = false;
+    }
   }
 
   /** Call once per frame with the scene's accumulated elapsed time (seconds). */
@@ -327,4 +369,18 @@ export class GymArena {
     rim.material = rimMat;
     rim.isPickable = false;
   }
+}
+
+function createPbrMaterial(
+  scene: Scene,
+  name: string,
+  albedo: Color3,
+  options: { metallic?: number; roughness?: number; emissive?: Color3 } = {}
+): PBRMaterial {
+  const material = new PBRMaterial(name, scene);
+  material.albedoColor = albedo;
+  material.metallic = options.metallic ?? 0;
+  material.roughness = options.roughness ?? 0.5;
+  if (options.emissive) material.emissiveColor = options.emissive;
+  return material;
 }

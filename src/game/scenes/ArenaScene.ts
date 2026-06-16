@@ -17,6 +17,7 @@ import { settings } from '../config/Settings';
 import { MultiplayerClient } from '../network/MultiplayerClient';
 import { MultiplayerOverlay } from '../network/MultiplayerOverlay';
 import { NetworkRenderer } from '../network/NetworkRenderer';
+import type { ServerSnapshot } from '../../../shared/protocol';
 import type { PlayerInput, PlayerState, Vec3 } from '../../../shared/types';
 
 export class ArenaScene {
@@ -47,6 +48,7 @@ export class ArenaScene {
   private networkPitch = 0;
   private readonly onlineCharging: Record<'left' | 'right', boolean> = { left: false, right: false };
   private readonly onlineChargeSeconds: Record<'left' | 'right', number> = { left: 0, right: 0 };
+  private lastOnlineScoreByTeamId: Record<string, number> = {};
 
   constructor(engine: Engine, canvas: HTMLCanvasElement) {
     this.scene = new Scene(engine);
@@ -177,6 +179,9 @@ export class ArenaScene {
       this.player.dash.addChargeFromHit();
       this.effects.onDummyHit();
     }
+    if (hits > 0) {
+      this.hud.showScoreEvent(`HIT +${hits}`, `${this.rules.scoring.playerHits} / ${TUNING.match.scoreLimit}`, 'good');
+    }
 
     this.rules.boundary.update(dt, this.player.root.position);
     this.effects.update(dt);
@@ -216,6 +221,7 @@ export class ArenaScene {
     if (snapshot && local) {
       this.applyNetworkLocalPlayer(local);
       this.networkRenderer.update(snapshot, this.multiplayer.localPlayerId);
+      this.handleOnlineScoreEvents(snapshot);
     }
 
     this.effects.update(dt);
@@ -233,7 +239,9 @@ export class ArenaScene {
     this.onlineChargeSeconds.right = 0;
     this.player.hands.clearHands();
     this.bot.reset();
+    this.setPracticePropsEnabled(false);
     this.ballManager.clear();
+    this.lastOnlineScoreByTeamId = {};
   }
 
   private exitOnlineMode(): void {
@@ -244,9 +252,61 @@ export class ArenaScene {
     this.onlineCharging.right = false;
     this.onlineChargeSeconds.left = 0;
     this.onlineChargeSeconds.right = 0;
+    this.lastOnlineScoreByTeamId = {};
     this.player.hands.clearHands();
     this.player.resetPosition();
+    this.bot.reset();
+    this.setPracticePropsEnabled(true);
     this.ballManager.spawnCenterLineBalls();
+  }
+
+  private handleOnlineScoreEvents(snapshot: ServerSnapshot): void {
+    const scores = snapshot.room.match.scoreByTeamId;
+    if (Object.keys(this.lastOnlineScoreByTeamId).length === 0) {
+      this.lastOnlineScoreByTeamId = { ...scores };
+      return;
+    }
+
+    for (const [teamId, score] of Object.entries(scores)) {
+      const previous = this.lastOnlineScoreByTeamId[teamId] ?? score;
+      const delta = score - previous;
+      if (delta > 0) this.showOnlineScoreEvent(snapshot, teamId, score, delta);
+    }
+
+    this.lastOnlineScoreByTeamId = { ...scores };
+  }
+
+  private showOnlineScoreEvent(snapshot: ServerSnapshot, scoringTeamId: string, score: number, delta: number): void {
+    const local = snapshot.room.players[this.multiplayer.localPlayerId];
+    const scorer = Object.values(snapshot.room.players).find((player) => player.teamId === scoringTeamId);
+    const scorerName = scorer?.name ?? scoringTeamId.toUpperCase();
+    const localScored = local?.teamId === scoringTeamId;
+    const boundaryEvent = snapshot.room.match.boundary.lastEvent;
+    const wasPenalty = boundaryEvent.type === 'half-court-penalty' && boundaryEvent.opponentTeamId === scoringTeamId;
+
+    if (wasPenalty) {
+      this.hud.showScoreEvent(`PENALTY +${delta}`, `${scorerName} ${score} / ${snapshot.room.match.scoreLimit}`, localScored ? 'good' : 'bad');
+      return;
+    }
+
+    if (localScored) {
+      this.effects.onDummyHit();
+      this.hud.showScoreEvent(`HIT +${delta}`, `${scorerName} ${score} / ${snapshot.room.match.scoreLimit}`, 'good');
+      return;
+    }
+
+    this.effects.onPlayerHit(this.player.camera.globalPosition);
+    this.hud.showScoreEvent('HIT TAKEN', `${scorerName} ${score} / ${snapshot.room.match.scoreLimit}`, 'bad');
+  }
+
+  private setPracticePropsEnabled(enabled: boolean): void {
+    this.bot.setEnabled(enabled);
+    for (const dummy of this.targetDummies) {
+      dummy.setEnabled(enabled);
+      for (const child of dummy.getChildMeshes(false)) {
+        child.setEnabled(enabled);
+      }
+    }
   }
 
   private buildNetworkInput(_dt: number): PlayerInput {

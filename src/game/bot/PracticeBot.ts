@@ -1,4 +1,4 @@
-import { Color3, Mesh, MeshBuilder, StandardMaterial, TransformNode, Vector3 } from '@babylonjs/core';
+import { Color3, Mesh, MeshBuilder, PBRMaterial, Scene, TransformNode, Vector3 } from '@babylonjs/core';
 import { TUNING } from '../config/tuning';
 import { BallManager } from '../ball/BallManager';
 import { ModelLoader } from '../assets/ModelLoader';
@@ -20,7 +20,10 @@ export class PracticeBot {
   private readonly throwArm: TransformNode; // animated shoulder pivot (right arm)
   private readonly restArm: TransformNode; // static left arm
   private readonly handAnchor: TransformNode; // grip point at the end of the throwing arm
-  private readonly armMaterial: StandardMaterial;
+  private readonly bodyMaterial: PBRMaterial;
+  private readonly armMaterial: PBRMaterial;
+  private readonly armorMaterial: PBRMaterial;
+  private readonly trimMaterial: PBRMaterial;
 
   private held: Ball | null = null;
   private throwTimer: number;
@@ -32,15 +35,29 @@ export class PracticeBot {
     // Face the player (local +Z toward -world Z) so the throwing arm swings toward them.
     this.mesh = loader.createVisual('dummy', { name: 'practice_bot', position: this.position, rotationY: Math.PI });
 
-    const body = (this.mesh.material as StandardMaterial).clone('practice_bot_mat');
-    body.diffuseColor = new Color3(0.2, 0.62, 0.92);
-    body.emissiveColor = new Color3(0.05, 0.18, 0.28);
-    this.mesh.material = body;
-    this.mesh.metadata = { practiceBot: true };
+    const scene = this.mesh.getScene();
+    this.bodyMaterial = makePbrMaterial(scene, 'practice_bot_body_mat', new Color3(0.18, 0.52, 0.92), {
+      roughness: 0.34,
+      emissive: new Color3(0.01, 0.06, 0.12)
+    });
+    this.armMaterial = makePbrMaterial(scene, 'practice_bot_arm_mat', new Color3(0.15, 0.44, 0.78), {
+      roughness: 0.38,
+      emissive: new Color3(0.01, 0.04, 0.08)
+    });
+    this.armorMaterial = makePbrMaterial(scene, 'practice_bot_armor_mat', new Color3(0.04, 0.08, 0.14), {
+      metallic: 0.18,
+      roughness: 0.32,
+      emissive: new Color3(0.004, 0.01, 0.02)
+    });
+    this.trimMaterial = makePbrMaterial(scene, 'practice_bot_trim_mat', new Color3(0.96, 0.78, 0.18), {
+      metallic: 0.2,
+      roughness: 0.28,
+      emissive: new Color3(0.08, 0.05, 0.005)
+    });
 
-    this.armMaterial = new StandardMaterial('practice_bot_arm_mat', this.mesh.getScene());
-    this.armMaterial.diffuseColor = new Color3(0.16, 0.5, 0.78);
-    this.armMaterial.emissiveColor = new Color3(0.04, 0.14, 0.22);
+    this.mesh.material = this.bodyMaterial;
+    this.mesh.metadata = { practiceBot: true };
+    this.buildBodyDetails();
 
     this.throwArm = this.buildArm(1);
     this.restArm = this.buildArm(-1);
@@ -89,9 +106,21 @@ export class PracticeBot {
     this.swingTimer = 0;
   }
 
+  setEnabled(enabled: boolean): void {
+    this.mesh.setEnabled(enabled);
+    this.throwArm.setEnabled(enabled);
+    this.restArm.setEnabled(enabled);
+    this.handAnchor.setEnabled(enabled);
+    for (const child of this.mesh.getChildMeshes(false)) {
+      child.setEnabled(enabled);
+    }
+  }
+
   dispose(): void {
+    this.bodyMaterial.dispose();
     this.armMaterial.dispose();
-    this.mesh.material?.dispose();
+    this.armorMaterial.dispose();
+    this.trimMaterial.dispose();
     this.mesh.dispose(); // disposes child arm/hand nodes too
   }
 
@@ -145,6 +174,78 @@ export class PracticeBot {
     return this.handAnchor.getAbsolutePosition();
   }
 
+  private buildBodyDetails(): void {
+    const scene = this.mesh.getScene();
+
+    const helmet = MeshBuilder.CreateSphere('practice_bot_helmet', { diameter: 0.54, segments: 18 }, scene);
+    helmet.parent = this.mesh;
+    helmet.position.set(0, 1.0, -0.02);
+    helmet.scaling.set(1.08, 0.78, 0.98);
+    helmet.material = this.armorMaterial;
+    helmet.isPickable = false;
+
+    const visor = MeshBuilder.CreateBox('practice_bot_visor', { width: 0.42, height: 0.1, depth: 0.04 }, scene);
+    visor.parent = this.mesh;
+    visor.position.set(0, 1.02, -0.28);
+    visor.material = this.trimMaterial;
+    visor.isPickable = false;
+
+    const chest = MeshBuilder.CreateBox('practice_bot_chest_plate', { width: 0.54, height: 0.58, depth: 0.08 }, scene);
+    chest.parent = this.mesh;
+    chest.position.set(0, 0.22, -0.29);
+    chest.material = this.armorMaterial;
+    chest.isPickable = false;
+
+    const hip = MeshBuilder.CreateBox('practice_bot_hips', { width: 0.5, height: 0.18, depth: 0.32 }, scene);
+    hip.parent = this.mesh;
+    hip.position.set(0, -0.48, 0);
+    hip.material = this.armorMaterial;
+    hip.isPickable = false;
+
+    for (const sign of [-1, 1]) {
+      const shoulder = MeshBuilder.CreateBox(
+        `practice_bot_shoulder_pad_${sign}`,
+        { width: 0.36, height: 0.16, depth: 0.42 },
+        scene
+      );
+      shoulder.parent = this.mesh;
+      shoulder.position.set(sign * 0.46, 0.48, -0.02);
+      shoulder.rotation.z = -sign * 0.18;
+      shoulder.material = this.armorMaterial;
+      shoulder.isPickable = false;
+
+      const leg = MeshBuilder.CreateCapsule(
+        `practice_bot_leg_${sign}`,
+        { height: 0.72, radius: 0.095, tessellation: 12 },
+        scene
+      );
+      leg.parent = this.mesh;
+      leg.position.set(sign * 0.16, -0.78, 0);
+      leg.material = this.bodyMaterial;
+      leg.isPickable = false;
+
+      const shinPad = MeshBuilder.CreateBox(
+        `practice_bot_shin_pad_${sign}`,
+        { width: 0.14, height: 0.34, depth: 0.055 },
+        scene
+      );
+      shinPad.parent = this.mesh;
+      shinPad.position.set(sign * 0.16, -0.83, -0.1);
+      shinPad.material = this.trimMaterial;
+      shinPad.isPickable = false;
+
+      const shoe = MeshBuilder.CreateBox(
+        `practice_bot_shoe_${sign}`,
+        { width: 0.24, height: 0.1, depth: 0.42 },
+        scene
+      );
+      shoe.parent = this.mesh;
+      shoe.position.set(sign * 0.16, -1.18, -0.08);
+      shoe.material = this.armorMaterial;
+      shoe.isPickable = false;
+    }
+  }
+
   private buildArm(sign: number): TransformNode {
     const scene = this.mesh.getScene();
     const pivot = new TransformNode(`practice_bot_shoulder_${sign}`, scene);
@@ -160,6 +261,32 @@ export class PracticeBot {
     forearm.material = this.armMaterial;
     forearm.isPickable = false;
     forearm.position.set(0, -TUNING.bot.armLength / 2, 0); // hang down from the shoulder
+
+    const glove = MeshBuilder.CreateSphere(
+      `practice_bot_glove_${sign}`,
+      { diameter: TUNING.bot.armRadius * 2.7, segments: 12 },
+      scene
+    );
+    glove.parent = pivot;
+    glove.position.set(0, -TUNING.bot.armLength, 0);
+    glove.scaling.set(1.08, 0.82, 1.18);
+    glove.material = this.armorMaterial;
+    glove.isPickable = false;
+
     return pivot;
   }
+}
+
+function makePbrMaterial(
+  scene: Scene,
+  name: string,
+  albedo: Color3,
+  options: { metallic?: number; roughness?: number; emissive?: Color3 } = {}
+): PBRMaterial {
+  const material = new PBRMaterial(name, scene);
+  material.albedoColor = albedo;
+  material.metallic = options.metallic ?? 0;
+  material.roughness = options.roughness ?? 0.45;
+  if (options.emissive) material.emissiveColor = options.emissive;
+  return material;
 }

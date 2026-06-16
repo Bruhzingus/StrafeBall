@@ -1,4 +1,4 @@
-import { Color3, Mesh, MeshBuilder, Scene, StandardMaterial, TransformNode, Vector3 } from '@babylonjs/core';
+import { Color3, Mesh, MeshBuilder, PBRMaterial, Scene, TransformNode, Vector3 } from '@babylonjs/core';
 import type { ServerSnapshot } from '../../../shared/protocol';
 import type { BallState, PlayerState } from '../../../shared/types';
 import { TUNING } from '../config/tuning';
@@ -16,7 +16,7 @@ interface BallVisual {
 export class NetworkRenderer {
   private readonly players = new Map<string, PlayerVisual>();
   private readonly balls = new Map<string, BallVisual>();
-  private readonly materials = new Map<string, StandardMaterial>();
+  private readonly materials = new Map<string, PBRMaterial>();
 
   constructor(private readonly scene: Scene) {}
 
@@ -120,7 +120,7 @@ export class NetworkRenderer {
 
     const mesh = MeshBuilder.CreateSphere(
       `networkBall_${ball.id}`,
-      { diameter: TUNING.ball.radius * 2, segments: 16 },
+      { diameter: TUNING.ball.radius * 2, segments: 24 },
       this.scene
     );
     mesh.position = toVector3(ball.position);
@@ -137,14 +137,16 @@ export class NetworkRenderer {
     return 'ballLive';
   }
 
-  private material(key: string): StandardMaterial {
+  private material(key: string): PBRMaterial {
     const existing = this.materials.get(key);
     if (existing) return existing;
 
-    const material = new StandardMaterial(`${key}_material`, this.scene);
+    const material = new PBRMaterial(`${key}_material`, this.scene);
     const color = materialColor(key);
-    material.diffuseColor = color.diffuse;
+    material.albedoColor = color.diffuse;
     material.emissiveColor = color.emissive;
+    material.metallic = color.metallic;
+    material.roughness = color.roughness;
     this.materials.set(key, material);
     return material;
   }
@@ -154,22 +156,22 @@ function toVector3(v: { x: number; y: number; z: number }): Vector3 {
   return new Vector3(v.x, v.y, v.z);
 }
 
-function materialColor(key: string): { diffuse: Color3; emissive: Color3 } {
+function materialColor(key: string): { diffuse: Color3; emissive: Color3; metallic: number; roughness: number } {
   switch (key) {
     case 'playerRed':
-      return { diffuse: new Color3(0.95, 0.18, 0.14), emissive: new Color3(0.08, 0, 0) };
+      return { diffuse: new Color3(0.95, 0.18, 0.14), emissive: new Color3(0.025, 0, 0), metallic: 0, roughness: 0.4 };
     case 'playerBlue':
-      return { diffuse: new Color3(0.15, 0.42, 0.95), emissive: new Color3(0, 0.02, 0.08) };
+      return { diffuse: new Color3(0.15, 0.42, 0.95), emissive: new Color3(0, 0.01, 0.035), metallic: 0, roughness: 0.4 };
     case 'playerFacing':
-      return { diffuse: new Color3(1, 0.95, 0.78), emissive: new Color3(0.08, 0.06, 0.02) };
+      return { diffuse: new Color3(1, 0.95, 0.78), emissive: new Color3(0.04, 0.03, 0.008), metallic: 0.05, roughness: 0.32 };
     case 'ballHeld':
-      return { diffuse: new Color3(1, 0.38, 0.08), emissive: new Color3(0.22, 0.04, 0) };
+      return { diffuse: new Color3(1, 0.38, 0.08), emissive: new Color3(0.08, 0.015, 0), metallic: 0, roughness: 0.32 };
     case 'ballDeflected':
-      return { diffuse: new Color3(1, 0.9, 0.12), emissive: new Color3(0.45, 0.28, 0.03) };
+      return { diffuse: new Color3(1, 0.9, 0.12), emissive: new Color3(0.22, 0.13, 0.012), metallic: 0, roughness: 0.24 };
     case 'ballDead':
-      return { diffuse: new Color3(0.45, 0.12, 0.1), emissive: new Color3(0.03, 0, 0) };
+      return { diffuse: new Color3(0.45, 0.12, 0.1), emissive: new Color3(0.01, 0, 0), metallic: 0, roughness: 0.62 };
     case 'ballLive':
     default:
-      return { diffuse: new Color3(0.96, 0.12, 0.05), emissive: new Color3(0.22, 0.02, 0) };
+      return { diffuse: new Color3(0.96, 0.12, 0.05), emissive: new Color3(0.08, 0.005, 0), metallic: 0, roughness: 0.34 };
   }
 }

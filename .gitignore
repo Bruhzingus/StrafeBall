@@ -16,6 +16,8 @@ out/
 .env
 .env.local
 .env.*.local
+sshkey
+sshkey.pub
 
 # Editor / IDE
 .vscode/
