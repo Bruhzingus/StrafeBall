@@ -9,6 +9,7 @@ import { BackflipController } from './BackflipController';
 import { CatchController } from './CatchController';
 import { CollisionWorld } from '../map/Collider';
 import { Effects } from '../effects/Effects';
+import { settings } from '../config/Settings';
 
 export class PlayerController {
   public readonly root: TransformNode;
@@ -22,7 +23,6 @@ export class PlayerController {
 
   private pitch = 0;
   private yaw = 0;
-  private readonly mouseSensitivity = 0.0022;
 
   constructor(scene: Scene, private readonly input: InputManager, ballManager: BallManager, collision: CollisionWorld, effects: Effects) {
     this.root = new TransformNode('playerRoot', scene);
@@ -74,8 +74,8 @@ export class PlayerController {
   // no added input delay). Yaw rotates the body root; pitch tilts the camera (clamped).
   private updateLook(): void {
     const { dx, dy } = this.input.consumeMouseDelta();
-    this.yaw += dx * this.mouseSensitivity;
-    this.pitch += dy * this.mouseSensitivity;
+    this.yaw += dx * settings.mouseSensitivity;
+    this.pitch += dy * settings.mouseSensitivity;
     this.pitch = Math.max(-1.45, Math.min(1.45, this.pitch));
     this.root.rotation.y = this.yaw;
     this.camera.rotation.x = this.pitch;

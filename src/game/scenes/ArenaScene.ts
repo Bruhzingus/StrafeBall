@@ -6,6 +6,7 @@ import { ModelLoader } from '../assets/ModelLoader';
 import { BallManager } from '../ball/BallManager';
 import { BallState } from '../ball/BallState';
 import { Hud } from '../ui/Hud';
+import { SettingsPanel } from '../ui/SettingsPanel';
 import { MatchRules } from '../rules/MatchRules';
 import { TUNING } from '../config/tuning';
 import { CONTROL_KEYS } from '../config/controls';
@@ -25,6 +26,7 @@ export class ArenaScene {
   private readonly sound: SoundManager;
   private readonly effects: Effects;
   private readonly bot: PracticeBot;
+  private readonly settingsPanel: SettingsPanel;
 
   constructor(engine: Engine, canvas: HTMLCanvasElement) {
     this.scene = new Scene(engine);
@@ -50,6 +52,7 @@ export class ArenaScene {
     const hudRoot = document.getElementById('hud-root');
     if (!hudRoot) throw new Error('Missing HUD root.');
     this.hud = new Hud(hudRoot);
+    this.settingsPanel = new SettingsPanel();
   }
 
   update(): void {
@@ -70,6 +73,7 @@ export class ArenaScene {
   dispose(): void {
     this.input.dispose();
     this.hud.dispose();
+    this.settingsPanel.dispose();
     this.bot.dispose();
     this.effects.dispose();
     this.sound.dispose();

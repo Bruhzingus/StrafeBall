@@ -1,5 +1,11 @@
 export type MouseButton = 0 | 1 | 2;
 
+// While the cursor is locked (i.e. you're playing) we swallow the browser's default action for
+// every key EXCEPT these, so combos like Ctrl(crouch)+D no longer fire a bookmark, Ctrl+S a
+// save dialog, Space a page scroll, etc. Escape must stay free so the player can release the
+// cursor; F5/F11/F12 stay free for reload/fullscreen/devtools.
+const KEY_DEFAULT_ALLOWLIST = new Set(['Escape', 'F5', 'F11', 'F12']);
+
 export class InputManager {
   private readonly canvas: HTMLCanvasElement;
   private keysDown = new Set<string>();
@@ -88,6 +94,10 @@ export class InputManager {
   }
 
   private onKeyDown = (event: KeyboardEvent): void => {
+    // Suppress browser shortcuts during play so in-game key combos can't trigger them.
+    if (this.pointerLocked && !KEY_DEFAULT_ALLOWLIST.has(event.code)) {
+      event.preventDefault();
+    }
     if (!this.keysDown.has(event.code)) {
       this.keysPressed.add(event.code);
     }
@@ -106,6 +116,11 @@ export class InputManager {
   };
 
   private onMouseDown = (event: MouseEvent): void => {
+    // Clicks on interactive UI marked [data-no-lock] (e.g. the settings slider) must not grab
+    // pointer lock, otherwise the cursor vanishes the instant you try to use the control.
+    const onUi = event.target instanceof Element && event.target.closest('[data-no-lock]') !== null;
+    if (onUi) return;
+
     if (!this.pointerLocked) {
       this.requestPointerLock();
     }
