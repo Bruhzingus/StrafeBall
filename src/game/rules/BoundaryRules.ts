@@ -1,9 +1,12 @@
 import { Vector3 } from '@babylonjs/core';
-import { TUNING } from '../config/tuning';
+import type { MatchState, Vec3 } from '../../../shared/types';
+import { advanceNoBoundariesTimer, applyHalfCourtRule, createMatchState } from '../../../shared/simulation/RuleSim';
 
 // Player's legal half is negative Z (they spawn at z=-12; center line is z=0). A small
 // grace band past center avoids false positives from brushing the line.
-const HALF_COURT_LINE_Z = 0.25;
+const PLAYER_ID = 'local-player';
+const PLAYER_TEAM_ID = 'player';
+const OPPONENT_TEAM_ID = 'opponent';
 
 export class BoundaryRules {
   public elapsed = 0;
@@ -14,40 +17,57 @@ export class BoundaryRules {
 
   // Edge-trigger guard: a single sustained excursion past the line counts once, not once
   // per frame. Re-crossing after returning legal counts again.
-  private wasAcross = false;
+  private match: MatchState = createBoundaryMatch();
 
   update(dt: number, playerPosition: Vector3): void {
-    this.elapsed += dt;
-    if (!this.noBoundaries && this.elapsed >= TUNING.match.noBoundariesSeconds) {
-      this.noBoundaries = true;
-      this.lastMessage = 'BELL! No boundaries. Full court is open.';
-    }
+    const hadBoundaries = !this.match.boundary.noBoundaries;
+    this.match = advanceNoBoundariesTimer(this.match, dt);
 
-    if (this.noBoundaries) {
-      this.wasAcross = false;
+    if (hadBoundaries && this.match.boundary.noBoundaries) {
+      this.syncPublicState();
+      this.lastMessage = 'BELL! No boundaries. Full court is open.';
       return;
     }
 
-    const across = playerPosition.z > HALF_COURT_LINE_Z;
-    if (across && !this.wasAcross) {
-      // New illegal crossing: first one warns, subsequent ones penalize the offender.
-      this.illegalCrossWarnings += 1;
-      if (this.illegalCrossWarnings <= TUNING.match.illegalCrossWarningsBeforePenalty) {
-        this.lastMessage = 'Warning: crossed half-court. Get back!';
-      } else {
-        this.opponentPenaltyHits += TUNING.match.penaltyHitValue;
-        this.lastMessage = `Penalty! Opponent awarded a hit (total ${this.opponentPenaltyHits}).`;
-      }
+    this.match = applyHalfCourtRule(
+      this.match,
+      PLAYER_ID,
+      PLAYER_TEAM_ID,
+      'negativeZ',
+      toSharedVec3(playerPosition)
+    );
+    this.syncPublicState();
+
+    const event = this.match.boundary.lastEvent;
+    if (event.type === 'half-court-warning') {
+      this.lastMessage = 'Warning: crossed half-court. Get back!';
+    } else if (event.type === 'half-court-penalty') {
+      this.lastMessage = `Penalty! Opponent awarded a hit (total ${this.opponentPenaltyHits}).`;
     }
-    this.wasAcross = across;
   }
 
   reset(): void {
+    this.match = createBoundaryMatch();
     this.elapsed = 0;
     this.noBoundaries = false;
     this.illegalCrossWarnings = 0;
     this.opponentPenaltyHits = 0;
     this.lastMessage = 'Half-court active.';
-    this.wasAcross = false;
   }
+
+  private syncPublicState(): void {
+    const violation = this.match.boundary.illegalCrossByPlayerId[PLAYER_ID];
+    this.elapsed = this.match.boundary.elapsedSeconds;
+    this.noBoundaries = this.match.boundary.noBoundaries;
+    this.illegalCrossWarnings = violation?.illegalCrossCount ?? 0;
+    this.opponentPenaltyHits = this.match.scoreByTeamId[OPPONENT_TEAM_ID] ?? 0;
+  }
+}
+
+function createBoundaryMatch(): MatchState {
+  return createMatchState('local-boundary', [PLAYER_TEAM_ID, OPPONENT_TEAM_ID]);
+}
+
+function toSharedVec3(v: Vector3): Vec3 {
+  return { x: v.x, y: v.y, z: v.z };
 }

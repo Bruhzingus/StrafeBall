@@ -57,6 +57,34 @@ npm run dev
 
 Then open the Vite local URL.
 
+For multiplayer client testing, point Vite at the local Colyseus server:
+
+```bash
+VITE_SERVER_URL=ws://localhost:2567 npm run dev
+```
+
+On Windows PowerShell:
+
+```powershell
+$env:VITE_SERVER_URL='ws://localhost:2567'; npm run dev
+```
+
+## Run the local multiplayer server
+
+The first Colyseus server lives in `server/` and runs private 1v1 duel rooms locally.
+
+```bash
+cd server
+npm install
+npm run dev
+```
+
+The server listens on `ws://localhost:2567` by default. Override the port with `PORT=3001 npm run dev` or `COLYSEUS_PORT=3001 npm run dev`.
+
+Clients create a private room with `client.create("duel", { name })`, then share the returned `roomId`. The second player joins with `client.joinById(roomId, { name })`. `DuelRoom` allows 2 players max and is not public matchmaking.
+
+In the browser prototype, use the Private Duel panel on the left: enter a name, click Create, copy the room code, and join from a second tab/window with that code. Use Leave to return to local single-player/dev mode.
+
 ## Important note
 
 This scaffold prioritizes architecture and decision preservation. Claude Code should still tune, debug, and improve the actual gameplay feel. Movement-heavy games need hands-on iteration in-browser.

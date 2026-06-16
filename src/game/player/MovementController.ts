@@ -8,6 +8,8 @@ import { DashController } from './DashController';
 import { BackflipController } from './BackflipController';
 import { CollisionWorld } from '../map/Collider';
 
+export type FrictionMode = 'air' | 'normal' | 'slide' | 'dashSuppressed';
+
 export interface MovementSnapshot {
   position: Vector3;
   velocity: Vector3;
@@ -17,6 +19,9 @@ export interface MovementSnapshot {
   wallRunning: boolean;
   dashingThisFrame: boolean;
   speed: number;
+  bhopGraceTimer: number;
+  wallRunTimer: number;
+  frictionMode: FrictionMode;
 }
 
 export class MovementController {
@@ -427,7 +432,10 @@ export class MovementController {
     crouching: false,
     wallRunning: false,
     dashingThisFrame: false,
-    speed: 0
+    speed: 0,
+    bhopGraceTimer: 0,
+    wallRunTimer: 0,
+    frictionMode: 'normal'
   };
 
   snapshot(): MovementSnapshot {
@@ -440,6 +448,12 @@ export class MovementController {
     s.wallRunning = this.wallRunning;
     s.dashingThisFrame = this.dashingThisFrame;
     s.speed = this.horizontalSpeed();
+    s.bhopGraceTimer = this.jumpGraceTimer;
+    s.wallRunTimer = this.wallRunTimer;
+    s.frictionMode = !this.grounded ? 'air'
+      : (this.dashActiveTimer > 0 && !this.sliding) ? 'dashSuppressed'
+      : this.sliding ? 'slide'
+      : 'normal';
     return s;
   }
 }

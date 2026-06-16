@@ -42,60 +42,83 @@ export interface ModelAsset {
 export type AssetKey =
   | 'floor'
   | 'wall'
+  | 'wallPad'
   | 'line'
   | 'bleacher'
   | 'mat'
   | 'dummy'
   | 'ball'
-  | 'superBall';
+  | 'superBall'
+  | 'scoreboard';
 
 export const ASSET_MANIFEST: Record<AssetKey, ModelAsset> = {
   floor: {
     key: 'floor',
     glb: null,
-    material: { diffuse: [0.74, 0.55, 0.32] },
+    // Warm maple hardwood — school gym palette anchor color.
+    material: { diffuse: [0.82, 0.58, 0.24] },
     primitive: { kind: 'box', size: { width: 1, height: 0.08, depth: 1 } }
   },
   wall: {
     key: 'wall',
     glb: null,
-    material: { diffuse: [0.72, 0.77, 0.84] },
+    // Light cream cinderblock — upper wall above the padding.
+    material: { diffuse: [0.89, 0.87, 0.82] },
+    primitive: { kind: 'box' }
+  },
+  wallPad: {
+    key: 'wallPad',
+    glb: null,
+    // School navy — lower 1.5 m gym wall padding, safety color.
+    material: { diffuse: [0.12, 0.28, 0.6] },
     primitive: { kind: 'box' }
   },
   line: {
     key: 'line',
     glb: null,
-    material: { diffuse: [0.95, 0.95, 0.92] },
-    primitive: { kind: 'box', size: { height: 0.015 } }
+    material: { diffuse: [1.0, 1.0, 0.98] },
+    primitive: { kind: 'box', size: { height: 0.016 } }
   },
   bleacher: {
     key: 'bleacher',
     glb: null,
-    material: { diffuse: [0.36, 0.43, 0.52] },
+    // Warm pine bleacher steps.
+    material: { diffuse: [0.68, 0.52, 0.32] },
     primitive: { kind: 'box' }
   },
   mat: {
     key: 'mat',
     glb: null,
-    material: { diffuse: [0.1, 0.32, 0.85] },
+    // Deep competition blue crash pad with subtle inner glow so it reads as padded cover.
+    material: { diffuse: [0.08, 0.18, 0.76], emissive: [0.01, 0.04, 0.14] },
     primitive: { kind: 'box' }
   },
   dummy: {
     key: 'dummy',
     glb: null,
-    material: { diffuse: [0.9, 0.25, 0.25] },
+    // Vivid target red with slight self-illumination so the dummies pop at range.
+    material: { diffuse: [0.88, 0.2, 0.18], emissive: [0.14, 0.01, 0.01] },
     primitive: { kind: 'capsule', size: { height: 1.8, radius: 0.35 } }
   },
   ball: {
     key: 'ball',
     glb: null,
-    material: { diffuse: [0.9, 0.08, 0.06] },
+    // Classic dodgeball red with a subtle glow so balls are easy to track in motion.
+    material: { diffuse: [0.96, 0.12, 0.05], emissive: [0.22, 0.02, 0.0] },
     primitive: { kind: 'sphere', size: { segments: 16 } }
   },
   superBall: {
     key: 'superBall',
     glb: null,
-    material: { diffuse: [1.0, 0.85, 0.16], emissive: [0.5, 0.35, 0.05] },
+    // Intense golden glow — unmistakable as a charged super.
+    material: { diffuse: [1.0, 0.88, 0.14], emissive: [0.65, 0.42, 0.05] },
     primitive: { kind: 'sphere', size: { segments: 16 } }
+  },
+  scoreboard: {
+    key: 'scoreboard',
+    glb: null,
+    // Dark metal backing for the north-wall scoreboard prop.
+    material: { diffuse: [0.1, 0.12, 0.16] },
+    primitive: { kind: 'box' }
   }
 };

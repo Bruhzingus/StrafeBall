@@ -56,6 +56,21 @@ export class Effects {
     this.triggerFlash(0.2, 0.26, '120, 180, 255');
   }
 
+  onSlide(): void {
+    this.sound.whoosh(0.4);
+    this.triggerFlash(0.1, 0.09, '80, 160, 255');
+  }
+
+  onDash(): void {
+    this.sound.whoosh(1.3);
+    this.triggerFlash(0.12, 0.14, '240, 220, 80');
+  }
+
+  onBackflip(): void {
+    this.sound.whoosh(0.6);
+    this.triggerFlash(0.15, 0.1, '190, 110, 255');
+  }
+
   /** The player failed to catch/block and took a hit. */
   onPlayerHit(position: Vector3): void {
     this.sound.thud(1);
@@ -66,6 +81,7 @@ export class Effects {
   /** A player throw connected with a target dummy. */
   onDummyHit(): void {
     this.sound.thud(0.7);
+    this.triggerFlash(0.16, 0.18, '255, 180, 50');
   }
 
   // --- Per-frame fade -----------------------------------------------------------------------

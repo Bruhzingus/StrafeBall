@@ -31,6 +31,7 @@ export class HandController {
   public left: HandState = makeHand();
   public right: HandState = makeHand();
   public lastThrowTime = -999;
+  public lastAction = 'none';
 
   private readonly throwSystem = new ThrowSystem();
   private elapsed = 0;
@@ -75,6 +76,7 @@ export class HandController {
     hand.charging = false;
     hand.chargeSeconds = 0;
     hand.cooldown = TUNING.catch.cooldownSeconds;
+    this.lastAction = `catch #${ball.id} (${side})`;
   }
 
   /** Detaches both hands (used when balls are reset so hands don't point at disposed meshes). */
@@ -111,9 +113,11 @@ export class HandController {
   private handlePickupDrop(input: InputManager, movement: MovementSnapshot): void {
     if (input.wasKeyPressed(CONTROL_KEYS.drop)) {
       if (this.right.ball) {
+        this.lastAction = `drop #${this.right.ball.id} (right)`;
         this.ballManager.dropBall(this.right.ball, movement.position.add(new Vector3(0.4, 1, 0)));
         this.right.ball = null;
       } else if (this.left.ball) {
+        this.lastAction = `drop #${this.left.ball.id} (left)`;
         this.ballManager.dropBall(this.left.ball, movement.position.add(new Vector3(-0.4, 1, 0)));
         this.left.ball = null;
       }
@@ -140,6 +144,7 @@ export class HandController {
     hand.charging = false;
     hand.chargeSeconds = 0;
     hand.cooldown = 0;
+    this.lastAction = `pickup #${candidate.id} (${side})`;
     this.ballManager.attachHeldBall(candidate, side, candidate.mesh.position); // sets ball.state = Held
   }
 
@@ -217,6 +222,8 @@ export class HandController {
     const origin = this.camera.globalPosition.add(forward.scale(0.8));
     this.ballManager.throwBall(hand.ball, origin, throwResult.velocity, throwResult.velocity.length(), 'player', throwResult.isSuper, throwResult.dropScale, throwResult.curveAccel);
 
+    const throwLabel = charge01 >= 0.25 ? `charged ${Math.round(charge01 * 100)}%` : 'quick';
+    this.lastAction = `${throwLabel} throw #${hand.ball.id} (${side})`;
     hand.ball = null;
     hand.charging = false;
     hand.chargeSeconds = 0;

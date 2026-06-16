@@ -9,15 +9,16 @@ import { TUNING } from '../src/game/config/tuning';
 // pure scoring logic. ScoringSystem only touches state/owner/mesh.position/makeDead on balls,
 // and position/metadata on dummies.
 function makeBall(state: BallState, owner: BallOwner, position: Vector3): Ball {
-  return {
+  const ball = {
     state,
     owner,
     mesh: { position },
     makeDead() {
-      this.state = BallState.Dead;
-      this.owner = null;
+      ball.state = BallState.Dead;
+      ball.owner = null;
     }
   } as unknown as Ball;
+  return ball;
 }
 
 function makeDummy(position: Vector3): AbstractMesh {

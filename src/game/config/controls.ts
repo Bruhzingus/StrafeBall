@@ -15,7 +15,8 @@ export const CONTROL_KEYS = {
   reset: 'KeyK',
   resetBalls: 'KeyJ',
   resetMatch: 'KeyU',
-  debugBallLauncher: 'KeyL'
+  debugBallLauncher: 'KeyL',
+  toggleDebug: 'Tab'
 } as const;
 
 export const MOUSE_BUTTON = {

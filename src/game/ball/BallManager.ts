@@ -6,6 +6,7 @@ import { BallState } from './BallState';
 import { safeNormalize } from '../utils/math';
 import { CollisionWorld } from '../map/Collider';
 import { ModelLoader } from '../assets/ModelLoader';
+import { isBallPickupStateEligible } from '../../../shared/simulation/BallSim';
 
 export class BallManager {
   public readonly balls: Ball[] = [];
@@ -68,9 +69,7 @@ export class BallManager {
     // A ball already held in a hand is never a pickup candidate. It sits in front of the
     // camera at zero velocity, so without this guard holding the interact key would re-grab
     // the same ball into the second hand (the "ball in both hands" bug).
-    if (ball.state === BallState.Held) return false;
-    if (ball.state === BallState.Loose || ball.state === BallState.Dead) return true;
-    return ball.velocity.length() <= TUNING.ball.slowPickupSpeed;
+    return isBallPickupStateEligible({ phase: ball.state, velocity: ball.velocity });
   }
 
   /** A ball the debug launcher can safely reuse: never one held in a player's hand. */

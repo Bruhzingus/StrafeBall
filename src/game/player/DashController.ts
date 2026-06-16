@@ -1,52 +1,53 @@
 import { Vector3 } from '@babylonjs/core';
-import { TUNING } from '../config/tuning';
+import { GAME_CONSTANTS } from '../../../shared/constants';
+import type { DashState, Vec3 } from '../../../shared/types';
+import { advanceDashState, canSpendDashCharge, grantDashCharge, tryDash as tryDashSim } from '../../../shared/simulation/PlayerSim';
 
 export class DashController {
-  // Explicit number type: TUNING is `as const`, so maxCharges has literal type 3
+  // Explicit number type: constants are `as const`, so maxCharges has literal type 3
   // and would otherwise lock this field to the literal type `3`.
-  public charges: number = TUNING.dash.maxCharges;
+  public charges: number = GAME_CONSTANTS.dash.maxCharges;
   public rechargeTimer = 0;
   private dashCooldownTimer = 0;
 
   update(dt: number): void {
-    if (this.dashCooldownTimer > 0) {
-      this.dashCooldownTimer = Math.max(0, this.dashCooldownTimer - dt);
-    }
-
-    if (this.charges >= TUNING.dash.maxCharges) return;
-
-    this.rechargeTimer += dt;
-    if (this.rechargeTimer >= TUNING.dash.rechargeSeconds) {
-      this.rechargeTimer = 0;
-      this.charges += 1;
-    }
+    this.applyDashState(advanceDashState(this.snapshotDashState(), dt));
   }
 
   canDash(): boolean {
-    return this.charges > 0 && this.dashCooldownTimer <= 0;
+    return canSpendDashCharge(this.snapshotDashState());
   }
 
   tryDash(currentVelocity: Vector3, dashDirection: Vector3): Vector3 | null {
-    if (!this.canDash() || dashDirection.lengthSquared() <= 0.001) return null;
-
-    this.charges -= 1;
-    this.dashCooldownTimer = TUNING.dash.cooldownBetweenDashes;
-
-    const currentHorizontal = currentVelocity.clone();
-    currentHorizontal.y = 0;
-    const currentSpeed = currentHorizontal.length();
-    const normalizedCurrent = currentSpeed > 0.001 ? currentHorizontal.scale(1 / currentSpeed) : dashDirection;
-    const dot = Vector3.Dot(normalizedCurrent, dashDirection);
-
-    if (dot >= TUNING.dash.similarDirectionDot) {
-      return currentVelocity.add(dashDirection.scale(TUNING.dash.impulse));
-    }
-
-    const penalized = currentVelocity.scale(TUNING.dash.oppositeDirectionMomentumPenalty);
-    return penalized.add(dashDirection.scale(TUNING.dash.impulse));
+    const result = tryDashSim(this.snapshotDashState(), toSharedVec3(currentVelocity), toSharedVec3(dashDirection));
+    if (!result.ok) return null;
+    this.applyDashState(result.dash);
+    return toBabylonVector(result.velocity);
   }
 
   addChargeFromHit(): void {
-    this.charges = Math.min(TUNING.dash.maxCharges, this.charges + 1);
+    this.applyDashState(grantDashCharge(this.snapshotDashState()));
   }
+
+  private snapshotDashState(): DashState {
+    return {
+      charges: this.charges,
+      rechargeTimerSeconds: this.rechargeTimer,
+      cooldownSeconds: this.dashCooldownTimer
+    };
+  }
+
+  private applyDashState(state: DashState): void {
+    this.charges = state.charges;
+    this.rechargeTimer = state.rechargeTimerSeconds;
+    this.dashCooldownTimer = state.cooldownSeconds;
+  }
+}
+
+function toSharedVec3(v: Vector3): Vec3 {
+  return { x: v.x, y: v.y, z: v.z };
+}
+
+function toBabylonVector(v: Vec3): Vector3 {
+  return new Vector3(v.x, v.y, v.z);
 }

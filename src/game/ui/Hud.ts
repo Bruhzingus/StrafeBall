@@ -4,6 +4,7 @@ import { PlayerController } from '../player/PlayerController';
 import { BallManager } from '../ball/BallManager';
 import { BallState } from '../ball/BallState';
 import { Crosshair } from './Crosshair';
+import type { ServerSnapshot } from '../../../shared/protocol';
 
 export class Hud {
   private readonly root: HTMLDivElement;
@@ -15,6 +16,7 @@ export class Hud {
   // Last rendered markup per panel — we only touch the DOM when the text actually changes,
   // so the HUD doesn't thrash innerHTML 60+ times a second while values are static.
   private readonly lastHtml = new Map<HTMLDivElement, string>();
+  private debugVisible = true;
 
   constructor(parent: HTMLElement) {
     this.root = document.createElement('div');
@@ -34,8 +36,13 @@ export class Hud {
       <div>M1/M2 hands | E pickup | R drop | F fake</div>
       <div>Shift dash | C/Ctrl slide | Q backflip</div>
       <div>K reset pos | J reset balls | U reset match</div>
-      <div>L launch test ball</div>
+      <div>L launch test ball | Tab debug</div>
     `;
+  }
+
+  toggleDebug(): void {
+    this.debugVisible = !this.debugVisible;
+    this.topLeft.style.display = this.debugVisible ? '' : 'none';
   }
 
   update(player: PlayerController, rules: MatchRules, ballManager: BallManager, fps: number, frameMs: number): void {
@@ -49,39 +56,115 @@ export class Hud {
         ? 'full'
         : `+1 in ${Math.max(0, TUNING.dash.rechargeSeconds - player.dash.rechargeTimer).toFixed(1)}s`;
 
+    // Bhop: grace window visible while it's active so you can time re-jumps.
+    const bhopHtml = movement.bhopGraceTimer > 0
+      ? `<span class="hud-good">GRACE ${movement.bhopGraceTimer.toFixed(2)}s</span>`
+      : '<span style="opacity:0.45">—</span>';
+
+    const wallHtml = movement.wallRunning
+      ? `<span class="hud-good">${movement.wallRunTimer.toFixed(1)}s</span>`
+      : '<span style="opacity:0.45">—</span>';
+
     // Performance + movement debug overlay.
-    this.setHtml(this.topLeft, `
-      <div class="hud-title">Debug</div>
-      <div>FPS <span class="hud-good">${Math.round(fps)}</span> · ${frameMs.toFixed(1)} ms</div>
-      <div>Speed: <span class="hud-good">${movement.speed.toFixed(1)}</span> m/s</div>
-      <div>Vel: ${v.x.toFixed(1)}, ${v.y.toFixed(1)}, ${v.z.toFixed(1)}</div>
-      <div>State: ${this.movementState(player)}</div>
-      <div>${movement.grounded ? 'GROUNDED' : 'AIRBORNE'}</div>
-      <div>Dash: <span class="hud-good">${player.dash.charges}/${TUNING.dash.maxCharges}</span> (${dashRecharge})</div>
-      <div>Backflip CD: ${player.backflip.cooldown.toFixed(1)}s</div>
-    `);
+    if (this.debugVisible) {
+      this.setHtml(this.topLeft, `
+        <div class="hud-title">Debug <span style="font-weight:400;opacity:0.45;font-size:10px">[Tab]</span></div>
+        <div>FPS <span class="hud-good">${Math.round(fps)}</span> · ${frameMs.toFixed(1)} ms</div>
+        <div>Speed: <span class="hud-good">${movement.speed.toFixed(1)}</span> m/s</div>
+        <div>Vel: ${v.x.toFixed(1)}, ${v.y.toFixed(1)}, ${v.z.toFixed(1)}</div>
+        <div>State: ${this.movementState(player)}</div>
+        <div>${movement.grounded ? 'GROUNDED' : 'AIRBORNE'} · fric: ${movement.frictionMode}</div>
+        <div>bhop: ${bhopHtml} · wall: ${wallHtml}</div>
+        <div>Dash: <span class="hud-good">${player.dash.charges}/${TUNING.dash.maxCharges}</span> (${dashRecharge})</div>
+        <div>Backflip CD: ${player.backflip.cooldown.toFixed(1)}s</div>
+        <div>Last: ${hands.lastAction}</div>
+      `);
+    }
 
     const superReady = player.backflip.isSuperThrowWindow();
     this.setHtml(this.topCenter, `
-      <div class="hud-title">Score</div>
-      <div>You ${rules.scoring.playerHits} — ${rules.boundary.opponentPenaltyHits} Opp / ${TUNING.match.scoreLimit} hits</div>
-      <div class="${rules.boundary.noBoundaries ? 'hud-bad' : 'hud-warn'}">
+      <div class="scoreboard-title">StrafeBall</div>
+      <div class="scoreboard-digits">
+        <span class="scoreboard-team">YOU</span>
+        <span class="scoreboard-num scoreboard-num--red">${rules.scoring.playerHits}</span>
+        <span class="scoreboard-sep">—</span>
+        <span class="scoreboard-num scoreboard-num--blue">${rules.boundary.opponentPenaltyHits}</span>
+        <span class="scoreboard-team">OPP</span>
+      </div>
+      <div class="scoreboard-sub">First to ${TUNING.match.scoreLimit}</div>
+      <div class="${rules.boundary.noBoundaries ? 'hud-bad' : 'hud-warn'}" style="text-align:center;margin-top:3px">
         ${rules.boundary.noBoundaries ? 'NO BOUNDARIES' : `Half-court: ${noBoundariesTime.toFixed(0)}s`}
       </div>
-      <div>${rules.boundary.lastMessage}</div>
-      ${superReady ? '<div class="hud-bad">★ SUPER THROW WINDOW ★</div>' : ''}
+      ${rules.boundary.lastMessage ? `<div class="scoreboard-msg">${rules.boundary.lastMessage}</div>` : ''}
+      ${superReady ? '<div class="hud-bad" style="text-align:center;margin-top:2px">★ SUPER THROW ★</div>' : ''}
     `);
 
     const parryReady = hands.hasTwoBalls() && player.catching.getParryCooldown() <= 0;
+    const leftBallId = hands.left.ball ? `#${hands.left.ball.id}` : '—';
+    const rightBallId = hands.right.ball ? `#${hands.right.ball.id}` : '—';
     this.setHtml(this.bottomLeft, `
       <div class="hud-title">Hands</div>
-      <div>M1 Left: ${this.handText(hands.left)}</div>
+      <div>M1 L [${leftBallId}]: ${this.handText(hands.left)}</div>
       <div>${this.chargeBar(hands.left)}</div>
-      <div>M2 Right: ${this.handText(hands.right)}</div>
+      <div>M2 R [${rightBallId}]: ${this.handText(hands.right)}</div>
       <div>${this.chargeBar(hands.right)}</div>
       <div>Catch track: ${player.catching.getDebugTrackingTime().toFixed(2)}s / ${TUNING.catch.trackingSeconds.toFixed(2)}s</div>
       <div>Auto-parry: ${parryReady ? '<span class="hud-good">ready</span>' : hands.hasTwoBalls() ? `CD ${player.catching.getParryCooldown().toFixed(2)}s` : 'need 2 balls'}</div>
       <div>Balls — ${this.ballTally(ballManager)}</div>
+    `);
+  }
+
+  updateNetwork(snapshot: ServerSnapshot, localPlayerId: string, fps: number, frameMs: number, pingMs: number | null): void {
+    const room = snapshot.room;
+    const local = room.players[localPlayerId];
+    const opponent = Object.values(room.players).find((player) => player.id !== localPlayerId);
+    const localScore = local ? room.match.scoreByTeamId[local.teamId] ?? 0 : 0;
+    const opponentScore = opponent ? room.match.scoreByTeamId[opponent.teamId] ?? 0 : 0;
+    const noBoundariesTime = Math.max(0, TUNING.match.noBoundariesSeconds - room.match.boundary.elapsedSeconds);
+
+    if (this.debugVisible) {
+      this.setHtml(this.topLeft, `
+        <div class="hud-title">Online <span style="font-weight:400;opacity:0.45;font-size:10px">[Tab]</span></div>
+        <div>FPS <span class="hud-good">${Math.round(fps)}</span> &middot; ${frameMs.toFixed(1)} ms</div>
+        <div>Room: <span class="hud-good">${escapeHtml(room.id)}</span></div>
+        <div>Ping: <span class="hud-good">${pingMs === null ? '-' : `${pingMs} ms`}</span></div>
+        <div>Local: ${escapeHtml(localPlayerId || '-')}</div>
+        <div>Players: ${Object.keys(room.players).length}/2</div>
+        <div>Tick: ${snapshot.tick}</div>
+        ${local ? `<div>Speed: <span class="hud-good">${local.movement.speed.toFixed(1)}</span> m/s</div>` : ''}
+        ${local ? `<div>Vel: ${local.movement.velocity.x.toFixed(1)}, ${local.movement.velocity.y.toFixed(1)}, ${local.movement.velocity.z.toFixed(1)}</div>` : ''}
+      `);
+    }
+
+    const winner = room.match.winnerTeamId
+      ? `<div class="scoreboard-msg hud-good">Winner: ${escapeHtml(room.match.winnerTeamId)}</div>`
+      : '';
+
+    this.setHtml(this.topCenter, `
+      <div class="scoreboard-title">Private Duel</div>
+      <div class="scoreboard-digits">
+        <span class="scoreboard-team">${escapeHtml(local?.name ?? 'YOU')}</span>
+        <span class="scoreboard-num scoreboard-num--blue">${localScore}</span>
+        <span class="scoreboard-sep">-</span>
+        <span class="scoreboard-num scoreboard-num--red">${opponentScore}</span>
+        <span class="scoreboard-team">${escapeHtml(opponent?.name ?? 'OPP')}</span>
+      </div>
+      <div class="scoreboard-sub">First to ${room.match.scoreLimit}</div>
+      <div class="${room.match.boundary.noBoundaries ? 'hud-bad' : 'hud-warn'}" style="text-align:center;margin-top:3px">
+        ${room.match.boundary.noBoundaries ? 'NO BOUNDARIES' : `Half-court: ${noBoundariesTime.toFixed(0)}s`}
+      </div>
+      ${winner}
+    `);
+
+    const left = local?.hands.left;
+    const right = local?.hands.right;
+    this.setHtml(this.bottomLeft, `
+      <div class="hud-title">Server State</div>
+      <div>M1 L [${escapeHtml(left?.heldBallId ?? '-')}]: ${escapeHtml(left?.mode ?? 'empty')}</div>
+      <div>M2 R [${escapeHtml(right?.heldBallId ?? '-')}]: ${escapeHtml(right?.mode ?? 'empty')}</div>
+      <div>Dash: <span class="hud-good">${local?.dash.charges ?? '-'}/${TUNING.dash.maxCharges}</span></div>
+      <div>Balls - ${this.networkBallTally(snapshot)}</div>
+      <div style="max-width:320px;white-space:normal">${this.networkBallList(snapshot)}</div>
     `);
   }
 
@@ -118,6 +201,20 @@ export class Hud {
     return `live ${live} · held ${held} · loose ${loose} · dead ${dead}`;
   }
 
+  private networkBallTally(snapshot: ServerSnapshot): string {
+    const counts = { live: 0, held: 0, loose: 0, dead: 0, deflected: 0 };
+    for (const ball of Object.values(snapshot.room.balls)) {
+      counts[ball.phase] += 1;
+    }
+    return `live ${counts.live} &middot; held ${counts.held} &middot; loose ${counts.loose} &middot; dead ${counts.dead} &middot; defl ${counts.deflected}`;
+  }
+
+  private networkBallList(snapshot: ServerSnapshot): string {
+    return Object.values(snapshot.room.balls)
+      .map((ball) => `${escapeHtml(ball.id)}:${escapeHtml(ball.phase)}${ball.heldByPlayerId ? `(${escapeHtml(ball.heldByPlayerId.slice(0, 4))}/${escapeHtml(ball.heldHand ?? '-')})` : ''}`)
+      .join(' ');
+  }
+
   dispose(): void {
     this.root.remove();
   }
@@ -129,9 +226,9 @@ export class Hud {
     return el;
   }
 
-  private handText(hand: { ball: unknown; charging: boolean; chargeSeconds: number; catchStance: boolean; cooldown: number }): string {
+  private handText(hand: { ball: { id: number } | null; charging: boolean; chargeSeconds: number; catchStance: boolean; cooldown: number }): string {
     if (hand.ball) {
-      return hand.charging ? `charging ${Math.round(this.charge01(hand) * 100)}%` : 'holding ball';
+      return hand.charging ? `charging ${Math.round(this.charge01(hand) * 100)}%` : 'holding';
     }
     if (hand.catchStance) return 'catch stance';
     if (hand.cooldown > 0) return `catch CD ${hand.cooldown.toFixed(2)}s`;
@@ -149,4 +246,13 @@ export class Hud {
   private charge01(hand: { chargeSeconds: number }): number {
     return Math.min(1, hand.chargeSeconds / TUNING.ball.maxChargeSeconds);
   }
+}
+
+function escapeHtml(value: string): string {
+  return value
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&#039;');
 }

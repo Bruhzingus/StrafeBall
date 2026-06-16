@@ -1,7 +1,6 @@
-import { AbstractMesh, Vector3 } from '@babylonjs/core';
+import { AbstractMesh } from '@babylonjs/core';
 import { Ball } from '../ball/Ball';
-import { BallState } from '../ball/BallState';
-import { TUNING } from '../config/tuning';
+import { hasReachedScoreLimit, isHitInRange, isLivePlayerOwnedBall } from '../../../shared/simulation/RuleSim';
 
 export class ScoringSystem {
   public playerHits = 0;
@@ -14,11 +13,10 @@ export class ScoringSystem {
   updateAgainstDummies(balls: Ball[], targetDummies: AbstractMesh[]): number {
     let hitsThisFrame = 0;
     for (const ball of balls) {
-      if (ball.state !== BallState.Live || ball.owner !== 'player') continue;
+      if (!isLivePlayerOwnedBall(ball.state, ball.owner)) continue;
 
       for (const dummy of targetDummies) {
-        const dist = Vector3.Distance(ball.mesh.position, dummy.position);
-        if (dist > TUNING.ball.hitRadius) continue;
+        if (!isHitInRange(ball.mesh.position, dummy.position)) continue;
         this.playerHits += 1;
         hitsThisFrame += 1;
         dummy.metadata.hitCount = (dummy.metadata.hitCount ?? 0) + 1;
@@ -30,7 +28,7 @@ export class ScoringSystem {
   }
 
   isWin(): boolean {
-    return this.playerHits >= TUNING.match.scoreLimit;
+    return hasReachedScoreLimit(this.playerHits);
   }
 
   reset(): void {

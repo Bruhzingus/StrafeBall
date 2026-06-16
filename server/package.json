@@ -1,0 +1,21 @@
+{
+  "name": "strafeball-server",
+  "version": "0.1.0",
+  "private": true,
+  "scripts": {
+    "dev": "tsx src/index.ts",
+    "build": "tsc -p tsconfig.json",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "start": "node dist/server/src/index.js",
+    "test": "vitest run"
+  },
+  "dependencies": {
+    "colyseus": "^0.17.10"
+  },
+  "devDependencies": {
+    "@types/node": "^25.9.3",
+    "tsx": "^4.22.4",
+    "typescript": "^5.0.0",
+    "vitest": "^4.1.9"
+  }
+}

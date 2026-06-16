@@ -1,0 +1,217 @@
+import { GAME_CONSTANTS, type GameConstants } from '../constants';
+import type { BallPhase, BallState, HandSide, Vec3, ValidationResult } from '../types';
+import {
+  add,
+  cloneVec3,
+  distance,
+  length,
+  normalize,
+  scale,
+  vec3
+} from './CollisionMath';
+
+export interface ThrowBallRequest {
+  playerId: string;
+  hand: HandSide;
+  origin: Vec3;
+  velocity: Vec3;
+  ownerKind?: 'player' | 'launcher' | 'bot';
+  isSuper?: boolean;
+  dropScale?: number;
+  curveAccel?: Vec3;
+}
+
+export type ThrowValidationReason = 'ball-not-held' | 'wrong-player' | 'wrong-hand';
+
+export function createBallState(id: string, position: Vec3 = vec3(), overrides: Partial<BallState> = {}): BallState {
+  const base: BallState = {
+    id,
+    phase: 'loose',
+    position: cloneVec3(position),
+    velocity: vec3(),
+    ownerKind: null,
+    ownerId: null,
+    heldByPlayerId: null,
+    heldHand: null,
+    bounceCount: 0,
+    isSuper: false,
+    dropScale: 1,
+    curveAccel: vec3(),
+    lastTouchedByPlayerId: null
+  };
+
+  return {
+    ...base,
+    ...overrides,
+    id,
+    position: cloneVec3(overrides.position ?? position),
+    velocity: cloneVec3(overrides.velocity ?? base.velocity),
+    curveAccel: cloneVec3(overrides.curveAccel ?? base.curveAccel)
+  };
+}
+
+export function isBallPickupStateEligible(
+  ball: Pick<BallState, 'phase' | 'velocity'> | { phase: BallPhase | string; velocity: Vec3 },
+  constants: GameConstants = GAME_CONSTANTS
+): boolean {
+  if (ball.phase === 'held') return false;
+  if (ball.phase === 'loose' || ball.phase === 'dead') return true;
+  return length(ball.velocity) <= constants.ball.slowPickupSpeed;
+}
+
+export function isBallPickupEligible(
+  ball: Pick<BallState, 'phase' | 'position' | 'velocity'>,
+  playerPosition: Vec3,
+  constants: GameConstants = GAME_CONSTANTS
+): boolean {
+  return isBallPickupStateEligible(ball, constants) && distance(ball.position, playerPosition) <= constants.ball.pickupRadius;
+}
+
+export function holdBall(ball: BallState, playerId: string, hand: HandSide): BallState {
+  return {
+    ...ball,
+    phase: 'held',
+    velocity: vec3(),
+    ownerKind: 'player',
+    ownerId: playerId,
+    heldByPlayerId: playerId,
+    heldHand: hand,
+    bounceCount: 0,
+    isSuper: false,
+    dropScale: 1,
+    curveAccel: vec3(),
+    lastTouchedByPlayerId: playerId
+  };
+}
+
+export function markBallDead(ball: BallState, velocity: Vec3 = ball.velocity): BallState {
+  return {
+    ...ball,
+    phase: 'dead',
+    velocity: cloneVec3(velocity),
+    ownerKind: null,
+    ownerId: null,
+    heldByPlayerId: null,
+    heldHand: null,
+    isSuper: false
+  };
+}
+
+export function dropHeldBall(ball: BallState, position: Vec3, velocity: Vec3 = vec3(0, 0.3, 0)): BallState {
+  return {
+    ...markBallDead(ball, velocity),
+    position: cloneVec3(position),
+    bounceCount: 1
+  };
+}
+
+export function validateThrowBall(ball: BallState, playerId: string, hand: HandSide): ValidationResult<ThrowValidationReason> {
+  if (ball.phase !== 'held') return { ok: false, reason: 'ball-not-held' };
+  if (ball.heldByPlayerId !== playerId) return { ok: false, reason: 'wrong-player' };
+  if (ball.heldHand !== hand) return { ok: false, reason: 'wrong-hand' };
+  return { ok: true };
+}
+
+export function throwHeldBall(ball: BallState, request: ThrowBallRequest): { ok: true; ball: BallState } | { ok: false; reason: ThrowValidationReason } {
+  const validation = validateThrowBall(ball, request.playerId, request.hand);
+  if (!validation.ok) return validation;
+
+  return {
+    ok: true,
+    ball: {
+      ...ball,
+      phase: 'live',
+      position: cloneVec3(request.origin),
+      velocity: cloneVec3(request.velocity),
+      ownerKind: request.ownerKind ?? 'player',
+      ownerId: request.playerId,
+      heldByPlayerId: null,
+      heldHand: null,
+      bounceCount: 0,
+      isSuper: request.isSuper ?? false,
+      dropScale: request.dropScale ?? 1,
+      curveAccel: cloneVec3(request.curveAccel ?? vec3()),
+      lastTouchedByPlayerId: request.playerId
+    }
+  };
+}
+
+export function catchBall(ball: BallState, playerId: string, hand: HandSide): BallState {
+  return holdBall(ball, playerId, hand);
+}
+
+export function deflectBall(ball: BallState, defenderPlayerId: string, forward: Vec3, constants: GameConstants = GAME_CONSTANTS): BallState {
+  const incomingSpeed = length(ball.velocity);
+  const deflectForward = normalize(forward, vec3(0, 0, 1));
+  const deflectedVelocity = add(
+    scale(deflectForward, incomingSpeed * constants.parry.deflectSpeedMultiplier),
+    vec3(0, constants.parry.deflectUpVelocity, 0)
+  );
+
+  return {
+    ...ball,
+    phase: 'deflected',
+    velocity: deflectedVelocity,
+    ownerKind: 'player',
+    ownerId: defenderPlayerId,
+    heldByPlayerId: null,
+    heldHand: null,
+    bounceCount: 0,
+    isSuper: false,
+    lastTouchedByPlayerId: defenderPlayerId
+  };
+}
+
+export function applyBallBounce(ball: BallState, constants: GameConstants = GAME_CONSTANTS): BallState {
+  if (ball.phase !== 'live' && ball.phase !== 'deflected') {
+    return { ...ball, bounceCount: ball.bounceCount + 1 };
+  }
+
+  const bounceCount = ball.bounceCount + 1;
+  const deadAfterBounces = ball.phase === 'deflected'
+    ? constants.ball.deflectedDeadAfterBounces
+    : constants.ball.deadAfterBounces;
+
+  if (bounceCount >= deadAfterBounces) {
+    return {
+      ...markBallDead(ball),
+      bounceCount
+    };
+  }
+
+  return {
+    ...ball,
+    bounceCount
+  };
+}
+
+export function settleBallIfSlow(ball: BallState, constants: GameConstants = GAME_CONSTANTS): BallState {
+  if (ball.phase !== 'dead' || length(ball.velocity) >= constants.ball.settleSpeed) return ball;
+  return {
+    ...ball,
+    phase: 'loose',
+    velocity: vec3(),
+    ownerKind: null,
+    ownerId: null,
+    heldByPlayerId: null,
+    heldHand: null,
+    isSuper: false
+  };
+}
+
+export function advanceBall(ball: BallState, dt: number, constants: GameConstants = GAME_CONSTANTS): BallState {
+  if (ball.phase !== 'live' && ball.phase !== 'dead' && ball.phase !== 'loose' && ball.phase !== 'deflected') return ball;
+
+  const firstLiveFlight = ball.phase === 'live' && ball.bounceCount === 0;
+  const gravityScale = firstLiveFlight ? ball.dropScale : 1;
+  const velocityWithGravity = add(ball.velocity, vec3(0, -constants.ball.gravity * gravityScale * dt, 0));
+  const velocity = firstLiveFlight
+    ? add(velocityWithGravity, scale(ball.curveAccel, dt))
+    : velocityWithGravity;
+
+  return {
+    ...ball,
+    velocity,
+    position: add(ball.position, scale(velocity, dt))
+  };
+}
