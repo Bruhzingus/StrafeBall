@@ -2,6 +2,7 @@ import { GAME_CONSTANTS, type GameConstants } from '../constants';
 import type { HandSide, PlayerState, Vec3 } from '../types';
 import { add, scale, vec3 } from './CollisionMath';
 import { lookVectorsFromAngles } from './AimMath';
+import { playerAimOriginHeight } from './PlayerHitbox';
 
 export interface HandAnchorOptions {
   horizontalOffset?: number;
@@ -15,11 +16,10 @@ export interface HandAnchors {
   right: Vec3;
 }
 
-const DEFAULT_HAND_ANCHOR: Required<HandAnchorOptions> = {
+const DEFAULT_HAND_ANCHOR: Required<Omit<HandAnchorOptions, 'originHeight'>> = {
   horizontalOffset: 0.36,
   forwardOffset: 0.56,
-  verticalOffset: -0.36,
-  originHeight: GAME_CONSTANTS.player.eyeHeight
+  verticalOffset: -0.36
 };
 
 export function computePlayerHandAnchor(
@@ -32,7 +32,8 @@ export function computePlayerHandAnchor(
   const movement = player.movement;
   const { forward, right, up } = lookVectorsFromAngles(movement.yawRadians, movement.pitchRadians, constants);
   const sideSign = hand === 'left' ? -1 : 1;
-  const origin = add(movement.position, vec3(0, config.originHeight, 0));
+  const originHeight = options.originHeight ?? playerAimOriginHeight(movement, constants);
+  const origin = add(movement.position, vec3(0, originHeight, 0));
 
   return add(
     add(origin, scale(right, sideSign * config.horizontalOffset)),

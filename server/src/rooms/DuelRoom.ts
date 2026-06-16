@@ -3,23 +3,31 @@ import { performance } from 'node:perf_hooks';
 import type {
   ClientMessage,
   InputCommand,
-  ServerMessage
+  ServerMessage,
+  ServerSnapshot
 } from '../../../shared/protocol';
 import type { PlayerInput } from '../../../shared/types';
+import {
+  MAX_ACCUMULATOR_CLAMP_MS,
+  MAX_ACCUMULATOR_STEPS,
+  ROOM_LOOP_WAKE_INTERVAL_MS,
+  SERVER_STEP_MS,
+  SERVER_TICK_RATE,
+  SNAPSHOT_INTERVAL_MS,
+  SNAPSHOT_RATE,
+  describeNetConfig,
+  resolveServerDebugFlags,
+  type DebugFlags
+} from '../../../shared/netConfig';
 import { ServerGameLoop } from '../simulation/ServerGameLoop';
 
 export interface DuelRoomOptions {
   name?: string;
 }
 
-const SIMULATION_TICK_RATE = 30;
-// Visual state is sent through explicit `snapshot` messages, not Colyseus Schema patches.
-// Keep this intentional so SERVER_TICK_RATE and client receive rate are not conflated.
-const SNAPSHOT_RATE = 30;
-const SIMULATION_STEP_MS = 1000 / SIMULATION_TICK_RATE;
-const ROOM_LOOP_WAKE_RATE = 60;
-const ROOM_LOOP_WAKE_INTERVAL_MS = 1000 / ROOM_LOOP_WAKE_RATE;
-const MAX_SIMULATION_STEPS_PER_WAKE = 4;
+// All timing/rate constants now come from the centralized netConfig — never hardcode a rate here.
+// Visual state is sent through explicit `snapshot` messages, not Colyseus Schema patches, so we
+// keep the manual snapshot cadence (SNAPSHOT_RATE) explicit and decoupled from the sim tick.
 const COLYSEUS_PATCH_RATE_MS: number | null = null;
 // How long a dropped player has to reconnect before they forfeit (#12).
 const RECONNECT_SECONDS = 20;
@@ -29,8 +37,10 @@ const MAX_ROOMS = 200;
 let activeRoomCount = 0;
 
 // Per-message-type rate limits: { capacity (burst), refillPerSecond } (#11).
+// Input is sized for sustained 60Hz with burst headroom: refill > tick rate so a steady 60/s
+// stream is never throttled, capacity ~1.5x the rate to absorb reconnection/jitter bursts.
 const RATE_LIMITS: Record<string, { capacity: number; refillPerSecond: number }> = {
-  input: { capacity: 60, refillPerSecond: 45 },
+  input: { capacity: 90, refillPerSecond: 75 },
   throw: { capacity: 8, refillPerSecond: 8 },
   pickup: { capacity: 8, refillPerSecond: 8 },
   'catch-parry': { capacity: 10, refillPerSecond: 10 },
@@ -49,14 +59,22 @@ export class DuelRoom extends Room {
   autoDispose = true;
 
   private game!: ServerGameLoop;
+  private readonly debug: DebugFlags = resolveServerDebugFlags();
   private readonly buckets = new Map<string, Map<string, Bucket>>();
   private rateWindowStartedAtMs = 0;
   private simTicksThisWindow = 0;
   private snapshotsThisWindow = 0;
   private simTickMsTotal = 0;
   private simTickMsMax = 0;
+  // Two independent accumulators: one drains fixed sim steps, the other gates snapshot broadcasts
+  // so snapshots run at SNAPSHOT_RATE decoupled from the sim tick (mode B = 60 sim / 30 snapshots).
   private simulationAccumulatorMs = 0;
+  private snapshotAccumulatorMs = 0;
   private lastLoopWakeAtMs = 0;
+  private latestSnapshot: ServerSnapshot | null = null;
+  // When sim and snapshot rates are equal (mode A/C) we broadcast one snapshot per sim step, which
+  // is exactly the old coupled behavior — no accumulator drift, lowest latency.
+  private readonly snapshotCoupledToTick = SNAPSHOT_RATE === SERVER_TICK_RATE;
   private readonly inputPacketsThisWindowByPlayerId = new Map<string, number>();
 
   onCreate(): void {
@@ -66,14 +84,12 @@ export class DuelRoom extends Room {
     // Coarse built-in backstop on top of the per-type token buckets below (#11).
     this.maxMessagesPerSecond = 150;
     this.game = new ServerGameLoop(this.roomId, {
-      tickRate: SIMULATION_TICK_RATE,
+      tickRate: SERVER_TICK_RATE,
       logger: (message) => this.log(message),
-      debugInput: process.env.DEBUG_INPUT === '1' || process.env.DEBUG_GAMEPLAY === '1'
+      debug: this.debug
     });
-    this.log(
-      `room created simTickRate=${SIMULATION_TICK_RATE}Hz manualSnapshotRate=${SNAPSHOT_RATE}Hz ` +
-      `loopWakeRate=${ROOM_LOOP_WAKE_RATE}Hz colyseusPatchRate=${formatPatchRate(COLYSEUS_PATCH_RATE_MS)}`
-    );
+    // One-time room-created line describing the active net config + the manual-snapshot patch mode.
+    this.log(`room created ${describeNetConfig()} colyseusPatchRate=${formatPatchRate(COLYSEUS_PATCH_RATE_MS)}`);
 
     this.onMessage('input', (client, message: Partial<InputCommand> | (Partial<PlayerInput> & { sequence?: number }) | undefined) => {
       if (!this.allow(client, 'input')) return;
@@ -92,9 +108,9 @@ export class DuelRoom extends Room {
       if (!this.allow(client, 'pickup')) return;
       const result = this.game.handlePickup(client.sessionId);
       if (!result.ok) {
-        this.log(`pickup rejected player=${client.sessionId} reason=${result.reason}`);
+        if (this.debug.PICKUP_DEBUG) this.log(`pickup rejected player=${client.sessionId} reason=${result.reason}`);
         this.reject(client, 'pickup', result.reason);
-      } else if (result.log) {
+      } else if (result.log && this.debug.PICKUP_DEBUG) {
         this.log(result.log);
       }
     });
@@ -111,9 +127,9 @@ export class DuelRoom extends Room {
       // server-tracked charge (#7). Only the hand selection comes from the client.
       const result = this.game.handleThrow(client.sessionId, { hand: message?.hand });
       if (!result.ok) {
-        this.log(`throw rejected player=${client.sessionId} reason=${result.reason}`);
+        if (this.debug.THROW_DEBUG) this.log(`throw rejected player=${client.sessionId} reason=${result.reason}`);
         this.reject(client, 'throw', result.reason);
-      } else if (result.log) {
+      } else if (result.log && this.debug.THROW_DEBUG) {
         this.log(result.log);
       }
     });
@@ -145,28 +161,58 @@ export class DuelRoom extends Room {
       const now = performance.now();
       if (this.clients.length === 0) {
         this.simulationAccumulatorMs = 0;
+        this.snapshotAccumulatorMs = 0;
         this.lastLoopWakeAtMs = now;
+        this.latestSnapshot = null;
         return;
       }
 
       if (this.lastLoopWakeAtMs === 0) this.lastLoopWakeAtMs = now;
-      this.simulationAccumulatorMs += Math.min(250, now - this.lastLoopWakeAtMs);
+      // Monotonic clock; clamp the elapsed slice so an alt-tab/GC pause can't dump a huge backlog.
+      const elapsedMs = Math.min(MAX_ACCUMULATOR_CLAMP_MS, now - this.lastLoopWakeAtMs);
       this.lastLoopWakeAtMs = now;
+      this.simulationAccumulatorMs += elapsedMs;
+      // The snapshot accumulator is only used in the decoupled path; leave it at zero when coupled
+      // so it can't drift/grow while unused.
+      if (!this.snapshotCoupledToTick) this.snapshotAccumulatorMs += elapsedMs;
 
+      // Drain fixed sim steps, capped to avoid a spiral-of-death after a long pause.
       let steps = 0;
-      while (this.simulationAccumulatorMs + 0.001 >= SIMULATION_STEP_MS && steps < MAX_SIMULATION_STEPS_PER_WAKE) {
-        this.simulationAccumulatorMs -= SIMULATION_STEP_MS;
+      while (this.simulationAccumulatorMs + 0.001 >= SERVER_STEP_MS && steps < MAX_ACCUMULATOR_STEPS) {
+        this.simulationAccumulatorMs -= SERVER_STEP_MS;
         steps += 1;
 
         const startedAt = performance.now();
-        const snapshot = this.game.step();
-        const simTickMs = performance.now() - startedAt;
-        this.broadcast('snapshot', snapshot);
-        this.recordSimulationRate(simTickMs);
+        this.latestSnapshot = this.game.step();
+        this.recordSimulationTick(performance.now() - startedAt);
+
+        // Coupled fast path (mode A/C, snapshots == sim): broadcast every step, exactly the old
+        // behavior — lowest latency, no snapshot accumulator drift.
+        if (this.snapshotCoupledToTick) {
+          this.broadcast('snapshot', this.latestSnapshot);
+          this.recordSnapshot();
+        }
       }
 
-      if (steps >= MAX_SIMULATION_STEPS_PER_WAKE && this.simulationAccumulatorMs >= SIMULATION_STEP_MS) {
-        this.simulationAccumulatorMs = SIMULATION_STEP_MS;
+      // Step cap hit with backlog remaining: discard the backlog (don't time-warp) and report only
+      // under PERF_DEBUG so a real playtest stays silent.
+      if (steps >= MAX_ACCUMULATOR_STEPS && this.simulationAccumulatorMs >= SERVER_STEP_MS) {
+        if (this.debug.PERF_DEBUG) {
+          this.log(`[perf] step cap hit (${steps}) — discarding ${this.simulationAccumulatorMs.toFixed(1)}ms backlog`);
+        }
+        this.simulationAccumulatorMs = SERVER_STEP_MS;
+      }
+
+      // Decoupled snapshot broadcast (mode B, snapshots < sim): emit the latest simulated state on
+      // the snapshot cadence, independent of how many sim steps ran this wake. Catch up at most one
+      // interval per wake to avoid bursts; clamp the accumulator so it can't grow unbounded.
+      if (!this.snapshotCoupledToTick && this.latestSnapshot) {
+        if (this.snapshotAccumulatorMs + 0.001 >= SNAPSHOT_INTERVAL_MS) {
+          this.snapshotAccumulatorMs -= SNAPSHOT_INTERVAL_MS;
+          if (this.snapshotAccumulatorMs > SNAPSHOT_INTERVAL_MS) this.snapshotAccumulatorMs = SNAPSHOT_INTERVAL_MS;
+          this.broadcast('snapshot', this.latestSnapshot);
+          this.recordSnapshot();
+        }
       }
     }, ROOM_LOOP_WAKE_INTERVAL_MS);
   }
@@ -235,29 +281,33 @@ export class DuelRoom extends Room {
     this.inputPacketsThisWindowByPlayerId.set(playerId, (this.inputPacketsThisWindowByPlayerId.get(playerId) ?? 0) + 1);
   }
 
-  private recordSimulationRate(simTickMs: number): void {
+  /** Record one fixed sim step for the periodic [rates] summary. Counts ticks separately from
+   * snapshots since the two cadences can differ (mode B). Emits the summary at most once/second,
+   * and ONLY when PERF_DEBUG is enabled. */
+  private recordSimulationTick(simTickMs: number): void {
     const now = Date.now();
     if (this.rateWindowStartedAtMs === 0) this.rateWindowStartedAtMs = now;
     this.simTicksThisWindow += 1;
-    this.snapshotsThisWindow += 1;
     this.simTickMsTotal += simTickMs;
     this.simTickMsMax = Math.max(this.simTickMsMax, simTickMs);
 
     const elapsedMs = now - this.rateWindowStartedAtMs;
-    if (elapsedMs < 1000) return;
+    if (elapsedMs < 5000) return;
 
-    const elapsedSeconds = elapsedMs / 1000;
-    const inputRates = [...this.inputPacketsThisWindowByPlayerId.entries()]
-      .map(([playerId, count]) => `${playerId.slice(-4)}:${(count / elapsedSeconds).toFixed(1)}/s`)
-      .join(',');
-    const avgSimTickMs = this.simTicksThisWindow > 0 ? this.simTickMsTotal / this.simTicksThisWindow : 0;
-    this.log(
-      `[rates] simTicks=${(this.simTicksThisWindow / elapsedSeconds).toFixed(1)}/s ` +
-      `snapshots=${(this.snapshotsThisWindow / elapsedSeconds).toFixed(1)}/s ` +
-      `patchRate=${formatPatchRate(COLYSEUS_PATCH_RATE_MS)} ` +
-      `inputPackets={${inputRates || 'none'}} ` +
-      `simTickMs avg=${avgSimTickMs.toFixed(2)} max=${this.simTickMsMax.toFixed(2)}`
-    );
+    if (this.debug.PERF_DEBUG) {
+      const elapsedSeconds = elapsedMs / 1000;
+      const inputRates = [...this.inputPacketsThisWindowByPlayerId.entries()]
+        .map(([playerId, count]) => `${playerId.slice(-4)}:${(count / elapsedSeconds).toFixed(1)}/s`)
+        .join(',');
+      const avgSimTickMs = this.simTicksThisWindow > 0 ? this.simTickMsTotal / this.simTicksThisWindow : 0;
+      this.log(
+        `[rates] simTicks=${(this.simTicksThisWindow / elapsedSeconds).toFixed(1)}/s ` +
+        `snapshots=${(this.snapshotsThisWindow / elapsedSeconds).toFixed(1)}/s ` +
+        `patchRate=${formatPatchRate(COLYSEUS_PATCH_RATE_MS)} ` +
+        `inputPackets={${inputRates || 'none'}} ` +
+        `simTickMs avg=${avgSimTickMs.toFixed(2)} max=${this.simTickMsMax.toFixed(2)}`
+      );
+    }
 
     this.rateWindowStartedAtMs = now;
     this.simTicksThisWindow = 0;
@@ -265,6 +315,11 @@ export class DuelRoom extends Room {
     this.simTickMsTotal = 0;
     this.simTickMsMax = 0;
     this.inputPacketsThisWindowByPlayerId.clear();
+  }
+
+  /** Record one snapshot broadcast for the [rates] summary (decoupled from sim ticks in mode B). */
+  private recordSnapshot(): void {
+    this.snapshotsThisWindow += 1;
   }
 
   /** Token-bucket rate limit per client per message type (#11). Returns false if over limit. */

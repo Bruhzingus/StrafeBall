@@ -1,0 +1,186 @@
+/**
+ * Centralized netcode configuration — the single source of truth for every timing path in the
+ * game. Server simulation, manual snapshot broadcast, client input send, client prediction, and
+ * reconciliation replay all derive their rates and fixed timesteps from here so they can never
+ * silently drift apart (the bug class behind "intended 30Hz became ~22Hz").
+ *
+ * IMPORTANT: derive dt from the rate (`1 / rate`), never hardcode `0.033` / `0.016` literals.
+ * Prediction and the server must use compatible fixed dt; with SERVER_TICK_RATE === CLIENT_INPUT_RATE
+ * they are identical, which is the only configuration that makes reconciliation residual ≈ 0.
+ *
+ * To switch test configs, change ACTIVE_NET_MODE below (or set VITE_NET_MODE / NET_MODE env).
+ * The three supported modes:
+ *   A. 60 sim / 60 input / 60 snapshots  (target — lowest latency)
+ *   B. 60 sim / 60 input / 30 snapshots  (fallback — half the snapshot CPU/bandwidth)
+ *   C. 30 sim / 30 input / 30 snapshots  (baseline — safest for a 1 vCPU box)
+ */
+
+export type NetMode = 'A_60_60_60' | 'B_60_60_30' | 'C_30_30_30';
+
+export interface NetModeConfig {
+  /** Server fixed simulation steps per second. */
+  serverTickRate: number;
+  /** Client input send + local prediction steps per second. Must equal serverTickRate for residual≈0. */
+  clientInputRate: number;
+  /** Manual snapshot broadcasts per second. May be lower than serverTickRate (fallback mode). */
+  snapshotRate: number;
+  /**
+   * How far behind real time remote players/balls are rendered, in ms. Sized to absorb one to two
+   * snapshot intervals plus delivery jitter. Higher snapshot rate → shorter delay is safe.
+   *   60Hz snapshots: ~75ms   30Hz snapshots: ~110ms
+   */
+  interpolationDelayMs: number;
+}
+
+const MODES: Record<NetMode, NetModeConfig> = {
+  // A — full 60Hz. Snapshot interval ~16.7ms; a 75ms delay covers ~4 snapshots of jitter headroom.
+  A_60_60_60: { serverTickRate: 60, clientInputRate: 60, snapshotRate: 60, interpolationDelayMs: 75 },
+  // B — 60 sim/input, 30 snapshots. Snapshot interval ~33ms; 110ms delay covers ~3 snapshots.
+  B_60_60_30: { serverTickRate: 60, clientInputRate: 60, snapshotRate: 30, interpolationDelayMs: 110 },
+  // C — classic 30Hz everything. Snapshot interval ~33ms; 110ms delay covers ~3 snapshots.
+  C_30_30_30: { serverTickRate: 30, clientInputRate: 30, snapshotRate: 30, interpolationDelayMs: 110 }
+};
+
+/**
+ * Resolve the active mode from an env override if present, else the compiled default. The override
+ * lets local-vs-deployed tests pick a mode without editing this constant:
+ *   - server: NET_MODE=B_60_60_30 (process.env, read here)
+ *   - client: VITE_NET_MODE=B_60_60_30 — the client calls applyClientNetMode() at startup with
+ *     its own import.meta.env value, because this `shared` file is compiled as CommonJS for the
+ *     Node server where a bare `import.meta` token is a syntax error (TS1343). Keeping the
+ *     import.meta reference OUT of shared code is what lets the same file build for both targets.
+ */
+/**
+ * Read process.env via globalThis so this file type-checks under BOTH builds: the client tsconfig
+ * does not include @types/node (so a bare `process` is an error TS2580), and the server compiles
+ * shared as CommonJS. Going through `globalThis` with a local typed shim avoids needing the Node
+ * type while still reading env on the server at runtime; on the client `process` is simply absent
+ * and this returns {}.
+ */
+function processEnv(): Record<string, string | undefined> {
+  const g = globalThis as { process?: { env?: Record<string, string | undefined> } };
+  return g.process?.env ?? {};
+}
+
+function resolveProcessMode(): NetMode {
+  const fromProcess = processEnv().NET_MODE as NetMode | undefined;
+  if (fromProcess && fromProcess in MODES) return fromProcess;
+  return DEFAULT_NET_MODE;
+}
+
+/** Compiled default mode. Per playtest decision: 60 sim / 60 input / 60 snapshots. */
+export const DEFAULT_NET_MODE: NetMode = 'A_60_60_60';
+
+/**
+ * Active mode resolved at module load from process.env (server) or the compiled default (client).
+ * The client may narrow this further at startup via applyClientNetMode(); since rates are read
+ * eagerly below, a client override should be applied before the first room connection. In practice
+ * the compiled default A_60_60_60 is what ships, so no client override is required for the playtest.
+ */
+export const ACTIVE_NET_MODE: NetMode = resolveProcessMode();
+
+/**
+ * Client-side hook to validate a VITE_NET_MODE value against the known modes. The client reads its
+ * own import.meta.env.VITE_NET_MODE (allowed in client code, which Vite compiles as ESM) and passes
+ * it here; returns the matching NetModeConfig or null if unset/unknown. This keeps the import.meta
+ * token in client-only code, never in this shared CommonJS-compiled file.
+ */
+export function netModeConfig(mode: string | undefined): NetModeConfig | null {
+  return mode && mode in MODES ? MODES[mode as NetMode] : null;
+}
+
+const active = MODES[ACTIVE_NET_MODE];
+
+export const SERVER_TICK_RATE = active.serverTickRate;
+export const CLIENT_INPUT_RATE = active.clientInputRate;
+export const SNAPSHOT_RATE = active.snapshotRate;
+
+/** Exact fixed timesteps (seconds). Derived from rate — never a rounded literal. */
+export const SERVER_FIXED_DT = 1 / SERVER_TICK_RATE;
+export const CLIENT_FIXED_DT = 1 / CLIENT_INPUT_RATE;
+
+/** Milliseconds between snapshot broadcasts. The room loop broadcasts on this cadence. */
+export const SNAPSHOT_INTERVAL_MS = 1000 / SNAPSHOT_RATE;
+/** Milliseconds between server fixed sim steps. */
+export const SERVER_STEP_MS = 1000 / SERVER_TICK_RATE;
+
+export const INTERPOLATION_DELAY_MS = active.interpolationDelayMs;
+
+/**
+ * How frequently the room loop wakes to drain the fixed-step accumulator. Wake faster than the sim
+ * rate so timer jitter can't starve a step. 120Hz wake (≈8.3ms) comfortably feeds a 60Hz sim.
+ */
+export const ROOM_LOOP_WAKE_RATE = 120;
+export const ROOM_LOOP_WAKE_INTERVAL_MS = 1000 / ROOM_LOOP_WAKE_RATE;
+
+/**
+ * Max fixed sim steps to run per wake. Prevents a spiral-of-death after a long pause: instead of
+ * trying to "catch up" hundreds of frames we cap and discard the backlog. Sized so a single wake
+ * can absorb a couple of missed steps without ever simulating a visible time-warp.
+ */
+export const MAX_ACCUMULATOR_STEPS = 5;
+
+/** Clamp on elapsed time fed into the accumulator (ms). Caps the damage of an alt-tab / GC pause. */
+export const MAX_ACCUMULATOR_CLAMP_MS = 250;
+
+/** Max sent inputs the client buffers for reconciliation. ~1.5s at 60Hz — generous RTT headroom. */
+export const PENDING_INPUT_LIMIT = 100;
+
+/** Max inputs the server queues per player before dropping the oldest. ~1s of buffer at the rate. */
+export const SERVER_INPUT_QUEUE_LIMIT = Math.max(30, Math.ceil(SERVER_TICK_RATE));
+
+/** Max snapshots the client interpolation buffer keeps (by age, ms). */
+export const SNAPSHOT_BUFFER_LIMIT_MS = 1000;
+
+/** How long the client may extrapolate a remote entity past the newest snapshot on buffer underrun. */
+export const EXTRAPOLATION_LIMIT_MS = 120;
+
+/** Position error (m) above which interpolation snaps instead of lerping (reset/teleport/glitch). */
+export const HUGE_ERROR_SNAP_METERS = 5;
+
+/**
+ * Debug flags — ALL OFF by default. These gate per-tick/per-frame logging that must never run
+ * during a real playtest (it dominates CPU and GC). Each may be enabled out-of-band:
+ *   - server: env vars (NET_DEBUG=1, PERF_DEBUG=1, BALL_DEBUG=1, PICKUP_DEBUG=1, THROW_DEBUG=1)
+ *   - client: localStorage (strafeball.debug.net, .perf, .ball, .pickup, .throw)
+ * PERF_DEBUG additionally controls the every-5s [rates] line, which is the one log worth keeping
+ * occasionally during a playtest; it is still off unless explicitly enabled.
+ */
+export interface DebugFlags {
+  NET_DEBUG: boolean;
+  PERF_DEBUG: boolean;
+  BALL_DEBUG: boolean;
+  PICKUP_DEBUG: boolean;
+  THROW_DEBUG: boolean;
+}
+
+export const DEBUG_DEFAULTS: DebugFlags = {
+  NET_DEBUG: false,
+  PERF_DEBUG: false,
+  BALL_DEBUG: false,
+  PICKUP_DEBUG: false,
+  THROW_DEBUG: false
+};
+
+/** Resolve server-side debug flags from env (1/true enables). Returns all-off if env is absent. */
+export function resolveServerDebugFlags(env: Record<string, string | undefined> = processEnv()): DebugFlags {
+  const on = (v: string | undefined): boolean => v === '1' || v === 'true';
+  // DEBUG_GAMEPLAY=1 is a convenience switch that turns the gameplay-related channels on at once.
+  const all = on(env.DEBUG_GAMEPLAY);
+  return {
+    NET_DEBUG: all || on(env.NET_DEBUG),
+    PERF_DEBUG: all || on(env.PERF_DEBUG),
+    BALL_DEBUG: all || on(env.BALL_DEBUG),
+    PICKUP_DEBUG: all || on(env.PICKUP_DEBUG),
+    THROW_DEBUG: all || on(env.THROW_DEBUG)
+  };
+}
+
+/** Human-readable summary of the active config, for the one-time room-created log line. */
+export function describeNetConfig(): string {
+  return (
+    `mode=${ACTIVE_NET_MODE} sim=${SERVER_TICK_RATE}Hz input=${CLIENT_INPUT_RATE}Hz ` +
+    `snapshots=${SNAPSHOT_RATE}Hz interpDelay=${INTERPOLATION_DELAY_MS}ms ` +
+    `loopWake=${ROOM_LOOP_WAKE_RATE}Hz`
+  );
+}

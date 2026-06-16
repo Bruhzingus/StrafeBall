@@ -1,4 +1,5 @@
 import { GAME_CONSTANTS } from '../../../shared/constants';
+import { DEBUG_DEFAULTS, SERVER_INPUT_QUEUE_LIMIT, SERVER_TICK_RATE, type DebugFlags } from '../../../shared/netConfig';
 import type {
   BallState,
   HandSide,
@@ -47,10 +48,17 @@ import { createGymCollisionBoxes, type AABB } from '../../../shared/simulation/M
 import { facingFromAngles, isSuperThrowWindow, stepMovement } from '../../../shared/simulation/MovementSim';
 import { clampLookPitch } from '../../../shared/simulation/AimMath';
 import { computePlayerHandAnchor } from '../../../shared/simulation/HandAnchors';
+import { playerBallHitRadius, playerHitCapsule } from '../../../shared/simulation/PlayerHitbox';
 
 export interface ServerGameLoopOptions {
   tickRate?: number;
   logger?: (message: string) => void;
+  /** Per-channel debug flags. All default OFF — a real playtest produces zero per-tick logging. */
+  debug?: Partial<DebugFlags>;
+  /**
+   * Backward-compat shim for the old constructor shape. `debugInput: true` maps to NET_DEBUG so
+   * existing callers (and tests) keep compiling. Prefer `debug` for new code.
+   */
   debugInput?: boolean;
 }
 
@@ -96,10 +104,9 @@ const SPAWN_BY_SIDE: Record<SpawnSide, { position: Vec3; yawRadians: number }> =
 };
 
 const TEAM_IDS = ['blue', 'red'];
-// Max inputs buffered per player before we drop the oldest.
-// At 30 Hz, 30 slots = 1 s of buffer — enough headroom for typical internet RTTs without
-// letting a malicious or frozen client build infinite queue.
-const MAX_INPUT_QUEUE = 30;
+// Max inputs buffered per player before we drop the oldest. Driven by netConfig so the buffer
+// scales with the active tick rate (~1 s of headroom) instead of a hardcoded 30Hz assumption.
+const MAX_INPUT_QUEUE = SERVER_INPUT_QUEUE_LIMIT;
 // If no fresh input arrives for this long, the player's input is treated as neutral (so a
 // backgrounded/frozen tab doesn't keep walking or charging on the last-held input).
 const STALE_INPUT_MS = 1000;
@@ -112,7 +119,7 @@ export class ServerGameLoop {
   private readonly roomId: string;
   private readonly tickSeconds: number;
   private readonly logger: (message: string) => void;
-  private readonly debugInput: boolean;
+  private readonly debug: DebugFlags;
   private readonly collisionBoxes = createGymCollisionBoxes();
 
   private readonly inputQueueByPlayerId = new Map<string, QueuedInput[]>();
@@ -129,10 +136,19 @@ export class ServerGameLoop {
 
   constructor(roomId: string, options: ServerGameLoopOptions = {}) {
     this.roomId = roomId;
-    this.tickRate = options.tickRate ?? 30;
+    this.tickRate = options.tickRate ?? SERVER_TICK_RATE;
     this.tickSeconds = 1 / this.tickRate;
     this.logger = options.logger ?? (() => undefined);
-    this.debugInput = options.debugInput ?? false;
+    // All flags default OFF. The legacy `debugInput` boolean maps to NET_DEBUG for compat; an
+    // explicit `debug.NET_DEBUG` (if provided) wins over it.
+    this.debug = {
+      ...DEBUG_DEFAULTS,
+      NET_DEBUG: options.debug?.NET_DEBUG ?? options.debugInput ?? DEBUG_DEFAULTS.NET_DEBUG,
+      PERF_DEBUG: options.debug?.PERF_DEBUG ?? DEBUG_DEFAULTS.PERF_DEBUG,
+      BALL_DEBUG: options.debug?.BALL_DEBUG ?? DEBUG_DEFAULTS.BALL_DEBUG,
+      PICKUP_DEBUG: options.debug?.PICKUP_DEBUG ?? DEBUG_DEFAULTS.PICKUP_DEBUG,
+      THROW_DEBUG: options.debug?.THROW_DEBUG ?? DEBUG_DEFAULTS.THROW_DEBUG
+    };
     this.state = this.createFreshRoomState();
   }
 
@@ -200,7 +216,7 @@ export class ServerGameLoop {
     const others = Object.values(this.state.players).filter((p) => p.id !== playerId);
     if (this.state.match.status === 'playing' && others.length === 1) {
       this.forfeitTo(others[0].teamId);
-      this.logger(`forfeit win team=${others[0].teamId} (opponent abandoned)`);
+      if (this.debug.NET_DEBUG) this.logger(`forfeit win team=${others[0].teamId} (opponent abandoned)`);
     }
     this.removePlayer(playerId);
   }
@@ -249,15 +265,17 @@ export class ServerGameLoop {
       .map((ball) => ({ ball, distance: distance(ball.position, pp) }))
       .sort((a, b) => a.distance - b.distance);
 
-    this.logger(
-      `pickup attempt player=${playerId} pos=(${pp.x.toFixed(2)},${pp.y.toFixed(2)},${pp.z.toFixed(2)}) balls=${allBalls.length}`
-    );
-    for (const { ball, distance: dist } of candidates.slice(0, 4)) {
+    if (this.debug.PICKUP_DEBUG) {
       this.logger(
-        `  ball=${ball.id} phase=${ball.phase} owner=${ball.ownerId ?? 'none'}` +
-        ` pos=(${ball.position.x.toFixed(2)},${ball.position.y.toFixed(2)},${ball.position.z.toFixed(2)})` +
-        ` dist=${dist.toFixed(2)} pickupRadius=${GAME_CONSTANTS.ball.pickupRadius}`
+        `pickup attempt player=${playerId} pos=(${pp.x.toFixed(2)},${pp.y.toFixed(2)},${pp.z.toFixed(2)}) balls=${allBalls.length}`
       );
+      for (const { ball, distance: dist } of candidates.slice(0, 4)) {
+        this.logger(
+          `  ball=${ball.id} phase=${ball.phase} owner=${ball.ownerId ?? 'none'}` +
+          ` pos=(${ball.position.x.toFixed(2)},${ball.position.y.toFixed(2)},${ball.position.z.toFixed(2)})` +
+          ` dist=${dist.toFixed(2)} pickupRadius=${GAME_CONSTANTS.ball.pickupRadius}`
+        );
+      }
     }
 
     for (const { ball } of candidates) {
@@ -332,13 +350,15 @@ export class ServerGameLoop {
 
     this.state.players[playerId] = { ...player, hands: result.hands };
     this.state.balls[ball.id] = result.ball;
-    this.logger(
-      `throw aim player=${playerId}` +
-      ` yaw=${player.movement.yawRadians.toFixed(3)} pitch=${player.movement.pitchRadians.toFixed(3)}` +
-      ` dir=(${forward.x.toFixed(3)},${forward.y.toFixed(3)},${forward.z.toFixed(3)})` +
-      ` origin=(${origin.x.toFixed(2)},${origin.y.toFixed(2)},${origin.z.toFixed(2)})` +
-      ` vel=(${velocity.x.toFixed(2)},${velocity.y.toFixed(2)},${velocity.z.toFixed(2)})`
-    );
+    if (this.debug.THROW_DEBUG) {
+      this.logger(
+        `throw aim player=${playerId}` +
+        ` yaw=${player.movement.yawRadians.toFixed(3)} pitch=${player.movement.pitchRadians.toFixed(3)}` +
+        ` dir=(${forward.x.toFixed(3)},${forward.y.toFixed(3)},${forward.z.toFixed(3)})` +
+        ` origin=(${origin.x.toFixed(2)},${origin.y.toFixed(2)},${origin.z.toFixed(2)})` +
+        ` vel=(${velocity.x.toFixed(2)},${velocity.y.toFixed(2)},${velocity.z.toFixed(2)})`
+      );
+    }
     return { ok: true, log: `throw accepted player=${playerId} ball=${ball.id} hand=${request.hand} charge=${charge01.toFixed(2)}${isSuper ? ' SUPER' : ''}` };
   }
 
@@ -356,14 +376,14 @@ export class ServerGameLoop {
       const cooldown = this.parryCooldownByPlayerId.get(playerId) ?? 0;
       const result = autoParryBall(player, player.hands, threat, facing, cooldown, eye);
       if (!result.ok) {
-        this.logger(`parry rejected player=${playerId} ball=${threat.id} reason=${result.reason}`);
+        if (this.debug.NET_DEBUG) this.logger(`parry rejected player=${playerId} ball=${threat.id} reason=${result.reason}`);
         return result;
       }
 
       this.state.balls[threat.id] = result.ball;
       this.parryCooldownByPlayerId.set(playerId, result.parryCooldownSeconds);
       if (threat.isSuper) this.dropOneHeldBall(player); // super-parry drops a defender ball
-      this.logger(`parry accepted player=${playerId} ball=${threat.id} super=${threat.isSuper}`);
+      if (this.debug.NET_DEBUG) this.logger(`parry accepted player=${playerId} ball=${threat.id} super=${threat.isSuper}`);
       return { ok: true };
     }
 
@@ -380,7 +400,7 @@ export class ServerGameLoop {
     const tracked = this.catchTrackingByPlayerId.get(playerId)?.[threat.id] ?? 0;
     const result = catchBallInHand(player, player.hands, hand, threat, facing, tracked, eye);
     if (!result.ok) {
-      this.logger(`catch rejected player=${playerId} ball=${threat.id} tracked=${tracked.toFixed(3)}s reason=${result.reason}`);
+      if (this.debug.NET_DEBUG) this.logger(`catch rejected player=${playerId} ball=${threat.id} tracked=${tracked.toFixed(3)}s reason=${result.reason}`);
       return result;
     }
 
@@ -394,7 +414,7 @@ export class ServerGameLoop {
     };
     this.state.players[playerId] = boostedPlayer;
     this.state.balls[threat.id] = result.ball;
-    this.logger(`catch accepted player=${playerId} ball=${threat.id} hand=${hand} tracked=${tracked.toFixed(3)}s`);
+    if (this.debug.NET_DEBUG) this.logger(`catch accepted player=${playerId} ball=${threat.id} hand=${hand} tracked=${tracked.toFixed(3)}s`);
     return { ok: true };
   }
 
@@ -406,7 +426,7 @@ export class ServerGameLoop {
     this.syncResetVoteState();
 
     const vote = this.state.resetVote;
-    this.logger(`reset vote player=${playerId} votes=${vote.voteCount}/${vote.requiredVotes}`);
+    if (this.debug.NET_DEBUG) this.logger(`reset vote player=${playerId} votes=${vote.voteCount}/${vote.requiredVotes}`);
     if (vote.requiredVotes > 0 && vote.voteCount >= vote.requiredVotes) {
       this.performRoomReset(playerId);
       return { ok: true, log: `room reset approved player=${playerId}` };
@@ -477,15 +497,17 @@ export class ServerGameLoop {
 
     if (input.dropPressed) {
       const result = this.handleDrop(player.id);
-      if (!result.ok) this.logger(`drop rejected player=${player.id} reason=${result.reason}`);
+      if (!result.ok && this.debug.NET_DEBUG) this.logger(`drop rejected player=${player.id} reason=${result.reason}`);
     }
 
     if (input.pickupPressed) {
       const result = this.handlePickup(player.id);
-      if (!result.ok) {
-        this.logger(`pickup rejected player=${player.id} reason=${result.reason}`);
-      } else if (result.log) {
-        this.logger(result.log);
+      if (this.debug.PICKUP_DEBUG) {
+        if (!result.ok) {
+          this.logger(`pickup rejected player=${player.id} reason=${result.reason}`);
+        } else if (result.log) {
+          this.logger(result.log);
+        }
       }
     }
 
@@ -504,7 +526,7 @@ export class ServerGameLoop {
     preGrounded: boolean,
     postMovement: PlayerState['movement']
   ): void {
-    if (!this.debugInput) return;
+    if (!this.debug.NET_DEBUG) return;
     const now = Date.now();
     const previous = this.lastInputDebugAtByPlayerId.get(playerId) ?? 0;
 
@@ -549,7 +571,7 @@ export class ServerGameLoop {
 
       const advanced = advanceBall(ball, dt);
       const bounded = resolveBallBounds(advanced);
-      const collided = resolveBallStaticBoxes(bounded, this.collisionBoxes, this.debugInput ? this.logger : undefined);
+      const collided = resolveBallStaticBoxes(bounded, this.collisionBoxes, this.debug.BALL_DEBUG ? this.logger : undefined);
       this.state.balls[ball.id] = settleBallIfSlow(collided);
     }
   }
@@ -561,7 +583,7 @@ export class ServerGameLoop {
    * throws tunnelling through a player between ticks.
    */
   private validateHits(dt: number): void {
-    const radius = GAME_CONSTANTS.player.radius + GAME_CONSTANTS.ball.radius;
+    const radius = playerBallHitRadius();
 
     for (const ball of Object.values(this.state.balls)) {
       if (!canScorePlayerHit(ball)) continue;
@@ -573,10 +595,8 @@ export class ServerGameLoop {
 
       for (const target of Object.values(this.state.players)) {
         if (target.id === ownerId) continue;
-        const base = target.movement.position;
-        const bodyBase = vec3(base.x, base.y, base.z);
-        const bodyTop = vec3(base.x, base.y + GAME_CONSTANTS.player.height, base.z);
-        if (!sweptBallHitsBody(prev, curr, bodyBase, bodyTop, radius)) continue;
+        const hitbox = playerHitCapsule(target);
+        if (!sweptBallHitsBody(prev, curr, hitbox.base, hitbox.top, radius)) continue;
 
         const scorer = this.state.players[ownerId];
         const previousScore = scorer ? this.state.match.scoreByTeamId[scorer.teamId] ?? 0 : 0;
@@ -584,9 +604,11 @@ export class ServerGameLoop {
         this.state.balls[ball.id] = markBallDead(ball);
         this.state = registerPlayerHit(this.state, ownerId);
         const nextScore = scorer ? this.state.match.scoreByTeamId[scorer.teamId] ?? 0 : previousScore;
-        this.logger(`hit confirmed scorer=${ownerId} target=${target.id} ball=${ball.id}`);
-        if (nextScore !== previousScore) this.logger(`score changed team=${scorer?.teamId ?? 'unknown'} score=${nextScore}`);
-        if (!previousWinner && this.state.match.winnerTeamId) this.logger(`match ended winner=${this.state.match.winnerTeamId}`);
+        if (this.debug.NET_DEBUG) {
+          this.logger(`hit confirmed scorer=${ownerId} target=${target.id} ball=${ball.id}`);
+          if (nextScore !== previousScore) this.logger(`score changed team=${scorer?.teamId ?? 'unknown'} score=${nextScore}`);
+          if (!previousWinner && this.state.match.winnerTeamId) this.logger(`match ended winner=${this.state.match.winnerTeamId}`);
+        }
         break;
       }
     }
@@ -659,7 +681,7 @@ export class ServerGameLoop {
     }
     if (players.length === 2) this.startMatch();
     this.syncResetVoteState();
-    this.logger(`room reset by player=${triggerPlayerId} players=${players.length} serial=${this.resetSerial}`);
+    if (this.debug.NET_DEBUG) this.logger(`room reset by player=${triggerPlayerId} players=${players.length} serial=${this.resetSerial}`);
   }
 
   private resolveResetVotesAfterRosterChange(): void {

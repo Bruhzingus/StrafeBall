@@ -20,8 +20,10 @@ import { NetworkRenderer } from '../network/NetworkRenderer';
 import type { ServerSnapshot } from '../../../shared/protocol';
 import type { DashState, MovementInternalState, PlayerInput, PlayerMovementState, PlayerState, Vec3 } from '../../../shared/types';
 import { stepMovement, facingFromAngles } from '../../../shared/simulation/MovementSim';
+import { CLIENT_FIXED_DT, PENDING_INPUT_LIMIT, MAX_ACCUMULATOR_STEPS } from '../../../shared/netConfig';
 import { createGymCollisionBoxes, type AABB } from '../../../shared/simulation/MapGeometry';
 import { sweptBallHitsBody } from '../../../shared/simulation/CollisionMath';
+import { playerBallHitRadius, playerHitCapsule } from '../../../shared/simulation/PlayerHitbox';
 
 export class ArenaScene {
   public readonly scene: Scene;
@@ -60,7 +62,10 @@ export class ArenaScene {
   // timestep with sequence-numbered inputs. Each snapshot reconciles: adopt the authoritative
   // state, then replay inputs the server hasn't acknowledged yet.
   private readonly netCollisionBoxes: AABB[] = createGymCollisionBoxes();
-  private static readonly NET_FIXED_DT = 1 / 30;
+  // Fixed timestep for input send + prediction + reconciliation replay. Driven entirely by the
+  // shared net config (must equal the server's fixed dt for reconciliation residual ≈ 0). At the
+  // active A_60_60_60 mode this is 1/60; the fixed-step loop below then sends at 60Hz.
+  private static readonly NET_FIXED_DT = CLIENT_FIXED_DT;
   private netAccumulator = 0;
   private inputSeq = 0;
   private pendingInputs: { seq: number; input: PlayerInput; prev: PlayerInput }[] = [];
@@ -90,7 +95,9 @@ export class ArenaScene {
   private onlineRateLogInputCount = 0;
 
   // Input latches: accumulate edge-triggered inputs across render frames so they survive to the
-  // next fixed-step packet boundary (render may run faster than the 30 Hz send rate).
+  // next fixed-step packet boundary. They survive whether render runs faster OR slower than the
+  // input rate: on a frame that emits zero fixed steps the latches are NOT cleared (cleared only
+  // inside the while loop after a packet is built), so no edge is dropped at e.g. 50fps vs 60Hz.
   private latchJumpPressed = false;
   private latchDashPressed = false;
   private latchSlidePressed = false;
@@ -194,10 +201,22 @@ export class ArenaScene {
    * Caught/parried balls leave the Live state before reaching here, so they never register.
    */
   private checkBotHitsPlayer(dt: number): void {
-    const feet = this.player.root.position;
-    const radius = TUNING.player.radius + TUNING.ball.radius;
-    const base = { x: feet.x, y: feet.y, z: feet.z };
-    const top = { x: feet.x, y: feet.y + TUNING.player.height, z: feet.z };
+    const hitbox = playerHitCapsule({
+      movement: {
+        position: vector3ToVec3(this.player.root.position),
+        velocity: vector3ToVec3(this.player.movement.velocity),
+        yawRadians: this.player.root.rotation.y,
+        pitchRadians: this.player.camera.rotation.x,
+        facing: { x: 0, y: 0, z: 1 },
+        grounded: this.player.movement.grounded,
+        crouching: this.player.movement.crouching,
+        sliding: this.player.movement.sliding,
+        wallRunning: this.player.movement.wallRunning,
+        dashingThisFrame: this.player.movement.dashingThisFrame,
+        speed: this.player.lastMovementSnapshot.speed
+      }
+    });
+    const radius = playerBallHitRadius();
 
     for (const ball of this.ballManager.balls) {
       if (ball.state !== BallState.Live || ball.owner !== 'bot') continue;
@@ -205,7 +224,7 @@ export class ArenaScene {
       // Swept capsule (ball path this tick vs the player's body axis) so fast lobs that cross the
       // body between frames still register, and high throws count as head hits.
       const prev = { x: b.x - ball.velocity.x * dt, y: b.y - ball.velocity.y * dt, z: b.z - ball.velocity.z * dt };
-      if (!sweptBallHitsBody(prev, b, base, top, radius)) continue;
+      if (!sweptBallHitsBody(prev, b, hitbox.base, hitbox.top, radius)) continue;
 
       ball.makeDead();
       this.effects.onPlayerHit(b);
@@ -338,10 +357,19 @@ export class ArenaScene {
       this.reconcile(local);
     }
 
-    // --- Fixed-step prediction: one packet per server tick (33 ms), same shared sim ---
+    // --- Fixed-step prediction: one packet per server tick, same shared sim, at CLIENT_FIXED_DT ---
+    // Spiral-of-death guard (mirrors the server's MAX_ACCUMULATOR_STEPS): a single slow render
+    // frame (hitch / GC / alt-tab) could otherwise dump many input packets at once. Cap the
+    // iterations per frame and drop the backlog by clamping the accumulator afterwards.
     this.netAccumulator += dt;
-    while (this.netAccumulator >= ArenaScene.NET_FIXED_DT && this.predictedMovement) {
+    let fixedSteps = 0;
+    while (
+      this.netAccumulator >= ArenaScene.NET_FIXED_DT &&
+      this.predictedMovement &&
+      fixedSteps < MAX_ACCUMULATOR_STEPS
+    ) {
       this.netAccumulator -= ArenaScene.NET_FIXED_DT;
+      fixedSteps += 1;
       this.inputSeq += 1;
 
       const input = this.buildNetworkInput();
@@ -357,7 +385,7 @@ export class ArenaScene {
       this.predictedDash = res.dash;
 
       this.pendingInputs.push({ seq: this.inputSeq, input, prev });
-      if (this.pendingInputs.length > 120) this.pendingInputs.shift();
+      if (this.pendingInputs.length > PENDING_INPUT_LIMIT) this.pendingInputs.shift();
 
       // Clear latches after the packet is built; the immutable input object carries the edges.
       this.latchJumpPressed = false;
@@ -373,10 +401,13 @@ export class ArenaScene {
       this.latchLeftHandReleased = false;
       this.latchRightHandReleased = false;
 
-      // Per-packet debug log (throttled to ~1 s).
+      // Per-packet debug log (throttled to ~1 s, and off unless strafeball.debug.net === '1').
+      // The timer resets on every threshold crossing regardless of the flag so it can't grow
+      // unbounded while debug is off; the logging itself is gated.
       this.debugLogTimer += ArenaScene.NET_FIXED_DT;
       if (this.debugLogTimer >= 1.0) {
         this.debugLogTimer = 0;
+        if (isNetDebugEnabled()) {
         this.updatePredictionDebugMetrics(local);
         const pm = this.predictedMovement;
         const ackAge = this.ackAgeMs();
@@ -397,12 +428,20 @@ export class ArenaScene {
           ` residualAfterReplay=${this.residualAfterReplayM.toFixed(3)}m` +
           ` predicted=(${pm.position.x.toFixed(2)},${pm.position.y.toFixed(2)},${pm.position.z.toFixed(2)})`
         );
+        }
       }
 
       this.sentInputClientTimeBySeq.set(input.sequence, input.clientTimeMs);
       this.multiplayer.sendInput(input);
       this.onlineRateLogInputCount += 1;
       this.lastSentInput = input;
+    }
+
+    // Spiral guard: if we hit the per-frame step cap there was a large backlog (hitch). Drop it by
+    // clamping the leftover accumulator to at most one fixed step so the next frame starts fresh
+    // instead of trying to catch up dozens of ticks (which would dump a burst of packets).
+    if (fixedSteps >= MAX_ACCUMULATOR_STEPS && this.netAccumulator > ArenaScene.NET_FIXED_DT) {
+      this.netAccumulator = ArenaScene.NET_FIXED_DT;
     }
 
     // Fire one-shot effects from predicted state transitions (replaces offline controller callbacks).
@@ -498,8 +537,9 @@ export class ArenaScene {
       this.lastAckReceiveMs = Date.now();
       const ackedClientTime = this.sentInputClientTimeBySeq.get(ack);
       if (ackedClientTime !== undefined) this.lastAckedInputClientTimeMs = ackedClientTime;
+      // Prune ack-time bookkeeping for seqs older than the pending buffer window.
       for (const seq of this.sentInputClientTimeBySeq.keys()) {
-        if (seq < ack - 120) this.sentInputClientTimeBySeq.delete(seq);
+        if (seq < ack - PENDING_INPUT_LIMIT) this.sentInputClientTimeBySeq.delete(seq);
       }
     }
     while (this.pendingInputs.length > 0 && this.pendingInputs[0].seq <= ack) {
@@ -578,8 +618,11 @@ export class ArenaScene {
     if (this.localPositionWriterTimer < 1.0) return;
     this.localPositionWriterTimer = 0;
 
-    const writers = [...this.localPositionWritersThisSecond].sort();
-    console.log(`[net/local-writers] ${writers.length > 0 ? writers.join(',') : 'none'}`);
+    // Dev diagnostic — gated behind strafeball.debug.net so playtests stay quiet.
+    if (isNetDebugEnabled()) {
+      const writers = [...this.localPositionWritersThisSecond].sort();
+      console.log(`[net/local-writers] ${writers.length > 0 ? writers.join(',') : 'none'}`);
+    }
     this.localPositionWritersThisSecond.clear();
   }
 
@@ -588,24 +631,28 @@ export class ArenaScene {
     this.onlineRateLogTimer += dt;
     if (this.onlineRateLogTimer < 1.0) return;
 
-    const elapsed = this.onlineRateLogTimer;
-    const snapshotDebug = this.multiplayer.snapshotDebug;
-    const renderStats = this.networkRenderer.getDebugStats();
-    const snapshotRate = snapshotDebug.receivedPerSecond;
-    console.log(
-      `[net/rates] snapshots=${snapshotRate.toFixed(1)}/s` +
-      ` avgMs=${snapshotDebug.averageMsBetweenSnapshots.toFixed(1)}` +
-      ` maxMs=${snapshotDebug.maxMsBetweenSnapshots.toFixed(1)}` +
-      ` inputPackets=${(this.onlineRateLogInputCount / elapsed).toFixed(1)}/s` +
-      ` renderFps=${(this.onlineRateLogFrameCount / elapsed).toFixed(1)}` +
-      ` remoteBuffer=${renderStats.remoteInterpolationBufferSize}` +
-      ` ballBuffer=${renderStats.ballInterpolationBufferSize}` +
-      ` renderDelay=${renderStats.renderDelayMs}ms` +
-      ` latestSnapshotAge=${renderStats.latestSnapshotAgeMs}ms`
-    );
-
-    if (snapshotRate >= 18 && snapshotRate <= 22) {
-      console.log(`[net/rates] snapshot receive rate is ~20Hz (actual ${snapshotRate.toFixed(1)}/s)`);
+    // Gated behind strafeball.debug.net so playtests stay quiet. The counters below are still
+    // reset every second regardless so they never accumulate across the off period.
+    if (isNetDebugEnabled()) {
+      const elapsed = this.onlineRateLogTimer;
+      const snapshotDebug = this.multiplayer.snapshotDebug;
+      const renderStats = this.networkRenderer.getDebugStats();
+      const snapshotRate = snapshotDebug.receivedPerSecond;
+      console.log(
+        `[net/rates] snapshots=${snapshotRate.toFixed(1)}/s` +
+        ` avgMs=${snapshotDebug.averageMsBetweenSnapshots.toFixed(1)}` +
+        ` maxMs=${snapshotDebug.maxMsBetweenSnapshots.toFixed(1)}` +
+        ` inputPackets=${(this.onlineRateLogInputCount / elapsed).toFixed(1)}/s` +
+        ` renderFps=${(this.onlineRateLogFrameCount / elapsed).toFixed(1)}` +
+        ` remoteBuffer=${renderStats.remoteInterpolationBufferSize}` +
+        ` ballBuffer=${renderStats.ballInterpolationBufferSize}` +
+        ` renderDelay=${renderStats.renderDelayMs}ms` +
+        ` latestSnapshotAge=${renderStats.latestSnapshotAgeMs}ms` +
+        ` underruns=${renderStats.bufferUnderrunsPerSec.toFixed(1)}/s` +
+        ` overruns=${renderStats.bufferOverrunsPerSec.toFixed(1)}/s` +
+        ` interpAvgMs=${renderStats.avgSnapshotIntervalMs.toFixed(1)}` +
+        ` interpMaxMs=${renderStats.maxSnapshotIntervalMs.toFixed(1)}`
+      );
     }
 
     this.onlineRateLogTimer = 0;
@@ -900,6 +947,24 @@ function distanceVec3(a: { x: number; y: number; z: number }, b: { x: number; y:
   const dy = a.y - b.y;
   const dz = a.z - b.z;
   return Math.sqrt(dx * dx + dy * dy + dz * dz);
+}
+
+function vector3ToVec3(v: Vector3): Vec3 {
+  return { x: v.x, y: v.y, z: v.z };
+}
+
+/**
+ * Net-debug gate for the chatty per-frame/per-packet console logs ([net/input/send], [net/pos],
+ * [net/local-writers], [net/rates]). OFF by default so playtests stay quiet; enable out-of-band
+ * with `localStorage.setItem('strafeball.debug.net', '1')`. Wrapped in try/catch like
+ * NetworkRenderer's isNetworkRenderDebugEnabled so a sandboxed/denied localStorage never throws.
+ */
+function isNetDebugEnabled(): boolean {
+  try {
+    return window.localStorage.getItem('strafeball.debug.net') === '1';
+  } catch {
+    return false;
+  }
 }
 
 function neutralNetInput(yawRadians: number, pitchRadians = 0): PlayerInput {

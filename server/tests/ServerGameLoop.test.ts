@@ -173,6 +173,48 @@ describe('ServerGameLoop', () => {
     expect(loop.state.match.scoreByTeamId.blue).toBe(0);
   });
 
+  it('uses the shortened crouch hitbox for player hits', () => {
+    const missLoop = new ServerGameLoop('room');
+    missLoop.addPlayer('a', 'A');
+    missLoop.addPlayer('b', 'B');
+    missLoop.handleInput('b', { crouchHeld: true }, 1);
+
+    const crouchHeight = GAME_CONSTANTS.player.height * GAME_CONSTANTS.player.crouchHeightMultiplier;
+    const combinedRadius = GAME_CONSTANTS.player.radius + GAME_CONSTANTS.ball.radius;
+    const overCrouchedHeadY = crouchHeight + combinedRadius + 0.08;
+    expect(overCrouchedHeadY).toBeLessThan(GAME_CONSTANTS.player.height + combinedRadius);
+
+    missLoop.state.balls.ball_0 = {
+      ...missLoop.state.balls.ball_0,
+      phase: 'live',
+      ownerKind: 'player',
+      ownerId: 'a',
+      position: { ...missLoop.state.players.b.movement.position, y: overCrouchedHeadY },
+      velocity: vec3(0, 0, 24)
+    };
+
+    missLoop.step();
+
+    expect(missLoop.state.match.scoreByTeamId.blue).toBe(0);
+
+    const hitLoop = new ServerGameLoop('room');
+    hitLoop.addPlayer('a', 'A');
+    hitLoop.addPlayer('b', 'B');
+    hitLoop.handleInput('b', { crouchHeld: true }, 1);
+    hitLoop.state.balls.ball_0 = {
+      ...hitLoop.state.balls.ball_0,
+      phase: 'live',
+      ownerKind: 'player',
+      ownerId: 'a',
+      position: { ...hitLoop.state.players.b.movement.position, y: crouchHeight + combinedRadius - 0.05 },
+      velocity: vec3(0, 0, 24)
+    };
+
+    hitLoop.step();
+
+    expect(hitLoop.state.match.scoreByTeamId.blue).toBe(1);
+  });
+
   it('resets immediately with one player', () => {
     const loop = new ServerGameLoop('room');
     loop.addPlayer('a', 'A');
@@ -242,5 +284,92 @@ describe('ServerGameLoop', () => {
     expect(loop.state.match.status).toBe('complete');
     expect(loop.state.match.winnerTeamId).toBe(loop.state.players.a.teamId);
     expect(Object.keys(loop.state.players)).toEqual(['a']);
+  });
+
+  describe('1v1 reset', () => {
+    it('both players voting resets scores and bumps resetSerial so clients detect it', () => {
+      const loop = new ServerGameLoop('room');
+      loop.addPlayer('a', 'A');
+      loop.addPlayer('b', 'B');
+      loop.state.match.scoreByTeamId.blue = 4;
+      loop.state.players.a.score = 4;
+      const serialBefore = loop.state.resetVote.resetSerial;
+
+      // First vote: pending (requires both connected players in a 1v1).
+      expect(loop.handleReset('a').ok).toBe(true);
+      expect(loop.state.resetVote.requiredVotes).toBe(2);
+      expect(loop.state.resetVote.voteCount).toBe(1);
+      expect(loop.state.match.scoreByTeamId.blue).toBe(4);
+
+      // Second vote: reset fires.
+      expect(loop.handleReset('b').ok).toBe(true);
+      expect(loop.state.match.scoreByTeamId.blue).toBe(0);
+      expect(loop.state.players.a.score).toBe(0);
+      expect(loop.state.resetVote.voteCount).toBe(0);
+      // resetSerial must increase so the client's handleOnlineResetEvents triggers.
+      expect(loop.state.resetVote.resetSerial).toBe(serialBefore + 1);
+    });
+
+    it('reset clears a live ball and restores the center-line loose balls', () => {
+      const loop = new ServerGameLoop('room');
+      loop.addPlayer('a', 'A');
+      loop.addPlayer('b', 'B');
+
+      loop.state.balls.ball_0 = {
+        ...loop.state.balls.ball_0,
+        phase: 'live',
+        ownerKind: 'player',
+        ownerId: 'a',
+        velocity: vec3(0, 0, 24)
+      };
+
+      loop.handleReset('a');
+      loop.handleReset('b');
+
+      // Every ball is back to a fresh loose, owner-less state.
+      const balls = Object.values(loop.state.balls);
+      expect(balls).toHaveLength(GAME_CONSTANTS.map.ballCount);
+      for (const ball of balls) {
+        expect(ball.phase).toBe('loose');
+        expect(ball.ownerId).toBeNull();
+        expect(ball.heldByPlayerId).toBeNull();
+      }
+    });
+
+    it('reset clears a held ball back to the ball pool', () => {
+      const loop = new ServerGameLoop('room');
+      loop.addPlayer('a', 'A');
+      loop.addPlayer('b', 'B');
+      loop.state.players.a.movement.position = vec3(0, 0, 0);
+      expect(loop.handlePickup('a').ok).toBe(true);
+      expect(loop.state.players.a.hands.left.heldBallId).toBeTruthy();
+
+      loop.handleReset('a');
+      loop.handleReset('b');
+
+      expect(loop.state.players.a.hands.left.heldBallId).toBeNull();
+      expect(loop.state.players.a.hands.right.heldBallId).toBeNull();
+      for (const ball of Object.values(loop.state.balls)) {
+        expect(ball.heldByPlayerId).toBeNull();
+      }
+    });
+
+    it('recomputes the required votes immediately when one of the two players disconnects', () => {
+      const loop = new ServerGameLoop('room');
+      loop.addPlayer('a', 'A');
+      loop.addPlayer('b', 'B');
+
+      // a votes; still pending because both connected players are needed.
+      expect(loop.handleReset('a').ok).toBe(true);
+      expect(loop.state.resetVote.requiredVotes).toBe(2);
+      expect(loop.state.resetVote.voteCount).toBe(1);
+
+      // b disconnects → a's lone vote now satisfies the (recomputed) 1-player requirement and the
+      // pending reset resolves rather than stranding the room waiting on a ghost vote.
+      loop.setConnected('b', false);
+
+      expect(loop.state.resetVote.voteCount).toBe(0);
+      expect(loop.state.resetVote.requiredVotes).toBe(1);
+    });
   });
 });
