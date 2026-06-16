@@ -9,13 +9,14 @@
  * they are identical, which is the only configuration that makes reconciliation residual ≈ 0.
  *
  * To switch test configs, change ACTIVE_NET_MODE below (or set VITE_NET_MODE / NET_MODE env).
- * The three supported modes:
- *   A. 60 sim / 60 input / 60 snapshots  (target — lowest latency)
- *   B. 60 sim / 60 input / 30 snapshots  (fallback — half the snapshot CPU/bandwidth)
- *   C. 30 sim / 30 input / 30 snapshots  (baseline — safest for a 1 vCPU box)
+ * The supported modes:
+ *   A. 72 sim / 72 input / 60 snapshots  (target — sharper input with 60Hz snapshots)
+ *   B. 60 sim / 60 input / 60 snapshots  (legacy full-rate fallback)
+ *   C. 60 sim / 60 input / 30 snapshots  (bandwidth fallback)
+ *   D. 30 sim / 30 input / 30 snapshots  (baseline — safest for a 1 vCPU box)
  */
 
-export type NetMode = 'A_60_60_60' | 'B_60_60_30' | 'C_30_30_30';
+export type NetMode = 'A_72_72_60' | 'A_60_60_60' | 'B_60_60_30' | 'C_30_30_30';
 
 export interface NetModeConfig {
   /** Server fixed simulation steps per second. */
@@ -33,7 +34,9 @@ export interface NetModeConfig {
 }
 
 const MODES: Record<NetMode, NetModeConfig> = {
-  // A — full 60Hz. Snapshot interval ~16.7ms; a 75ms delay covers ~4 snapshots of jitter headroom.
+  // A — 72Hz sim/input with 60Hz snapshots. Snapshot interval ~16.7ms; 75ms covers ~4 snapshots.
+  A_72_72_60: { serverTickRate: 72, clientInputRate: 72, snapshotRate: 60, interpolationDelayMs: 75 },
+  // Legacy full 60Hz. Snapshot interval ~16.7ms; a 75ms delay covers ~4 snapshots of jitter headroom.
   A_60_60_60: { serverTickRate: 60, clientInputRate: 60, snapshotRate: 60, interpolationDelayMs: 75 },
   // B — 60 sim/input, 30 snapshots. Snapshot interval ~33ms; 110ms delay covers ~3 snapshots.
   B_60_60_30: { serverTickRate: 60, clientInputRate: 60, snapshotRate: 30, interpolationDelayMs: 110 },
@@ -68,14 +71,14 @@ function resolveProcessMode(): NetMode {
   return DEFAULT_NET_MODE;
 }
 
-/** Compiled default mode. Per playtest decision: 60 sim / 60 input / 60 snapshots. */
-export const DEFAULT_NET_MODE: NetMode = 'A_60_60_60';
+/** Compiled default mode. Per playtest decision: 72 sim / 72 input / 60 snapshots. */
+export const DEFAULT_NET_MODE: NetMode = 'A_72_72_60';
 
 /**
  * Active mode resolved at module load from process.env (server) or the compiled default (client).
  * The client may narrow this further at startup via applyClientNetMode(); since rates are read
  * eagerly below, a client override should be applied before the first room connection. In practice
- * the compiled default A_60_60_60 is what ships, so no client override is required for the playtest.
+ * the compiled default A_72_72_60 is what ships, so no client override is required for the playtest.
  */
 export const ACTIVE_NET_MODE: NetMode = resolveProcessMode();
 
@@ -108,7 +111,7 @@ export const INTERPOLATION_DELAY_MS = active.interpolationDelayMs;
 
 /**
  * How frequently the room loop wakes to drain the fixed-step accumulator. Wake faster than the sim
- * rate so timer jitter can't starve a step. 120Hz wake (≈8.3ms) comfortably feeds a 60Hz sim.
+ * rate so timer jitter can't starve a step. 120Hz wake (≈8.3ms) comfortably feeds a 72Hz sim.
  */
 export const ROOM_LOOP_WAKE_RATE = 120;
 export const ROOM_LOOP_WAKE_INTERVAL_MS = 1000 / ROOM_LOOP_WAKE_RATE;
@@ -123,8 +126,8 @@ export const MAX_ACCUMULATOR_STEPS = 5;
 /** Clamp on elapsed time fed into the accumulator (ms). Caps the damage of an alt-tab / GC pause. */
 export const MAX_ACCUMULATOR_CLAMP_MS = 250;
 
-/** Max sent inputs the client buffers for reconciliation. ~1.5s at 60Hz — generous RTT headroom. */
-export const PENDING_INPUT_LIMIT = 100;
+/** Max sent inputs the client buffers for reconciliation. Scales to ~1.5s at the active input rate. */
+export const PENDING_INPUT_LIMIT = Math.ceil(CLIENT_INPUT_RATE * 1.5);
 
 /** Max inputs the server queues per player before dropping the oldest. ~1s of buffer at the rate. */
 export const SERVER_INPUT_QUEUE_LIMIT = Math.max(30, Math.ceil(SERVER_TICK_RATE));

@@ -17,6 +17,7 @@ import {
   catchBall,
   createBallState,
   deflectBall,
+  isBallCatchableInFlight,
   markBallDead,
   settleBallIfSlow
 } from '../../../shared/simulation/BallSim';
@@ -655,12 +656,30 @@ export class ServerGameLoop {
       }
     }
 
+    this.handleInputThrows(player.id, input);
+
     this.logInputDebug(player.id, input, preVelocity, preGrounded, player.movement);
 
     this.previousInputByPlayerId.set(player.id, input);
 
     const cooldown = this.parryCooldownByPlayerId.get(player.id) ?? 0;
     this.parryCooldownByPlayerId.set(player.id, Math.max(0, cooldown - dt));
+  }
+
+  private handleInputThrows(playerId: string, input: PlayerInput): void {
+    if (input.fakeThrowPressed || input.fakeThrowHeld) return;
+    if (input.leftHandReleased) this.handleInputThrow(playerId, 'left');
+    if (input.rightHandReleased) this.handleInputThrow(playerId, 'right');
+  }
+
+  private handleInputThrow(playerId: string, hand: HandSide): void {
+    const player = this.state.players[playerId];
+    if (!player || player.hands[hand].mode !== 'charging') return;
+
+    const result = this.handleThrow(playerId, { hand });
+    if (!result.ok && this.debug.THROW_DEBUG) {
+      this.logger(`throw rejected player=${playerId} hand=${hand} reason=${result.reason}`);
+    }
   }
 
   private logInputDebug(
@@ -726,14 +745,16 @@ export class ServerGameLoop {
       const advanced = advanceBall(ball, dt);
       let resolved = advanced;
 
-      // (4-6) Live-ball combat against the swept segment, in order. Only a live, scoring-eligible
-      // ball thrown by a player can be parried/caught/hit. Each helper, on success, returns the new
-      // ball state (deflected/held/dead) and we stop further combat on this ball this tick.
-      if (resolved.phase === 'live') {
+      // (4-6) Ball combat against the swept segment, in order. A 'live' ball can be parried, caught,
+      // or hit; a 'dead' ball that just bounced (still fast, ≤1 bounce) can still be CAUGHT out of the
+      // air (it can no longer score, so parry/hit self-skip it). Each helper, on success, returns the
+      // new ball state (deflected/held/dead) and we stop further combat on this ball this tick.
+      if (isBallCatchableInFlight(resolved)) {
         const segPrev = prevPos;
         const segCurr = resolved.position;
         const tickStartMs = this.stepNowMs;
 
+        // Parry/hit self-gate to 'live' inside, so they no-op on a bounced 'dead' ball.
         const parried = this.tryAutoParry(resolved, segPrev, segCurr, dt, tickStartMs);
         if (parried) {
           resolved = parried;
@@ -884,9 +905,10 @@ export class ServerGameLoop {
     });
   }
 
-  /** Record a live/deflected ball's position so a rewound click can reconstruct its swept path. */
+  /** Record an interaction-relevant ball's position so a rewound click can reconstruct its swept
+   * path. Covers live/deflected balls AND freshly-bounced (catchable) dead balls. */
   private recordBallSample(ball: BallState): void {
-    if (ball.phase !== 'live' && ball.phase !== 'deflected') {
+    if (!isBallCatchableInFlight(ball)) {
       // Non-interaction phases don't need history; drop any stale ring so memory stays bounded.
       this.ballHistoryById.delete(ball.id);
       return;
@@ -1024,12 +1046,14 @@ export class ServerGameLoop {
    * sample. On success the ball becomes held (velocity 0) in that hand and the attempt is consumed.
    */
   private tryCatchAttempts(ball: BallState, segPrev: Vec3, segCurr: Vec3, _dt: number, tickStartMs: number): BallState | null {
-    const ownerId = ball.ownerId;
-    if (ball.phase !== 'live' || ball.ownerKind !== 'player' || !ownerId) return null;
+    // A live/deflected ball OR a freshly-bounced (now 'dead') ball that's still fast can be caught.
+    // (A bounced ball has its owner cleared, so it's catchable by either player.)
+    if (!isBallCatchableInFlight(ball)) return null;
     const now = this.stepNowMs;
 
     for (const defenderId in this.state.players) {
-      if (defenderId === ownerId) continue;
+      // Can't catch your own still-owned ball (live throw); a bounced/dead ball has no owner.
+      if (ball.ownerId !== null && defenderId === ball.ownerId) continue;
       const defender = this.state.players[defenderId];
 
       for (const hand of ['left', 'right'] as const) {
@@ -1090,8 +1114,9 @@ export class ServerGameLoop {
     if (!handEmpty) return 'no-empty-hand';
     const dashing = sample ? sample.dashing : defender.movement.dashingThisFrame;
     if (dashing) return 'dashing';
-    if (ball.phase !== 'live') return 'ball-not-live';
-    if (ball.ownerId === defender.id) return 'owner-invalid';
+    // Catchable = a live/deflected ball OR a freshly-bounced (still-fast, ≤1 bounce) dead ball.
+    if (!isBallCatchableInFlight(ball)) return 'ball-not-live';
+    if (ball.ownerId !== null && ball.ownerId === defender.id) return 'owner-invalid';
     const origin = sample ? sample.eye : add(defender.movement.position, vec3(0, GAME_CONSTANTS.player.eyeHeight, 0));
     const forward = sample ? sample.forward : defender.movement.facing;
     const closest = closestPointOnSegment(segPrev, segCurr, origin);

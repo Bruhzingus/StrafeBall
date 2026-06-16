@@ -88,14 +88,26 @@ export class GymArena {
   /**
    * Solid ceiling slab capping the gym at TUNING.map.wallHeight — the same plane the server uses
    * for the ball ceiling clamp + the side-wall/ceiling 1-bounce rule, so the visual lid matches the
-   * gameplay surface. Visual only; the ball ceiling bounce is enforced authoritatively server-side.
+   * gameplay surface. Movement and ball bounds now treat this plane as solid in both modes.
    */
   private createCeiling(): void {
     const h = TUNING.map.wallHeight;
     const t = 0.35;
     const ceilingMat = new StandardMaterial('gym_ceiling_mat', this.scene);
-    ceilingMat.diffuseColor = new Color3(0.16, 0.17, 0.2);
-    ceilingMat.specularColor = new Color3(0.04, 0.04, 0.05);
+    ceilingMat.diffuseColor = new Color3(0.72, 0.73, 0.68);
+    ceilingMat.specularColor = new Color3(0.08, 0.08, 0.07);
+
+    const panelMat = new StandardMaterial('gym_roof_panel_mat', this.scene);
+    panelMat.diffuseColor = new Color3(0.82, 0.83, 0.78);
+    panelMat.specularColor = new Color3(0.04, 0.04, 0.035);
+
+    const beamMat = new StandardMaterial('gym_roof_beam_mat', this.scene);
+    beamMat.diffuseColor = new Color3(0.34, 0.36, 0.38);
+    beamMat.specularColor = new Color3(0.12, 0.12, 0.12);
+
+    const seamMat = new StandardMaterial('gym_roof_seam_mat', this.scene);
+    seamMat.diffuseColor = new Color3(0.5, 0.51, 0.48);
+    seamMat.specularColor = new Color3(0.03, 0.03, 0.03);
 
     const ceiling = MeshBuilder.CreateBox('gym_ceiling', {
       width: TUNING.map.halfWidth * 2 + t * 2,
@@ -105,6 +117,52 @@ export class GymArena {
     ceiling.position.set(0, h + t / 2, 0);
     ceiling.material = ceilingMat;
     ceiling.isPickable = false;
+
+    const panelY = h - 0.035;
+    const panelRows = 6;
+    const panelDepth = (TUNING.map.halfLength * 2 - 1.2) / panelRows;
+    for (let i = 0; i < panelRows; i += 1) {
+      const z = -TUNING.map.halfLength + 0.6 + panelDepth * (i + 0.5);
+      const panel = MeshBuilder.CreateBox(`gym_roof_panel_${i}`, {
+        width: TUNING.map.halfWidth * 2 - 1.0,
+        height: 0.03,
+        depth: panelDepth - 0.18
+      }, this.scene);
+      panel.position.set(0, panelY, z);
+      panel.material = panelMat;
+      panel.isPickable = false;
+    }
+
+    for (const x of [-9, -4.5, 0, 4.5, 9]) {
+      const purlin = MeshBuilder.CreateBox(`gym_roof_purlin_${x}`, {
+        width: 0.12,
+        height: 0.12,
+        depth: TUNING.map.halfLength * 2 - 0.6
+      }, this.scene);
+      purlin.position.set(x, h - 0.16, 0);
+      purlin.material = beamMat;
+      purlin.isPickable = false;
+    }
+
+    for (const z of [-15, -9, -3, 3, 9, 15]) {
+      const rafter = MeshBuilder.CreateBox(`gym_roof_rafter_${z}`, {
+        width: TUNING.map.halfWidth * 2 + 0.2,
+        height: 0.16,
+        depth: 0.16
+      }, this.scene);
+      rafter.position.set(0, h - 0.25, z);
+      rafter.material = beamMat;
+      rafter.isPickable = false;
+
+      const seam = MeshBuilder.CreateBox(`gym_roof_seam_${z}`, {
+        width: TUNING.map.halfWidth * 2 - 0.6,
+        height: 0.025,
+        depth: 0.035
+      }, this.scene);
+      seam.position.set(0, h - 0.055, z + 3);
+      seam.material = seamMat;
+      seam.isPickable = false;
+    }
   }
 
   private createFloor(): void {

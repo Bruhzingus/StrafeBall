@@ -289,11 +289,17 @@ export function stepMovement(
   pz += vz * dt;
   px = clamp(px, -c.map.halfWidth + c.player.radius, c.map.halfWidth - c.player.radius);
   pz = clamp(pz, -c.map.halfLength + c.player.radius, c.map.halfLength - c.player.radius);
+  const bodyHeight = crouching || sliding ? c.player.height * c.player.crouchHeightMultiplier : c.player.height;
+  const maxPlayerY = Math.max(0, c.map.wallHeight - bodyHeight);
+  if (py > maxPlayerY) {
+    py = maxPlayerY;
+    if (vy > 0) vy = 0;
+    wallRunning = false;
+  }
 
   // --- resolve static boxes (ground support + wall push-out) ---
   {
     const r = c.player.radius;
-    const bodyHeight = crouching || sliding ? c.player.height * c.player.crouchHeightMultiplier : c.player.height;
     const stepTolerance = c.player.stepHeight;
     let support = 0;
     for (const b of boxes) {

@@ -119,17 +119,33 @@ export class CatchController {
   private findCatchCandidate(allowDead: boolean): Ball | null {
     let best: Ball | null = null;
     let bestDistance = Number.POSITIVE_INFINITY;
+    const forward = cameraForward(this.camera);
 
     for (const ball of this.ballManager.balls) {
-      if (ball.state !== BallState.Live && !(allowDead && ball.state === BallState.Dead)) continue;
+      // Catchable = a Live ball, OR a freshly-bounced (Dead, ≤1 bounce, still fast) ball you can
+      // pluck out of the air. Matches the server's isBallCatchableInFlight so online + offline agree.
+      const catchable = ball.state === BallState.Live || this.isBouncedCatchable(ball);
+      if (!catchable && !(allowDead && ball.state === BallState.Dead)) continue;
       const tracked = this.trackingTimeByBall.get(ball.id) ?? 0;
       if (tracked < TUNING.catch.trackingSeconds) continue;
-      const distance = Vector3.Distance(this.camera.globalPosition, ball.mesh.position);
+      const toBall = ball.mesh.position.subtract(this.camera.globalPosition);
+      const distance = toBall.length();
       if (distance > TUNING.catch.rangeMeters || distance > bestDistance) continue;
+      // Must actually be looking at it (cone gate — same skill requirement as a live catch).
+      if (angleBetweenDegrees(forward, toBall) > TUNING.catch.coneDegrees) continue;
       best = ball;
       bestDistance = distance;
     }
 
     return best;
+  }
+
+  /** A Dead ball that just bounced once and is still moving fast is still catchable in the air. */
+  private isBouncedCatchable(ball: Ball): boolean {
+    return (
+      ball.state === BallState.Dead &&
+      ball.bounceCount <= TUNING.catch.bouncedCatchMaxBounces &&
+      ball.velocity.length() >= TUNING.catch.bouncedCatchMinSpeed
+    );
   }
 }

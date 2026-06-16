@@ -13,6 +13,9 @@ import { Effects } from '../effects/Effects';
 
 export interface HandState {
   ball: Ball | null;
+  // Visual-only online mirror: lets the first-person arms show a server-held ball without
+  // borrowing ownership of the authoritative network ball mesh.
+  visualHolding: boolean;
   charging: boolean;
   chargeSeconds: number;
   catchStance: boolean;
@@ -21,10 +24,23 @@ export interface HandState {
   cooldown: number;
   // Throw-animation pulse: set to 1 the frame a throw fires, decays to 0. Drives the arm swing.
   throwAnim: number;
+  // Fake/cancel pulse: starts from the current windup and eases the hand back to holding.
+  fakeAnim: number;
+  fakeCharge01: number;
 }
 
 function makeHand(): HandState {
-  return { ball: null, charging: false, chargeSeconds: 0, catchStance: false, cooldown: 0, throwAnim: 0 };
+  return {
+    ball: null,
+    visualHolding: false,
+    charging: false,
+    chargeSeconds: 0,
+    catchStance: false,
+    cooldown: 0,
+    throwAnim: 0,
+    fakeAnim: 0,
+    fakeCharge01: 0
+  };
 }
 
 export class HandController {
@@ -67,14 +83,23 @@ export class HandController {
     this.getHand(side).cooldown = Math.max(this.getHand(side).cooldown, seconds);
   }
 
+  tickVisualAnimations(dt: number): void {
+    this.tickHandAnimation(this.left, dt);
+    this.tickHandAnimation(this.right, dt);
+  }
+
   forceCatchBall(side: HandSide, ball: Ball): void {
     const hand = this.getHand(side);
     if (hand.ball) return;
     hand.ball = ball;
+    hand.visualHolding = true;
     ball.setHeld(side);
     hand.catchStance = false;
     hand.charging = false;
     hand.chargeSeconds = 0;
+    hand.throwAnim = 0;
+    hand.fakeAnim = 0;
+    hand.fakeCharge01 = 0;
     hand.cooldown = TUNING.catch.cooldownSeconds;
     this.lastAction = `catch #${ball.id} (${side})`;
   }
@@ -89,12 +114,47 @@ export class HandController {
     if (this.right.ball) {
       this.ballManager.dropBall(this.right.ball, position.add(new Vector3(0.35, 1.0, 0)));
       this.right.ball = null;
+      this.right.visualHolding = false;
       return;
     }
     if (this.left.ball) {
       this.ballManager.dropBall(this.left.ball, position.add(new Vector3(-0.35, 1.0, 0)));
       this.left.ball = null;
+      this.left.visualHolding = false;
     }
+  }
+
+  syncVisualState(side: HandSide, holding: boolean, charging: boolean, chargeSeconds: number): void {
+    const hand = this.getHand(side);
+    if (!hand.ball) hand.visualHolding = holding;
+    hand.catchStance = false;
+
+    if (holding && charging) {
+      hand.charging = true;
+      hand.chargeSeconds = Math.min(TUNING.ball.maxChargeSeconds, Math.max(0, chargeSeconds));
+      return;
+    }
+
+    if (!hand.ball || !hand.charging) {
+      hand.charging = false;
+      hand.chargeSeconds = 0;
+    }
+  }
+
+  playThrowAnimation(side: HandSide): void {
+    const hand = this.getHand(side);
+    hand.throwAnim = 1;
+    hand.fakeAnim = 0;
+    hand.fakeCharge01 = 0;
+    if (!hand.ball) hand.visualHolding = false;
+  }
+
+  playFakeThrowAnimation(side: HandSide, charge01?: number): void {
+    const hand = this.getHand(side);
+    const fromCharge = charge01 ?? hand.chargeSeconds / TUNING.ball.maxChargeSeconds;
+    hand.fakeAnim = 1;
+    hand.fakeCharge01 = Math.max(0.2, Math.min(1, fromCharge));
+    hand.throwAnim = 0;
   }
 
   private tickCooldowns(dt: number): void {
@@ -104,9 +164,17 @@ export class HandController {
 
   private tickHand(hand: HandState, dt: number): void {
     hand.cooldown = Math.max(0, hand.cooldown - dt);
-    if (hand.throwAnim > 0) hand.throwAnim = Math.max(0, hand.throwAnim - dt / TUNING.arms.throwAnimSeconds);
+    this.tickHandAnimation(hand, dt);
     if (hand.charging) {
       hand.chargeSeconds = Math.min(TUNING.ball.maxChargeSeconds, hand.chargeSeconds + dt);
+    }
+  }
+
+  private tickHandAnimation(hand: HandState, dt: number): void {
+    if (hand.throwAnim > 0) hand.throwAnim = Math.max(0, hand.throwAnim - dt / TUNING.arms.throwAnimSeconds);
+    if (hand.fakeAnim > 0) {
+      hand.fakeAnim = Math.max(0, hand.fakeAnim - dt / TUNING.arms.fakeAnimSeconds);
+      if (hand.fakeAnim <= 0) hand.fakeCharge01 = 0;
     }
   }
 
@@ -116,10 +184,12 @@ export class HandController {
         this.lastAction = `drop #${this.right.ball.id} (right)`;
         this.ballManager.dropBall(this.right.ball, movement.position.add(new Vector3(0.4, 1, 0)));
         this.right.ball = null;
+        this.right.visualHolding = false;
       } else if (this.left.ball) {
         this.lastAction = `drop #${this.left.ball.id} (left)`;
         this.ballManager.dropBall(this.left.ball, movement.position.add(new Vector3(-0.4, 1, 0)));
         this.left.ball = null;
+        this.left.visualHolding = false;
       }
     }
 
@@ -140,9 +210,13 @@ export class HandController {
     // a fresh M1/M2 press throws right away. (A button already held from before pickup won't
     // auto-throw because charging only starts on a new press edge.)
     hand.ball = candidate;
+    hand.visualHolding = true;
     hand.catchStance = false;
     hand.charging = false;
     hand.chargeSeconds = 0;
+    hand.throwAnim = 0;
+    hand.fakeAnim = 0;
+    hand.fakeCharge01 = 0;
     hand.cooldown = 0;
     this.lastAction = `pickup #${candidate.id} (${side})`;
     this.ballManager.attachHeldBall(candidate, side, candidate.mesh.position); // sets ball.state = Held
@@ -164,6 +238,8 @@ export class HandController {
       hand.catchStance = false;
       hand.charging = false;
       hand.chargeSeconds = 0;
+      hand.fakeAnim = 0;
+      hand.fakeCharge01 = 0;
       return;
     }
 
@@ -187,6 +263,7 @@ export class HandController {
     }
 
     if (hand.charging && input.wasKeyPressed(CONTROL_KEYS.fakeThrow)) {
+      this.playFakeThrowAnimation(side);
       hand.charging = false;
       hand.chargeSeconds = 0;
       return;
@@ -225,9 +302,10 @@ export class HandController {
     const throwLabel = charge01 >= 0.25 ? `charged ${Math.round(charge01 * 100)}%` : 'quick';
     this.lastAction = `${throwLabel} throw #${hand.ball.id} (${side})`;
     hand.ball = null;
+    hand.visualHolding = false;
     hand.charging = false;
     hand.chargeSeconds = 0;
-    hand.throwAnim = 1;
+    this.playThrowAnimation(side);
     this.lastThrowTime = this.elapsed;
     this.effects.playerThrow();
   }

@@ -16,7 +16,8 @@ interface ArmRig {
  * First-person arm viewmodel: two greybox arms parented to the camera that visually hold the
  * balls. Each hand pivots in camera-local space and the held ball is snapped to the animated
  * hand every frame, so arm and ball move as one. Small animations: an idle bob while holding,
- * a wind-up pull as the throw charges, and a forward punch + tilt on release. Purely cosmetic —
+ * an overhand windup while charging, a follow-through on release, and a visible fake/cancel abort.
+ * Purely cosmetic —
  * throw direction/origin is computed from the camera, never from these meshes.
  */
 export class Viewmodel {
@@ -140,7 +141,7 @@ export class Viewmodel {
 
   private poseArm(dt: number, rig: ArmRig, side: HandSide, hand: HandState): void {
     const sign = side === 'left' ? -1 : 1;
-    const holding = !!hand.ball;
+    const holding = !!hand.ball || hand.visualHolding;
     this.computeTarget(side, sign, hand, holding);
 
     // Frame-rate-independent smoothing toward the target pose.
@@ -150,8 +151,13 @@ export class Viewmodel {
     rig.current.z += (this.target.z - rig.current.z) * k;
     rig.node.position.copyFrom(rig.current);
 
-    // Tilt forward during a throw (follow-through); a gentle base tilt otherwise.
-    rig.node.rotation.x = -hand.throwAnim * 0.85 + (holding ? -0.12 : 0.12);
+    // Tilt back during the overhand windup, then snap through on release.
+    const charge = hand.charging ? Math.min(1, hand.chargeSeconds / TUNING.ball.maxChargeSeconds) : 0;
+    const fakeWindup = hand.fakeCharge01 * easeOutCubic(hand.fakeAnim);
+    const windup = Math.max(charge, fakeWindup);
+    const throwSwing = easeOutCubic(hand.throwAnim);
+    rig.node.rotation.x = -throwSwing * 1.05 + windup * 0.72 + (holding ? -0.08 : 0.08);
+    rig.node.rotation.z = -sign * windup * 0.18 + sign * throwSwing * 0.12;
 
     // Snap the held ball into the animated hand.
     if (hand.ball) {
@@ -161,17 +167,25 @@ export class Viewmodel {
   }
 
   private computeTarget(side: HandSide, sign: number, hand: HandState, holding: boolean): void {
-    if (!holding) {
+    const throwSwing = easeOutCubic(hand.throwAnim);
+    const fakeWindup = hand.fakeCharge01 * easeOutCubic(hand.fakeAnim);
+
+    if (!holding && throwSwing <= 0 && fakeWindup <= 0) {
       this.target.set(sign * TUNING.arms.restSide, TUNING.arms.restDrop, TUNING.arms.restForward);
       return;
     }
-    const charge = Math.min(1, hand.chargeSeconds / TUNING.ball.maxChargeSeconds);
+    const charge = hand.charging ? Math.min(1, hand.chargeSeconds / TUNING.ball.maxChargeSeconds) : 0;
+    const windup = Math.max(charge, fakeWindup);
     const bob = Math.sin(this.time * TUNING.arms.bobSpeed + (side === 'left' ? 0 : Math.PI)) * TUNING.arms.bobAmplitude;
-    const punch = hand.throwAnim * hand.throwAnim; // ease-out punch on release
     this.target.set(
-      sign * TUNING.hands.holdSide,
-      TUNING.hands.holdDrop + bob + punch * TUNING.arms.throwLift,
-      TUNING.hands.holdForward - charge * TUNING.arms.windupPull + punch * TUNING.arms.throwReach
+      sign * (TUNING.hands.holdSide + windup * TUNING.arms.windupSide - throwSwing * TUNING.arms.throwCenter),
+      TUNING.hands.holdDrop + bob + windup * TUNING.arms.windupLift - throwSwing * TUNING.arms.throwDrop,
+      TUNING.hands.holdForward - windup * TUNING.arms.windupPull + throwSwing * TUNING.arms.throwReach
     );
   }
+}
+
+function easeOutCubic(t: number): number {
+  const x = Math.max(0, Math.min(1, t));
+  return 1 - (1 - x) * (1 - x) * (1 - x);
 }

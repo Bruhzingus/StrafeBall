@@ -131,10 +131,14 @@ export const TUNING = {
     bobAmplitude: 0.012,
     bobSpeed: 6.5,
     // Charge pulls the hand back; a throw punches it forward then eases home.
-    windupPull: 0.16,
-    throwReach: 0.34,
-    throwLift: 0.12,
-    throwAnimSeconds: 0.26,
+    windupPull: 0.24,
+    windupLift: 0.31,
+    windupSide: 0.07,
+    throwReach: 0.44,
+    throwDrop: 0.2,
+    throwCenter: 0.16,
+    throwAnimSeconds: 0.3,
+    fakeAnimSeconds: 0.22,
     // Pose smoothing rate (higher = snappier follow).
     smoothing: 18
   },
@@ -146,7 +150,9 @@ export const TUNING = {
     rangeMeters: GAME_CONSTANTS.catch.rangeMeters,
     cooldownSeconds: GAME_CONSTANTS.catch.cooldownSeconds,
     catchBoostSpeed: GAME_CONSTANTS.catch.catchBoostSpeed,
-    catchBoostDuration: GAME_CONSTANTS.catch.catchBoostDuration
+    catchBoostDuration: GAME_CONSTANTS.catch.catchBoostDuration,
+    bouncedCatchMaxBounces: GAME_CONSTANTS.catch.bouncedCatchMaxBounces,
+    bouncedCatchMinSpeed: GAME_CONSTANTS.catch.bouncedCatchMinSpeed
   },
 
   parry: {

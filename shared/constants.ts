@@ -99,7 +99,12 @@ export const GAME_CONSTANTS = {
     rangeMeters: 3.62,
     cooldownSeconds: 0.45,
     catchBoostSpeed: 3,
-    catchBoostDuration: 0.25
+    catchBoostDuration: 0.25,
+    // A live ball that bounces off the floor/back wall/bleachers becomes 'dead' (it can no longer
+    // SCORE a hit), but it's still a fast ball in the air you should be able to catch. Allow catching
+    // a dead ball that has bounced at most this many times and is still moving above this speed.
+    bouncedCatchMaxBounces: 1,
+    bouncedCatchMinSpeed: 3.0
   },
 
   parry: {

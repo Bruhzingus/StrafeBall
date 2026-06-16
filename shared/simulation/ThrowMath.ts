@@ -19,8 +19,8 @@ export function curveAccelForThrow(
   constants: GameConstants = GAME_CONSTANTS
 ): Vec3 {
   if (!crouching) return vec3();
-  // Horizontal right vector relative to aim: right = forward × up (normalized, flattened to XZ).
-  const right = normalize(cross(forward, vec3(0, 1, 0)), vec3(1, 0, 0));
+  // Horizontal right vector relative to aim: right = up x forward (normalized, flattened to XZ).
+  const right = normalize(cross(vec3(0, 1, 0), forward), vec3(1, 0, 0));
   const flatRight = normalize(vec3(right.x, 0, right.z), vec3(1, 0, 0));
   // Curve toward the side opposite the throwing hand: left hand → +right, right hand → −right.
   const sign = hand === 'left' ? 1 : -1;

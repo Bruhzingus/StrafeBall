@@ -6,7 +6,7 @@ import { ACTIVE_NET_MODE, describeNetConfig, netModeConfig } from '../shared/net
 // are compiled into the client from shared/netConfig.ts; the client and server MUST run the same
 // mode or prediction will desync (e.g. 60Hz client prediction against a 30Hz server). If a tester
 // sets VITE_NET_MODE we validate it and warn loudly when it disagrees with the compiled mode,
-// rather than silently running mismatched rates.
+// rather than silently running mismatched rates (for example 72Hz prediction against a 60Hz server).
 const requestedNetMode = import.meta.env.VITE_NET_MODE;
 if (requestedNetMode && requestedNetMode !== ACTIVE_NET_MODE) {
   const known = netModeConfig(requestedNetMode);

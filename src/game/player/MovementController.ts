@@ -398,6 +398,12 @@ export class MovementController {
   private clampToGymBounds(): void {
     this.root.position.x = Math.max(-TUNING.map.halfWidth + TUNING.player.radius, Math.min(TUNING.map.halfWidth - TUNING.player.radius, this.root.position.x));
     this.root.position.z = Math.max(-TUNING.map.halfLength + TUNING.player.radius, Math.min(TUNING.map.halfLength - TUNING.player.radius, this.root.position.z));
+    const maxY = Math.max(0, TUNING.map.wallHeight - this.currentBodyHeight());
+    if (this.root.position.y > maxY) {
+      this.root.position.y = maxY;
+      if (this.velocity.y > 0) this.velocity.y = 0;
+      this.wallRunning = false;
+    }
   }
 
   private applyCameraHeight(): void {

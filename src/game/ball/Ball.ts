@@ -98,6 +98,7 @@ export class Ball {
     const maxX = TUNING.map.halfWidth - r;
     const minZ = -TUNING.map.halfLength + r;
     const maxZ = TUNING.map.halfLength - r;
+    const maxY = TUNING.map.wallHeight - r;
 
     if (p.y < r) {
       p.y = r;
@@ -105,10 +106,16 @@ export class Ball {
       this.onBounce();
     }
 
+    if (p.y > maxY) {
+      p.y = maxY;
+      this.velocity.y = -Math.abs(this.velocity.y) * TUNING.ball.bounceRestitution;
+      this.onWallCeilingBounce();
+    }
+
     if (p.x < minX || p.x > maxX) {
       p.x = Math.max(minX, Math.min(maxX, p.x));
       this.velocity.x *= -TUNING.ball.bounceRestitution;
-      this.onBounce();
+      this.onWallCeilingBounce();
     }
 
     if (p.z < minZ || p.z > maxZ) {
@@ -152,6 +159,18 @@ export class Ball {
   private onBounce(): void {
     this.bounceCount += 1;
     if (this.bounceCount >= TUNING.ball.deadAfterBounces) {
+      this.makeDead();
+    }
+  }
+
+  private onWallCeilingBounce(): void {
+    if (this.state !== BallState.Live) {
+      this.onBounce();
+      return;
+    }
+
+    this.bounceCount += 1;
+    if (this.bounceCount > 1) {
       this.makeDead();
     }
   }

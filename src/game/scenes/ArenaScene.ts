@@ -77,7 +77,7 @@ export class ArenaScene {
   private readonly knockedNetMatIds = new Set<string>();
   // Fixed timestep for input send + prediction + reconciliation replay. Driven entirely by the
   // shared net config (must equal the server's fixed dt for reconciliation residual ≈ 0). At the
-  // active A_60_60_60 mode this is 1/60; the fixed-step loop below then sends at 60Hz.
+  // active A_72_72_60 mode this is 1/72; the fixed-step loop below then sends at 72Hz.
   private static readonly NET_FIXED_DT = CLIENT_FIXED_DT;
   private netAccumulator = 0;
   private inputSeq = 0;
@@ -401,26 +401,24 @@ export class ArenaScene {
     this.latchLeftHandReleased ||= this.input.wasMouseReleased(MOUSE_BUTTON.leftHand);
     this.latchRightHandReleased ||= this.input.wasMouseReleased(MOUSE_BUTTON.rightHand);
 
-    // Mouse look + viewmodel only — physics and hand sim are server-authoritative.
-    // Effect callbacks fire from predicted state after the fixed-step loop below.
-    this.player.updateOnline(dt);
-
-    if (this.latchFakeThrowPressed) {
-      this.onlineCharging.left = false;
-      this.onlineCharging.right = false;
-      this.onlineChargeSeconds.left = 0;
-      this.onlineChargeSeconds.right = 0;
-    }
-
-    // Look angles come from the offline controller (mouse-driven) — not predicted.
-    this.networkYaw = this.player.root.rotation.y;
-    this.networkPitch = this.player.camera.rotation.x;
-
     const snapshot = this.multiplayer.latestSnapshot;
     const local = snapshot?.room.players[this.multiplayer.localPlayerId] ?? null;
     // Pre-round countdown gate: while the authoritative match is counting down, local input is
     // frozen to look-only (built in buildNetworkInput) so the player can't move/throw until GO.
     this.countdownActive = snapshot?.room.match.status === 'countdown';
+
+    // Hand edges are folded into the fixed input stream. Process them before building packets so
+    // catch ids and throw releases ride the same ordered tick as crouch/look/charge state.
+    if (local && !this.countdownActive) this.sendOnlineHandActions(dt, local);
+    this.syncOnlineViewmodelHands(local);
+
+    // Mouse look + viewmodel only — physics and hand sim are server-authoritative.
+    // Effect callbacks fire from predicted state after the fixed-step loop below.
+    this.player.updateOnline(dt);
+
+    // Look angles come from the offline controller (mouse-driven) — not predicted.
+    this.networkYaw = this.player.root.rotation.y;
+    this.networkPitch = this.player.camera.rotation.x;
 
     // Detect a server room reset BEFORE prediction/reconcile this frame. The reset is keyed on
     // resetSerial (not tick), so it is robust even if the tick were ever non-monotonic. Clearing
@@ -560,12 +558,10 @@ export class ArenaScene {
       this.applyPredicted(this.predictedMovement, this.predictedInternal);
     }
 
-    // Server-side actions (not in the movement input stream). Reset votes are always allowed.
+    // Server-side actions outside the movement input stream. Reset votes are always allowed.
     if (this.input.wasKeyPressed(CONTROL_KEYS.reset) || this.input.wasKeyPressed(CONTROL_KEYS.resetMatch)) {
       this.multiplayer.requestReset();
     }
-    // Hand actions (throw/catch) are frozen during the countdown — no combat until GO.
-    if (local && !this.countdownActive) this.sendOnlineHandActions(dt, local);
 
     // Remote players and balls: rendered from server state. Pass the local PREDICTED movement so a
     // ball held by the local player attaches to the present-time hand (no strafe drag) rather than
@@ -1085,9 +1081,26 @@ export class ArenaScene {
   }
 
   private sendOnlineHandActions(dt: number, local: PlayerState): void {
-    const facing = facingFromAngles(this.networkYaw, this.networkPitch);
-    this.updateOnlineHandAction('left', MOUSE_BUTTON.leftHand, dt, this.input.isMouseDown(MOUSE_BUTTON.leftHand), facing, local);
-    this.updateOnlineHandAction('right', MOUSE_BUTTON.rightHand, dt, this.input.isMouseDown(MOUSE_BUTTON.rightHand), facing, local);
+    this.updateOnlineHandAction('left', MOUSE_BUTTON.leftHand, dt, this.input.isMouseDown(MOUSE_BUTTON.leftHand), local);
+    this.updateOnlineHandAction('right', MOUSE_BUTTON.rightHand, dt, this.input.isMouseDown(MOUSE_BUTTON.rightHand), local);
+  }
+
+  private syncOnlineViewmodelHands(local: PlayerState | null): void {
+    for (const side of ['left', 'right'] as const) {
+      const serverHand = local?.hands[side];
+      const visualHand = this.player.hands.getHand(side);
+      const serverHolding = !!serverHand?.heldBallId;
+      const releaseAnimating = visualHand.throwAnim > 0;
+      const fakeAnimating = visualHand.fakeAnim > 0;
+      const localCharging = this.onlineCharging[side] && serverHolding;
+      const serverCharging = serverHolding && serverHand?.mode === 'charging';
+      const charging = !releaseAnimating && !fakeAnimating && (localCharging || serverCharging);
+      const chargeSeconds = localCharging
+        ? this.onlineChargeSeconds[side]
+        : serverHand?.chargeSeconds ?? 0;
+
+      this.player.hands.syncVisualState(side, serverHolding && !releaseAnimating, charging, chargeSeconds);
+    }
   }
 
   private updateOnlineHandAction(
@@ -1095,7 +1108,6 @@ export class ArenaScene {
     button: number,
     dt: number,
     mouseDown: boolean,
-    facing: Vec3,
     local: PlayerState
   ): void {
     const hand = local.hands[side];
@@ -1121,6 +1133,13 @@ export class ArenaScene {
       return;
     }
 
+    if (this.onlineCharging[side] && this.input.wasKeyPressed(CONTROL_KEYS.fakeThrow)) {
+      this.player.hands.playFakeThrowAnimation(side, this.onlineChargeSeconds[side] / TUNING.ball.maxChargeSeconds);
+      this.onlineCharging[side] = false;
+      this.onlineChargeSeconds[side] = 0;
+      return;
+    }
+
     if (pressed) {
       this.onlineCharging[side] = true;
       this.onlineChargeSeconds[side] = 0;
@@ -1131,12 +1150,10 @@ export class ArenaScene {
     }
 
     if (this.onlineCharging[side] && released) {
-      const charge01 = Math.min(1, this.onlineChargeSeconds[side] / TUNING.ball.maxChargeSeconds);
-      this.multiplayer.requestThrow(side, facing, charge01);
-      // Instant local throw feedback (Phase 3): play the release whoosh immediately rather than
-      // waiting for the server snapshot. The authoritative live ball + its visual prediction follow
-      // from the server throw event; the held-ball visual releases as soon as that arrives.
+      // The release itself is sent through PlayerInput.left/rightHandReleased this same fixed tick.
+      // Play instant local feedback while the server-authoritative throw event follows shortly after.
       this.effects.playerThrow();
+      this.player.hands.playThrowAnimation(side);
       this.onlineCharging[side] = false;
       this.onlineChargeSeconds[side] = 0;
     }

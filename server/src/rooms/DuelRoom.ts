@@ -38,10 +38,10 @@ const MAX_ROOMS = 200;
 let activeRoomCount = 0;
 
 // Per-message-type rate limits: { capacity (burst), refillPerSecond } (#11).
-// Input is sized for sustained 60Hz with burst headroom: refill > tick rate so a steady 60/s
-// stream is never throttled, capacity ~1.5x the rate to absorb reconnection/jitter bursts.
+// Input is sized from the active tick rate with burst headroom so a steady input stream is never
+// throttled, capacity ~1.5x the rate to absorb reconnection/jitter bursts.
 const RATE_LIMITS: Record<string, { capacity: number; refillPerSecond: number }> = {
-  input: { capacity: 90, refillPerSecond: 75 },
+  input: { capacity: Math.ceil(SERVER_TICK_RATE * 1.5), refillPerSecond: SERVER_TICK_RATE + 15 },
   throw: { capacity: 8, refillPerSecond: 8 },
   pickup: { capacity: 8, refillPerSecond: 8 },
   'catch-parry': { capacity: 10, refillPerSecond: 10 },
@@ -88,7 +88,7 @@ export class DuelRoom extends Room {
     this.setPrivate(true);
     this.patchRate = COLYSEUS_PATCH_RATE_MS;
     // Coarse built-in backstop on top of the per-type token buckets below (#11).
-    this.maxMessagesPerSecond = 150;
+    this.maxMessagesPerSecond = Math.max(150, Math.ceil(SERVER_TICK_RATE * 3));
     this.game = new ServerGameLoop(this.roomId, {
       tickRate: SERVER_TICK_RATE,
       logger: (message) => this.log(message),

@@ -11,6 +11,7 @@ import {
   EXTRAPOLATION_LIMIT_MS,
   HUGE_ERROR_SNAP_METERS,
   INTERPOLATION_DELAY_MS,
+  SERVER_STEP_MS,
   SNAPSHOT_BUFFER_LIMIT_MS,
   SNAPSHOT_INTERVAL_MS
 } from '../../../shared/netConfig';
@@ -39,6 +40,18 @@ interface ArmVisual {
   upper: Mesh;
   lower: Mesh;
   hand: Mesh;
+}
+
+interface ArmAnimTrack {
+  throwAnim: number;
+  fakeAnim: number;
+  previousMode: PlayerState['hands'][HandSide]['mode'];
+  previousHeldBallId: string | null;
+}
+
+interface RemoteArmAnimations {
+  left: ArmAnimTrack;
+  right: ArmAnimTrack;
 }
 
 interface BallVisual {
@@ -98,6 +111,7 @@ export class NetworkRenderer {
   private readonly players = new Map<string, PlayerVisual>();
   private readonly playerDebug = new Map<string, RemotePlayerDebug>();
   private readonly balls = new Map<string, BallVisual>();
+  private readonly remoteArmAnimations = new Map<string, RemoteArmAnimations>();
   // Deterministic visual prediction for live thrown balls (seeded by throw events). Visual only.
   private readonly ballPredictor = new BallPredictor();
   private readonly materials = new Map<string, PBRMaterial>();
@@ -168,6 +182,9 @@ export class NetworkRenderer {
   applyThrowEvents(events: readonly ThrowEvent[]): void {
     for (const event of events) {
       this.ballPredictor.applyThrowEvent(event);
+      const anim = this.ensureRemoteArmAnimations(event.ownerId);
+      anim[event.hand].throwAnim = 1;
+      anim[event.hand].fakeAnim = 0;
       if (isBallPredictDebugEnabled()) {
         console.log(`[ball/predict] seed ballId=${event.ballId} throwId=${event.throwId} owner=${event.ownerId.slice(-4)} curve=${Number(event.isCurve)}`);
       }
@@ -193,6 +210,7 @@ export class NetworkRenderer {
     }
     this.players.clear();
     this.playerDebug.clear();
+    this.remoteArmAnimations.clear();
     this.balls.clear();
     this.seenPlayers.clear();
     this.seenBalls.clear();
@@ -214,6 +232,7 @@ export class NetworkRenderer {
     }
     this.materials.clear();
     this.playerDebug.clear();
+    this.remoteArmAnimations.clear();
   }
 
   private bufferSnapshot(snapshot: ServerSnapshot): void {
@@ -279,7 +298,7 @@ export class NetworkRenderer {
         this.serverTimeBaseTick = snapshot.tick;
         this.serverTimeBaseInitialized = true;
       }
-      return this.serverTimeBaseMs + (snapshot.tick - this.serverTimeBaseTick) * SNAPSHOT_INTERVAL_MS;
+      return this.serverTimeBaseMs + (snapshot.tick - this.serverTimeBaseTick) * SERVER_STEP_MS;
     };
 
     if (!Number.isFinite(reported) || reported <= 0) return reconstructed();
@@ -287,7 +306,7 @@ export class NetworkRenderer {
     // Sanity-check the reported clock against the tick-derived expectation. A wildly inconsistent
     // serverTimeMs (clock reset, synthetic snapshot) falls back to the reconstructed timeline.
     if (this.serverTimeBaseInitialized) {
-      const expected = this.serverTimeBaseMs + (snapshot.tick - this.serverTimeBaseTick) * SNAPSHOT_INTERVAL_MS;
+      const expected = this.serverTimeBaseMs + (snapshot.tick - this.serverTimeBaseTick) * SERVER_STEP_MS;
       if (Math.abs(reported - expected) > NetworkRenderer.CURSOR_RESYNC_THRESHOLD_MS) {
         // Re-anchor reconstruction to the reported value and trust the server clock going forward.
         this.serverTimeBaseMs = reported;
@@ -414,6 +433,7 @@ export class NetworkRenderer {
       if (player.id === localPlayerId) continue;
       seen.add(player.id);
       const visual = this.ensurePlayer(player);
+      this.updateRemoteArmAnimations(player, dt);
       const target = player.movement.position;
       if (isNetworkRenderDebugEnabled()) {
         const error = distanceVec3({ x: visual.root.position.x, y: visual.root.position.y, z: visual.root.position.z }, target);
@@ -459,7 +479,40 @@ export class NetworkRenderer {
       visual.root.dispose();
       this.players.delete(id);
       this.playerDebug.delete(id);
+      this.remoteArmAnimations.delete(id);
     }
+  }
+
+  private updateRemoteArmAnimations(player: PlayerState, dt: number): void {
+    const anim = this.ensureRemoteArmAnimations(player.id);
+    for (const side of ['left', 'right'] as const) {
+      const track = anim[side];
+      const hand = player.hands[side];
+      const canceledCharge =
+        track.previousMode === 'charging' &&
+        hand.mode === 'holding' &&
+        track.previousHeldBallId !== null &&
+        track.previousHeldBallId === hand.heldBallId &&
+        track.throwAnim <= 0;
+
+      if (canceledCharge) track.fakeAnim = 1;
+
+      track.throwAnim = Math.max(0, track.throwAnim - dt / TUNING.arms.throwAnimSeconds);
+      track.fakeAnim = Math.max(0, track.fakeAnim - dt / TUNING.arms.fakeAnimSeconds);
+      track.previousMode = hand.mode;
+      track.previousHeldBallId = hand.heldBallId;
+    }
+  }
+
+  private ensureRemoteArmAnimations(playerId: string): RemoteArmAnimations {
+    let anim = this.remoteArmAnimations.get(playerId);
+    if (anim) return anim;
+    anim = {
+      left: createArmAnimTrack(),
+      right: createArmAnimTrack()
+    };
+    this.remoteArmAnimations.set(playerId, anim);
+    return anim;
   }
 
   private updateBalls(
@@ -823,8 +876,9 @@ export class NetworkRenderer {
     visual.visor.rotationQuaternion ??= new Quaternion();
     Quaternion.FromUnitVectorsToRef(SCRATCH_FWD_Z, forwardV, visual.visor.rotationQuaternion);
     this.poseSegment(visual.facing, scratchEye, scratchAimEnd, root);
-    this.poseArm(renderPlayer, visual.leftArm, 'left', root, forwardV, rightV);
-    this.poseArm(renderPlayer, visual.rightArm, 'right', root, forwardV, rightV);
+    const armAnim = this.remoteArmAnimations.get(player.id);
+    this.poseArm(renderPlayer, visual.leftArm, 'left', root, forwardV, rightV, armAnim?.left);
+    this.poseArm(renderPlayer, visual.rightArm, 'right', root, forwardV, rightV, armAnim?.right);
   }
 
   private poseStaticSidePart(mesh: Mesh, side: HandSide, y: number, forward: Vector3, right: Vector3): void {
@@ -855,7 +909,8 @@ export class NetworkRenderer {
     side: HandSide,
     root: Vector3,
     forward: Vector3,
-    right: Vector3
+    right: Vector3,
+    anim?: ArmAnimTrack
   ): void {
     const sign = side === 'left' ? -1 : 1;
     const handState = player.hands[side];
@@ -871,19 +926,39 @@ export class NetworkRenderer {
 
     const anchor = computePlayerHandAnchor(player, side);
     const hand = scratchHand.set(anchor.x, anchor.y, anchor.z);
-    if (handState.mode === 'charging') {
+    const throwSwing = easeOutCubic(anim?.throwAnim ?? 0);
+    const fakeWindup = easeOutCubic(anim?.fakeAnim ?? 0) * 0.8;
+    if (throwSwing > 0) {
+      hand.set(
+        hand.x + forward.x * TUNING.arms.throwReach * throwSwing - right.x * sign * TUNING.arms.throwCenter * throwSwing,
+        hand.y + forward.y * TUNING.arms.throwReach * throwSwing - TUNING.arms.throwDrop * throwSwing - right.y * sign * TUNING.arms.throwCenter * throwSwing,
+        hand.z + forward.z * TUNING.arms.throwReach * throwSwing - right.z * sign * TUNING.arms.throwCenter * throwSwing
+      );
+    } else if (handState.mode === 'charging') {
       const charge = Math.min(1, handState.chargeSeconds / TUNING.ball.maxChargeSeconds);
-      hand.set(hand.x - forward.x * 0.18 * charge, hand.y - forward.y * 0.18 * charge + 0.08 * charge, hand.z - forward.z * 0.18 * charge);
+      hand.set(
+        hand.x - forward.x * TUNING.arms.windupPull * charge + right.x * sign * TUNING.arms.windupSide * charge,
+        hand.y - forward.y * TUNING.arms.windupPull * charge + TUNING.arms.windupLift * charge + right.y * sign * TUNING.arms.windupSide * charge,
+        hand.z - forward.z * TUNING.arms.windupPull * charge + right.z * sign * TUNING.arms.windupSide * charge
+      );
+    } else if (fakeWindup > 0) {
+      hand.set(
+        hand.x - forward.x * TUNING.arms.windupPull * fakeWindup + right.x * sign * TUNING.arms.windupSide * fakeWindup,
+        hand.y - forward.y * TUNING.arms.windupPull * fakeWindup + TUNING.arms.windupLift * fakeWindup + right.y * sign * TUNING.arms.windupSide * fakeWindup,
+        hand.z - forward.z * TUNING.arms.windupPull * fakeWindup + right.z * sign * TUNING.arms.windupSide * fakeWindup
+      );
     } else if (!handState.heldBallId && handState.mode === 'empty') {
       hand.set(hand.x - forward.x * 0.08, hand.y - 0.12 - forward.y * 0.08, hand.z - forward.z * 0.08);
     }
 
     // elbow = lerp(shoulder, hand, 0.52) + (0, -0.04, 0) + right*sign*0.05
     const elbow = scratchElbow;
+    const elbowLift = (handState.mode === 'charging' ? Math.min(1, handState.chargeSeconds / TUNING.ball.maxChargeSeconds) : fakeWindup) * 0.18;
+    const elbowDrop = throwSwing * 0.1;
     elbow.set(
-      shoulder.x + (hand.x - shoulder.x) * 0.52 + right.x * sign * 0.05,
-      shoulder.y + (hand.y - shoulder.y) * 0.52 - 0.04 + right.y * sign * 0.05,
-      shoulder.z + (hand.z - shoulder.z) * 0.52 + right.z * sign * 0.05
+      shoulder.x + (hand.x - shoulder.x) * 0.52 + right.x * sign * (0.05 + elbowLift),
+      shoulder.y + (hand.y - shoulder.y) * 0.52 - 0.04 + elbowLift - elbowDrop + right.y * sign * (0.05 + elbowLift),
+      shoulder.z + (hand.z - shoulder.z) * 0.52 + right.z * sign * (0.05 + elbowLift)
     );
 
     this.poseSegment(arm.upper, shoulder, elbow, root);
@@ -1024,6 +1099,20 @@ const scratchEye = new Vector3();
 const scratchAimEnd = new Vector3();
 // Held-ball target is a plain Vec3 (never a Babylon Vector3) so the math stays alloc-free.
 const scratchBallTarget: Vec3 = { x: 0, y: 0, z: 0 };
+
+function createArmAnimTrack(): ArmAnimTrack {
+  return {
+    throwAnim: 0,
+    fakeAnim: 0,
+    previousMode: 'empty',
+    previousHeldBallId: null
+  };
+}
+
+function easeOutCubic(t: number): number {
+  const x = Math.max(0, Math.min(1, t));
+  return 1 - (1 - x) * (1 - x) * (1 - x);
+}
 
 /**
  * Keep a held-ball anchor in front of the local eye. Projects the anchor onto the camera look
