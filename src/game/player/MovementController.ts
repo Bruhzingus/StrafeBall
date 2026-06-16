@@ -111,14 +111,22 @@ export class MovementController {
 
     if (this.sliding) {
       this.slideTimer += dt;
-      if (this.slideTimer > TUNING.slide.maxDuration || this.horizontalSpeed() < TUNING.slide.minStartSpeed * 0.55) {
+      const tooSlow = this.horizontalSpeed() < TUNING.slide.minStartSpeed * 0.55;
+      // Honor slide.minDuration before the speed-based cancel so a slide into a ramp/wall (which
+      // bleeds speed fast) doesn't flicker out a frame or two after it starts. The hard cap
+      // (maxDuration) always ends it.
+      if (this.slideTimer > TUNING.slide.maxDuration || (tooSlow && this.slideTimer >= TUNING.slide.minDuration)) {
         this.sliding = false;
       }
     }
   }
 
   private tryStartSlide(input: InputManager, wishDir: Vector3): void {
-    const wantsSlide = input.wasKeyPressed(CONTROL_KEYS.slide) || (this.crouching && this.horizontalSpeed() > TUNING.slide.minStartSpeed);
+    // Edge-triggered: a slide starts on the slide key OR a fresh crouch press while moving fast.
+    // Using the crouch PRESS (not the held state) stops a held-crouch from re-applying the slide
+    // impulse every frame the instant a previous slide ends.
+    const crouchPressed = input.wasKeyPressed(CONTROL_KEYS.crouch) || input.wasKeyPressed(CONTROL_KEYS.crouchAlt);
+    const wantsSlide = input.wasKeyPressed(CONTROL_KEYS.slide) || (crouchPressed && this.horizontalSpeed() > TUNING.slide.minStartSpeed);
     if (!this.grounded || this.sliding || !wantsSlide || this.horizontalSpeed() < TUNING.slide.minStartSpeed) return;
 
     this.sliding = true;
