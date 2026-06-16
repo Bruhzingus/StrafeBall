@@ -110,6 +110,28 @@ export const TUNING = {
     holdDrop: -0.42
   },
 
+  // First-person arm viewmodel. Poses are camera-local meters; the held ball is snapped to the
+  // animated hand each frame so arm and ball always read as one unit. Visual only.
+  arms: {
+    forearmLength: 0.46,
+    forearmRadius: 0.058,
+    handRadius: 0.085,
+    // Rest pose (empty hand): lowered and tucked toward screen center, out of the way.
+    restForward: 0.34,
+    restSide: 0.2,
+    restDrop: -0.66,
+    // Idle hand bob while holding.
+    bobAmplitude: 0.012,
+    bobSpeed: 6.5,
+    // Charge pulls the hand back; a throw punches it forward then eases home.
+    windupPull: 0.16,
+    throwReach: 0.34,
+    throwLift: 0.12,
+    throwAnimSeconds: 0.26,
+    // Pose smoothing rate (higher = snappier follow).
+    smoothing: 18
+  },
+
   catch: {
     coneDegrees: 25,
     superParryConeDegrees: 10,

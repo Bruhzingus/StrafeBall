@@ -7,7 +7,6 @@ import { BallManager } from '../ball/BallManager';
 import { HandSide } from '../ball/BallState';
 import { ThrowSystem } from '../ball/ThrowSystem';
 import { cameraForward } from '../utils/vector';
-import { safeNormalize } from '../utils/math';
 import { MovementSnapshot } from './MovementController';
 import { BackflipController } from './BackflipController';
 import { Effects } from '../effects/Effects';
@@ -20,10 +19,12 @@ export interface HandState {
   // Catch-only cooldown (a missed/used catch). Does NOT gate throwing — throwing a held ball
   // is always immediate so the hands never feel like they're on a throw cooldown.
   cooldown: number;
+  // Throw-animation pulse: set to 1 the frame a throw fires, decays to 0. Drives the arm swing.
+  throwAnim: number;
 }
 
 function makeHand(): HandState {
-  return { ball: null, charging: false, chargeSeconds: 0, catchStance: false, cooldown: 0 };
+  return { ball: null, charging: false, chargeSeconds: 0, catchStance: false, cooldown: 0, throwAnim: 0 };
 }
 
 export class HandController {
@@ -94,23 +95,6 @@ export class HandController {
     }
   }
 
-  /**
-   * Positions held balls in the player's actual left/right hands, low on screen, in CAMERA
-   * space (so left really stays left as you turn). Visual only — throws still originate from
-   * the camera center so the offset can't break aim. Called per render frame for smoothness.
-   */
-  updateHeldVisuals(): void {
-    if (!this.left.ball && !this.right.ball) return;
-    // Camera matrix was already refreshed this frame by PlayerController before this call.
-    const forward = cameraForward(this.camera);
-    const flat = safeNormalize(new Vector3(forward.x, 0, forward.z), forward);
-    const right = safeNormalize(Vector3.Cross(Vector3.Up(), flat));
-    const base = this.camera.globalPosition.add(flat.scale(TUNING.hands.holdForward)).add(new Vector3(0, TUNING.hands.holdDrop, 0));
-
-    if (this.left.ball) this.left.ball.mesh.position.copyFrom(base.subtract(right.scale(TUNING.hands.holdSide)));
-    if (this.right.ball) this.right.ball.mesh.position.copyFrom(base.add(right.scale(TUNING.hands.holdSide)));
-  }
-
   private tickCooldowns(dt: number): void {
     this.tickHand(this.left, dt);
     this.tickHand(this.right, dt);
@@ -118,6 +102,7 @@ export class HandController {
 
   private tickHand(hand: HandState, dt: number): void {
     hand.cooldown = Math.max(0, hand.cooldown - dt);
+    if (hand.throwAnim > 0) hand.throwAnim = Math.max(0, hand.throwAnim - dt / TUNING.arms.throwAnimSeconds);
     if (hand.charging) {
       hand.chargeSeconds = Math.min(TUNING.ball.maxChargeSeconds, hand.chargeSeconds + dt);
     }
@@ -235,6 +220,7 @@ export class HandController {
     hand.ball = null;
     hand.charging = false;
     hand.chargeSeconds = 0;
+    hand.throwAnim = 1;
     this.lastThrowTime = this.elapsed;
     this.effects.playerThrow();
   }

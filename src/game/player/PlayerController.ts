@@ -10,6 +10,7 @@ import { CatchController } from './CatchController';
 import { CollisionWorld } from '../map/Collider';
 import { Effects } from '../effects/Effects';
 import { settings } from '../config/Settings';
+import { Viewmodel } from './Viewmodel';
 
 export class PlayerController {
   public readonly root: TransformNode;
@@ -19,6 +20,7 @@ export class PlayerController {
   public readonly movement: MovementController;
   public readonly hands: HandController;
   public readonly catching: CatchController;
+  public readonly viewmodel: Viewmodel;
   public lastMovementSnapshot!: MovementSnapshot;
 
   private pitch = 0;
@@ -39,6 +41,7 @@ export class PlayerController {
     this.movement = new MovementController(this.root, this.camera, this.dash, this.backflip, collision);
     this.hands = new HandController(this.camera, ballManager, this.backflip, effects);
     this.catching = new CatchController(this.camera, ballManager, this.hands, this.movement, effects);
+    this.viewmodel = new Viewmodel(this.camera);
     // Seed a valid snapshot so the HUD never reads `undefined` on a frame before the first
     // sim step has run.
     this.lastMovementSnapshot = this.movement.snapshot();
@@ -57,7 +60,8 @@ export class PlayerController {
 
     this.hands.update(dt, this.input, this.lastMovementSnapshot);
     this.catching.update(dt, this.input, this.lastMovementSnapshot);
-    this.hands.updateHeldVisuals();
+    // Arms follow the hand state and snap the held balls into the animated hands.
+    this.viewmodel.update(dt, this.hands);
 
     if (this.input.wasKeyPressed(CONTROL_KEYS.reset)) {
       this.resetPosition();
