@@ -80,6 +80,7 @@ export const GAME_CONSTANTS = {
     deflectedDeadAfterBounces: 1,
     settleSpeed: 0.2,
     hitRadius: 0.7,
+    liveHitMinSpeed: 2.5,
     looseFriction: 3.5,
     pickupVerticalTolerance: 1.2
   },

@@ -92,7 +92,7 @@ describe('ServerGameLoop', () => {
       ownerKind: 'player',
       ownerId: 'a',
       position: { ...loop.state.players.b.movement.position, y: GAME_CONSTANTS.player.height * 0.5 },
-      velocity: vec3()
+      velocity: vec3(0, 0, 24)
     };
 
     loop.step();
@@ -101,6 +101,76 @@ describe('ServerGameLoop', () => {
     expect(loop.state.players.a.score).toBe(1);
     expect(loop.state.players.a.dash.charges).toBe(GAME_CONSTANTS.dash.maxCharges);
     expect(loop.state.balls.ball_0.phase).toBe('dead');
+  });
+
+  it('does not score when a held or attached ball touches another player', () => {
+    const loop = new ServerGameLoop('room');
+    loop.addPlayer('a', 'A');
+    loop.addPlayer('b', 'B');
+
+    loop.state.balls.ball_0 = {
+      ...loop.state.balls.ball_0,
+      phase: 'held',
+      ownerKind: 'player',
+      ownerId: 'a',
+      heldByPlayerId: 'a',
+      heldHand: 'left',
+      position: { ...loop.state.players.b.movement.position, y: GAME_CONSTANTS.player.height * 0.5 },
+      velocity: vec3(0, 0, 24)
+    };
+
+    loop.step();
+
+    expect(loop.state.match.scoreByTeamId.blue).toBe(0);
+
+    loop.state.balls.ball_0 = {
+      ...loop.state.balls.ball_0,
+      phase: 'live',
+      ownerKind: 'player',
+      ownerId: 'a',
+      heldByPlayerId: 'a',
+      heldHand: 'left',
+      position: { ...loop.state.players.b.movement.position, y: GAME_CONSTANTS.player.height * 0.5 },
+      velocity: vec3(0, 0, 24)
+    };
+
+    loop.step();
+
+    expect(loop.state.match.scoreByTeamId.blue).toBe(0);
+  });
+
+  it('does not score from slow live or dead ball contact', () => {
+    const loop = new ServerGameLoop('room');
+    loop.addPlayer('a', 'A');
+    loop.addPlayer('b', 'B');
+
+    loop.state.balls.ball_0 = {
+      ...loop.state.balls.ball_0,
+      phase: 'live',
+      ownerKind: 'player',
+      ownerId: 'a',
+      position: { ...loop.state.players.b.movement.position, y: GAME_CONSTANTS.player.height * 0.5 },
+      velocity: vec3(0, 0, GAME_CONSTANTS.ball.liveHitMinSpeed * 0.5)
+    };
+
+    loop.step();
+
+    expect(loop.state.match.scoreByTeamId.blue).toBe(0);
+
+    loop.state.balls.ball_0 = {
+      ...loop.state.balls.ball_0,
+      phase: 'dead',
+      ownerKind: null,
+      ownerId: null,
+      heldByPlayerId: null,
+      heldHand: null,
+      position: { ...loop.state.players.b.movement.position, y: GAME_CONSTANTS.player.height * 0.5 },
+      velocity: vec3(0, 0, 24)
+    };
+
+    loop.step();
+
+    expect(loop.state.match.scoreByTeamId.blue).toBe(0);
   });
 
   it('resets immediately with one player', () => {

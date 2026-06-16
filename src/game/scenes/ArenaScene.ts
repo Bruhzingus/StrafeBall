@@ -76,7 +76,18 @@ export class ArenaScene {
   private snapshotRateTimer = 0;
   private snapshotRateHz = 0;
   private predictionErrorM = 0;
+  private residualAfterReplayM = 0;
+  private expectedLeadM = 0;
+  private lastAckedSeq = 0;
+  private lastAckedInputClientTimeMs = 0;
+  private lastAckReceiveMs = 0;
+  private readonly sentInputClientTimeBySeq = new Map<number, number>();
+  private readonly localPositionWritersThisSecond = new Set<string>();
+  private localPositionWriterTimer = 0;
   private lastSeenSnapshotTick = -1;
+  private onlineRateLogTimer = 0;
+  private onlineRateLogFrameCount = 0;
+  private onlineRateLogInputCount = 0;
 
   // Input latches: accumulate edge-triggered inputs across render frames so they survive to the
   // next fixed-step packet boundary (render may run faster than the 30 Hz send rate).
@@ -149,6 +160,9 @@ export class ArenaScene {
             lastAckedSeq: this.multiplayer.latestSnapshot.room.players[this.multiplayer.localPlayerId]?.lastProcessedInputSeq ?? 0,
             pendingInputs: this.pendingInputs.length,
             predictionErrorM: this.predictionErrorM,
+            residualAfterReplayM: this.residualAfterReplayM,
+            expectedLeadM: this.expectedLeadM,
+            ackAgeMs: this.ackAgeMs(),
             predictionActive: this.predictedMovement !== null,
           }
         );
@@ -264,6 +278,7 @@ export class ArenaScene {
 
   private stepOnline(dt: number): void {
     this.elapsed += dt;
+    this.onlineRateLogFrameCount += 1;
 
     // --- Latch edge-triggered inputs every render frame so none are lost between fixed ticks ---
     this.latchJumpPressed ||= this.input.wasKeyPressed(CONTROL_KEYS.jump);
@@ -308,12 +323,7 @@ export class ArenaScene {
       this.snapshotReceiveCount = 0;
       this.snapshotRateTimer = 0;
     }
-    if (this.predictedMovement && local) {
-      const sp = local.movement.position;
-      const pp = this.predictedMovement.position;
-      const ex = pp.x - sp.x, ey = pp.y - sp.y, ez = pp.z - sp.z;
-      this.predictionErrorM = Math.sqrt(ex * ex + ey * ey + ez * ez);
-    }
+    this.updatePredictionDebugMetrics(local);
 
     // Initialise prediction from the first authoritative player state we receive.
     if (local && !this.predictedMovement) {
@@ -367,13 +377,13 @@ export class ArenaScene {
       this.debugLogTimer += ArenaScene.NET_FIXED_DT;
       if (this.debugLogTimer >= 1.0) {
         this.debugLogTimer = 0;
+        this.updatePredictionDebugMetrics(local);
         const pm = this.predictedMovement;
-        const sp = local?.movement.position;
-        const ex = sp ? pm.position.x - sp.x : 0;
-        const ey = sp ? pm.position.y - sp.y : 0;
-        const ez = sp ? pm.position.z - sp.z : 0;
+        const ackAge = this.ackAgeMs();
         console.log(
           `[net/input/send] seq=${input.sequence} pending=${this.pendingInputs.length}` +
+          ` lastSent=${input.sequence} lastAcked=${this.lastAckedSeq}` +
+          ` ackAge=${ackAge === null ? 'n/a' : `${ackAge}ms`}` +
           ` move=(${input.moveX.toFixed(2)},${input.moveZ.toFixed(2)})` +
           ` jump=${Number(input.jumpPressed)}/${Number(input.jumpHeld)} dash=${Number(input.dashPressed)}` +
           ` slide=${Number(input.slidePressed)} backflip=${Number(input.backflipPressed)}` +
@@ -381,15 +391,17 @@ export class ArenaScene {
           ` yaw=${input.lookYawRadians.toFixed(2)} pitch=${input.lookPitchRadians.toFixed(2)}`
         );
         console.log(
-          `[net/pos] predicted=(${pm.position.x.toFixed(2)},${pm.position.y.toFixed(2)},${pm.position.z.toFixed(2)})` +
-          (sp
-            ? ` server=(${sp.x.toFixed(2)},${sp.y.toFixed(2)},${sp.z.toFixed(2)})` +
-              ` err=${Math.sqrt(ex * ex + ey * ey + ez * ez).toFixed(3)}m`
-            : ' server=none')
+          `[net/pos] rawServerLeadErr=${this.predictionErrorM.toFixed(3)}m` +
+          ` pending=${this.pendingInputs.length}` +
+          ` expectedLead~=${this.expectedLeadM.toFixed(3)}m` +
+          ` residualAfterReplay=${this.residualAfterReplayM.toFixed(3)}m` +
+          ` predicted=(${pm.position.x.toFixed(2)},${pm.position.y.toFixed(2)},${pm.position.z.toFixed(2)})`
         );
       }
 
+      this.sentInputClientTimeBySeq.set(input.sequence, input.clientTimeMs);
       this.multiplayer.sendInput(input);
+      this.onlineRateLogInputCount += 1;
       this.lastSentInput = input;
     }
 
@@ -425,6 +437,53 @@ export class ArenaScene {
 
     this.effects.update(dt);
     this.gym.update(this.elapsed);
+    this.logLocalPositionWriters(dt);
+    this.logOnlineRates(dt);
+  }
+
+  private updatePredictionDebugMetrics(local: PlayerState | null): void {
+    if (!local || !this.predictedMovement) {
+      this.predictionErrorM = 0;
+      this.residualAfterReplayM = 0;
+      this.expectedLeadM = 0;
+      return;
+    }
+
+    this.predictionErrorM = distanceVec3(this.predictedMovement.position, local.movement.position);
+    const unacked = this.pendingInputs.filter((entry) => entry.seq > local.lastProcessedInputSeq);
+    this.expectedLeadM = this.predictedMovement.speed * unacked.length * ArenaScene.NET_FIXED_DT;
+
+    const replayed = this.replayUnackedFromServer(local, unacked);
+    this.residualAfterReplayM = replayed
+      ? distanceVec3(this.predictedMovement.position, replayed.movement.position)
+      : 0;
+  }
+
+  private replayUnackedFromServer(
+    local: PlayerState,
+    unacked: { seq: number; input: PlayerInput; prev: PlayerInput }[]
+  ): { movement: PlayerMovementState; internal: MovementInternalState; dash: DashState } | null {
+    let movement = cloneMovement(local.movement);
+    let internal = { ...local.movementInternal };
+    let dash = { ...local.dash };
+
+    for (const entry of unacked) {
+      const res = stepMovement(
+        movement,
+        internal,
+        dash,
+        entry.input,
+        entry.prev,
+        ArenaScene.NET_FIXED_DT,
+        this.netCollisionBoxes,
+        this.deriveCatchStance(local, entry.input)
+      );
+      movement = res.movement;
+      internal = res.internal;
+      dash = res.dash;
+    }
+
+    return { movement, internal, dash };
   }
 
   /** Adopt the authoritative snapshot, drop acknowledged inputs, then replay the unacked ones. */
@@ -434,6 +493,15 @@ export class ArenaScene {
     this.predictedDash = { ...local.dash };
 
     const ack = local.lastProcessedInputSeq;
+    if (ack > this.lastAckedSeq) {
+      this.lastAckedSeq = ack;
+      this.lastAckReceiveMs = Date.now();
+      const ackedClientTime = this.sentInputClientTimeBySeq.get(ack);
+      if (ackedClientTime !== undefined) this.lastAckedInputClientTimeMs = ackedClientTime;
+      for (const seq of this.sentInputClientTimeBySeq.keys()) {
+        if (seq < ack - 120) this.sentInputClientTimeBySeq.delete(seq);
+      }
+    }
     while (this.pendingInputs.length > 0 && this.pendingInputs[0].seq <= ack) {
       this.pendingInputs.shift();
     }
@@ -463,6 +531,7 @@ export class ArenaScene {
   }
 
   private applyPredicted(movement: PlayerMovementState, internal: MovementInternalState): void {
+    this.markLocalPositionWriter('applyPredicted');
     const p = movement.position;
     const v = movement.velocity;
     this.player.root.position.set(p.x, p.y, p.z);
@@ -498,6 +567,57 @@ export class ArenaScene {
     this.player.camera.getViewMatrix(true);
   }
 
+  private markLocalPositionWriter(name: string): void {
+    if (!this.onlineModeActive) return;
+    this.localPositionWritersThisSecond.add(name);
+  }
+
+  private logLocalPositionWriters(dt: number): void {
+    if (!this.onlineModeActive) return;
+    this.localPositionWriterTimer += dt;
+    if (this.localPositionWriterTimer < 1.0) return;
+    this.localPositionWriterTimer = 0;
+
+    const writers = [...this.localPositionWritersThisSecond].sort();
+    console.log(`[net/local-writers] ${writers.length > 0 ? writers.join(',') : 'none'}`);
+    this.localPositionWritersThisSecond.clear();
+  }
+
+  private logOnlineRates(dt: number): void {
+    if (!this.onlineModeActive) return;
+    this.onlineRateLogTimer += dt;
+    if (this.onlineRateLogTimer < 1.0) return;
+
+    const elapsed = this.onlineRateLogTimer;
+    const snapshotDebug = this.multiplayer.snapshotDebug;
+    const renderStats = this.networkRenderer.getDebugStats();
+    const snapshotRate = snapshotDebug.receivedPerSecond;
+    console.log(
+      `[net/rates] snapshots=${snapshotRate.toFixed(1)}/s` +
+      ` avgMs=${snapshotDebug.averageMsBetweenSnapshots.toFixed(1)}` +
+      ` maxMs=${snapshotDebug.maxMsBetweenSnapshots.toFixed(1)}` +
+      ` inputPackets=${(this.onlineRateLogInputCount / elapsed).toFixed(1)}/s` +
+      ` renderFps=${(this.onlineRateLogFrameCount / elapsed).toFixed(1)}` +
+      ` remoteBuffer=${renderStats.remoteInterpolationBufferSize}` +
+      ` ballBuffer=${renderStats.ballInterpolationBufferSize}` +
+      ` renderDelay=${renderStats.renderDelayMs}ms` +
+      ` latestSnapshotAge=${renderStats.latestSnapshotAgeMs}ms`
+    );
+
+    if (snapshotRate >= 18 && snapshotRate <= 22) {
+      console.log(`[net/rates] snapshot receive rate is ~20Hz (actual ${snapshotRate.toFixed(1)}/s)`);
+    }
+
+    this.onlineRateLogTimer = 0;
+    this.onlineRateLogFrameCount = 0;
+    this.onlineRateLogInputCount = 0;
+  }
+
+  private ackAgeMs(): number | null {
+    if (this.lastAckedInputClientTimeMs <= 0) return this.lastAckReceiveMs > 0 ? Date.now() - this.lastAckReceiveMs : null;
+    return Math.max(0, Date.now() - this.lastAckedInputClientTimeMs);
+  }
+
   private enterOnlineMode(): void {
     if (this.onlineModeActive) return;
     this.onlineModeActive = true;
@@ -507,7 +627,7 @@ export class ArenaScene {
     this.onlineCharging.right = false;
     this.onlineChargeSeconds.left = 0;
     this.onlineChargeSeconds.right = 0;
-    this.resetPrediction();
+    this.resetPrediction('enter-online');
     this.player.hands.clearHands();
     this.bot.reset();
     this.setPracticePropsEnabled(false);
@@ -525,7 +645,7 @@ export class ArenaScene {
     this.onlineCharging.right = false;
     this.onlineChargeSeconds.left = 0;
     this.onlineChargeSeconds.right = 0;
-    this.resetPrediction();
+    this.resetPrediction('exit-online');
     this.lastOnlineScoreByTeamId = {};
     this.lastResetSerial = -1;
     this.lastResetVoteKey = '';
@@ -536,7 +656,10 @@ export class ArenaScene {
     this.ballManager.spawnCenterLineBalls();
   }
 
-  private resetPrediction(): void {
+  private resetPrediction(reason = 'reset'): void {
+    if (this.inputSeq > 0 || this.pendingInputs.length > 0) {
+      console.log(`[net/seq] reset reason=${reason} oldSeq=${this.inputSeq} oldPending=${this.pendingInputs.length}`);
+    }
     this.netAccumulator = 0;
     this.inputSeq = 0;
     this.pendingInputs = [];
@@ -546,6 +669,15 @@ export class ArenaScene {
     this.lastSentInput = neutralNetInput(this.networkYaw, this.networkPitch);
     this.lastReconciledTick = -1;
     this.debugLogTimer = 0;
+    this.lastAckedSeq = 0;
+    this.lastAckedInputClientTimeMs = 0;
+    this.lastAckReceiveMs = 0;
+    this.sentInputClientTimeBySeq.clear();
+    this.localPositionWritersThisSecond.clear();
+    this.localPositionWriterTimer = 0;
+    this.onlineRateLogTimer = 0;
+    this.onlineRateLogFrameCount = 0;
+    this.onlineRateLogInputCount = 0;
     this.snapshotReceiveCount = 0;
     this.snapshotRateTimer = 0;
     this.snapshotRateHz = 0;
@@ -588,7 +720,7 @@ export class ArenaScene {
     } else if (vote.resetSerial !== this.lastResetSerial) {
       this.lastResetSerial = vote.resetSerial;
       this.lastResetVoteKey = '';
-      this.resetPrediction();
+      this.resetPrediction('server-reset');
       this.onlineCharging.left = false;
       this.onlineCharging.right = false;
       this.onlineChargeSeconds.left = 0;
@@ -761,6 +893,13 @@ function cloneMovement(movement: PlayerMovementState): PlayerMovementState {
     velocity: { ...movement.velocity },
     facing: { ...movement.facing }
   };
+}
+
+function distanceVec3(a: { x: number; y: number; z: number }, b: { x: number; y: number; z: number }): number {
+  const dx = a.x - b.x;
+  const dy = a.y - b.y;
+  const dz = a.z - b.z;
+  return Math.sqrt(dx * dx + dy * dy + dz * dz);
 }
 
 function neutralNetInput(yawRadians: number, pitchRadians = 0): PlayerInput {

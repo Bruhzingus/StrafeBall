@@ -1,4 +1,5 @@
 import { Client, Room } from 'colyseus';
+import { performance } from 'node:perf_hooks';
 import type {
   ClientMessage,
   InputCommand,
@@ -11,7 +12,15 @@ export interface DuelRoomOptions {
   name?: string;
 }
 
-const TICK_RATE = 30;
+const SIMULATION_TICK_RATE = 30;
+// Visual state is sent through explicit `snapshot` messages, not Colyseus Schema patches.
+// Keep this intentional so SERVER_TICK_RATE and client receive rate are not conflated.
+const SNAPSHOT_RATE = 30;
+const SIMULATION_STEP_MS = 1000 / SIMULATION_TICK_RATE;
+const ROOM_LOOP_WAKE_RATE = 60;
+const ROOM_LOOP_WAKE_INTERVAL_MS = 1000 / ROOM_LOOP_WAKE_RATE;
+const MAX_SIMULATION_STEPS_PER_WAKE = 4;
+const COLYSEUS_PATCH_RATE_MS: number | null = null;
 // How long a dropped player has to reconnect before they forfeit (#12).
 const RECONNECT_SECONDS = 20;
 // Hard cap on concurrent duel rooms per process (#19 — cheap DoS guard).
@@ -41,21 +50,34 @@ export class DuelRoom extends Room {
 
   private game!: ServerGameLoop;
   private readonly buckets = new Map<string, Map<string, Bucket>>();
+  private rateWindowStartedAtMs = 0;
+  private simTicksThisWindow = 0;
+  private snapshotsThisWindow = 0;
+  private simTickMsTotal = 0;
+  private simTickMsMax = 0;
+  private simulationAccumulatorMs = 0;
+  private lastLoopWakeAtMs = 0;
+  private readonly inputPacketsThisWindowByPlayerId = new Map<string, number>();
 
   onCreate(): void {
     activeRoomCount += 1;
     this.setPrivate(true);
+    this.patchRate = COLYSEUS_PATCH_RATE_MS;
     // Coarse built-in backstop on top of the per-type token buckets below (#11).
     this.maxMessagesPerSecond = 150;
     this.game = new ServerGameLoop(this.roomId, {
-      tickRate: TICK_RATE,
+      tickRate: SIMULATION_TICK_RATE,
       logger: (message) => this.log(message),
       debugInput: process.env.DEBUG_INPUT === '1' || process.env.DEBUG_GAMEPLAY === '1'
     });
-    this.log('room created');
+    this.log(
+      `room created simTickRate=${SIMULATION_TICK_RATE}Hz manualSnapshotRate=${SNAPSHOT_RATE}Hz ` +
+      `loopWakeRate=${ROOM_LOOP_WAKE_RATE}Hz colyseusPatchRate=${formatPatchRate(COLYSEUS_PATCH_RATE_MS)}`
+    );
 
     this.onMessage('input', (client, message: Partial<InputCommand> | (Partial<PlayerInput> & { sequence?: number }) | undefined) => {
       if (!this.allow(client, 'input')) return;
+      this.recordInputPacket(client.sessionId);
       const wrapped = message && typeof message === 'object' && 'input' in message
         ? (message as Partial<InputCommand>)
         : undefined;
@@ -120,9 +142,33 @@ export class DuelRoom extends Room {
 
     this.setSimulationInterval(() => {
       // Skip the whole step+broadcast when no one is here (#18); empty rooms auto-dispose.
-      if (this.clients.length === 0) return;
-      this.broadcast('snapshot', this.game.step());
-    }, 1000 / TICK_RATE);
+      const now = performance.now();
+      if (this.clients.length === 0) {
+        this.simulationAccumulatorMs = 0;
+        this.lastLoopWakeAtMs = now;
+        return;
+      }
+
+      if (this.lastLoopWakeAtMs === 0) this.lastLoopWakeAtMs = now;
+      this.simulationAccumulatorMs += Math.min(250, now - this.lastLoopWakeAtMs);
+      this.lastLoopWakeAtMs = now;
+
+      let steps = 0;
+      while (this.simulationAccumulatorMs + 0.001 >= SIMULATION_STEP_MS && steps < MAX_SIMULATION_STEPS_PER_WAKE) {
+        this.simulationAccumulatorMs -= SIMULATION_STEP_MS;
+        steps += 1;
+
+        const startedAt = performance.now();
+        const snapshot = this.game.step();
+        const simTickMs = performance.now() - startedAt;
+        this.broadcast('snapshot', snapshot);
+        this.recordSimulationRate(simTickMs);
+      }
+
+      if (steps >= MAX_SIMULATION_STEPS_PER_WAKE && this.simulationAccumulatorMs >= SIMULATION_STEP_MS) {
+        this.simulationAccumulatorMs = SIMULATION_STEP_MS;
+      }
+    }, ROOM_LOOP_WAKE_INTERVAL_MS);
   }
 
   onAuth(_client: Client, _options: DuelRoomOptions): boolean {
@@ -185,6 +231,42 @@ export class DuelRoom extends Room {
     this.game.dispose();
   }
 
+  private recordInputPacket(playerId: string): void {
+    this.inputPacketsThisWindowByPlayerId.set(playerId, (this.inputPacketsThisWindowByPlayerId.get(playerId) ?? 0) + 1);
+  }
+
+  private recordSimulationRate(simTickMs: number): void {
+    const now = Date.now();
+    if (this.rateWindowStartedAtMs === 0) this.rateWindowStartedAtMs = now;
+    this.simTicksThisWindow += 1;
+    this.snapshotsThisWindow += 1;
+    this.simTickMsTotal += simTickMs;
+    this.simTickMsMax = Math.max(this.simTickMsMax, simTickMs);
+
+    const elapsedMs = now - this.rateWindowStartedAtMs;
+    if (elapsedMs < 1000) return;
+
+    const elapsedSeconds = elapsedMs / 1000;
+    const inputRates = [...this.inputPacketsThisWindowByPlayerId.entries()]
+      .map(([playerId, count]) => `${playerId.slice(-4)}:${(count / elapsedSeconds).toFixed(1)}/s`)
+      .join(',');
+    const avgSimTickMs = this.simTicksThisWindow > 0 ? this.simTickMsTotal / this.simTicksThisWindow : 0;
+    this.log(
+      `[rates] simTicks=${(this.simTicksThisWindow / elapsedSeconds).toFixed(1)}/s ` +
+      `snapshots=${(this.snapshotsThisWindow / elapsedSeconds).toFixed(1)}/s ` +
+      `patchRate=${formatPatchRate(COLYSEUS_PATCH_RATE_MS)} ` +
+      `inputPackets={${inputRates || 'none'}} ` +
+      `simTickMs avg=${avgSimTickMs.toFixed(2)} max=${this.simTickMsMax.toFixed(2)}`
+    );
+
+    this.rateWindowStartedAtMs = now;
+    this.simTicksThisWindow = 0;
+    this.snapshotsThisWindow = 0;
+    this.simTickMsTotal = 0;
+    this.simTickMsMax = 0;
+    this.inputPacketsThisWindowByPlayerId.clear();
+  }
+
   /** Token-bucket rate limit per client per message type (#11). Returns false if over limit. */
   private allow(client: Client, type: string): boolean {
     const limit = RATE_LIMITS[type];
@@ -218,4 +300,8 @@ export class DuelRoom extends Room {
   private log(message: string): void {
     console.log(`[duel ${this.roomId}] ${message}`);
   }
+}
+
+function formatPatchRate(patchRateMs: number | null): string {
+  return patchRateMs === null ? 'disabled(manual snapshots)' : `${(1000 / patchRateMs).toFixed(1)}Hz`;
 }

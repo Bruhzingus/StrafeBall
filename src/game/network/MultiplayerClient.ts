@@ -21,11 +21,22 @@ export class MultiplayerClient {
   public localPlayerId = '';
   public pingMs: number | null = null;
   public latestSnapshot: ServerSnapshot | null = null;
+  public snapshotDebug = {
+    receivedPerSecond: 0,
+    averageMsBetweenSnapshots: 0,
+    maxMsBetweenSnapshots: 0
+  };
 
   private readonly client: Client;
   private room: Room | null = null;
   private pingTimer: number | null = null;
   private lastPingClientTime = 0;
+  private snapshotWindowStartedAtMs = 0;
+  private snapshotWindowCount = 0;
+  private lastSnapshotReceivedAtMs = 0;
+  private snapshotIntervalTotalMs = 0;
+  private snapshotIntervalCount = 0;
+  private snapshotIntervalMaxMs = 0;
   // Incremented on every connect() call. Lets an awaited join() detect it was superseded by a
   // newer call (e.g. user double-clicks Create) and leave the orphaned room rather than
   // overwriting this.room and leaking the server-side session.
@@ -62,6 +73,7 @@ export class MultiplayerClient {
     this.roomId = '';
     this.localPlayerId = '';
     this.latestSnapshot = null;
+    this.resetSnapshotDebug();
   }
 
   dispose(): void {
@@ -143,6 +155,7 @@ export class MultiplayerClient {
   private bindRoom(room: Room): void {
     room.onMessage('snapshot', (message: ServerSnapshot) => {
       if (this.room !== room) return;
+      this.recordSnapshotReceived();
       this.latestSnapshot = message;
     });
 
@@ -181,7 +194,52 @@ export class MultiplayerClient {
       this.roomId = '';
       this.localPlayerId = '';
       this.latestSnapshot = null;
+      this.resetSnapshotDebug();
     });
+  }
+
+  private recordSnapshotReceived(): void {
+    const now = Date.now();
+    if (this.snapshotWindowStartedAtMs === 0) this.snapshotWindowStartedAtMs = now;
+
+    if (this.lastSnapshotReceivedAtMs > 0) {
+      const interval = now - this.lastSnapshotReceivedAtMs;
+      this.snapshotIntervalTotalMs += interval;
+      this.snapshotIntervalCount += 1;
+      this.snapshotIntervalMaxMs = Math.max(this.snapshotIntervalMaxMs, interval);
+    }
+
+    this.lastSnapshotReceivedAtMs = now;
+    this.snapshotWindowCount += 1;
+
+    const elapsed = now - this.snapshotWindowStartedAtMs;
+    if (elapsed < 1000) return;
+
+    this.snapshotDebug = {
+      receivedPerSecond: this.snapshotWindowCount / (elapsed / 1000),
+      averageMsBetweenSnapshots: this.snapshotIntervalCount > 0 ? this.snapshotIntervalTotalMs / this.snapshotIntervalCount : 0,
+      maxMsBetweenSnapshots: this.snapshotIntervalMaxMs
+    };
+
+    this.snapshotWindowStartedAtMs = now;
+    this.snapshotWindowCount = 0;
+    this.snapshotIntervalTotalMs = 0;
+    this.snapshotIntervalCount = 0;
+    this.snapshotIntervalMaxMs = 0;
+  }
+
+  private resetSnapshotDebug(): void {
+    this.snapshotDebug = {
+      receivedPerSecond: 0,
+      averageMsBetweenSnapshots: 0,
+      maxMsBetweenSnapshots: 0
+    };
+    this.snapshotWindowStartedAtMs = 0;
+    this.snapshotWindowCount = 0;
+    this.lastSnapshotReceivedAtMs = 0;
+    this.snapshotIntervalTotalMs = 0;
+    this.snapshotIntervalCount = 0;
+    this.snapshotIntervalMaxMs = 0;
   }
 
   private startPing(): void {

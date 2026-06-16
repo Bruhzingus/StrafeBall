@@ -27,17 +27,62 @@ interface BallVisual {
 
 type RemotePlayerDebug = { logTimer: number };
 
+interface BufferedSnapshot {
+  tick: number;
+  resetSerial: number;
+  receivedAtMs: number;
+  players: PlayerState[];
+  balls: BallState[];
+}
+
+interface BallRenderContinuity {
+  phase: BallState['phase'];
+  ownerKind: BallState['ownerKind'];
+  ownerId: string | null;
+  heldByPlayerId: string | null;
+  heldHand: HandSide | null;
+}
+
+export interface NetworkRendererDebugStats {
+  remoteInterpolationBufferSize: number;
+  ballInterpolationBufferSize: number;
+  renderDelayMs: number;
+  latestSnapshotAgeMs: number;
+}
+
 export class NetworkRenderer {
+  private static readonly INTERPOLATION_DELAY_MS = 100;
+  static readonly BALL_EXTRAPOLATION_MAX_MS = 100;
+  private static readonly MAX_BUFFER_MS = 1000;
+  static readonly HUGE_ERROR_SNAP_METERS = 5;
+
   private readonly players = new Map<string, PlayerVisual>();
   private readonly playerDebug = new Map<string, RemotePlayerDebug>();
   private readonly balls = new Map<string, BallVisual>();
   private readonly materials = new Map<string, PBRMaterial>();
+  private readonly snapshotBuffer: BufferedSnapshot[] = [];
+  private readonly ballRenderContinuity = new Map<string, BallRenderContinuity>();
+  private lastBufferedTick = -1;
+  private lastBufferedResetSerial = -1;
+  private latestSnapshotReceivedAtMs = 0;
 
   constructor(private readonly scene: Scene) {}
 
   update(snapshot: ServerSnapshot, localPlayerId: string, dt: number): void {
-    this.updatePlayers(Object.values(snapshot.room.players), localPlayerId, dt);
-    this.updateBalls(Object.values(snapshot.room.balls), dt);
+    this.bufferSnapshot(snapshot);
+    const renderSnapshot = this.sampleBufferedSnapshot(Date.now() - NetworkRenderer.INTERPOLATION_DELAY_MS);
+    if (!renderSnapshot) return;
+    this.updatePlayers(renderSnapshot.players, localPlayerId, dt);
+    this.updateBalls(renderSnapshot.balls);
+  }
+
+  getDebugStats(): NetworkRendererDebugStats {
+    return {
+      remoteInterpolationBufferSize: this.snapshotBuffer.length,
+      ballInterpolationBufferSize: this.snapshotBuffer.length,
+      renderDelayMs: NetworkRenderer.INTERPOLATION_DELAY_MS,
+      latestSnapshotAgeMs: this.latestSnapshotReceivedAtMs > 0 ? Date.now() - this.latestSnapshotReceivedAtMs : 0
+    };
   }
 
   clear(): void {
@@ -50,6 +95,11 @@ export class NetworkRenderer {
     this.players.clear();
     this.playerDebug.clear();
     this.balls.clear();
+    this.snapshotBuffer.length = 0;
+    this.ballRenderContinuity.clear();
+    this.lastBufferedTick = -1;
+    this.lastBufferedResetSerial = -1;
+    this.latestSnapshotReceivedAtMs = 0;
   }
 
   dispose(): void {
@@ -61,17 +111,76 @@ export class NetworkRenderer {
     this.playerDebug.clear();
   }
 
+  private bufferSnapshot(snapshot: ServerSnapshot): void {
+    const resetSerial = snapshot.room.resetVote.resetSerial;
+    if (resetSerial !== this.lastBufferedResetSerial) {
+      if (this.lastBufferedResetSerial !== -1 && isNetworkRenderDebugEnabled()) {
+        console.log(`[net/render-buffer] reset serial ${this.lastBufferedResetSerial} -> ${resetSerial}; clearing interpolation buffer`);
+      }
+      this.snapshotBuffer.length = 0;
+      this.ballRenderContinuity.clear();
+      this.lastBufferedTick = -1;
+      this.lastBufferedResetSerial = resetSerial;
+    }
+
+    if (snapshot.tick === this.lastBufferedTick) return;
+
+    const now = Date.now();
+    this.latestSnapshotReceivedAtMs = now;
+    this.lastBufferedTick = snapshot.tick;
+    this.snapshotBuffer.push({
+      tick: snapshot.tick,
+      resetSerial,
+      receivedAtMs: now,
+      players: Object.values(snapshot.room.players).map(clonePlayerState),
+      balls: Object.values(snapshot.room.balls).map(cloneBallState)
+    });
+
+    while (
+      this.snapshotBuffer.length > 2 &&
+      now - this.snapshotBuffer[0].receivedAtMs > NetworkRenderer.MAX_BUFFER_MS
+    ) {
+      this.snapshotBuffer.shift();
+    }
+  }
+
+  private sampleBufferedSnapshot(targetTimeMs: number): BufferedSnapshot | null {
+    if (this.snapshotBuffer.length === 0) return null;
+    if (this.snapshotBuffer.length === 1) return this.snapshotBuffer[0];
+
+    let before: BufferedSnapshot | null = null;
+    let after: BufferedSnapshot | null = null;
+
+    for (const snapshot of this.snapshotBuffer) {
+      if (snapshot.receivedAtMs <= targetTimeMs) before = snapshot;
+      if (snapshot.receivedAtMs >= targetTimeMs) {
+        after = snapshot;
+        break;
+      }
+    }
+
+    if (!before) return this.snapshotBuffer[0];
+    if (!after) return extrapolateSnapshot(before, targetTimeMs - before.receivedAtMs);
+    if (before === after) return before;
+
+    const spanMs = Math.max(1, after.receivedAtMs - before.receivedAtMs);
+    const t = clamp01((targetTimeMs - before.receivedAtMs) / spanMs);
+    return interpolateSnapshots(before, after, t, targetTimeMs);
+  }
+
   private updatePlayers(players: PlayerState[], localPlayerId: string, dt: number): void {
     const seen = new Set<string>();
-    // Exponential decay: position converges in ~0.1 s regardless of frame rate.
-    const blend = 1 - Math.exp(-20 * dt);
 
     for (const player of players) {
       if (player.id === localPlayerId) continue;
       seen.add(player.id);
       const visual = this.ensurePlayer(player);
       const target = toVector3(player.movement.position);
-      visual.root.position = Vector3.Lerp(visual.root.position, target, blend);
+      const error = Vector3.Distance(visual.root.position, target);
+      if (error > NetworkRenderer.HUGE_ERROR_SNAP_METERS && isNetworkRenderDebugEnabled()) {
+        console.log(`[remote/${player.id.slice(-4)}] snap largeError=${error.toFixed(2)}m`);
+      }
+      visual.root.position.copyFrom(target);
       visual.root.rotation.y = 0;
       this.posePlayerVisual(player, visual);
 
@@ -101,25 +210,33 @@ export class NetworkRenderer {
     }
   }
 
-  private updateBalls(balls: BallState[], dt: number): void {
+  private updateBalls(balls: BallState[]): void {
     const seen = new Set<string>();
-    const blendFast = 1 - Math.exp(-30 * dt);  // live/deflected: catch up quickly
-    const blendSlow = 1 - Math.exp(-15 * dt);  // loose/dead/held: gentle slide
 
     for (const ball of balls) {
       seen.add(ball.id);
       const visual = this.ensureBall(ball);
       const target = toVector3(ball.position);
-      const blend = ball.phase === 'live' || ball.phase === 'deflected' ? blendFast : blendSlow;
-      visual.mesh.position = Vector3.Lerp(visual.mesh.position, target, blend);
+      const error = Vector3.Distance(visual.mesh.position, target);
+      const continuity = ballContinuity(ball);
+      const previous = this.ballRenderContinuity.get(ball.id);
+      const changed = previous !== undefined && !sameBallContinuity(previous, continuity);
+      if ((changed || error > NetworkRenderer.HUGE_ERROR_SNAP_METERS) && isNetworkRenderDebugEnabled()) {
+        console.log(
+          `[net/ball] snap id=${ball.id} phase=${ball.phase} changed=${Number(changed)} error=${error.toFixed(2)}m`
+        );
+      }
+      visual.mesh.position.copyFrom(target);
       visual.mesh.material = getBallMaterial(this.scene, ballVariantForState(ball));
       visual.mesh.setEnabled(true);
+      this.ballRenderContinuity.set(ball.id, continuity);
     }
 
     for (const [id, visual] of this.balls) {
       if (seen.has(id)) continue;
       visual.mesh.dispose();
       this.balls.delete(id);
+      this.ballRenderContinuity.delete(id);
     }
   }
 
@@ -295,6 +412,164 @@ export class NetworkRenderer {
 
 function toVector3(v: { x: number; y: number; z: number }): Vector3 {
   return new Vector3(v.x, v.y, v.z);
+}
+
+function clonePlayerState(player: PlayerState): PlayerState {
+  return {
+    ...player,
+    movement: {
+      ...player.movement,
+      position: { ...player.movement.position },
+      velocity: { ...player.movement.velocity },
+      facing: { ...player.movement.facing }
+    },
+    movementInternal: { ...player.movementInternal },
+    dash: { ...player.dash },
+    hands: {
+      left: {
+        ...player.hands.left,
+        catchTrackingSecondsByBallId: { ...player.hands.left.catchTrackingSecondsByBallId }
+      },
+      right: {
+        ...player.hands.right,
+        catchTrackingSecondsByBallId: { ...player.hands.right.catchTrackingSecondsByBallId }
+      }
+    }
+  };
+}
+
+function cloneBallState(ball: BallState): BallState {
+  return {
+    ...ball,
+    position: { ...ball.position },
+    velocity: { ...ball.velocity },
+    curveAccel: { ...ball.curveAccel }
+  };
+}
+
+function interpolateSnapshots(before: BufferedSnapshot, after: BufferedSnapshot, t: number, targetTimeMs: number): BufferedSnapshot {
+  const playersBefore = new Map(before.players.map((player) => [player.id, player]));
+  const ballsBefore = new Map(before.balls.map((ball) => [ball.id, ball]));
+
+  return {
+    tick: after.tick,
+    resetSerial: after.resetSerial,
+    receivedAtMs: targetTimeMs,
+    players: after.players.map((player) => {
+      const previous = playersBefore.get(player.id);
+      return previous ? interpolatePlayerState(previous, player, t) : clonePlayerState(player);
+    }),
+    balls: after.balls.map((ball) => {
+      const previous = ballsBefore.get(ball.id);
+      return previous ? interpolateBallState(previous, ball, t) : cloneBallState(ball);
+    })
+  };
+}
+
+function extrapolateSnapshot(snapshot: BufferedSnapshot, deltaMs: number): BufferedSnapshot {
+  const dt = Math.min(NetworkRenderer.BALL_EXTRAPOLATION_MAX_MS, Math.max(0, deltaMs)) / 1000;
+  return {
+    tick: snapshot.tick,
+    resetSerial: snapshot.resetSerial,
+    receivedAtMs: snapshot.receivedAtMs + deltaMs,
+    players: snapshot.players.map(clonePlayerState),
+    balls: snapshot.balls.map((ball) => {
+      const clone = cloneBallState(ball);
+      if (dt > 0 && (ball.phase === 'live' || ball.phase === 'deflected') && !ball.heldByPlayerId) {
+        clone.position = addVec3(ball.position, scaleVec3(ball.velocity, dt));
+      }
+      return clone;
+    })
+  };
+}
+
+function interpolatePlayerState(before: PlayerState, after: PlayerState, t: number): PlayerState {
+  if (distanceVec3(before.movement.position, after.movement.position) > NetworkRenderer.HUGE_ERROR_SNAP_METERS) {
+    return clonePlayerState(after);
+  }
+
+  const clone = clonePlayerState(after);
+  clone.movement = {
+    ...clone.movement,
+    position: lerpVec3(before.movement.position, after.movement.position, t),
+    velocity: lerpVec3(before.movement.velocity, after.movement.velocity, t),
+    yawRadians: lerpAngleRadians(before.movement.yawRadians, after.movement.yawRadians, t),
+    pitchRadians: lerpNumber(before.movement.pitchRadians, after.movement.pitchRadians, t),
+    facing: lerpVec3(before.movement.facing, after.movement.facing, t),
+    speed: lerpNumber(before.movement.speed, after.movement.speed, t)
+  };
+  return clone;
+}
+
+function interpolateBallState(before: BallState, after: BallState, t: number): BallState {
+  if (!sameBallContinuity(ballContinuity(before), ballContinuity(after))) {
+    return cloneBallState(after);
+  }
+  if (distanceVec3(before.position, after.position) > NetworkRenderer.HUGE_ERROR_SNAP_METERS) {
+    return cloneBallState(after);
+  }
+
+  const clone = cloneBallState(after);
+  clone.position = lerpVec3(before.position, after.position, t);
+  clone.velocity = lerpVec3(before.velocity, after.velocity, t);
+  clone.curveAccel = lerpVec3(before.curveAccel, after.curveAccel, t);
+  return clone;
+}
+
+function ballContinuity(ball: BallState): BallRenderContinuity {
+  return {
+    phase: ball.phase,
+    ownerKind: ball.ownerKind,
+    ownerId: ball.ownerId,
+    heldByPlayerId: ball.heldByPlayerId,
+    heldHand: ball.heldHand
+  };
+}
+
+function sameBallContinuity(a: BallRenderContinuity, b: BallRenderContinuity): boolean {
+  return (
+    a.phase === b.phase &&
+    a.ownerKind === b.ownerKind &&
+    a.ownerId === b.ownerId &&
+    a.heldByPlayerId === b.heldByPlayerId &&
+    a.heldHand === b.heldHand
+  );
+}
+
+function lerpVec3(a: { x: number; y: number; z: number }, b: { x: number; y: number; z: number }, t: number): { x: number; y: number; z: number } {
+  return {
+    x: lerpNumber(a.x, b.x, t),
+    y: lerpNumber(a.y, b.y, t),
+    z: lerpNumber(a.z, b.z, t)
+  };
+}
+
+function addVec3(a: { x: number; y: number; z: number }, b: { x: number; y: number; z: number }): { x: number; y: number; z: number } {
+  return { x: a.x + b.x, y: a.y + b.y, z: a.z + b.z };
+}
+
+function scaleVec3(v: { x: number; y: number; z: number }, scale: number): { x: number; y: number; z: number } {
+  return { x: v.x * scale, y: v.y * scale, z: v.z * scale };
+}
+
+function distanceVec3(a: { x: number; y: number; z: number }, b: { x: number; y: number; z: number }): number {
+  const dx = a.x - b.x;
+  const dy = a.y - b.y;
+  const dz = a.z - b.z;
+  return Math.sqrt(dx * dx + dy * dy + dz * dz);
+}
+
+function lerpNumber(a: number, b: number, t: number): number {
+  return a + (b - a) * t;
+}
+
+function lerpAngleRadians(a: number, b: number, t: number): number {
+  const delta = Math.atan2(Math.sin(b - a), Math.cos(b - a));
+  return a + delta * t;
+}
+
+function clamp01(value: number): number {
+  return Math.max(0, Math.min(1, value));
 }
 
 function materialColor(key: string): { diffuse: Color3; emissive: Color3; metallic: number; roughness: number } {

@@ -20,7 +20,7 @@ import {
   add,
   clamp,
   distance,
-  isWithinCone,
+  length,
   lerp,
   normalize,
   scale,
@@ -564,25 +564,27 @@ export class ServerGameLoop {
     const radius = GAME_CONSTANTS.player.radius + GAME_CONSTANTS.ball.radius;
 
     for (const ball of Object.values(this.state.balls)) {
-      if (ball.phase !== 'live' || ball.ownerKind !== 'player' || !ball.ownerId) continue;
+      if (!canScorePlayerHit(ball)) continue;
+      const ownerId = ball.ownerId;
+      if (!ownerId) continue;
 
       const curr = ball.position;
       const prev = subtract(curr, scale(ball.velocity, dt));
 
       for (const target of Object.values(this.state.players)) {
-        if (target.id === ball.ownerId) continue;
+        if (target.id === ownerId) continue;
         const base = target.movement.position;
         const bodyBase = vec3(base.x, base.y, base.z);
         const bodyTop = vec3(base.x, base.y + GAME_CONSTANTS.player.height, base.z);
         if (!sweptBallHitsBody(prev, curr, bodyBase, bodyTop, radius)) continue;
 
-        const scorer = this.state.players[ball.ownerId];
+        const scorer = this.state.players[ownerId];
         const previousScore = scorer ? this.state.match.scoreByTeamId[scorer.teamId] ?? 0 : 0;
         const previousWinner = this.state.match.winnerTeamId;
         this.state.balls[ball.id] = markBallDead(ball);
-        this.state = registerPlayerHit(this.state, ball.ownerId);
+        this.state = registerPlayerHit(this.state, ownerId);
         const nextScore = scorer ? this.state.match.scoreByTeamId[scorer.teamId] ?? 0 : previousScore;
-        this.logger(`hit confirmed scorer=${ball.ownerId} target=${target.id} ball=${ball.id}`);
+        this.logger(`hit confirmed scorer=${ownerId} target=${target.id} ball=${ball.id}`);
         if (nextScore !== previousScore) this.logger(`score changed team=${scorer?.teamId ?? 'unknown'} score=${nextScore}`);
         if (!previousWinner && this.state.match.winnerTeamId) this.logger(`match ended winner=${this.state.match.winnerTeamId}`);
         break;
@@ -952,6 +954,14 @@ function resolveBallStaticBoxes(ball: BallState, boxes: AABB[], logger?: (messag
     );
   }
   return resolved;
+}
+
+function canScorePlayerHit(ball: BallState): boolean {
+  if (ball.phase !== 'live') return false;
+  if (ball.ownerKind !== 'player' || !ball.ownerId) return false;
+  if (ball.heldByPlayerId || ball.heldHand) return false;
+  if (length(ball.velocity) < GAME_CONSTANTS.ball.liveHitMinSpeed) return false;
+  return true;
 }
 
 function defaultInput(yawRadians = 0): PlayerInput {

@@ -152,6 +152,9 @@ export class Hud {
       lastAckedSeq: number;
       pendingInputs: number;
       predictionErrorM: number;
+      residualAfterReplayM: number;
+      expectedLeadM: number;
+      ackAgeMs: number | null;
       predictionActive: boolean;
     }
   ): void {
@@ -166,15 +169,16 @@ export class Hud {
       : '';
 
     if (this.debugVisible) {
-      const errColor = netDebug.predictionErrorM > 0.5 ? 'hud-bad' : netDebug.predictionErrorM > 0.1 ? 'hud-warn' : 'hud-good';
+      const residualColor = netDebug.residualAfterReplayM > 0.15 ? 'hud-bad' : netDebug.residualAfterReplayM > 0.05 ? 'hud-warn' : 'hud-good';
       this.setHtml(this.topLeft, `
         <div class="hud-title">Online <span style="font-weight:400;opacity:0.45;font-size:10px">[Tab]</span></div>
         <div>FPS <span class="hud-good">${Math.round(fps)}</span> &middot; ${frameMs.toFixed(1)} ms</div>
         <div>Room: <span class="hud-good">${escapeHtml(room.id)}</span> · Players: ${Object.keys(room.players).length}/2</div>
         <div>Ping: <span class="hud-good">${pingMs === null ? '-' : `${pingMs} ms`}</span> · Tick: ${snapshot.tick}</div>
-        <div>Snap rate: <span class="hud-good">${netDebug.snapshotRateHz.toFixed(1)} Hz</span></div>
+        <div>Snap rate: <span class="hud-good">${netDebug.snapshotRateHz.toFixed(1)} Hz</span> | Ack age: ${netDebug.ackAgeMs === null ? '-' : `${netDebug.ackAgeMs} ms`}</div>
+        <div>Raw lead: ${netDebug.predictionErrorM.toFixed(3)} m / ~${netDebug.expectedLeadM.toFixed(3)} m</div>
         <div>Input seq: ${netDebug.inputSeq} · Acked: ${netDebug.lastAckedSeq} · Pending: ${netDebug.pendingInputs}</div>
-        <div>Pred err: <span class="${errColor}">${netDebug.predictionErrorM.toFixed(3)} m</span> · Active: ${netDebug.predictionActive ? '<span class="hud-good">yes</span>' : '<span class="hud-bad">no</span>'}</div>
+        <div>Residual: <span class="${residualColor}">${netDebug.residualAfterReplayM.toFixed(3)} m</span> · Active: ${netDebug.predictionActive ? '<span class="hud-good">yes</span>' : '<span class="hud-bad">no</span>'}</div>
         <div>Interp remote: <span class="hud-good">yes (exp-20)</span> · Balls: <span class="hud-good">yes (exp-30/15)</span></div>
         ${local ? `<div>Speed: <span class="hud-good">${local.movement.speed.toFixed(1)}</span> m/s · Vel: ${local.movement.velocity.x.toFixed(1)}, ${local.movement.velocity.y.toFixed(1)}, ${local.movement.velocity.z.toFixed(1)}</div>` : ''}
       `);
