@@ -38,12 +38,12 @@ export const TUNING = {
   },
 
   slide: {
-    minStartSpeed: 6.2,
-    impulse: 2.2,
-    frictionMultiplier: 0.38,
-    minDuration: 0.28,
-    maxDuration: 1.2,
-    jumpBonus: 1.12
+    minStartSpeed: GAME_CONSTANTS.slide.minStartSpeed,
+    impulse: GAME_CONSTANTS.slide.impulse,
+    frictionMultiplier: GAME_CONSTANTS.slide.frictionMultiplier,
+    minDuration: GAME_CONSTANTS.slide.minDuration,
+    maxDuration: GAME_CONSTANTS.slide.maxDuration,
+    jumpBonus: GAME_CONSTANTS.slide.jumpBonus
   },
 
   dash: {
@@ -55,7 +55,8 @@ export const TUNING = {
     // carries instead of being bled away the same frame.
     activeSeconds: GAME_CONSTANTS.dash.activeSeconds,
     similarDirectionDot: GAME_CONSTANTS.dash.similarDirectionDot,
-    oppositeDirectionMomentumPenalty: GAME_CONSTANTS.dash.oppositeDirectionMomentumPenalty
+    oppositeDirectionMomentumPenalty: GAME_CONSTANTS.dash.oppositeDirectionMomentumPenalty,
+    oppositeDirectionImpulseScale: GAME_CONSTANTS.dash.oppositeDirectionImpulseScale
   },
 
   wall: {

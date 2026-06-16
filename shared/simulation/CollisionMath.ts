@@ -88,3 +88,61 @@ export function isMovingToward(origin: Vec3, velocity: Vec3, target: Vec3, minDo
   if (toTargetLengthSq <= EPSILON || velocityLengthSq <= EPSILON) return false;
   return dot(toTarget, velocity) / Math.sqrt(toTargetLengthSq * velocityLengthSq) > minDot;
 }
+
+/**
+ * Shortest distance between two line segments [p1,q1] and [p2,q2] (Ericson, Real-Time Collision
+ * Detection). Used for swept hit detection: one segment is the ball's path this tick, the other
+ * is the target's vertical body axis. This is what makes both headshots register (the body axis
+ * spans feet→head, not a single mid-height point) AND stops fast balls tunnelling between ticks
+ * (we test the whole swept path, not just the end position).
+ */
+export function closestDistanceBetweenSegments(p1: Vec3, q1: Vec3, p2: Vec3, q2: Vec3): number {
+  const d1 = subtract(q1, p1);
+  const d2 = subtract(q2, p2);
+  const r = subtract(p1, p2);
+  const a = dot(d1, d1);
+  const e = dot(d2, d2);
+  const f = dot(d2, r);
+
+  let s: number;
+  let t: number;
+
+  if (a <= EPSILON && e <= EPSILON) {
+    return length(r);
+  }
+  if (a <= EPSILON) {
+    s = 0;
+    t = clamp(f / e, 0, 1);
+  } else {
+    const cValue = dot(d1, r);
+    if (e <= EPSILON) {
+      t = 0;
+      s = clamp(-cValue / a, 0, 1);
+    } else {
+      const b = dot(d1, d2);
+      const denom = a * e - b * b;
+      s = denom !== 0 ? clamp((b * f - cValue * e) / denom, 0, 1) : 0;
+      t = (b * s + f) / e;
+      if (t < 0) {
+        t = 0;
+        s = clamp(-cValue / a, 0, 1);
+      } else if (t > 1) {
+        t = 1;
+        s = clamp((b - cValue) / a, 0, 1);
+      }
+    }
+  }
+
+  const c1 = add(p1, scale(d1, s));
+  const c2 = add(p2, scale(d2, t));
+  return distance(c1, c2);
+}
+
+/**
+ * True if a ball travelling from `ballPrev` to `ballCurr` this tick comes within `radius` of an
+ * upright body capsule whose axis runs from `bodyBase` (feet) to `bodyTop` (head). `radius`
+ * should be the combined ball + body radius.
+ */
+export function sweptBallHitsBody(ballPrev: Vec3, ballCurr: Vec3, bodyBase: Vec3, bodyTop: Vec3, radius: number): boolean {
+  return closestDistanceBetweenSegments(ballPrev, ballCurr, bodyBase, bodyTop) <= radius;
+}

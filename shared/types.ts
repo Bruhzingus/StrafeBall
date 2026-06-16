@@ -12,22 +12,29 @@ export type BallPhase = 'loose' | 'held' | 'live' | 'dead' | 'deflected';
 export type BallOwnerKind = 'player' | 'launcher' | 'bot' | 'dummy' | null;
 
 export interface PlayerInput {
+  sequence: number;
+  clientTimeMs: number;
   moveX: number;
   moveZ: number;
+  dashDirection: Vec3;
   lookYawRadians: number;
   lookPitchRadians: number;
-  jump: boolean;
-  crouch: boolean;
-  slide: boolean;
-  dash: boolean;
-  backflip: boolean;
-  interact: boolean;
-  drop: boolean;
-  fakeThrow: boolean;
-  leftHand: boolean;
-  rightHand: boolean;
+  jumpPressed: boolean;
+  jumpHeld: boolean;
+  dashPressed: boolean;
+  crouchPressed: boolean;
+  crouchHeld: boolean;
+  slidePressed: boolean;
+  slideHeld: boolean;
+  backflipPressed: boolean;
+  pickupPressed: boolean;
+  dropPressed: boolean;
+  fakeThrowPressed: boolean;
+  fakeThrowHeld: boolean;
   leftHandPressed: boolean;
+  leftHandHeld: boolean;
   rightHandPressed: boolean;
+  rightHandHeld: boolean;
   leftHandReleased: boolean;
   rightHandReleased: boolean;
 }
@@ -65,6 +72,27 @@ export interface DashState {
   cooldownSeconds: number;
 }
 
+/**
+ * Persistent, frame-to-frame movement timers that don't belong in the outward-facing
+ * PlayerMovementState but must survive across ticks AND be reconciled on the client (the
+ * client replays unacknowledged inputs from this state). Mirrors the private fields of the
+ * offline MovementController so the shared MovementSim reproduces identical feel.
+ */
+export interface MovementInternalState {
+  slideTimer: number;
+  jumpGraceTimer: number;
+  wallRunTimer: number;
+  wallReattachCooldown: number;
+  dashActiveTimer: number;
+  catchBoostTimer: number;
+  groundHeight: number;
+  lastWallNormalX: number;
+  lastWallNormalZ: number;
+  backflipActive: boolean;
+  backflipTimer: number;
+  backflipCooldown: number;
+}
+
 export interface PlayerState {
   id: string;
   name: string;
@@ -72,10 +100,14 @@ export interface PlayerState {
   spawnSide: SpawnSide;
   legalHalf: LegalHalf;
   movement: PlayerMovementState;
+  movementInternal: MovementInternalState;
   hands: PlayerHandsState;
   dash: DashState;
   score: number;
   connected: boolean;
+  // Highest input sequence number the server has simulated for this player. The client uses
+  // it to discard acknowledged inputs and replay only the unacknowledged ones (reconciliation).
+  lastProcessedInputSeq: number;
 }
 
 export interface BallState {

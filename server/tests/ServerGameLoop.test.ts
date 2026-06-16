@@ -72,13 +72,19 @@ describe('ServerGameLoop', () => {
     expect(loop.state.balls.ball_0.phase).toBe('dead');
   });
 
-  it('reset is server-owned and respawns balls without changing players', () => {
+  it('blocks mid-match reset but allows a rematch once the match is complete', () => {
     const loop = new ServerGameLoop('room');
     loop.addPlayer('a', 'A');
     loop.addPlayer('b', 'B');
     loop.state.match.scoreByTeamId.blue = 3;
     loop.state.players.a.score = 3;
 
+    // Unilateral reset mid-duel is griefing and is rejected (#6).
+    expect(loop.handleReset('a').ok).toBe(false);
+    expect(loop.state.match.scoreByTeamId.blue).toBe(3);
+
+    // Once the match is complete, either player may start a rematch.
+    loop.state.match.status = 'complete';
     const reset = loop.handleReset('a');
 
     expect(reset.ok).toBe(true);
@@ -86,5 +92,17 @@ describe('ServerGameLoop', () => {
     expect(Object.keys(loop.state.balls)).toHaveLength(GAME_CONSTANTS.map.ballCount);
     expect(loop.state.match.scoreByTeamId.blue).toBe(0);
     expect(loop.state.players.a.score).toBe(0);
+  });
+
+  it('forfeits to the remaining player when an opponent abandons mid-match', () => {
+    const loop = new ServerGameLoop('room');
+    loop.addPlayer('a', 'A');
+    loop.addPlayer('b', 'B');
+
+    loop.abandon('b');
+
+    expect(loop.state.match.status).toBe('complete');
+    expect(loop.state.match.winnerTeamId).toBe(loop.state.players.a.teamId);
+    expect(Object.keys(loop.state.players)).toEqual(['a']);
   });
 });

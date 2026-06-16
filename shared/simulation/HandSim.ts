@@ -181,6 +181,9 @@ export function catchBallInHand(
   ball: BallState,
   aimForward: Vec3,
   trackedSeconds: number,
+  // Cone origin — pass the eye position so a chest-height ball aimed at horizontally is in-cone
+  // (defaults to the feet position for backward compatibility).
+  origin: Vec3 = player.movement.position,
   constants: GameConstants = GAME_CONSTANTS
 ): CatchResult | { ok: false; reason: CatchValidationReason } {
   const hand = hands[side];
@@ -188,7 +191,7 @@ export function catchBallInHand(
   if (hand.cooldownSeconds > 0) return { ok: false, reason: 'catch-cooldown' };
   if (ball.phase !== 'live') return { ok: false, reason: 'not-live' };
   if (trackedSeconds < constants.catch.trackingSeconds) return { ok: false, reason: 'not-tracked' };
-  if (!isInCatchCone(player.movement.position, aimForward, ball, constants)) return { ok: false, reason: 'outside-catch-cone' };
+  if (!isInCatchCone(origin, aimForward, ball, constants)) return { ok: false, reason: 'outside-catch-cone' };
 
   return {
     ok: true,
@@ -214,12 +217,13 @@ export function autoParryBall(
   ball: BallState,
   aimForward: Vec3,
   parryCooldownSeconds: number,
+  origin: Vec3 = player.movement.position,
   constants: GameConstants = GAME_CONSTANTS
 ): AutoParryResult | { ok: false; reason: ParryValidationReason } {
   if (heldBallCount(hands) < constants.ball.maxHeldBalls) return { ok: false, reason: 'hands-not-full' };
   if (parryCooldownSeconds > 0) return { ok: false, reason: 'parry-cooldown' };
   if (ball.phase !== 'live') return { ok: false, reason: 'not-live' };
-  if (!isInParryCone(player.movement.position, aimForward, ball, constants)) return { ok: false, reason: 'outside-parry-cone' };
+  if (!isInParryCone(origin, aimForward, ball, constants)) return { ok: false, reason: 'outside-parry-cone' };
 
   return {
     ok: true,

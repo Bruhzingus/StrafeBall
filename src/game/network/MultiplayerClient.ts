@@ -2,6 +2,7 @@ import { Client, Room } from '@colyseus/sdk';
 import type {
   CatchParryRequest,
   DropRequest,
+  InputCommand,
   PickupRequest,
   ResetRequest,
   ServerMessage,
@@ -25,6 +26,10 @@ export class MultiplayerClient {
   private room: Room | null = null;
   private pingTimer: number | null = null;
   private lastPingClientTime = 0;
+  // Incremented on every connect() call. Lets an awaited join() detect it was superseded by a
+  // newer call (e.g. user double-clicks Create) and leave the orphaned room rather than
+  // overwriting this.room and leaking the server-side session.
+  private connectGeneration = 0;
 
   constructor(serverUrl = import.meta.env.VITE_SERVER_URL ?? 'ws://localhost:2567') {
     this.serverUrl = serverUrl;
@@ -64,7 +69,13 @@ export class MultiplayerClient {
   }
 
   sendInput(input: PlayerInput): void {
-    this.room?.send('input', input);
+    this.room?.send('input', {
+      type: 'input',
+      playerId: this.localPlayerId,
+      sequence: input.sequence,
+      clientTimeMs: input.clientTimeMs,
+      input
+    } satisfies InputCommand);
   }
 
   requestPickup(): void {
@@ -99,12 +110,22 @@ export class MultiplayerClient {
   }
 
   private async connect(join: () => Promise<Room>): Promise<void> {
+    const gen = ++this.connectGeneration;
     this.leave();
     this.status = 'connecting';
     this.errorMessage = '';
 
     try {
       const room = await join();
+
+      if (gen !== this.connectGeneration) {
+        // A newer connect() started while we were awaiting the server handshake. Leave the
+        // orphaned room so the server session is cleaned up immediately rather than waiting for
+        // a timeout. Don't update any shared state — the newer call owns it.
+        void room.leave().catch(() => undefined);
+        return;
+      }
+
       this.room = room;
       this.status = 'connected';
       this.roomId = room.roomId;
@@ -112,6 +133,7 @@ export class MultiplayerClient {
       this.bindRoom(room);
       this.startPing();
     } catch (error) {
+      if (gen !== this.connectGeneration) return; // superseded, ignore the error
       this.room = null;
       this.status = 'error';
       this.errorMessage = error instanceof Error ? error.message : String(error);

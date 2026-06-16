@@ -5,7 +5,57 @@ export const GAME_CONSTANTS = {
 
   player: {
     height: 1.75,
-    radius: 0.42
+    radius: 0.42,
+    eyeHeight: 1.58,
+    groundAcceleration: 24,
+    airAcceleration: 11,
+    airStrafeMaxSpeed: 1.3,
+    friction: 10,
+    maxGroundSpeed: 8.5,
+    softSpeedLimit: 18,
+    softLimitBleedRate: 1.2,
+    gravity: 22,
+    fallGravityMultiplier: 1.45,
+    jumpSpeed: 8.2,
+    bhopGraceSeconds: 0.12,
+    bhopSpeedBonus: 1.035,
+    crouchHeightMultiplier: 0.62,
+    catchStanceSpeedMultiplier: 0.72,
+    stepHeight: 0.45
+  },
+
+  slide: {
+    minStartSpeed: 6.2,
+    // Reduced from 2.2 → shorter slide launch.
+    impulse: 1.4,
+    // Raised from 0.38 → slide bleeds speed faster → covers less ground.
+    frictionMultiplier: 0.55,
+    minDuration: 0.28,
+    // Shortened from 1.2 → slides end sooner.
+    maxDuration: 1.0,
+    jumpBonus: 1.12
+  },
+
+  wall: {
+    runTriggerAngleDegrees: 55,
+    runMaxSeconds: 1.1,
+    runGravityScale: 0.15,
+    runMaxFallSpeed: -2.0,
+    runStartUpBoost: 2.2,
+    minEntrySpeed: 2.0,
+    jumpAwaySpeed: 9.5,
+    jumpUpSpeed: 8.5,
+    reattachCooldownSeconds: 0.2
+  },
+
+  backflip: {
+    cooldownSeconds: 2.6,
+    durationSeconds: 0.72,
+    verticalImpulse: 10.5,
+    backwardImpulse: 4.8,
+    superWindowStart: 0.25,
+    superWindowEnd: 0.52,
+    superThrowMultiplier: 2.0
   },
 
   ball: {
@@ -52,11 +102,18 @@ export const GAME_CONSTANTS = {
   dash: {
     maxCharges: 3,
     rechargeSeconds: 3,
-    impulse: 15,
+    // Reduced from 15 → shorter dash distance.
+    impulse: 11,
     cooldownBetweenDashes: 0.18,
-    activeSeconds: 0.22,
+    // Reduced from 0.22 → friction reclaims the dash sooner → shorter carry.
+    activeSeconds: 0.16,
     similarDirectionDot: 0.35,
-    oppositeDirectionMomentumPenalty: 0.55
+    // Raised from 0.55 → when dashing AGAINST momentum you keep more of the opposing
+    // velocity, so you can't instantly reverse to full speed.
+    oppositeDirectionMomentumPenalty: 0.65,
+    // New: the dash impulse itself is weakened when fired opposite to current momentum,
+    // further limiting instant direction reversals.
+    oppositeDirectionImpulseScale: 0.7
   },
 
   match: {

@@ -1,5 +1,5 @@
 import { GAME_CONSTANTS, type GameConstants } from '../constants';
-import type { DashState, LegalHalf, PlayerState, SpawnSide, Vec3 } from '../types';
+import type { DashState, LegalHalf, MovementInternalState, PlayerState, SpawnSide, Vec3 } from '../types';
 import { createHands } from './HandSim';
 import { add, cloneVec3, dot, length, lengthSquared, normalize, scale, vec3 } from './CollisionMath';
 
@@ -38,10 +38,12 @@ export function createPlayerState(
       dashingThisFrame: false,
       speed: 0
     },
+    movementInternal: createMovementInternalState(),
     hands: createHands(),
     dash: createDashState(),
     score: 0,
-    connected: true
+    connected: true,
+    lastProcessedInputSeq: 0
   };
 
   return {
@@ -57,8 +59,30 @@ export function createPlayerState(
       velocity: cloneVec3(overrides.movement?.velocity ?? base.movement.velocity),
       facing: cloneVec3(overrides.movement?.facing ?? base.movement.facing)
     },
+    movementInternal: overrides.movementInternal
+      ? { ...base.movementInternal, ...overrides.movementInternal }
+      : base.movementInternal,
     hands: overrides.hands ?? base.hands,
-    dash: overrides.dash ? { ...base.dash, ...overrides.dash } : base.dash
+    dash: overrides.dash ? { ...base.dash, ...overrides.dash } : base.dash,
+    lastProcessedInputSeq: overrides.lastProcessedInputSeq ?? base.lastProcessedInputSeq
+  };
+}
+
+export function createMovementInternalState(overrides: Partial<MovementInternalState> = {}): MovementInternalState {
+  return {
+    slideTimer: 0,
+    jumpGraceTimer: 0,
+    wallRunTimer: 0,
+    wallReattachCooldown: 0,
+    dashActiveTimer: 0,
+    catchBoostTimer: 0,
+    groundHeight: 0,
+    lastWallNormalX: 0,
+    lastWallNormalZ: 0,
+    backflipActive: false,
+    backflipTimer: 0,
+    backflipCooldown: 0,
+    ...overrides
   };
 }
 
@@ -127,7 +151,12 @@ export function calculateDashVelocity(
     return add(currentVelocity, scale(direction, constants.dash.impulse));
   }
 
-  return add(scale(currentVelocity, constants.dash.oppositeDirectionMomentumPenalty), scale(direction, constants.dash.impulse));
+  // Against momentum: retain more of the opposing velocity AND weaken the dash impulse, so a
+  // reverse-dash can't snap you to full speed the other way instantly.
+  return add(
+    scale(currentVelocity, constants.dash.oppositeDirectionMomentumPenalty),
+    scale(direction, constants.dash.impulse * constants.dash.oppositeDirectionImpulseScale)
+  );
 }
 
 export function tryDash(

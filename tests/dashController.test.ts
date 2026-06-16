@@ -18,12 +18,15 @@ describe('DashController', () => {
     expect(dash.charges).toBe(TUNING.dash.maxCharges - 1);
   });
 
-  it('an opposite-direction dash penalizes existing momentum', () => {
+  it('an opposite-direction dash penalizes existing momentum and weakens the impulse', () => {
     const dash = new DashController();
     const result = dash.tryDash(new Vector3(0, 0, 10), new Vector3(0, 0, -1));
     expect(result).not.toBeNull();
-    // 10 * penalty - impulse
-    expect(result!.z).toBeCloseTo(10 * TUNING.dash.oppositeDirectionMomentumPenalty - TUNING.dash.impulse, 4);
+    // retained opposing momentum (10 * penalty) minus the scaled-down impulse
+    expect(result!.z).toBeCloseTo(
+      10 * TUNING.dash.oppositeDirectionMomentumPenalty - TUNING.dash.impulse * TUNING.dash.oppositeDirectionImpulseScale,
+      4
+    );
   });
 
   it('blocks a second dash until the between-dash cooldown elapses', () => {
