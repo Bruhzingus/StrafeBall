@@ -23,8 +23,13 @@ export class CatchController {
 
   update(dt: number, input: InputManager, movement: MovementSnapshot): void {
     this.parryCooldown = Math.max(0, this.parryCooldown - dt);
-    this.updateTracking(dt, movement);
-    this.tryAutoParry(movement);
+    // Compute the forward ray and live-threat list once per frame and share them with both
+    // tracking and the auto-parry (previously each recomputed both — a Ray + a filtered array
+    // every frame, twice).
+    const forward = cameraForward(this.camera);
+    const threats = this.ballManager.getLiveThreatsToward(this.camera.globalPosition);
+    this.updateTracking(dt, movement, forward, threats);
+    this.tryAutoParry(movement, forward, threats);
     this.tryManualCatch(input, movement, 'left', MOUSE_BUTTON.leftHand);
     this.tryManualCatch(input, movement, 'right', MOUSE_BUTTON.rightHand);
   }
@@ -39,9 +44,7 @@ export class CatchController {
     return this.parryCooldown;
   }
 
-  private updateTracking(dt: number, movement: MovementSnapshot): void {
-    const forward = cameraForward(this.camera);
-    const threats = this.ballManager.getLiveThreatsToward(this.camera.globalPosition);
+  private updateTracking(dt: number, movement: MovementSnapshot, forward: Vector3, threats: Ball[]): void {
     const seen = new Set<number>();
 
     for (const ball of threats) {
@@ -83,11 +86,8 @@ export class CatchController {
     this.trackingTimeByBall.delete(candidate.id);
   }
 
-  private tryAutoParry(movement: MovementSnapshot): void {
+  private tryAutoParry(movement: MovementSnapshot, forward: Vector3, threats: Ball[]): void {
     if (!this.hands.hasTwoBalls() || this.parryCooldown > 0) return;
-
-    const forward = cameraForward(this.camera);
-    const threats = this.ballManager.getLiveThreatsToward(this.camera.globalPosition);
 
     for (const ball of threats) {
       const toBall = ball.mesh.position.subtract(this.camera.globalPosition);

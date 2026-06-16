@@ -40,7 +40,10 @@ export class BallManager {
     const ballMaterial = this.loader.material('ball');
     const superBallMaterial = this.loader.material('superBall');
     for (const ball of this.balls) {
-      ball.mesh.material = ball.isSuper ? superBallMaterial : ballMaterial;
+      // Only reassign when it actually changes (on a throw/catch transition) so we don't dirty
+      // Babylon's render state / break sub-mesh batching every frame.
+      const desired = ball.isSuper ? superBallMaterial : ballMaterial;
+      if (ball.mesh.material !== desired) ball.mesh.material = desired;
       ball.update(dt, this.collision);
     }
   }
@@ -99,11 +102,22 @@ export class BallManager {
   }
 
   getLiveThreatsToward(position: Vector3): Ball[] {
+    // Scalar dot of the (normalized) ball velocity against the (normalized) direction to the
+    // player — no per-ball Vector3 allocations (this runs every frame for every live ball).
     return this.balls.filter((ball) => {
       if (ball.state !== BallState.Live) return false;
-      const toPlayer = position.subtract(ball.mesh.position);
-      if (toPlayer.lengthSquared() <= 0.001) return false;
-      return Vector3.Dot(ball.velocity.normalizeToNew(), toPlayer.normalizeToNew()) > 0.35;
+      const tx = position.x - ball.mesh.position.x;
+      const ty = position.y - ball.mesh.position.y;
+      const tz = position.z - ball.mesh.position.z;
+      const toLenSq = tx * tx + ty * ty + tz * tz;
+      if (toLenSq <= 0.001) return false;
+      const vx = ball.velocity.x;
+      const vy = ball.velocity.y;
+      const vz = ball.velocity.z;
+      const vLenSq = vx * vx + vy * vy + vz * vz;
+      if (vLenSq <= 1e-6) return false;
+      const dot = tx * vx + ty * vy + tz * vz;
+      return dot / Math.sqrt(toLenSq * vLenSq) > 0.35;
     });
   }
 

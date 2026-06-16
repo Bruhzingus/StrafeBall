@@ -77,7 +77,10 @@ export class Ball {
       this.velocity.x += this.curveAccel.x * dt;
       this.velocity.z += this.curveAccel.z * dt;
     }
-    this.mesh.position.addInPlace(this.velocity.scale(dt));
+    // Scalar integrate (no temp Vector3 from .scale) — runs for every ball every frame.
+    this.mesh.position.x += this.velocity.x * dt;
+    this.mesh.position.y += this.velocity.y * dt;
+    this.mesh.position.z += this.velocity.z * dt;
 
     this.resolveSimpleBounds();
     if (collision) this.resolveBoxCollisions(collision);

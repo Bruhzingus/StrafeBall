@@ -408,16 +408,31 @@ export class MovementController {
     return yawForward(this.root.rotation.y).scale(-1);
   }
 
+  // One reusable snapshot, refreshed in place each tick. Consumers (hands, catch, HUD) only
+  // read it within the same frame it's produced, so we avoid allocating an object + two cloned
+  // vectors every frame. The position/velocity vectors are owned by the snapshot (copied from
+  // the live state) so writing them can't mutate the controller's real state.
+  private readonly _snapshot: MovementSnapshot = {
+    position: Vector3.Zero(),
+    velocity: Vector3.Zero(),
+    grounded: true,
+    sliding: false,
+    crouching: false,
+    wallRunning: false,
+    dashingThisFrame: false,
+    speed: 0
+  };
+
   snapshot(): MovementSnapshot {
-    return {
-      position: this.root.position.clone(),
-      velocity: this.velocity.clone(),
-      grounded: this.grounded,
-      sliding: this.sliding,
-      crouching: this.crouching,
-      wallRunning: this.wallRunning,
-      dashingThisFrame: this.dashingThisFrame,
-      speed: this.horizontalSpeed()
-    };
+    const s = this._snapshot;
+    s.position.copyFrom(this.root.position);
+    s.velocity.copyFrom(this.velocity);
+    s.grounded = this.grounded;
+    s.sliding = this.sliding;
+    s.crouching = this.crouching;
+    s.wallRunning = this.wallRunning;
+    s.dashingThisFrame = this.dashingThisFrame;
+    s.speed = this.horizontalSpeed();
+    return s;
   }
 }

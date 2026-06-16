@@ -106,11 +106,14 @@ export class HandController {
   }
 
   private tickCooldowns(dt: number): void {
-    for (const hand of [this.left, this.right]) {
-      hand.cooldown = Math.max(0, hand.cooldown - dt);
-      if (hand.charging) {
-        hand.chargeSeconds = Math.min(TUNING.ball.maxChargeSeconds, hand.chargeSeconds + dt);
-      }
+    this.tickHand(this.left, dt);
+    this.tickHand(this.right, dt);
+  }
+
+  private tickHand(hand: HandState, dt: number): void {
+    hand.cooldown = Math.max(0, hand.cooldown - dt);
+    if (hand.charging) {
+      hand.chargeSeconds = Math.min(TUNING.ball.maxChargeSeconds, hand.chargeSeconds + dt);
     }
   }
 
