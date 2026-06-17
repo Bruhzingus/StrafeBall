@@ -7,6 +7,8 @@
  * and resume it on the first pointer/key input (the same click that grabs pointer lock), so
  * sounds are audible from the first throw onward.
  */
+import { settings } from '../config/Settings';
+
 export class SoundManager {
   private ctx: AudioContext | null = null;
   private master: GainNode | null = null;
@@ -17,8 +19,7 @@ export class SoundManager {
   }
 
   dispose(): void {
-    window.removeEventListener('pointerdown', this.resume);
-    window.removeEventListener('keydown', this.resume);
+    this.removeUnlock();
     if (this.ctx) {
       this.ctx.close().catch(() => undefined);
       this.ctx = null;
@@ -153,25 +154,46 @@ export class SoundManager {
 
   private resume = (): void => {
     const ctx = this.ensureContext();
-    if (ctx && ctx.state === 'suspended') {
-      console.log('[audio] user gesture detected: resuming AudioContext');
-      ctx.resume().catch((e) => console.error('[audio] failed to resume context:', e));
+    if (!ctx) return;
+    if (ctx.state === 'running') {
+      this.removeUnlock();
+      return;
+    }
+    if (ctx.state === 'suspended') {
+      ctx.resume()
+        .then(() => this.removeUnlock())
+        .catch((e) => console.error('[audio] failed to resume context:', e));
     }
   };
 
+  private removeUnlock(): void {
+    if (!this.unlockBound) return;
+    window.removeEventListener('pointerdown', this.resume);
+    window.removeEventListener('keydown', this.resume);
+    this.unlockBound = false;
+  }
+
   private ensureContext(): AudioContext | null {
-    if (this.ctx) return this.ctx;
+    if (this.ctx) {
+      this.syncVolume();
+      return this.ctx;
+    }
     const Ctor = window.AudioContext ?? (window as unknown as { webkitAudioContext?: typeof AudioContext }).webkitAudioContext;
     if (!Ctor) return null;
     try {
       this.ctx = new Ctor();
       this.master = this.ctx.createGain();
-      this.master.gain.value = this.masterVolume;
+      this.syncVolume();
       this.master.connect(this.ctx.destination);
     } catch {
       this.ctx = null;
     }
     return this.ctx;
+  }
+
+  private syncVolume(): void {
+    if (!this.master) return;
+    this.master.gain.value = this.masterVolume * settings.sfxVolume;
   }
 
   // A single oscillator with a quick attack and exponential decay. freqEnd != freqStart sweeps

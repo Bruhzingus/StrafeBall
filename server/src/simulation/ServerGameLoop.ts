@@ -106,6 +106,9 @@ interface QueuedInput {
   input: PlayerInput;
 }
 
+const EMPTY_THROW_EVENTS: ReadonlyArray<ThrowEvent> = [];
+const EMPTY_COMBAT_EVENTS: ReadonlyArray<CatchEvent | ParryEvent | HitEvent | HitRevertEvent> = [];
+
 /**
  * An in-flight server-authoritative catch attempt opened by one client click. The attempt evaluates
  * each live-ball tick while `nowMs` is within [openedAtMs+startup, openedAtMs+active]; it blocks a
@@ -253,6 +256,7 @@ export class ServerGameLoop {
       ...DEBUG_DEFAULTS,
       NET_DEBUG: options.debug?.NET_DEBUG ?? options.debugInput ?? DEBUG_DEFAULTS.NET_DEBUG,
       PERF_DEBUG: options.debug?.PERF_DEBUG ?? DEBUG_DEFAULTS.PERF_DEBUG,
+      SOAK_DEBUG: options.debug?.SOAK_DEBUG ?? DEBUG_DEFAULTS.SOAK_DEBUG,
       BALL_DEBUG: options.debug?.BALL_DEBUG ?? DEBUG_DEFAULTS.BALL_DEBUG,
       PICKUP_DEBUG: options.debug?.PICKUP_DEBUG ?? DEBUG_DEFAULTS.PICKUP_DEBUG,
       THROW_DEBUG: options.debug?.THROW_DEBUG ?? DEBUG_DEFAULTS.THROW_DEBUG,
@@ -687,16 +691,16 @@ export class ServerGameLoop {
   }
 
   /** Drain authoritative throw events accepted since the last drain (room broadcasts them). */
-  drainThrowEvents(): ThrowEvent[] {
-    if (this.pendingThrowEvents.length === 0) return [];
+  drainThrowEvents(): ReadonlyArray<ThrowEvent> {
+    if (this.pendingThrowEvents.length === 0) return EMPTY_THROW_EVENTS;
     const events = this.pendingThrowEvents;
     this.pendingThrowEvents = [];
     return events;
   }
 
   /** Drain immediate combat events accepted since the last drain (room broadcasts them). */
-  drainCombatEvents(): Array<CatchEvent | ParryEvent | HitEvent | HitRevertEvent> {
-    if (this.pendingCombatEvents.length === 0) return [];
+  drainCombatEvents(): ReadonlyArray<CatchEvent | ParryEvent | HitEvent | HitRevertEvent> {
+    if (this.pendingCombatEvents.length === 0) return EMPTY_COMBAT_EVENTS;
     const events = this.pendingCombatEvents;
     this.pendingCombatEvents = [];
     return events;
@@ -708,28 +712,46 @@ export class ServerGameLoop {
 
   getDebugBufferStats(): {
     inputQueues: number;
+    maxInputQueue: number;
     pendingThrowEvents: number;
     pendingCombatEvents: number;
     defenseHistoryEntries: number;
+    maxDefenseHistoryEntries: number;
     ballHistoryEntries: number;
+    maxBallHistoryEntries: number;
     catchAttempts: number;
     recentHits: number;
   } {
     let inputQueues = 0;
-    for (const queue of this.inputQueueByPlayerId.values()) inputQueues += queue.length;
+    let maxInputQueue = 0;
+    for (const queue of this.inputQueueByPlayerId.values()) {
+      inputQueues += queue.length;
+      if (queue.length > maxInputQueue) maxInputQueue = queue.length;
+    }
 
     let defenseHistoryEntries = 0;
-    for (const ring of this.defenseHistoryByPlayerId.values()) defenseHistoryEntries += ring.size;
+    let maxDefenseHistoryEntries = 0;
+    for (const ring of this.defenseHistoryByPlayerId.values()) {
+      defenseHistoryEntries += ring.size;
+      if (ring.size > maxDefenseHistoryEntries) maxDefenseHistoryEntries = ring.size;
+    }
 
     let ballHistoryEntries = 0;
-    for (const ring of this.ballHistoryById.values()) ballHistoryEntries += ring.size;
+    let maxBallHistoryEntries = 0;
+    for (const ring of this.ballHistoryById.values()) {
+      ballHistoryEntries += ring.size;
+      if (ring.size > maxBallHistoryEntries) maxBallHistoryEntries = ring.size;
+    }
 
     return {
       inputQueues,
+      maxInputQueue,
       pendingThrowEvents: this.pendingThrowEvents.length,
       pendingCombatEvents: this.pendingCombatEvents.length,
       defenseHistoryEntries,
+      maxDefenseHistoryEntries,
       ballHistoryEntries,
+      maxBallHistoryEntries,
       catchAttempts: this.catchAttemptByKey.size,
       recentHits: this.recentHitByBallId.size
     };

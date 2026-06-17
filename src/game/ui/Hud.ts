@@ -15,6 +15,7 @@ export class Hud {
   private readonly bottomRight: HTMLDivElement;
   private readonly scoreEvent: HTMLDivElement;
   private readonly qteEvent: HTMLDivElement;
+  private readonly hitMarker: HTMLDivElement;
   private readonly countdown: HTMLDivElement;
   private readonly boundaryClock: HTMLDivElement;
   private lastCountdownLabel = '';
@@ -25,7 +26,8 @@ export class Hud {
   private readonly lastHtml = new Map<HTMLDivElement, string>();
   private scoreEventTimer: number | null = null;
   private qteEventTimer: number | null = null;
-  private debugVisible = true;
+  private hitMarkerTimer: number | null = null;
+  private debugVisible = false;
   private readonly staminaWidget: HTMLDivElement;
   private readonly staminaWidgetSegs: HTMLDivElement[] = [];
   private readonly staminaWidgetFills: HTMLDivElement[] = [];
@@ -38,6 +40,7 @@ export class Hud {
 
     this.crosshair = new Crosshair(this.root);
     this.topLeft = this.panel('hud-top-left');
+    this.topLeft.style.display = 'none';
     this.topCenter = this.panel('hud-top-center');
     this.bottomLeft = this.panel('hud-bottom-left');
     this.bottomRight = this.panel('hud-bottom-right');
@@ -50,6 +53,10 @@ export class Hud {
     this.qteEvent = document.createElement('div');
     this.qteEvent.className = 'qte-event';
     this.root.appendChild(this.qteEvent);
+
+    this.hitMarker = document.createElement('div');
+    this.hitMarker.className = 'hit-marker';
+    this.root.appendChild(this.hitMarker);
 
     this.countdown = document.createElement('div');
     this.countdown.className = 'countdown';
@@ -76,13 +83,11 @@ export class Hud {
 
     // Controls panel is static — write it once.
     this.bottomRight.innerHTML = `
-      <div class="hud-title">Controls</div>
-      <div>Click canvas for pointer lock</div>
-      <div>M1/M2 hands | E pickup | R drop | F fake</div>
-      <div>Shift dash | C/Ctrl slide | Q backflip</div>
-      <div>K reset/vote | J reset balls | U reset match</div>
-      <div>L launch test ball | Tab debug</div>
-      <div>Hold E by a fallen mat to stand it up</div>
+      <div class="hud-title">Quick Start</div>
+      <div><span class="key">M1</span><span class="key">M2</span> hands / catch / throw</div>
+      <div><span class="key">E</span> pickup or stand mat <span class="key">R</span> drop</div>
+      <div><span class="key">Shift</span> dash <span class="key">C</span> slide <span class="key">Q</span> backflip</div>
+      <div><span class="key">F</span> fake <span class="key">K</span> reset <span class="key">Tab</span> debug</div>
     `;
   }
 
@@ -135,6 +140,26 @@ export class Hud {
       this.qteEvent.classList.remove('qte-event--visible');
       this.qteEventTimer = null;
     }, 1100);
+  }
+
+  showHitMarker(variant: 'good' | 'bad' | 'neutral' = 'good'): void {
+    if (this.hitMarkerTimer !== null) {
+      window.clearTimeout(this.hitMarkerTimer);
+      this.hitMarkerTimer = null;
+    }
+
+    this.hitMarker.className = `hit-marker hit-marker--${variant}`;
+    void this.hitMarker.offsetWidth;
+    this.hitMarker.classList.add('hit-marker--visible');
+    this.crosshair.pulse(variant === 'good' ? 'hit' : 'throw');
+    this.hitMarkerTimer = window.setTimeout(() => {
+      this.hitMarker.classList.remove('hit-marker--visible');
+      this.hitMarkerTimer = null;
+    }, 260);
+  }
+
+  pulseCrosshair(kind: 'hit' | 'catch' | 'parry' | 'throw'): void {
+    this.crosshair.pulse(kind);
   }
 
   update(player: PlayerController, rules: MatchRules, ballManager: BallManager, fps: number, frameMs: number): void {
@@ -198,6 +223,12 @@ export class Hud {
     `);
 
     const parryReady = hands.hasTwoBalls() && player.catching.getParryCooldown() <= 0;
+    this.updateCrosshairMode({
+      holding: !!hands.left.ball || !!hands.right.ball,
+      charging: hands.left.charging || hands.right.charging,
+      catching: hands.left.catchStance || hands.right.catchStance,
+      parryReady
+    });
     const leftBallId = hands.left.ball ? `#${hands.left.ball.id}` : '—';
     const rightBallId = hands.right.ball ? `#${hands.right.ball.id}` : '—';
     this.setHtml(this.bottomLeft, `
@@ -288,6 +319,12 @@ export class Hud {
       ? this.staminaBar(local.dash.charges, TUNING.dash.maxCharges, local.dash.charges >= TUNING.dash.maxCharges ? 'full' : `+1 in ${Math.max(0, TUNING.dash.rechargeSeconds - local.dash.rechargeTimerSeconds).toFixed(1)}s`)
       : this.staminaBar(0, TUNING.dash.maxCharges, '-');
     this.updateStaminaWidget(local?.dash.charges ?? 0, TUNING.dash.maxCharges);
+    this.updateCrosshairMode({
+      holding: !!left?.heldBallId || !!right?.heldBallId,
+      charging: left?.mode === 'charging' || right?.mode === 'charging',
+      catching: left?.mode === 'catching' || right?.mode === 'catching',
+      parryReady: !!left?.heldBallId && !!right?.heldBallId
+    });
     this.setHtml(this.bottomLeft, `
       <div class="hud-title">Server State</div>
       <div>M1 L [${escapeHtml(left?.heldBallId ?? '-')}]: ${escapeHtml(left?.mode ?? 'empty')}</div>
@@ -422,7 +459,23 @@ export class Hud {
       window.clearTimeout(this.scoreEventTimer);
       this.scoreEventTimer = null;
     }
+    if (this.qteEventTimer !== null) {
+      window.clearTimeout(this.qteEventTimer);
+      this.qteEventTimer = null;
+    }
+    if (this.hitMarkerTimer !== null) {
+      window.clearTimeout(this.hitMarkerTimer);
+      this.hitMarkerTimer = null;
+    }
     this.root.remove();
+  }
+
+  private updateCrosshairMode(state: { holding: boolean; charging: boolean; catching: boolean; parryReady: boolean }): void {
+    if (state.charging) this.crosshair.setMode('charge');
+    else if (state.catching) this.crosshair.setMode('catch');
+    else if (state.parryReady) this.crosshair.setMode('parry');
+    else if (state.holding) this.crosshair.setMode('hold');
+    else this.crosshair.setMode('idle');
   }
 
   private panel(className: string): HTMLDivElement {

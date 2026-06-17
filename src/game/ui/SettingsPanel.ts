@@ -9,8 +9,12 @@ import { settings, SENSITIVITY_MIN, SENSITIVITY_MAX } from '../config/Settings';
  */
 export class SettingsPanel {
   private readonly root: HTMLDivElement;
-  private readonly slider: HTMLInputElement;
-  private readonly readout: HTMLSpanElement;
+  private readonly sensitivitySlider: HTMLInputElement;
+  private readonly sensitivityReadout: HTMLSpanElement;
+  private readonly sfxSlider: HTMLInputElement;
+  private readonly sfxReadout: HTMLSpanElement;
+  private readonly reducedEffectsToggle: HTMLInputElement;
+  private readonly preventKeySteal = (event: KeyboardEvent): void => event.preventDefault();
 
   constructor(parent: HTMLElement = document.body) {
     this.root = document.createElement('div');
@@ -21,43 +25,82 @@ export class SettingsPanel {
     title.className = 'settings-title';
     title.textContent = 'Settings';
 
-    const label = document.createElement('label');
-    label.className = 'settings-row';
+    const sensitivityLabel = this.row('Sensitivity');
+    this.sensitivityReadout = sensitivityLabel.readout;
+    this.sensitivitySlider = this.range(SENSITIVITY_MIN, SENSITIVITY_MAX, 0.0001, settings.mouseSensitivity);
+    this.sensitivitySlider.addEventListener('input', this.onSensitivityInput);
 
-    const name = document.createElement('span');
-    name.textContent = 'Sensitivity';
+    const sfxLabel = this.row('SFX');
+    this.sfxReadout = sfxLabel.readout;
+    this.sfxSlider = this.range(0, 1, 0.05, settings.sfxVolume);
+    this.sfxSlider.addEventListener('input', this.onSfxInput);
 
-    this.readout = document.createElement('span');
-    this.readout.className = 'settings-value';
+    const effectsLabel = document.createElement('label');
+    effectsLabel.className = 'settings-row settings-row--toggle';
+    const effectsName = document.createElement('span');
+    effectsName.textContent = 'Reduced FX';
+    this.reducedEffectsToggle = document.createElement('input');
+    this.reducedEffectsToggle.type = 'checkbox';
+    this.reducedEffectsToggle.checked = settings.reducedEffects;
+    this.reducedEffectsToggle.addEventListener('input', this.onReducedEffectsInput);
+    this.reducedEffectsToggle.addEventListener('keydown', this.preventKeySteal);
+    effectsLabel.append(effectsName, this.reducedEffectsToggle);
 
-    this.slider = document.createElement('input');
-    this.slider.type = 'range';
-    this.slider.min = String(SENSITIVITY_MIN);
-    this.slider.max = String(SENSITIVITY_MAX);
-    this.slider.step = '0.0001';
-    this.slider.value = String(settings.mouseSensitivity);
-    this.slider.addEventListener('input', this.onInput);
-    // Keep keyboard focus off the slider so arrow keys / space stay with the game.
-    this.slider.addEventListener('keydown', (e) => e.preventDefault());
-
-    label.append(name, this.readout);
-    this.root.append(title, label, this.slider);
+    this.root.append(title, sensitivityLabel.label, this.sensitivitySlider, sfxLabel.label, this.sfxSlider, effectsLabel);
     parent.appendChild(this.root);
 
     this.updateReadout();
   }
 
   dispose(): void {
-    this.slider.removeEventListener('input', this.onInput);
+    this.sensitivitySlider.removeEventListener('input', this.onSensitivityInput);
+    this.sfxSlider.removeEventListener('input', this.onSfxInput);
+    this.reducedEffectsToggle.removeEventListener('input', this.onReducedEffectsInput);
+    this.sensitivitySlider.removeEventListener('keydown', this.preventKeySteal);
+    this.sfxSlider.removeEventListener('keydown', this.preventKeySteal);
+    this.reducedEffectsToggle.removeEventListener('keydown', this.preventKeySteal);
     this.root.remove();
   }
 
-  private onInput = (): void => {
-    settings.setMouseSensitivity(parseFloat(this.slider.value));
+  private onSensitivityInput = (): void => {
+    settings.setMouseSensitivity(parseFloat(this.sensitivitySlider.value));
+    this.updateReadout();
+  };
+
+  private onSfxInput = (): void => {
+    settings.setSfxVolume(parseFloat(this.sfxSlider.value));
+    this.updateReadout();
+  };
+
+  private onReducedEffectsInput = (): void => {
+    settings.setReducedEffects(this.reducedEffectsToggle.checked);
     this.updateReadout();
   };
 
   private updateReadout(): void {
-    this.readout.textContent = (settings.mouseSensitivity * 1000).toFixed(2);
+    this.sensitivityReadout.textContent = (settings.mouseSensitivity * 1000).toFixed(2);
+    this.sfxReadout.textContent = `${Math.round(settings.sfxVolume * 100)}%`;
+  }
+
+  private row(labelText: string): { label: HTMLLabelElement; readout: HTMLSpanElement } {
+    const label = document.createElement('label');
+    label.className = 'settings-row';
+    const name = document.createElement('span');
+    name.textContent = labelText;
+    const readout = document.createElement('span');
+    readout.className = 'settings-value';
+    label.append(name, readout);
+    return { label, readout };
+  }
+
+  private range(min: number, max: number, step: number, value: number): HTMLInputElement {
+    const slider = document.createElement('input');
+    slider.type = 'range';
+    slider.min = String(min);
+    slider.max = String(max);
+    slider.step = String(step);
+    slider.value = String(value);
+    slider.addEventListener('keydown', this.preventKeySteal);
+    return slider;
   }
 }

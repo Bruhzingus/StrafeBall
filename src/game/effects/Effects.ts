@@ -1,12 +1,13 @@
 import { Color3, Mesh, MeshBuilder, Scene, StandardMaterial, Vector3 } from '@babylonjs/core';
 import { SoundManager } from '../audio/SoundManager';
+import { settings } from '../config/Settings';
 
 /**
- * Lightweight, asset-free game feedback: a full-screen vignette flash (DOM) and a single
- * reusable world-space "spark" mesh, plus procedural sounds. Exposed as named gameplay events
+ * Lightweight, asset-free game feedback: a full-screen vignette flash (DOM), a single
+ * reusable world-space spark, one reusable parry ring, plus procedural sounds. Exposed as named gameplay events
  * (playerThrow/onCatch/onParry/onPlayerHit/...) so call sites don't touch audio/DOM directly.
  *
- * Owns one persistent flash element and one spark mesh that are re-triggered and faded out in
+ * Owns persistent flash/spark/ring objects that are re-triggered and faded out in
  * update(), so nothing is allocated per effect.
  */
 export class Effects {
@@ -20,6 +21,11 @@ export class Effects {
   private sparkTime = 0;
   private sparkDuration = 0;
   private readonly sparkBaseSize: number;
+  private readonly ring: Mesh;
+  private readonly ringMaterial: StandardMaterial;
+  private ringTime = 0;
+  private ringDuration = 0;
+  private readonly ringBaseSize: number;
 
   constructor(scene: Scene, private readonly sound: SoundManager, parent: HTMLElement = document.body) {
     this.flashEl = document.createElement('div');
@@ -34,12 +40,25 @@ export class Effects {
     this.spark.isPickable = false;
     this.spark.isVisible = false;
     this.sparkBaseSize = 0.9;
+
+    this.ringMaterial = new StandardMaterial('fx_parry_ring_mat', scene);
+    this.ringMaterial.emissiveColor = new Color3(0.35, 0.7, 1);
+    this.ringMaterial.diffuseColor = new Color3(0.15, 0.45, 1);
+    this.ringMaterial.disableLighting = true;
+    this.ringMaterial.alpha = 0;
+    this.ring = MeshBuilder.CreateTorus('fx_parry_ring', { diameter: 1, thickness: 0.035, tessellation: 32 }, scene);
+    this.ring.material = this.ringMaterial;
+    this.ring.billboardMode = Mesh.BILLBOARDMODE_ALL;
+    this.ring.isPickable = false;
+    this.ring.isVisible = false;
+    this.ringBaseSize = 1.05;
   }
 
   // --- Gameplay events ----------------------------------------------------------------------
 
   playerThrow(): void {
     this.sound.whoosh(1);
+    this.triggerFlash(0.08, 0.045, '255, 207, 46');
   }
 
   botThrow(): void {
@@ -51,13 +70,15 @@ export class Effects {
     this.triggerFlash(0.16, 0.18, '90, 230, 150');
   }
 
-  /** Catch attempts are intentionally silent; only a confirmed catch should sound successful. */
+  /** Catch attempts stay subtle; only a confirmed catch should sound successful. */
   onCatchAttempt(_side: 'left' | 'right'): void {
+    if (!settings.reducedEffects) this.triggerFlash(0.08, 0.055, '120, 180, 255');
   }
 
-  onParry(speed = 18): void {
+  onParry(speed = 18, position?: Vector3): void {
     this.sound.ping(speed, 0.55);
     this.triggerFlash(0.2, 0.26, '120, 180, 255');
+    if (position) this.triggerRing(position, new Color3(0.35, 0.7, 1));
   }
 
   /**
@@ -124,25 +145,37 @@ export class Effects {
       this.sparkMaterial.alpha = t;
       if (this.sparkTime <= 0) this.spark.isVisible = false;
     }
+
+    if (this.ringTime > 0) {
+      this.ringTime = Math.max(0, this.ringTime - dt);
+      const t = this.ringDuration > 0 ? this.ringTime / this.ringDuration : 0;
+      const scale = this.ringBaseSize * (1.6 - t * 0.6);
+      this.ring.scaling.setAll(scale);
+      this.ringMaterial.alpha = t * 0.92;
+      if (this.ringTime <= 0) this.ring.isVisible = false;
+    }
   }
 
   dispose(): void {
     this.flashEl.remove();
     this.spark.dispose();
     this.sparkMaterial.dispose();
+    this.ring.dispose();
+    this.ringMaterial.dispose();
   }
 
   private triggerFlash(duration: number, peak: number, rgb: string): void {
     this.flashDuration = duration;
     this.flashTime = duration;
-    this.flashPeak = peak;
+    this.flashPeak = settings.reducedEffects ? peak * 0.45 : peak;
     // Vignette: transparent center, colored toward the edges — reads as a hit indicator without
     // whiting out the whole view.
     this.flashEl.style.background = `radial-gradient(ellipse at center, rgba(${rgb}, 0) 35%, rgba(${rgb}, 1) 120%)`;
-    this.flashEl.style.opacity = String(peak);
+    this.flashEl.style.opacity = String(this.flashPeak);
   }
 
   private triggerSpark(position: Vector3, color: Color3): void {
+    if (settings.reducedEffects) return;
     this.sparkMaterial.emissiveColor.copyFrom(color);
     this.sparkMaterial.alpha = 1;
     this.spark.position.copyFrom(position);
@@ -150,5 +183,17 @@ export class Effects {
     this.spark.isVisible = true;
     this.sparkDuration = 0.22;
     this.sparkTime = 0.22;
+  }
+
+  private triggerRing(position: Vector3, color: Color3): void {
+    if (settings.reducedEffects) return;
+    this.ringMaterial.emissiveColor.copyFrom(color);
+    this.ringMaterial.diffuseColor.copyFrom(color);
+    this.ringMaterial.alpha = 0.92;
+    this.ring.position.copyFrom(position);
+    this.ring.scaling.setAll(this.ringBaseSize * 0.4);
+    this.ring.isVisible = true;
+    this.ringDuration = 0.24;
+    this.ringTime = 0.24;
   }
 }

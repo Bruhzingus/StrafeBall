@@ -23,6 +23,11 @@ export interface HandState {
   cooldown: number;
   // Throw-animation pulse: set to 1 the frame a throw fires, decays to 0. Drives the arm swing.
   throwAnim: number;
+  // Visual-only polish pulses; these do not influence gameplay authority or throw/catch math.
+  pickupAnim: number;
+  catchAnim: number;
+  catchAttemptAnim: number;
+  parryAnim: number;
   // Fake/cancel pulse: starts from the current windup and eases the hand back to holding.
   fakeAnim: number;
   fakeCharge01: number;
@@ -37,6 +42,10 @@ function makeHand(): HandState {
     catchStance: false,
     cooldown: 0,
     throwAnim: 0,
+    pickupAnim: 0,
+    catchAnim: 0,
+    catchAttemptAnim: 0,
+    parryAnim: 0,
     fakeAnim: 0,
     fakeCharge01: 0
   };
@@ -101,6 +110,10 @@ export class HandController {
     hand.charging = false;
     hand.chargeSeconds = 0;
     hand.throwAnim = 0;
+    hand.pickupAnim = 0;
+    hand.catchAnim = 1;
+    hand.catchAttemptAnim = 0;
+    hand.parryAnim = 0;
     hand.fakeAnim = 0;
     hand.fakeCharge01 = 0;
     hand.cooldown = TUNING.catch.cooldownSeconds;
@@ -155,9 +168,33 @@ export class HandController {
   playThrowAnimation(side: HandSide): void {
     const hand = this.getHand(side);
     hand.throwAnim = 1;
+    hand.pickupAnim = 0;
+    hand.catchAnim = 0;
+    hand.catchAttemptAnim = 0;
+    hand.parryAnim = 0;
     hand.fakeAnim = 0;
     hand.fakeCharge01 = 0;
     if (!hand.ball) hand.visualHolding = false;
+  }
+
+  playCatchAttemptAnimation(side: HandSide): void {
+    const hand = this.getHand(side);
+    if (hand.ball) return;
+    hand.catchAttemptAnim = 1;
+    hand.catchAnim = 0;
+  }
+
+  playCatchSuccessAnimation(side: HandSide): void {
+    const hand = this.getHand(side);
+    hand.catchAnim = 1;
+    hand.catchAttemptAnim = 0;
+  }
+
+  playParryAnimation(): void {
+    this.left.parryAnim = 1;
+    this.right.parryAnim = 1;
+    this.left.catchAttemptAnim = 0;
+    this.right.catchAttemptAnim = 0;
   }
 
   playFakeThrowAnimation(side: HandSide, charge01?: number): void {
@@ -183,6 +220,10 @@ export class HandController {
 
   private tickHandAnimation(hand: HandState, dt: number): void {
     if (hand.throwAnim > 0) hand.throwAnim = Math.max(0, hand.throwAnim - dt / TUNING.arms.throwAnimSeconds);
+    if (hand.pickupAnim > 0) hand.pickupAnim = Math.max(0, hand.pickupAnim - dt / 0.18);
+    if (hand.catchAnim > 0) hand.catchAnim = Math.max(0, hand.catchAnim - dt / 0.16);
+    if (hand.catchAttemptAnim > 0) hand.catchAttemptAnim = Math.max(0, hand.catchAttemptAnim - dt / 0.22);
+    if (hand.parryAnim > 0) hand.parryAnim = Math.max(0, hand.parryAnim - dt / 0.24);
     if (hand.fakeAnim > 0) {
       hand.fakeAnim = Math.max(0, hand.fakeAnim - dt / TUNING.arms.fakeAnimSeconds);
       if (hand.fakeAnim <= 0) hand.fakeCharge01 = 0;
@@ -234,6 +275,10 @@ export class HandController {
     hand.charging = false;
     hand.chargeSeconds = 0;
     hand.throwAnim = 0;
+    hand.pickupAnim = 1;
+    hand.catchAnim = 0;
+    hand.catchAttemptAnim = 0;
+    hand.parryAnim = 0;
     hand.fakeAnim = 0;
     hand.fakeCharge01 = 0;
     hand.cooldown = 0;

@@ -94,6 +94,8 @@ export class CatchController {
       activeUntilMs: this.elapsedMs + GAME_CONSTANTS.combat.catchStartupMs + GAME_CONSTANTS.combat.catchActiveMs
     });
     hand.cooldown = Math.max(hand.cooldown, GAME_CONSTANTS.combat.catchCooldownMs / 1000);
+    this.hands.playCatchAttemptAnimation(side);
+    this.effects.onCatchAttempt(side);
   }
 
   private tryResolveCatchAttempts(dt: number, movement: MovementSnapshot, forward: Vector3): void {
@@ -147,7 +149,8 @@ export class CatchController {
         .add(new Vector3(0, TUNING.parry.deflectUpVelocity, 0));
       ball.state = BallState.Dead;
       this.parryCooldown = TUNING.parry.cooldownSeconds;
-      this.effects.onParry(incomingSpeed);
+      this.hands.playParryAnimation();
+      this.effects.onParry(incomingSpeed, ball.mesh.position);
 
       if (wasSuper) {
         this.hands.dropOneBall(movement.position);

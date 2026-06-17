@@ -25,12 +25,19 @@ import { settings } from '../config/Settings';
 import { MultiplayerClient } from '../network/MultiplayerClient';
 import { MultiplayerOverlay } from '../network/MultiplayerOverlay';
 import { NetworkRenderer } from '../network/NetworkRenderer';
-import type { CatchEvent, ServerSnapshot } from '../../../shared/protocol';
+import type { CatchEvent, HitEvent, HitRevertEvent, ParryEvent, ServerSnapshot } from '../../../shared/protocol';
 import type { DashState, MovementInternalState, PlayerInput, PlayerMovementState, PlayerState, Vec3 } from '../../../shared/types';
 import { stepMovement, facingFromAngles } from '../../../shared/simulation/MovementSim';
 import { grantDashCharge } from '../../../shared/simulation/PlayerSim';
 import { backflipPitchOffset } from '../../../shared/simulation/AimMath';
-import { CLIENT_FIXED_DT, PENDING_INPUT_LIMIT, MAX_ACCUMULATOR_STEPS, PERF_REPORT_INTERVAL_MS } from '../../../shared/netConfig';
+import {
+  CLIENT_FIXED_DT,
+  CLIENT_INPUT_RATE,
+  MAX_ACCUMULATOR_STEPS,
+  PENDING_INPUT_LIMIT,
+  PERF_REPORT_INTERVAL_MS,
+  SNAPSHOT_RATE
+} from '../../../shared/netConfig';
 import { createPlayerCollisionBoxes, type AABB } from '../../../shared/simulation/MapGeometry';
 import { isIllegalHalfCourtPosition } from '../../../shared/simulation/RuleSim';
 import { sweptBallHitsBody } from '../../../shared/simulation/CollisionMath';
@@ -115,6 +122,7 @@ export class ArenaScene {
   // shared net config (must equal the server's fixed dt for reconciliation residual ≈ 0). At the
   // active A_144_144_96 mode this is 1/144; the fixed-step loop below then sends at 144Hz.
   private static readonly NET_FIXED_DT = CLIENT_FIXED_DT;
+  private static readonly RECONCILE_SNAP_THRESHOLD_M = 0.5;
   private netAccumulator = 0;
   private inputSeq = 0;
   private pendingInputs: { seq: number; input: PlayerInput; prev: PlayerInput }[] = [];
@@ -143,10 +151,14 @@ export class ArenaScene {
   private onlineRateLogFrameCount = 0;
   private onlineRateLogInputCount = 0;
   // Separate 5s window for the always-on client [perf] line (mirrors the server PERF_DEBUG report).
+  private onlineModeStartedAtMs = 0;
   private perfReportTimer = 0;
   private perfReportFrameCount = 0;
   private perfReportInputCount = 0;
   private perfReportFrameMsTotal = 0;
+  private perfReportCorrectionCount = 0;
+  private perfReportSnapCount = 0;
+  private perfReportMaxCorrectionM = 0;
   private footstepTimer = 0;
   private squeakCooldown = 0;
   private lastGroundMoveDir: Vec3 = { x: 0, y: 0, z: 1 };
@@ -298,6 +310,7 @@ export class ArenaScene {
       const speed = Math.sqrt(v.x * v.x + v.y * v.y + v.z * v.z);
       ball.makeDead();
       this.effects.onPlayerHit(b, speed);
+      this.hud.showHitMarker('bad');
     }
   }
 
@@ -615,6 +628,7 @@ export class ArenaScene {
     for (const hit of hits) {
       this.player.dash.addChargeFromHit();
       this.effects.onDummyHit(hit.speed);
+      this.hud.showHitMarker('good');
     }
     if (hits.length > 0) {
       this.hud.showScoreEvent(`HIT +${hits.length}`, `${this.rules.scoring.playerHits} / ${TUNING.match.scoreLimit}`, 'good');
@@ -863,6 +877,9 @@ export class ArenaScene {
       const catchEvents = this.multiplayer.drainCatchEvents();
       this.handleOnlineCatchEvents(catchEvents);
       this.networkRenderer.applyCatchEvents(catchEvents);
+      this.handleOnlineParryEvents(this.multiplayer.drainParryEvents(), snapshot);
+      this.handleOnlineHitEvents(this.multiplayer.drainHitEvents());
+      this.handleOnlineHitRevertEvents(this.multiplayer.drainHitRevertEvents());
       this.networkRenderer.update(snapshot, this.multiplayer.localPlayerId, dt, this.predictedMovement);
       this.applyOnlineMats(snapshot);
       this.handleOnlineScoreEvents(snapshot);
@@ -898,28 +915,49 @@ export class ArenaScene {
       const avgFrameMs = this.perfReportFrameCount > 0 ? this.perfReportFrameMsTotal / this.perfReportFrameCount : 0;
       const fps = avgFrameMs > 0 ? 1000 / avgFrameMs : 0;
       const activeMeshes = this.scene.getActiveMeshes ? this.scene.getActiveMeshes().length : this.scene.meshes.length;
+      const roomAgeSec = this.onlineModeStartedAtMs > 0 ? (Date.now() - this.onlineModeStartedAtMs) / 1000 : 0;
       console.log(
-        `[perf] fps=${fps.toFixed(1)} avgFrameMs=${avgFrameMs.toFixed(2)}` +
-        ` snapshots=${snap.receivedPerSecond.toFixed(1)}/s` +
+        `[perf] roomAgeSec=${roomAgeSec.toFixed(1)}` +
+        ` input=${CLIENT_INPUT_RATE}Hz snapshots=${SNAPSHOT_RATE}Hz` +
+        ` fps=${fps.toFixed(1)} avgFrameMs=${avgFrameMs.toFixed(2)}` +
+        ` inputSent=${(this.perfReportInputCount / elapsed).toFixed(1)}/s` +
+        ` snapshotsRecv=${snap.receivedPerSecond.toFixed(1)}/s` +
         ` uniqueSnapshots=${snap.uniqueTicksPerSecond.toFixed(1)}/s` +
         ` renderSnapshots=${this.snapshotRateHz.toFixed(1)}/s` +
         ` snapMs avg=${snap.averageMsBetweenSnapshots.toFixed(1)} max=${snap.maxMsBetweenSnapshots.toFixed(1)}` +
         ` dupSnapshots=${snap.duplicateOrOutOfOrder} staleDropped=${snap.staleDropped}` +
-        ` inputPackets=${(this.perfReportInputCount / elapsed).toFixed(1)}/s` +
         ` pendingInputs=${this.pendingInputs.length}` +
+        ` rawServerLeadError=${this.predictionErrorM.toFixed(3)}m` +
         ` residualAfterReplay=${this.residualAfterReplayM.toFixed(3)}m` +
+        ` corrections=${this.perfReportCorrectionCount} snaps=${this.perfReportSnapCount}` +
         ` oldestSnapshotAge=${render.oldestSnapshotAgeMs.toFixed(1)}ms` +
         ` wsBuffered=${snap.socketBufferedAmount}B` +
         ` remoteUnderruns=${render.bufferUnderrunsPerSec.toFixed(1)}/s` +
+        ` remoteBuffer=${render.remoteInterpolationBufferSize}` +
         ` ballBuffer=${render.ballInterpolationBufferSize}` +
         ` activeMeshes=${activeMeshes}`
       );
+
+      if (isSoakDebugEnabled()) {
+        const heap = readJsHeapStats();
+        console.log(
+          `[soak] roomAgeSec=${roomAgeSec.toFixed(1)}` +
+          ` ackAgeMs=${this.ackAgeMs() ?? -1}` +
+          ` expectedLead=${this.expectedLeadM.toFixed(3)}m` +
+          ` correctionsMax=${this.perfReportMaxCorrectionM.toFixed(3)}m` +
+          ` interp={avgMs=${render.avgSnapshotIntervalMs.toFixed(1)} maxMs=${render.maxSnapshotIntervalMs.toFixed(1)} underruns=${render.bufferUnderrunsPerSec.toFixed(1)}/s overruns=${render.bufferOverrunsPerSec.toFixed(1)}/s}` +
+          ` heap=${heap ?? 'n/a'}`
+        );
+      }
     }
 
     this.perfReportTimer = 0;
     this.perfReportFrameCount = 0;
     this.perfReportInputCount = 0;
     this.perfReportFrameMsTotal = 0;
+    this.perfReportCorrectionCount = 0;
+    this.perfReportSnapCount = 0;
+    this.perfReportMaxCorrectionM = 0;
   }
 
   private updatePredictionDebugMetrics(local: PlayerState | null): void {
@@ -931,10 +969,13 @@ export class ArenaScene {
     }
 
     this.predictionErrorM = distanceVec3(this.predictedMovement.position, local.movement.position);
-    const unacked = this.pendingInputs.filter((entry) => entry.seq > local.lastProcessedInputSeq);
-    this.expectedLeadM = this.predictedMovement.speed * unacked.length * ArenaScene.NET_FIXED_DT;
+    let unackedCount = 0;
+    for (let i = 0; i < this.pendingInputs.length; i += 1) {
+      if (this.pendingInputs[i].seq > local.lastProcessedInputSeq) unackedCount += 1;
+    }
+    this.expectedLeadM = this.predictedMovement.speed * unackedCount * ArenaScene.NET_FIXED_DT;
 
-    const replayed = this.replayUnackedFromServer(local, unacked);
+    const replayed = this.replayUnackedFromServer(local, local.lastProcessedInputSeq);
     this.residualAfterReplayM = replayed
       ? distanceVec3(this.predictedMovement.position, replayed.movement.position)
       : 0;
@@ -942,13 +983,15 @@ export class ArenaScene {
 
   private replayUnackedFromServer(
     local: PlayerState,
-    unacked: { seq: number; input: PlayerInput; prev: PlayerInput }[]
+    lastProcessedInputSeq: number
   ): { movement: PlayerMovementState; internal: MovementInternalState; dash: DashState } | null {
     let movement = cloneMovement(local.movement);
     let internal = { ...local.movementInternal };
     let dash = { ...local.dash };
 
-    for (const entry of unacked) {
+    for (let i = 0; i < this.pendingInputs.length; i += 1) {
+      const entry = this.pendingInputs[i];
+      if (entry.seq <= lastProcessedInputSeq) continue;
       const res = stepMovement(
         movement,
         internal,
@@ -969,6 +1012,15 @@ export class ArenaScene {
 
   /** Adopt the authoritative snapshot, drop acknowledged inputs, then replay the unacked ones. */
   private reconcile(local: PlayerState): void {
+    const correctionMeters = this.predictedMovement
+      ? distanceVec3(this.predictedMovement.position, local.movement.position)
+      : 0;
+    if (correctionMeters > 0.001) {
+      this.perfReportCorrectionCount += 1;
+      this.perfReportMaxCorrectionM = Math.max(this.perfReportMaxCorrectionM, correctionMeters);
+      if (correctionMeters >= ArenaScene.RECONCILE_SNAP_THRESHOLD_M) this.perfReportSnapCount += 1;
+    }
+
     this.predictedMovement = cloneMovement(local.movement);
     this.predictedInternal = { ...local.movementInternal };
     this.predictedDash = { ...local.dash };
@@ -1150,6 +1202,7 @@ export class ArenaScene {
   private enterOnlineMode(): void {
     if (this.onlineModeActive) return;
     this.onlineModeActive = true;
+    this.onlineModeStartedAtMs = Date.now();
     this.resetBackflipQte();
     this.networkYaw = this.player.root.rotation.y;
     this.networkPitch = this.player.camera.rotation.x;
@@ -1177,6 +1230,7 @@ export class ArenaScene {
   private exitOnlineMode(): void {
     if (!this.onlineModeActive) return;
     this.onlineModeActive = false;
+    this.onlineModeStartedAtMs = 0;
     this.resetBackflipQte();
     this.networkRenderer.clear();
     this.onlineCharging.left = false;
@@ -1228,6 +1282,9 @@ export class ArenaScene {
     this.perfReportFrameCount = 0;
     this.perfReportInputCount = 0;
     this.perfReportFrameMsTotal = 0;
+    this.perfReportCorrectionCount = 0;
+    this.perfReportSnapCount = 0;
+    this.perfReportMaxCorrectionM = 0;
     this.snapshotReceiveCount = 0;
     this.snapshotRateTimer = 0;
     this.snapshotRateHz = 0;
@@ -1382,11 +1439,13 @@ export class ArenaScene {
 
     if (localScored) {
       this.effects.onDummyHit();
+      this.hud.showHitMarker('good');
       this.hud.showScoreEvent(`HIT +${delta}`, `${scorerName} ${score} / ${snapshot.room.match.scoreLimit}`, 'good');
       return;
     }
 
     this.effects.onPlayerHit(this.player.camera.globalPosition);
+    this.hud.showHitMarker('bad');
     this.hud.showScoreEvent('HIT TAKEN', `${scorerName} ${score} / ${snapshot.room.match.scoreLimit}`, 'bad');
   }
 
@@ -1506,12 +1565,52 @@ export class ArenaScene {
     for (const event of events) {
       if (event.catcherId !== this.multiplayer.localPlayerId) continue;
       this.effects.onCatch(event.absorbedSpeed);
+      this.player.hands.playCatchSuccessAnimation(event.hand);
+      this.hud.pulseCrosshair('catch');
+      this.hud.showHitMarker('neutral');
       this.player.movement.addCatchRecoil(new Vector3(
         event.incomingVelocity.x,
         event.incomingVelocity.y,
         event.incomingVelocity.z
       ));
       this.recentCatchAttemptBySide[event.hand] = null;
+    }
+  }
+
+  private handleOnlineParryEvents(events: readonly ParryEvent[], snapshot: ServerSnapshot): void {
+    for (const event of events) {
+      const ball = snapshot.room.balls[event.ballId];
+      const position = ball
+        ? new Vector3(ball.position.x, ball.position.y, ball.position.z)
+        : this.player.camera.globalPosition;
+      this.effects.onParry(18, position);
+
+      if (event.deflectorId !== this.multiplayer.localPlayerId) continue;
+      this.player.hands.playParryAnimation();
+      this.hud.pulseCrosshair('parry');
+      this.hud.showHitMarker('neutral');
+    }
+  }
+
+  private handleOnlineHitEvents(events: readonly HitEvent[]): void {
+    for (const event of events) {
+      if (event.throwerId === this.multiplayer.localPlayerId) {
+        this.hud.showHitMarker('good');
+        this.hud.pulseCrosshair('hit');
+      } else if (event.targetId === this.multiplayer.localPlayerId) {
+        this.hud.showHitMarker('bad');
+        this.hud.pulseCrosshair('throw');
+      }
+    }
+  }
+
+  private handleOnlineHitRevertEvents(events: readonly HitRevertEvent[]): void {
+    for (const event of events) {
+      if (event.targetId === this.multiplayer.localPlayerId) {
+        this.hud.showScoreEvent('CATCH SAVE', 'Hit reversed', 'neutral');
+      } else if (event.throwerId === this.multiplayer.localPlayerId) {
+        this.hud.showScoreEvent('HIT DENIED', 'Opponent caught it', 'neutral');
+      }
     }
   }
 
@@ -1628,7 +1727,9 @@ export class ArenaScene {
         this.pendingCatchAttemptId[side] = attemptId;
         this.recentCatchAttemptBySide[side] = { id: attemptId, openedAtMs: Date.now() };
         this.nextCatchAttemptId += 1;
+        this.player.hands.playCatchAttemptAnimation(side);
         this.effects.onCatchAttempt(side);
+        this.hud.pulseCrosshair('catch');
       }
       return;
     }
@@ -1654,6 +1755,7 @@ export class ArenaScene {
       // Play instant local feedback while the server-authoritative throw event follows shortly after.
       this.effects.playerThrow();
       this.player.hands.playThrowAnimation(side);
+      this.hud.pulseCrosshair('throw');
       this.onlineCharging[side] = false;
       this.onlineChargeSeconds[side] = 0;
     }
@@ -1840,6 +1942,27 @@ function isPerfDebugEnabled(): boolean {
   } catch {
     return true;
   }
+}
+
+function isSoakDebugEnabled(): boolean {
+  try {
+    return window.localStorage.getItem('strafeball.debug.soak') === '1';
+  } catch {
+    return false;
+  }
+}
+
+function readJsHeapStats(): string | null {
+  const perf = performance as Performance & {
+    memory?: {
+      usedJSHeapSize: number;
+      totalJSHeapSize: number;
+    };
+  };
+  if (!perf.memory) return null;
+  const usedMb = (perf.memory.usedJSHeapSize / 1048576).toFixed(1);
+  const totalMb = (perf.memory.totalJSHeapSize / 1048576).toFixed(1);
+  return `${usedMb}/${totalMb}MB`;
 }
 
 function neutralNetInput(yawRadians: number, pitchRadians = 0): PlayerInput {

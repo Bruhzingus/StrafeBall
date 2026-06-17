@@ -75,6 +75,7 @@ export class PracticeControlWall {
   private readonly buttonMeshes = new Map<ButtonId, Mesh>();
   private readonly buttonMats = new Map<ButtonId, PBRMaterial>();
   private readonly labelTextures = new Map<ButtonId, DynamicTexture>();
+  private readonly lastLabelState = new Map<ButtonId, string>();
   private readonly ballTouching = new Map<ButtonId, Set<Ball>>();
   private readonly disposables: Array<{ dispose(): void }> = [];
   private readonly meshes: Mesh[] = [];
@@ -198,6 +199,9 @@ export class PracticeControlWall {
       if (!tex) continue;
       const active = (id === 'toggleQuickBot' && this.state.quickThrowBotEnabled) ||
                      (id === 'toggleChargeBot' && this.state.chargeThrowBotEnabled);
+      const stateKey = `${l1}|${l2}|${active ? 1 : 0}`;
+      if (this.lastLabelState.get(id) === stateKey) continue;
+      this.lastLabelState.set(id, stateKey);
       // Match makeTex's 512×200 layout so the redrawn label fills the large button face.
       tex.drawText('', 0, 0, 'bold 1px Arial', '#000', active ? '#0d2a18' : '#0c1a2e', false, false);
       tex.drawText(l1, null, 88, 'bold 56px Arial', active ? '#44ff88' : '#c8d8ff', 'transparent', false, false);

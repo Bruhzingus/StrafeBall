@@ -156,8 +156,25 @@ export class Viewmodel {
     const fakeWindup = hand.fakeCharge01 * easeOutCubic(hand.fakeAnim);
     const windup = Math.max(charge, fakeWindup);
     const throwSwing = easeOutCubic(hand.throwAnim);
-    rig.node.rotation.x = -throwSwing * 1.05 + windup * 0.72 + (holding ? -0.08 : 0.08);
-    rig.node.rotation.z = -sign * windup * 0.18 + sign * throwSwing * 0.12;
+    const catchReach = easeOutCubic(hand.catchAttemptAnim) + (hand.catchStance ? 0.26 : 0);
+    const catchSnap = easeOutCubic(hand.catchAnim);
+    const pickup = easeOutCubic(hand.pickupAnim);
+    const parry = easeOutCubic(hand.parryAnim);
+    rig.node.rotation.x =
+      -throwSwing * 1.05 +
+      windup * 0.72 -
+      catchReach * 0.34 -
+      catchSnap * 0.2 +
+      pickup * 0.16 -
+      parry * 0.32 +
+      (holding ? -0.08 : 0.08);
+    rig.node.rotation.y = sign * (catchReach * 0.08 - parry * 0.28);
+    rig.node.rotation.z = -sign * windup * 0.18 + sign * throwSwing * 0.12 - sign * parry * 0.18;
+    rig.hand.scaling.set(1.08 + catchReach * 0.12 + parry * 0.08, 0.82 - catchReach * 0.08, 1.18 + catchReach * 0.16 + pickup * 0.08);
+    rig.wrist.scaling.set(1 + parry * 0.16, 1, 1 + catchReach * 0.08);
+    for (let i = 0; i < 4 && i < rig.knuckles.length; i += 1) {
+      rig.knuckles[i].position.y = 0.024 + catchReach * 0.018 - parry * 0.006;
+    }
 
     // Snap the held ball into the animated hand.
     if (hand.ball) {
@@ -169,8 +186,12 @@ export class Viewmodel {
   private computeTarget(side: HandSide, sign: number, hand: HandState, holding: boolean): void {
     const throwSwing = easeOutCubic(hand.throwAnim);
     const fakeWindup = hand.fakeCharge01 * easeOutCubic(hand.fakeAnim);
+    const catchReach = Math.min(1, easeOutCubic(hand.catchAttemptAnim) + (hand.catchStance ? 0.42 : 0));
+    const catchSnap = easeOutCubic(hand.catchAnim);
+    const pickup = easeOutCubic(hand.pickupAnim);
+    const parry = easeOutCubic(hand.parryAnim);
 
-    if (!holding && throwSwing <= 0 && fakeWindup <= 0) {
+    if (!holding && throwSwing <= 0 && fakeWindup <= 0 && catchReach <= 0 && catchSnap <= 0 && pickup <= 0 && parry <= 0) {
       this.target.set(sign * TUNING.arms.restSide, TUNING.arms.restDrop, TUNING.arms.restForward);
       return;
     }
@@ -178,9 +199,27 @@ export class Viewmodel {
     const windup = Math.max(charge, fakeWindup);
     const bob = Math.sin(this.time * TUNING.arms.bobSpeed + (side === 'left' ? 0 : Math.PI)) * TUNING.arms.bobAmplitude;
     this.target.set(
-      sign * (TUNING.hands.holdSide + windup * TUNING.arms.windupSide - throwSwing * TUNING.arms.throwCenter),
-      TUNING.hands.holdDrop + bob + windup * TUNING.arms.windupLift - throwSwing * TUNING.arms.throwDrop,
-      TUNING.hands.holdForward - windup * TUNING.arms.windupPull + throwSwing * TUNING.arms.throwReach
+      sign * (
+        TUNING.hands.holdSide +
+        windup * TUNING.arms.windupSide -
+        throwSwing * TUNING.arms.throwCenter -
+        parry * 0.1
+      ),
+      TUNING.hands.holdDrop +
+        bob +
+        windup * TUNING.arms.windupLift -
+        throwSwing * TUNING.arms.throwDrop +
+        catchReach * 0.08 +
+        catchSnap * 0.12 +
+        pickup * 0.18 +
+        parry * 0.14,
+      TUNING.hands.holdForward -
+        windup * TUNING.arms.windupPull +
+        throwSwing * TUNING.arms.throwReach +
+        catchReach * 0.42 -
+        catchSnap * 0.16 +
+        pickup * 0.1 +
+        parry * 0.24
     );
   }
 }

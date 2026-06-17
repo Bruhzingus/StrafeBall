@@ -3,7 +3,10 @@ import type {
   CatchEvent,
   CatchParryRequest,
   DropRequest,
+  HitEvent,
+  HitRevertEvent,
   InputCommand,
+  ParryEvent,
   PickupRequest,
   ResetRequest,
   ServerMessage,
@@ -19,6 +22,9 @@ export type ConnectionStatus = 'offline' | 'connecting' | 'connected' | 'error';
 /** Shared empty array returned by drainThrowEvents when nothing is queued (no per-call allocation). */
 const EMPTY_THROW_EVENTS: readonly ThrowEvent[] = [];
 const EMPTY_CATCH_EVENTS: readonly CatchEvent[] = [];
+const EMPTY_PARRY_EVENTS: readonly ParryEvent[] = [];
+const EMPTY_HIT_EVENTS: readonly HitEvent[] = [];
+const EMPTY_HIT_REVERT_EVENTS: readonly HitRevertEvent[] = [];
 
 export class MultiplayerClient {
   public readonly serverUrl: string;
@@ -32,6 +38,9 @@ export class MultiplayerClient {
   // deterministic live-ball visual prediction. Bounded: cleared on drain and on leave/reset.
   private throwEventQueue: ThrowEvent[] = [];
   private catchEventQueue: CatchEvent[] = [];
+  private parryEventQueue: ParryEvent[] = [];
+  private hitEventQueue: HitEvent[] = [];
+  private hitRevertEventQueue: HitRevertEvent[] = [];
   public snapshotDebug = {
     receivedPerSecond: 0,
     uniqueTicksPerSecond: 0,
@@ -94,6 +103,9 @@ export class MultiplayerClient {
     this.latestSnapshot = null;
     this.throwEventQueue = [];
     this.catchEventQueue = [];
+    this.parryEventQueue = [];
+    this.hitEventQueue = [];
+    this.hitRevertEventQueue = [];
     this.resetSnapshotDebug();
   }
 
@@ -150,6 +162,27 @@ export class MultiplayerClient {
     if (this.catchEventQueue.length === 0) return EMPTY_CATCH_EVENTS;
     const events = this.catchEventQueue;
     this.catchEventQueue = [];
+    return events;
+  }
+
+  drainParryEvents(): readonly ParryEvent[] {
+    if (this.parryEventQueue.length === 0) return EMPTY_PARRY_EVENTS;
+    const events = this.parryEventQueue;
+    this.parryEventQueue = [];
+    return events;
+  }
+
+  drainHitEvents(): readonly HitEvent[] {
+    if (this.hitEventQueue.length === 0) return EMPTY_HIT_EVENTS;
+    const events = this.hitEventQueue;
+    this.hitEventQueue = [];
+    return events;
+  }
+
+  drainHitRevertEvents(): readonly HitRevertEvent[] {
+    if (this.hitRevertEventQueue.length === 0) return EMPTY_HIT_REVERT_EVENTS;
+    const events = this.hitRevertEventQueue;
+    this.hitRevertEventQueue = [];
     return events;
   }
 
@@ -212,6 +245,24 @@ export class MultiplayerClient {
       this.catchEventQueue.push(message);
     });
 
+    room.onMessage('parry-event', (message: ParryEvent) => {
+      if (this.room !== room) return;
+      if (this.parryEventQueue.length >= 16) this.parryEventQueue.shift();
+      this.parryEventQueue.push(message);
+    });
+
+    room.onMessage('hit-event', (message: HitEvent) => {
+      if (this.room !== room) return;
+      if (this.hitEventQueue.length >= 16) this.hitEventQueue.shift();
+      this.hitEventQueue.push(message);
+    });
+
+    room.onMessage('hit-revert-event', (message: HitRevertEvent) => {
+      if (this.room !== room) return;
+      if (this.hitRevertEventQueue.length >= 16) this.hitRevertEventQueue.shift();
+      this.hitRevertEventQueue.push(message);
+    });
+
     room.onMessage('joined-room', (message: Extract<ServerMessage, { type: 'joined-room' }>) => {
       if (this.room !== room) return;
       this.localPlayerId = message.playerId;
@@ -249,6 +300,9 @@ export class MultiplayerClient {
       this.latestSnapshot = null;
       this.throwEventQueue = [];
       this.catchEventQueue = [];
+      this.parryEventQueue = [];
+      this.hitEventQueue = [];
+      this.hitRevertEventQueue = [];
       this.resetSnapshotDebug();
     });
   }

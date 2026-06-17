@@ -172,6 +172,7 @@ export const HUGE_ERROR_SNAP_METERS = 5;
 export interface DebugFlags {
   NET_DEBUG: boolean;
   PERF_DEBUG: boolean;
+  SOAK_DEBUG: boolean;
   BALL_DEBUG: boolean;
   PICKUP_DEBUG: boolean;
   THROW_DEBUG: boolean;
@@ -191,6 +192,7 @@ export interface DebugFlags {
 export const DEBUG_DEFAULTS: DebugFlags = {
   NET_DEBUG: false,
   PERF_DEBUG: true,
+  SOAK_DEBUG: false,
   BALL_DEBUG: false,
   PICKUP_DEBUG: false,
   THROW_DEBUG: false,
@@ -213,6 +215,7 @@ export function resolveServerDebugFlags(env: Record<string, string | undefined> 
     NET_DEBUG: all || on(env.NET_DEBUG),
     // PERF_DEBUG defaults ON (cheap throttled report); allow PERF_DEBUG=0 to silence it explicitly.
     PERF_DEBUG: (all || on(env.PERF_DEBUG) || DEBUG_DEFAULTS.PERF_DEBUG) && !off(env.PERF_DEBUG),
+    SOAK_DEBUG: all || on(env.SOAK_DEBUG),
     BALL_DEBUG: all || on(env.BALL_DEBUG),
     PICKUP_DEBUG: all || on(env.PICKUP_DEBUG),
     THROW_DEBUG: all || on(env.THROW_DEBUG),

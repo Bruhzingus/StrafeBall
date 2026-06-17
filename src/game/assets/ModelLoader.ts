@@ -60,6 +60,7 @@ export class ModelLoader {
     }
 
     mesh.material = this.material(key);
+    mesh.isPickable = false;
     this.applyTransform(mesh, options);
     return mesh;
   }
