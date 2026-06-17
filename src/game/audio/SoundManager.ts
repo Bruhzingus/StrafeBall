@@ -9,6 +9,17 @@
  */
 import { settings } from '../config/Settings';
 
+interface AudioPoint {
+  x: number;
+  y: number;
+  z: number;
+}
+
+interface LegacyAudioListener {
+  setPosition?: (x: number, y: number, z: number) => void;
+  setOrientation?: (x: number, y: number, z: number, xUp: number, yUp: number, zUp: number) => void;
+}
+
 export class SoundManager {
   private ctx: AudioContext | null = null;
   private master: GainNode | null = null;
@@ -33,17 +44,43 @@ export class SoundManager {
   }
 
   ping(speed: number, gain = 1): void {
+    this.pingTo(speed, gain);
+  }
+
+  pingAt(speed: number, position: AudioPoint, listenerPosition: AudioPoint, listenerForward?: AudioPoint, listenerUp?: AudioPoint, gain = 1): void {
+    const ctx = this.ensureContext();
+    if (!ctx || !this.master) return;
+
+    this.setListenerPose(listenerPosition, listenerForward, listenerUp);
+
+    const panner = ctx.createPanner();
+    // Equal-power panning is cheaper than HRTF and enough for readable bounce direction.
+    panner.panningModel = 'equalpower';
+    panner.distanceModel = 'inverse';
+    panner.refDistance = 4;
+    panner.maxDistance = 42;
+    panner.rolloffFactor = 1.15;
+    setAudioParam(panner.positionX, position.x, ctx.currentTime);
+    setAudioParam(panner.positionY, position.y, ctx.currentTime);
+    setAudioParam(panner.positionZ, position.z, ctx.currentTime);
+    panner.connect(this.master);
+
+    this.pingTo(speed, gain, panner);
+    window.setTimeout(() => panner.disconnect(), 700);
+  }
+
+  private pingTo(speed: number, gain = 1, destination?: AudioNode): void {
     const speedScale = Math.max(0.55, Math.min(1.15, 0.58 + speed / 52));
     const baseFreq = 460 * speedScale;
 
     // Core rubber impact: lower and less glassy than before.
-    this.tone('sine', baseFreq * 1.2, baseFreq * 0.82, 0.12, 1.05 * gain);
+    this.tone('sine', baseFreq * 1.2, baseFreq * 0.82, 0.12, 1.05 * gain, destination);
     // Hollow body resonance: the characteristic gym-ball "donk".
-    this.tone('triangle', baseFreq * 0.72, baseFreq * 0.34, 0.32, 0.52 * gain);
+    this.tone('triangle', baseFreq * 0.72, baseFreq * 0.34, 0.32, 0.52 * gain, destination);
     // Echoing hollow tail: long decaying low resonance.
-    this.tone('sine', baseFreq * 0.34, baseFreq * 0.28, 0.52, 0.32 * gain);
+    this.tone('sine', baseFreq * 0.34, baseFreq * 0.28, 0.52, 0.32 * gain, destination);
     // Texture: short noise burst for the initial slap
-    this.noiseBurst(0.07, 0.24 * gain, 650 * speedScale);
+    this.noiseBurst(0.07, 0.24 * gain, 650 * speedScale, destination);
   }
 
   footstep(speed = 1): void {
@@ -198,9 +235,10 @@ export class SoundManager {
 
   // A single oscillator with a quick attack and exponential decay. freqEnd != freqStart sweeps
   // the pitch over the duration. exponentialRamp can't target 0, so we decay to near-silence.
-  private tone(type: OscillatorType, freqStart: number, freqEnd: number, duration: number, peak: number): void {
+  private tone(type: OscillatorType, freqStart: number, freqEnd: number, duration: number, peak: number, destination?: AudioNode): void {
     const ctx = this.ensureContext();
-    if (!ctx || !this.master) return;
+    const output = destination ?? this.master;
+    if (!ctx || !output) return;
     const now = ctx.currentTime;
     const osc = ctx.createOscillator();
     const gain = ctx.createGain();
@@ -210,15 +248,16 @@ export class SoundManager {
     gain.gain.setValueAtTime(0.0001, now);
     gain.gain.exponentialRampToValueAtTime(peak, now + 0.006);
     gain.gain.exponentialRampToValueAtTime(0.0001, now + duration);
-    osc.connect(gain).connect(this.master);
+    osc.connect(gain).connect(output);
     osc.start(now);
     osc.stop(now + duration + 0.02);
   }
 
   // A burst of low-passed white noise — the "air"/impact texture layered under the tones.
-  private noiseBurst(duration: number, peak: number, filterFreq: number): void {
+  private noiseBurst(duration: number, peak: number, filterFreq: number, destination?: AudioNode): void {
     const ctx = this.ensureContext();
-    if (!ctx || !this.master) return;
+    const output = destination ?? this.master;
+    if (!ctx || !output) return;
     const now = ctx.currentTime;
     const frames = Math.max(1, Math.floor(ctx.sampleRate * duration));
     const buffer = ctx.createBuffer(1, frames, ctx.sampleRate);
@@ -233,8 +272,37 @@ export class SoundManager {
     const gain = ctx.createGain();
     gain.gain.setValueAtTime(peak, now);
     gain.gain.exponentialRampToValueAtTime(0.0001, now + duration);
-    src.connect(filter).connect(gain).connect(this.master);
+    src.connect(filter).connect(gain).connect(output);
     src.start(now);
     src.stop(now + duration);
   }
+
+  private setListenerPose(position: AudioPoint, forward?: AudioPoint, up?: AudioPoint): void {
+    if (!this.ctx) return;
+    const listener = this.ctx.listener;
+    const now = this.ctx.currentTime;
+
+    if ('positionX' in listener) {
+      setAudioParam(listener.positionX, position.x, now);
+      setAudioParam(listener.positionY, position.y, now);
+      setAudioParam(listener.positionZ, position.z, now);
+      if (forward && up && 'forwardX' in listener) {
+        setAudioParam(listener.forwardX, forward.x, now);
+        setAudioParam(listener.forwardY, forward.y, now);
+        setAudioParam(listener.forwardZ, forward.z, now);
+        setAudioParam(listener.upX, up.x, now);
+        setAudioParam(listener.upY, up.y, now);
+        setAudioParam(listener.upZ, up.z, now);
+      }
+      return;
+    }
+
+    const legacy = listener as unknown as LegacyAudioListener;
+    legacy.setPosition?.(position.x, position.y, position.z);
+    if (forward && up) legacy.setOrientation?.(forward.x, forward.y, forward.z, up.x, up.y, up.z);
+  }
+}
+
+function setAudioParam(param: AudioParam, value: number, time: number): void {
+  param.setValueAtTime(value, time);
 }

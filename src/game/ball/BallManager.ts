@@ -15,7 +15,7 @@ export class BallManager {
   constructor(
     private readonly loader: ModelLoader,
     private readonly collision: CollisionWorld,
-    private readonly onBallImpact?: (speed: number) => void
+    private readonly onBallImpact?: (speed: number, bounceCount: number, position: Vector3) => void
   ) {}
 
   spawnCenterLineBalls(): void {

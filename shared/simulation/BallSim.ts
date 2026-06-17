@@ -66,9 +66,9 @@ export function isBallPickupStateEligible(
 /**
  * Whether a ball is in a CATCHABLE in-flight state. A 'live' or 'deflected' ball is always catchable.
  * A ball that has bounced (off floor/back-wall/bleachers) is marked 'dead' — it can no longer score
- * a hit — but while it is still fast and has only bounced once it is a real ball in the air, so it
- * stays catchable (you can pick a bounced ball out of the air). A settled/slow/multi-bounce ball is
- * not. This does NOT affect scoring: a dead ball never scores regardless (see canScorePlayerHit).
+ * a hit — but while it is still moving fast enough to be airborne/playable, it stays catchable no
+ * matter how many times it has bounced. This does NOT affect scoring: a dead ball never scores
+ * regardless (see canScorePlayerHit).
  */
 export function isBallCatchableInFlight(
   ball: Pick<BallState, 'phase' | 'velocity' | 'bounceCount'>,
@@ -77,7 +77,6 @@ export function isBallCatchableInFlight(
   if (ball.phase === 'live' || ball.phase === 'deflected') return true;
   if (ball.phase !== 'dead') return false;
   return (
-    ball.bounceCount <= constants.catch.bouncedCatchMaxBounces &&
     length(ball.velocity) >= constants.catch.bouncedCatchMinSpeed
   );
 }

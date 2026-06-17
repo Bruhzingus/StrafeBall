@@ -10,7 +10,7 @@
  *
  * To switch test configs, change ACTIVE_NET_MODE below (or set VITE_NET_MODE / NET_MODE env).
  * The supported modes:
- *   A. 144 sim / 144 input / 96 snapshots  (target — sharp input with lighter snapshot cost)
+ *   A. 144 sim / 144 input / 128 snapshots (target — sharp input with lighter snapshot cost)
  *   B. 72 sim / 72 input / 60 snapshots  (sharper input with 60Hz snapshots)
  *   C. 60 sim / 60 input / 60 snapshots  (legacy full-rate fallback)
  *   D. 60 sim / 60 input / 30 snapshots  (bandwidth fallback)
@@ -90,14 +90,14 @@ function resolveProcessMode(): NetMode {
   return DEFAULT_NET_MODE;
 }
 
-/** Compiled default mode. StrafeBall 1.3: 144 sim / 144 input / 96 snapshots. */
-export const DEFAULT_NET_MODE: NetMode = 'A_144_144_96';
+/** Compiled default mode. StrafeBall 1.3: 144 sim / 144 input / 128 snapshots. */
+export const DEFAULT_NET_MODE: NetMode = 'A_144_144_128';
 
 /**
  * Active mode resolved at module load from process.env (server) or the compiled default (client).
  * The client may narrow this further at startup via applyClientNetMode(); since rates are read
  * eagerly below, a client override should be applied before the first room connection. In practice
- * the compiled default A_72_72_60 is what ships, so no client override is required for the playtest.
+ * the compiled default A_144_144_128 is what ships, so no client override is required for the playtest.
  */
 export const ACTIVE_NET_MODE: NetMode = resolveProcessMode();
 

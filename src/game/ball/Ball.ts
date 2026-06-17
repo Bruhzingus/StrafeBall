@@ -24,7 +24,11 @@ export class Ball {
 
   // The mesh is the ball's VISUAL, created by the ModelLoader and injected here. Gameplay
   // (state machine, physics, collision radius) is independent of it.
-  constructor(public readonly mesh: Mesh, position: Vector3, private readonly onImpact?: (speed: number) => void) {
+  constructor(
+    public readonly mesh: Mesh,
+    position: Vector3,
+    private readonly onImpact?: (speed: number, bounceCount: number, position: Vector3) => void
+  ) {
     this.mesh.position.copyFrom(position);
   }
 
@@ -187,8 +191,8 @@ export class Ball {
       return;
     }
 
-    this.emitImpact(normalImpactSpeed);
     this.bounceCount += 1;
+    this.emitImpact(normalImpactSpeed);
     if (this.bounceCount > 1) {
       this.makeDead();
     }
@@ -199,7 +203,7 @@ export class Ball {
     const reboundSpeed = normalImpactSpeed * TUNING.ball.bounceRestitution;
     const reboundHeight = (reboundSpeed * reboundSpeed) / (2 * TUNING.ball.gravity);
     if (reboundHeight < TUNING.ball.impactSoundMinBounceHeight) return;
-    this.onImpact(Math.max(4, normalImpactSpeed));
+    this.onImpact(Math.max(4, normalImpactSpeed), this.bounceCount, this.mesh.position);
   }
 }
 

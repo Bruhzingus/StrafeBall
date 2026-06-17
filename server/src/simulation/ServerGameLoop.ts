@@ -1103,7 +1103,7 @@ export class ServerGameLoop {
   }
 
   /** Record an interaction-relevant ball's position so a rewound click can reconstruct its swept
-   * path. Covers live/deflected balls AND freshly-bounced (catchable) dead balls. */
+   * path. Covers live/deflected balls and moving bounced balls that remain catchable. */
   private recordBallSample(ball: BallState): void {
     // Keep history while the ball is catchable in flight OR a hit on it is still inside the catch-undo
     // grace — a lag-comp catch reclaim needs the ball's PRE-hit (live) samples even after the present
@@ -1248,14 +1248,14 @@ export class ServerGameLoop {
    * sample. On success the ball becomes held (velocity 0) in that hand and the attempt is consumed.
    */
   private tryCatchAttempts(ball: BallState, segPrev: Vec3, segCurr: Vec3, _dt: number, tickStartMs: number): BallState | null {
-    // A live/deflected ball OR a freshly-bounced (now 'dead') ball that's still fast can be caught.
+    // A live/deflected ball OR a bounced dead ball that's still fast can be caught.
     // (A bounced ball has its owner cleared, so it's catchable by either player.)
     if (!isBallCatchableInFlight(ball)) return null;
     const now = this.stepNowMs;
 
     for (const defenderId in this.state.players) {
-      // Can't catch your own still-owned ball (live throw); a bounced/dead ball has no owner.
-      if (ball.ownerId !== null && defenderId === ball.ownerId) continue;
+      // Can't catch your own direct throw before it touches anything. Once it bounces, rebounds are playable.
+      if (ball.ownerId !== null && defenderId === ball.ownerId && ball.bounceCount <= 0) continue;
       const defender = this.state.players[defenderId];
 
       for (const hand of ['left', 'right'] as const) {
@@ -1468,9 +1468,9 @@ export class ServerGameLoop {
     if (!handEmpty) return 'no-empty-hand';
     const dashing = sample ? sample.dashing : defender.movement.dashingThisFrame;
     if (dashing) return 'dashing';
-    // Catchable = a live/deflected ball OR a freshly-bounced (still-fast, ≤1 bounce) dead ball.
+    // Catchable = a live/deflected ball OR a moving bounced dead ball.
     if (!isBallCatchableInFlight(ball)) return 'ball-not-live';
-    if (ball.ownerId !== null && ball.ownerId === defender.id) return 'owner-invalid';
+    if (ball.ownerId !== null && ball.ownerId === defender.id && ball.bounceCount <= 0) return 'owner-invalid';
     const origin = sample ? sample.eye : add(defender.movement.position, vec3(0, GAME_CONSTANTS.player.eyeHeight, 0));
     const forward = sample ? sample.forward : defender.movement.facing;
     const closest = closestPointOnSegment(segPrev, segCurr, origin);

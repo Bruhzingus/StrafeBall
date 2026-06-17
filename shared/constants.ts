@@ -126,8 +126,8 @@ export const GAME_CONSTANTS = {
     // succeeds if a live ball's swept path crosses the hand's catch zone during that window. This
     // field is retained at 0 for any legacy callers but no longer gates the attempt model.
     trackingSeconds: 0,
-    // Extended again +1 ft (0.305 m) from 3.31 → 3.62 m so fast throws can be caught with more reach.
-    rangeMeters: 3.62,
+    // Reduced 1 ft (0.305 m) from 3.62 -> 3.315 m for a tighter catch reach.
+    rangeMeters: 3.315,
     cooldownSeconds: 0.45,
     catchBoostSpeed: 3,
     catchBoostDuration: 0.25,
@@ -136,10 +136,9 @@ export const GAME_CONSTANTS = {
     momentumRecoilMinDistance: 0.035,
     momentumRecoilMaxDistance: 0.14,
     momentumRecoilDuration: 0.2,
-    // A live ball that bounces off the floor/back wall/bleachers becomes 'dead' (it can no longer
-    // SCORE a hit), but it's still a fast ball in the air you should be able to catch. Allow catching
-    // a dead ball that has bounced at most this many times and is still moving above this speed.
-    bouncedCatchMaxBounces: 1,
+    // A bounced/dead ball can still be caught while it is moving in flight. Keep this effectively
+    // unlimited so wall/floor/cover rebounds remain playable instead of turning into dead visuals.
+    bouncedCatchMaxBounces: Number.MAX_SAFE_INTEGER,
     bouncedCatchMinSpeed: 3.0
   },
 

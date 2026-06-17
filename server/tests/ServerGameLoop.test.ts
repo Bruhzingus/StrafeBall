@@ -850,6 +850,51 @@ describe('ServerGameLoop', () => {
       expect(loop.state.match.scoreByTeamId.blue).toBe(0);
     });
 
+    it('can catch your own live ball after it has bounced off a wall', () => {
+      const loop = defenderFacingIncoming();
+      loop.state.balls.ball_0 = {
+        ...loop.state.balls.ball_0,
+        phase: 'live',
+        ownerKind: 'player',
+        ownerId: 'b',
+        heldByPlayerId: null,
+        heldHand: null,
+        bounceCount: 1,
+        position: vec3(0, eye, -2),
+        velocity: vec3(0, 0, 8),
+        throwId: 1
+      };
+
+      loop.handleInput('b', { lookYawRadians: Math.PI, leftCatchAttemptId: 1, sequence: 2 }, 2);
+      loop.step();
+
+      const ball = loop.state.balls.ball_0;
+      expect(ball.phase).toBe('held');
+      expect(ball.heldByPlayerId).toBe('b');
+      expect(loop.state.players.b.hands.left.heldBallId).toBe('ball_0');
+    });
+
+    it('does not catch your own direct unbounced throw', () => {
+      const loop = defenderFacingIncoming();
+      loop.state.balls.ball_0 = {
+        ...loop.state.balls.ball_0,
+        phase: 'live',
+        ownerKind: 'player',
+        ownerId: 'b',
+        heldByPlayerId: null,
+        heldHand: null,
+        bounceCount: 0,
+        position: vec3(0, eye, -2),
+        velocity: vec3(0, 0, 8),
+        throwId: 1
+      };
+
+      loop.handleInput('b', { lookYawRadians: Math.PI, leftCatchAttemptId: 1, sequence: 2 }, 2);
+      loop.step();
+
+      expect(loop.state.balls.ball_0.heldByPlayerId).not.toBe('b');
+    });
+
     it('CAN catch a ball that has bounced once (dead but still fast, in the air)', () => {
       const loop = defenderFacingIncoming();
       // A live ball turns 'dead' on its first floor/cover bounce (it can no longer
@@ -875,7 +920,7 @@ describe('ServerGameLoop', () => {
       expect(loop.state.match.scoreByTeamId.blue).toBe(0);
     });
 
-    it('does NOT catch a settled/slow dead ball, or one that has bounced more than once', () => {
+    it('does NOT catch a settled/slow dead ball, but does catch fast multi-bounce balls', () => {
       // Slow dead ball → not catchable in the air (treat as on the ground; pick it up instead).
       const slow = defenderFacingIncoming();
       slow.state.balls.ball_0 = {
@@ -887,7 +932,7 @@ describe('ServerGameLoop', () => {
       slow.step();
       expect(slow.state.balls.ball_0.heldByPlayerId).not.toBe('b');
 
-      // Fast but multi-bounce → not catchable (only a fresh single bounce stays catchable).
+      // Fast multi-bounce balls are still playable in the air.
       const multi = defenderFacingIncoming();
       multi.state.balls.ball_0 = {
         ...multi.state.balls.ball_0,
@@ -896,7 +941,7 @@ describe('ServerGameLoop', () => {
       };
       multi.handleInput('b', { lookYawRadians: Math.PI, leftCatchAttemptId: 1, sequence: 2 }, 2);
       multi.step();
-      expect(multi.state.balls.ball_0.heldByPlayerId).not.toBe('b');
+      expect(multi.state.balls.ball_0.heldByPlayerId).toBe('b');
     });
 
     it('a bounced ball that reaches a player without being caught does NOT score (dead cannot hit)', () => {

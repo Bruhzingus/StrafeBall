@@ -44,6 +44,9 @@ import { sweptBallHitsBody } from '../../../shared/simulation/CollisionMath';
 import { playerBallHitRadius, playerHitCapsule } from '../../../shared/simulation/PlayerHitbox';
 
 type PendingOnlineScoreEvent = { teamId: string; score: number; delta: number; dueAtMs: number };
+const BALL_BOUNCE_GAIN = 0.42 * 0.7;
+const BALL_BOUNCE_DECAY = 0.72;
+const AUDIO_UP = { x: 0, y: 1, z: 0 };
 
 export class ArenaScene {
   public readonly scene: Scene;
@@ -102,6 +105,7 @@ export class ArenaScene {
   private lastOnlineScoreByTeamId: Record<string, number> = {};
   private pendingOnlineScoreEvents: PendingOnlineScoreEvent[] = [];
   private lastOnlineWinnerTeamId: string | null = null;
+  private readonly lastOnlineBallBounceCount = new Map<string, number>();
   private lastResetSerial = -1;
   private lastResetVoteKey = '';
 
@@ -120,7 +124,7 @@ export class ArenaScene {
   private static readonly MAT_RESTORE_HOLD_SECONDS = 0.6;
   // Fixed timestep for input send + prediction + reconciliation replay. Driven entirely by the
   // shared net config (must equal the server's fixed dt for reconciliation residual ≈ 0). At the
-  // active A_144_144_96 mode this is 1/144; the fixed-step loop below then sends at 144Hz.
+  // active 144/144 mode this is 1/144; the fixed-step loop below then sends at 144Hz.
   private static readonly NET_FIXED_DT = CLIENT_FIXED_DT;
   private static readonly RECONCILE_SNAP_THRESHOLD_M = 0.5;
   private netAccumulator = 0;
@@ -195,7 +199,9 @@ export class ArenaScene {
     this.targetDummies = this.scene.meshes.filter((mesh): mesh is Mesh => mesh instanceof Mesh && !!mesh.metadata?.targetDummy);
 
     // Balls collide with bleachers only (mats are immune to balls — they pass through).
-    this.ballManager = new BallManager(loader, this.gym.ballCollision, (speed) => this.sound.ping(speed, 0.42));
+    this.ballManager = new BallManager(loader, this.gym.ballCollision, (speed, bounceCount, position) => {
+      this.playBallBounceSound(speed, bounceCount, position);
+    });
     this.ballManager.spawnCenterLineBalls();
 
     this.sound = new SoundManager();
@@ -871,6 +877,7 @@ export class ArenaScene {
     // the interpolation-delayed network position.
     if (snapshot) {
       this.handleOnlineResetEvents(snapshot);
+      this.handleOnlineBallBounceAudio(snapshot);
       // Seed live-ball visual prediction from any throw events that arrived this frame BEFORE the
       // renderer update so a freshly-thrown ball predicts from its very first rendered frame.
       this.networkRenderer.applyThrowEvents(this.multiplayer.drainThrowEvents());
@@ -1223,6 +1230,7 @@ export class ArenaScene {
     this.lastOnlineScoreByTeamId = {};
     this.pendingOnlineScoreEvents = [];
     this.lastOnlineWinnerTeamId = null;
+    this.lastOnlineBallBounceCount.clear();
     this.lastResetSerial = -1;
     this.lastResetVoteKey = '';
   }
@@ -1241,6 +1249,7 @@ export class ArenaScene {
     this.lastOnlineScoreByTeamId = {};
     this.pendingOnlineScoreEvents = [];
     this.lastOnlineWinnerTeamId = null;
+    this.lastOnlineBallBounceCount.clear();
     this.lastResetSerial = -1;
     this.lastResetVoteKey = '';
     this.player.hands.clearHands();
@@ -1383,6 +1392,24 @@ export class ArenaScene {
     this.lastOnlineWinnerTeamId = winnerTeamId;
   }
 
+  private handleOnlineBallBounceAudio(snapshot: ServerSnapshot): void {
+    for (const ballId in snapshot.room.balls) {
+      const ball = snapshot.room.balls[ballId];
+      const previous = this.lastOnlineBallBounceCount.get(ballId);
+      this.lastOnlineBallBounceCount.set(ballId, ball.bounceCount);
+      if (previous === undefined || ball.bounceCount <= previous) continue;
+
+      const speed = Math.max(4, Math.hypot(ball.velocity.x, ball.velocity.y, ball.velocity.z));
+      this.playBallBounceSound(speed, ball.bounceCount, ball.position);
+    }
+  }
+
+  private playBallBounceSound(speed: number, bounceCount: number, position: { x: number; y: number; z: number }): void {
+    const gain = BALL_BOUNCE_GAIN * Math.pow(BALL_BOUNCE_DECAY, Math.max(0, bounceCount - 1));
+    const forward = this.player.camera.getForwardRay().direction;
+    this.sound.pingAt(speed, position, this.player.camera.globalPosition, forward, AUDIO_UP, gain);
+  }
+
   /**
    * Reset detection — runs at the TOP of the frame, before reconcile/prediction. Keyed on
    * resetSerial so a room reset is caught exactly once regardless of tick values. On a fresh
@@ -1409,6 +1436,7 @@ export class ArenaScene {
     this.lastOnlineScoreByTeamId = {};
     this.pendingOnlineScoreEvents = [];
     this.lastOnlineWinnerTeamId = null;
+    this.lastOnlineBallBounceCount.clear();
     this.hud.showScoreEvent('RESET', 'Room reset', 'neutral');
   }
 

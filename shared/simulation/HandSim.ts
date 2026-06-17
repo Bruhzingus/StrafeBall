@@ -235,7 +235,8 @@ export function catchBallInHand(
   const hand = hands[side];
   if (hand.heldBallId) return { ok: false, reason: 'hand-full' };
   if (hand.cooldownSeconds > 0) return { ok: false, reason: 'catch-cooldown' };
-  if (ball.phase !== 'live') return { ok: false, reason: 'not-live' };
+  if (!isBallCatchableInFlight(ball, constants)) return { ok: false, reason: 'not-live' };
+  if (ball.ownerId !== null && ball.ownerId === player.id && ball.bounceCount <= 0) return { ok: false, reason: 'not-live' };
   if (!isInCatchCone(origin, aimForward, ball, constants)) return { ok: false, reason: 'outside-catch-cone' };
 
   return {
@@ -289,7 +290,7 @@ export function sweptCatchFailReason(
   if ((request.handCooldownSeconds ?? 0) > 0) return 'catch-cooldown';
   if (request.dashing) return 'dashing';
   if (!isBallCatchableInFlight(request.ball, constants)) return 'ball-not-live';
-  if (request.ball.ownerId !== null && request.ball.ownerId === request.defenderPlayerId) return 'owner-invalid';
+  if (request.ball.ownerId !== null && request.ball.ownerId === request.defenderPlayerId && request.ball.bounceCount <= 0) return 'owner-invalid';
 
   const closest = closestPointOnSegment(request.segmentStart, request.segmentEnd, request.origin);
   if (distance(request.origin, closest) > constants.catch.rangeMeters) return 'out-of-range';
