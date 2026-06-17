@@ -890,12 +890,13 @@ export class NetworkRenderer {
     const renderPlayer = this.renderPlayerScratch;
     const m = this.renderPlayerMovement;
     const pm = player.movement;
+    const eliminated = player.combatState === 'eliminated';
     m.yawRadians = pm.yawRadians;
     m.pitchRadians = pm.pitchRadians;
     m.facing = pm.facing;
     m.velocity = pm.velocity;
     m.grounded = pm.grounded;
-    m.crouching = pm.crouching;
+    m.crouching = eliminated || pm.crouching;
     m.sliding = pm.sliding;
     m.wallRunning = pm.wallRunning;
     m.dashingThisFrame = pm.dashingThisFrame;
@@ -910,7 +911,7 @@ export class NetworkRenderer {
     const rightV = scratchRight.set(look.right.x, look.right.y, look.right.z);
     const flatForward = flatForwardToRef(forwardV, scratchFlatForward);
     const hitbox = playerHitCapsule(renderPlayer);
-    const bodyHeight = hitbox.height;
+    const bodyHeight = eliminated ? Math.min(hitbox.height, TUNING.player.height * 0.56) : hitbox.height;
     const bodyScale = bodyHeight / TUNING.player.height;
     const eyeHeight = playerAimOriginHeight(player.movement);
     const headY = Math.max(0.62, Math.min(bodyHeight - 0.2, eyeHeight - 0.04));
@@ -1165,6 +1166,10 @@ function createScratchPlayer(movement: PlayerState['movement']): PlayerState {
     },
     dash: { charges: 0, rechargeTimerSeconds: 0, cooldownSeconds: 0 },
     score: 0,
+    lives: TUNING.match.playerLives,
+    combatState: 'alive',
+    eliminatedAtMs: null,
+    lastPlayerBuffUntilMs: null,
     connected: true,
     reconnectDeadlineAtMs: null,
     lastProcessedInputSeq: 0

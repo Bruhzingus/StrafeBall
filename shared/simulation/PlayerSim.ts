@@ -43,6 +43,10 @@ export function createPlayerState(
     hands: createHands(),
     dash: createDashState(),
     score: 0,
+    lives: overrides.lives ?? GAME_CONSTANTS.match.playerLives,
+    combatState: overrides.combatState ?? 'alive',
+    eliminatedAtMs: overrides.eliminatedAtMs ?? null,
+    lastPlayerBuffUntilMs: overrides.lastPlayerBuffUntilMs ?? null,
     connected: true,
     reconnectDeadlineAtMs: overrides.reconnectDeadlineAtMs ?? null,
     lastProcessedInputSeq: 0
@@ -140,10 +144,12 @@ export function grantDashCharge(dash: DashState, constants: GameConstants = GAME
 export function calculateDashVelocity(
   currentVelocity: Vec3,
   dashDirection: Vec3,
-  constants: GameConstants = GAME_CONSTANTS
+  constants: GameConstants = GAME_CONSTANTS,
+  movementScale = 1
 ): Vec3 {
   const direction = normalize(dashDirection);
   if (lengthSquared(direction) <= 0) return cloneVec3(currentVelocity);
+  const impulseScale = sanitizeMovementScale(movementScale);
 
   const currentHorizontal = vec3(currentVelocity.x, 0, currentVelocity.z);
   const currentSpeed = length(currentHorizontal);
@@ -151,14 +157,14 @@ export function calculateDashVelocity(
   const sameDirection = dot(normalizedCurrent, direction) >= constants.dash.similarDirectionDot;
 
   if (sameDirection) {
-    return add(currentVelocity, scale(direction, constants.dash.impulse));
+    return add(currentVelocity, scale(direction, constants.dash.impulse * impulseScale));
   }
 
   // Against momentum: retain more of the opposing velocity AND weaken the dash impulse, so a
   // reverse-dash can't snap you to full speed the other way instantly.
   return add(
     scale(currentVelocity, constants.dash.oppositeDirectionMomentumPenalty),
-    scale(direction, constants.dash.impulse * constants.dash.oppositeDirectionImpulseScale)
+    scale(direction, constants.dash.impulse * constants.dash.oppositeDirectionImpulseScale * impulseScale)
   );
 }
 
@@ -166,7 +172,8 @@ export function tryDash(
   dash: DashState,
   currentVelocity: Vec3,
   dashDirection: Vec3,
-  constants: GameConstants = GAME_CONSTANTS
+  constants: GameConstants = GAME_CONSTANTS,
+  movementScale = 1
 ): { ok: true; dash: DashState; velocity: Vec3 } | { ok: false } {
   if (lengthSquared(dashDirection) <= 0.001) return { ok: false };
   const nextDash = spendDashCharge(dash, constants);
@@ -174,23 +181,29 @@ export function tryDash(
   return {
     ok: true,
     dash: nextDash,
-    velocity: calculateDashVelocity(currentVelocity, dashDirection, constants)
+    velocity: calculateDashVelocity(currentVelocity, dashDirection, constants, movementScale)
   };
 }
 
 export function tryUpwardDash(
   dash: DashState,
   currentVelocity: Vec3,
-  constants: GameConstants = GAME_CONSTANTS
+  constants: GameConstants = GAME_CONSTANTS,
+  movementScale = 1
 ): { ok: true; dash: DashState; velocity: Vec3 } | { ok: false } {
   const nextDash = spendDashCharge(dash, constants);
   if (!nextDash) return { ok: false };
+  const impulseScale = sanitizeMovementScale(movementScale);
   return {
     ok: true,
     dash: nextDash,
     velocity: {
       ...currentVelocity,
-      y: Math.max(currentVelocity.y, constants.dash.upwardImpulse)
+      y: Math.max(currentVelocity.y, constants.dash.upwardImpulse * impulseScale)
     }
   };
+}
+
+function sanitizeMovementScale(scaleValue: number): number {
+  return Number.isFinite(scaleValue) ? Math.max(0.05, scaleValue) : 1;
 }

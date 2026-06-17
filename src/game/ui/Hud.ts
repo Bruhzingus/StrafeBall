@@ -14,6 +14,7 @@ export class Hud {
   private readonly topCenter: HTMLDivElement;
   private readonly bottomLeft: HTMLDivElement;
   private readonly bottomRight: HTMLDivElement;
+  private readonly hearts: HTMLDivElement;
   private readonly scoreEvent: HTMLDivElement;
   private readonly qteEvent: HTMLDivElement;
   private readonly hitMarker: HTMLDivElement;
@@ -45,6 +46,8 @@ export class Hud {
     this.topCenter = this.panel('hud-top-center');
     this.bottomLeft = this.panel('hud-bottom-left');
     this.bottomRight = this.panel('hud-bottom-right');
+    this.hearts = this.panel('hud-hearts');
+    this.hearts.style.display = 'none';
     this.scoreEvent = document.createElement('div');
     this.scoreEvent.className = 'score-event';
     this.root.appendChild(this.scoreEvent);
@@ -166,6 +169,7 @@ export class Hud {
   update(player: PlayerController, rules: MatchRules, ballManager: BallManager, fps: number, frameMs: number): void {
     // No countdown in offline practice.
     this.updateCountdown('playing', 0);
+    this.hearts.style.display = 'none';
     this.updateBoundaryClock(rules.boundary.elapsed, rules.boundary.noBoundaries);
     const movement = player.lastMovementSnapshot;
     const hands = player.hands;
@@ -260,6 +264,9 @@ export class Hud {
       predictionErrorM: number;
       residualAfterReplayM: number;
       expectedLeadM: number;
+      desyncAverageM: number;
+      desyncRecentMaxM: number;
+      desyncPeakM: number;
       ackAgeMs: number | null;
       predictionActive: boolean;
     }
@@ -273,8 +280,9 @@ export class Hud {
     const opponentTeamId = room.match.teamIds.find((teamId) => teamId !== localTeamId) ?? room.match.teamIds[1] ?? 'red';
     const localTeam = players.filter((player) => player.teamId === localTeamId);
     const opponentTeam = players.filter((player) => player.teamId === opponentTeamId);
-    const localScore = room.match.scoreByTeamId[localTeamId] ?? 0;
-    const opponentScore = room.match.scoreByTeamId[opponentTeamId] ?? 0;
+    const isTeamElimination = room.match.mode === '2v2';
+    const localScore = isTeamElimination ? teamLives(localTeam) : room.match.scoreByTeamId[localTeamId] ?? 0;
+    const opponentScore = isTeamElimination ? teamLives(opponentTeam) : room.match.scoreByTeamId[opponentTeamId] ?? 0;
     const rosterLabel = formatHudRoster(localTeam, room.match.playersPerTeam, localPlayerId);
     const opponentLabel = formatHudRoster(opponentTeam, room.match.playersPerTeam, localPlayerId);
     const roomStatus = onlineRoomStatus(room);
@@ -285,17 +293,22 @@ export class Hud {
       : '';
 
     if (this.debugVisible) {
-      const residualColor = netDebug.residualAfterReplayM > 0.15 ? 'hud-bad' : netDebug.residualAfterReplayM > 0.05 ? 'hud-warn' : 'hud-good';
+      const desyncColor = netDebug.residualAfterReplayM > 0.15 || netDebug.desyncRecentMaxM > 0.25
+        ? 'hud-bad'
+        : netDebug.residualAfterReplayM > 0.05 || netDebug.desyncRecentMaxM > 0.1
+          ? 'hud-warn'
+          : 'hud-good';
       this.setHtml(this.topLeft, `
         <div class="hud-title">Online <span style="font-weight:400;opacity:0.45;font-size:10px">[Tab]</span></div>
         <div>FPS <span class="hud-good">${Math.round(fps)}</span> &middot; ${frameMs.toFixed(1)} ms</div>
-        <div>Room: <span class="hud-good">${escapeHtml(room.id)}</span> · Players: ${Object.keys(room.players).length}/2</div>
+        <div>Room: <span class="hud-good">${escapeHtml(room.id)}</span> · Players: ${Object.keys(room.players).length}/${room.match.maxPlayers}</div>
         <div>Ping: <span class="hud-good">${pingMs === null ? '-' : `${pingMs} ms`}</span> · Tick: ${snapshot.tick}</div>
         <div>Snap recv/render: <span class="hud-good">${netDebug.snapshotRateHz.toFixed(1)}</span> / ${netDebug.renderSnapshotRateHz.toFixed(1)} Hz | Ack age: ${netDebug.ackAgeMs === null ? '-' : `${netDebug.ackAgeMs} ms`}</div>
         <div>Tick rate: <span class="hud-good">${SERVER_TICK_RATE} Hz</span> &middot; Snap ${SNAPSHOT_RATE} Hz</div>
         <div>Raw lead: ${netDebug.predictionErrorM.toFixed(3)} m / ~${netDebug.expectedLeadM.toFixed(3)} m</div>
+        <div>Desync: <span class="${desyncColor}">${netDebug.residualAfterReplayM.toFixed(3)} m</span> avg ${netDebug.desyncAverageM.toFixed(3)} max ${netDebug.desyncRecentMaxM.toFixed(3)} peak ${netDebug.desyncPeakM.toFixed(3)}</div>
         <div>Input seq: ${netDebug.inputSeq} · Acked: ${netDebug.lastAckedSeq} · Pending: ${netDebug.pendingInputs}</div>
-        <div>Residual: <span class="${residualColor}">${netDebug.residualAfterReplayM.toFixed(3)} m</span> · Active: ${netDebug.predictionActive ? '<span class="hud-good">yes</span>' : '<span class="hud-bad">no</span>'}</div>
+        <div>Prediction: ${netDebug.predictionActive ? '<span class="hud-good">active</span>' : '<span class="hud-bad">inactive</span>'} · Desync = after replay</div>
         <div>Interp remote: <span class="hud-good">yes (exp-20)</span> · Balls: <span class="hud-good">yes (exp-30/15)</span></div>
         ${local ? `<div>Speed: <span class="hud-good">${local.movement.speed.toFixed(1)}</span> m/s · Vel: ${local.movement.velocity.x.toFixed(1)}, ${local.movement.velocity.y.toFixed(1)}, ${local.movement.velocity.z.toFixed(1)}</div>` : ''}
       `);
@@ -304,6 +317,7 @@ export class Hud {
     const winner = room.match.winnerTeamId
       ? `<div class="scoreboard-msg hud-good">Winner: ${escapeHtml(room.match.winnerTeamId === localTeamId ? 'Your Team' : 'Opponents')}</div>`
       : '';
+    this.updateLivesPanel(room, localPlayerId);
 
     this.setHtml(this.topCenter, `
       <div class="scoreboard-title">${room.match.mode === '2v2' ? 'Team Match' : 'Private Duel'}</div>
@@ -314,7 +328,7 @@ export class Hud {
         <span class="scoreboard-num scoreboard-num--red">${opponentScore}</span>
         <span class="scoreboard-team">${room.match.mode === '2v2' ? 'OPP TEAM' : 'OPP'}</span>
       </div>
-      <div class="scoreboard-sub">First to ${room.match.scoreLimit} &middot; ${players.length}/${room.match.maxPlayers} players</div>
+      <div class="scoreboard-sub">${isTeamElimination ? 'Team lives &middot; eliminate enemy team' : `First to ${room.match.scoreLimit}`} &middot; ${players.length}/${room.match.maxPlayers} players</div>
       <div class="scoreboard-msg">You: ${rosterLabel}</div>
       <div class="scoreboard-msg">Opp: ${opponentLabel}</div>
       ${roomStatus ? `<div class="scoreboard-msg hud-warn">${escapeHtml(roomStatus)}</div>` : ''}
@@ -501,6 +515,52 @@ export class Hud {
     else this.crosshair.setMode('idle');
   }
 
+  private updateLivesPanel(room: RoomState, localPlayerId: string): void {
+    if (room.match.mode !== '2v2') {
+      this.hearts.style.display = 'none';
+      return;
+    }
+    const local = room.players[localPlayerId];
+    if (!local) {
+      this.hearts.style.display = 'none';
+      return;
+    }
+
+    this.hearts.style.display = '';
+    const teammates = Object.values(room.players)
+      .filter((player) => player.teamId === local.teamId && player.id !== localPlayerId)
+      .sort(compareHudPlayers);
+    const opponents = Object.values(room.players)
+      .filter((player) => player.teamId !== local.teamId)
+      .sort(compareHudPlayers);
+    const buffSeconds = Math.max(0, Math.ceil(((local.lastPlayerBuffUntilMs ?? 0) - Date.now()) / 1000));
+    const buffLine = buffSeconds > 0
+      ? `<div class="hearts-warning">Last player alive, finish the mission <span>${buffSeconds}s</span></div>`
+      : '';
+
+    this.setHtml(this.hearts, `
+      <div class="hud-title">Lives</div>
+      <div class="hearts-row hearts-row--local">
+        <span>You</span>
+        <span>${formatHearts(local.lives, TUNING.match.playerLives)}</span>
+      </div>
+      ${teammates.map((player) => `
+        <div class="hearts-row">
+          <span>${escapeHtml(player.name)}${player.combatState === 'eliminated' ? ' <em>OUT</em>' : player.connected === false ? ' <em>DC</em>' : ''}</span>
+          <span>${formatHearts(player.lives, TUNING.match.playerLives)}</span>
+        </div>
+      `).join('')}
+      ${opponents.length > 0 ? `<div class="hearts-label">Opponents</div>` : ''}
+      ${opponents.map((player) => `
+        <div class="hearts-row hearts-row--opp">
+          <span>${escapeHtml(player.name)}${player.combatState === 'eliminated' ? ' <em>OUT</em>' : player.connected === false ? ' <em>DC</em>' : ''}</span>
+          <span>${formatHearts(player.lives, TUNING.match.playerLives)}</span>
+        </div>
+      `).join('')}
+      ${buffLine}
+    `);
+  }
+
   private panel(className: string): HTMLDivElement {
     const el = document.createElement('div');
     el.className = `hud-panel ${className}`;
@@ -576,6 +636,21 @@ export class Hud {
   }
 }
 
+function teamLives(players: PlayerState[]): number {
+  let total = 0;
+  for (const player of players) total += Math.max(0, Math.min(TUNING.match.playerLives, player.lives));
+  return total;
+}
+
+function formatHearts(lives: number, maxLives: number): string {
+  const filled = Math.max(0, Math.min(maxLives, Math.ceil(lives)));
+  let html = '<span class="hearts">';
+  for (let i = 0; i < maxLives; i += 1) {
+    html += `<span class="heart ${i < filled ? 'heart--full' : 'heart--empty'}">&hearts;</span>`;
+  }
+  return `${html}</span>`;
+}
+
 function escapeHtml(value: string): string {
   return value
     .replace(/&/g, '&amp;')
@@ -592,7 +667,10 @@ function compareHudPlayers(a: PlayerState, b: PlayerState): number {
 }
 
 function formatHudRoster(players: PlayerState[], playersPerTeam: number, localPlayerId: string): string {
-  const names = players.map((player) => escapeHtml(player.id === localPlayerId ? `${player.name} (You)` : player.name));
+  const names = players.map((player) => {
+    const suffix = player.id === localPlayerId ? ' (You)' : player.combatState === 'eliminated' ? ' (OUT)' : player.connected === false ? ' (DC)' : '';
+    return escapeHtml(`${player.name}${suffix}`);
+  });
   while (names.length < playersPerTeam) names.push('Open');
   return names.join(' / ');
 }

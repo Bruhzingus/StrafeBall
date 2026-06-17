@@ -123,6 +123,7 @@ export class ArenaScene {
   // Client prediction collision set. Mirrors the server's player collision (bleachers + standing
   // mats); rebuilt from snapshot mat state when a mat is knocked over so prediction stays in sync.
   private netCollisionBoxes: AABB[] = createPlayerCollisionBoxes();
+  private readonly netCollisionScratch: AABB[] = [];
   // Set of mat ids currently reflected in netCollisionBoxes — avoids rebuilding every frame.
   private readonly knockedNetMatIds = new Set<string>();
   // Offline practice: hold-E progress (seconds) toward standing the nearest knocked-over mat back
@@ -134,6 +135,7 @@ export class ArenaScene {
   // active 144/144 mode this is 1/144; the fixed-step loop below then sends at 144Hz.
   private static readonly NET_FIXED_DT = CLIENT_FIXED_DT;
   private static readonly RECONCILE_SNAP_THRESHOLD_M = 0.5;
+  private static readonly DESYNC_TRACKER_SECONDS = 5;
   private netAccumulator = 0;
   private inputSeq = 0;
   private pendingInputs: { seq: number; input: PlayerInput; prev: PlayerInput }[] = [];
@@ -151,6 +153,9 @@ export class ArenaScene {
   private predictionErrorM = 0;
   private residualAfterReplayM = 0;
   private expectedLeadM = 0;
+  private desyncSmoothedM = 0;
+  private desyncRecentMaxM = 0;
+  private desyncPeakM = 0;
   private lastAckedSeq = 0;
   private lastAckedInputClientTimeMs = 0;
   private lastAckReceiveMs = 0;
@@ -261,6 +266,9 @@ export class ArenaScene {
             predictionErrorM: this.predictionErrorM,
             residualAfterReplayM: this.residualAfterReplayM,
             expectedLeadM: this.expectedLeadM,
+            desyncAverageM: this.desyncSmoothedM,
+            desyncRecentMaxM: this.desyncRecentMaxM,
+            desyncPeakM: this.desyncPeakM,
             ackAgeMs: this.ackAgeMs(),
             predictionActive: this.predictedMovement !== null,
           }
@@ -727,7 +735,7 @@ export class ArenaScene {
 
     // Hand edges are folded into the fixed input stream. Process them before building packets so
     // catch ids and throw releases ride the same ordered tick as crouch/look/charge state.
-    if (local && !this.countdownActive && !qteActive) this.sendOnlineHandActions(dt, local);
+    if (local && !this.countdownActive && !qteActive && local.combatState !== 'eliminated') this.sendOnlineHandActions(dt, local);
     this.syncOnlineViewmodelHands(local);
 
     // Mouse look + viewmodel only — physics and hand sim are server-authoritative.
@@ -757,6 +765,7 @@ export class ArenaScene {
       this.snapshotRateTimer = 0;
     }
     this.updatePredictionDebugMetrics(local);
+    this.updateDesyncTracker(dt);
 
     // Initialise prediction from the first authoritative player state we receive.
     if (local && !this.predictedMovement) {
@@ -791,15 +800,20 @@ export class ArenaScene {
 
       const res = stepMovement(
         this.predictedMovement, this.predictedInternal!, this.predictedDash!,
-        input, prev, ArenaScene.NET_FIXED_DT, this.netCollisionBoxes,
-        this.deriveCatchStance(local, input)
+        input, prev, ArenaScene.NET_FIXED_DT, this.predictionCollisionBoxes(),
+        this.deriveCatchStance(local, input),
+        undefined,
+        this.deriveOnlineMovementScale(local)
       );
       this.predictedMovement = res.movement;
       this.predictedInternal = res.internal;
       this.predictedDash = res.dash;
 
       this.pendingInputs.push({ seq: this.inputSeq, input, prev });
-      if (this.pendingInputs.length > PENDING_INPUT_LIMIT) this.pendingInputs.shift();
+      if (this.pendingInputs.length > PENDING_INPUT_LIMIT) {
+        const dropped = this.pendingInputs.shift();
+        if (dropped) this.sentInputClientTimeBySeq.delete(dropped.seq);
+      }
 
       // Clear latches after the packet is built; the immutable input object carries the edges.
       this.latchJumpPressed = false;
@@ -848,6 +862,7 @@ export class ArenaScene {
       }
 
       this.sentInputClientTimeBySeq.set(input.sequence, input.clientTimeMs);
+      this.pruneSentInputClientTimes();
       this.multiplayer.sendInput(input);
       this.onlineRateLogInputCount += 1;
       this.perfReportInputCount += 1;
@@ -956,6 +971,9 @@ export class ArenaScene {
         ` pendingInputs=${this.pendingInputs.length}` +
         ` rawServerLeadError=${this.predictionErrorM.toFixed(3)}m` +
         ` residualAfterReplay=${this.residualAfterReplayM.toFixed(3)}m` +
+        ` desyncAvg=${this.desyncSmoothedM.toFixed(3)}m` +
+        ` desyncRecentMax=${this.desyncRecentMaxM.toFixed(3)}m` +
+        ` desyncPeak=${this.desyncPeakM.toFixed(3)}m` +
         ` corrections=${this.perfReportCorrectionCount} snaps=${this.perfReportSnapCount}` +
         ` oldestSnapshotAge=${render.oldestSnapshotAgeMs.toFixed(1)}ms` +
         ` wsBuffered=${snap.socketBufferedAmount}B` +
@@ -1008,6 +1026,15 @@ export class ArenaScene {
       : 0;
   }
 
+  private updateDesyncTracker(dt: number): void {
+    const current = this.residualAfterReplayM;
+    const seconds = ArenaScene.DESYNC_TRACKER_SECONDS;
+    const alpha = 1 - Math.exp(-Math.max(0, dt) / seconds);
+    this.desyncSmoothedM += (current - this.desyncSmoothedM) * alpha;
+    this.desyncRecentMaxM = Math.max(current, this.desyncRecentMaxM * (1 - alpha));
+    this.desyncPeakM = Math.max(this.desyncPeakM, current);
+  }
+
   private replayUnackedFromServer(
     local: PlayerState,
     lastProcessedInputSeq: number
@@ -1026,8 +1053,10 @@ export class ArenaScene {
         entry.input,
         entry.prev,
         ArenaScene.NET_FIXED_DT,
-        this.netCollisionBoxes,
-        this.deriveCatchStance(local, entry.input)
+        this.predictionCollisionBoxes(),
+        this.deriveCatchStance(local, entry.input),
+        undefined,
+        this.deriveOnlineMovementScale(local)
       );
       movement = res.movement;
       internal = res.internal;
@@ -1075,8 +1104,10 @@ export class ArenaScene {
         entry.input,
         entry.prev,
         ArenaScene.NET_FIXED_DT,
-        this.netCollisionBoxes,
-        this.deriveCatchStance(local, entry.input)
+        this.predictionCollisionBoxes(),
+        this.deriveCatchStance(local, entry.input),
+        undefined,
+        this.deriveOnlineMovementScale(local)
       );
       this.predictedMovement = res.movement;
       this.predictedInternal = res.internal;
@@ -1089,6 +1120,55 @@ export class ArenaScene {
     const leftEmpty = !hands?.left.heldBallId;
     const rightEmpty = !hands?.right.heldBallId;
     return (leftEmpty && input.leftHandHeld) || (rightEmpty && input.rightHandHeld);
+  }
+
+  private deriveOnlineMovementScale(local: PlayerState | null): number {
+    if (!local || local.combatState === 'eliminated') return 1;
+    const snapshot = this.multiplayer.latestSnapshot;
+    if (snapshot?.room.match.mode !== '2v2') return 1;
+    return (local.lastPlayerBuffUntilMs ?? 0) > Date.now()
+      ? TUNING.match.lastPlayerBuffMultiplier
+      : 1;
+  }
+
+  private isLocalOnlineEliminated(): boolean {
+    const snapshot = this.multiplayer.latestSnapshot;
+    const local = snapshot?.room.players[this.multiplayer.localPlayerId];
+    return local?.combatState === 'eliminated';
+  }
+
+  private predictionCollisionBoxes(): AABB[] {
+    const snapshot = this.multiplayer.latestSnapshot;
+    if (!snapshot || !hasEliminatedPlayers(snapshot)) return this.netCollisionBoxes;
+
+    this.netCollisionScratch.length = 0;
+    for (const box of this.netCollisionBoxes) this.netCollisionScratch.push(box);
+    for (const player of Object.values(snapshot.room.players)) {
+      if (player.id === this.multiplayer.localPlayerId) continue;
+      if (player.combatState !== 'eliminated') continue;
+      const pos = player.movement.position;
+      const radius = TUNING.player.radius * 0.95;
+      const height = TUNING.player.height * TUNING.player.crouchHeightMultiplier;
+      this.netCollisionScratch.push({
+        minX: pos.x - radius,
+        maxX: pos.x + radius,
+        minY: pos.y,
+        maxY: pos.y + height,
+        minZ: pos.z - radius,
+        maxZ: pos.z + radius,
+        id: `eliminated_${player.id}`
+      });
+    }
+    return this.netCollisionScratch;
+  }
+
+  private pruneSentInputClientTimes(): void {
+    const maxEntries = PENDING_INPUT_LIMIT * 2;
+    while (this.sentInputClientTimeBySeq.size > maxEntries) {
+      const oldest = this.sentInputClientTimeBySeq.keys().next().value;
+      if (oldest === undefined) break;
+      this.sentInputClientTimeBySeq.delete(oldest);
+    }
   }
 
   private applyPredicted(movement: PlayerMovementState, internal: MovementInternalState): void {
@@ -1114,26 +1194,25 @@ export class ArenaScene {
     this.player.movement.sliding = movement.sliding;
     this.player.movement.wallRunning = movement.wallRunning;
     this.player.movement.dashingThisFrame = movement.dashingThisFrame;
-    this.player.lastMovementSnapshot = {
-      position: new Vector3(p.x, p.y, p.z),
-      velocity: new Vector3(v.x, v.y, v.z),
-      grounded: movement.grounded,
-      sliding: movement.sliding,
-      crouching: movement.crouching,
-      wallRunning: movement.wallRunning,
-      wallNormal: new Vector3(internal.lastWallNormalX, 0, internal.lastWallNormalZ),
-      dashingThisFrame: movement.dashingThisFrame,
-      speed: movement.speed,
-      bhopGraceTimer: internal.jumpGraceTimer,
-      wallRunTimer: internal.wallRunTimer,
-      frictionMode: !movement.grounded
-        ? 'air'
-        : internal.dashActiveTimer > 0 && !movement.sliding
-          ? 'dashSuppressed'
-          : movement.sliding
-            ? 'slide'
-            : 'normal'
-    };
+    const snap = this.player.lastMovementSnapshot;
+    snap.position.set(p.x, p.y, p.z);
+    snap.velocity.set(v.x, v.y, v.z);
+    snap.grounded = movement.grounded;
+    snap.sliding = movement.sliding;
+    snap.crouching = movement.crouching;
+    snap.wallRunning = movement.wallRunning;
+    snap.wallNormal.set(internal.lastWallNormalX, 0, internal.lastWallNormalZ);
+    snap.dashingThisFrame = movement.dashingThisFrame;
+    snap.speed = movement.speed;
+    snap.bhopGraceTimer = internal.jumpGraceTimer;
+    snap.wallRunTimer = internal.wallRunTimer;
+    snap.frictionMode = !movement.grounded
+      ? 'air'
+      : internal.dashActiveTimer > 0 && !movement.sliding
+        ? 'dashSuppressed'
+        : movement.sliding
+          ? 'slide'
+          : 'normal';
     this.player.camera.getViewMatrix(true);
   }
 
@@ -1318,6 +1397,11 @@ export class ArenaScene {
     this.snapshotRateTimer = 0;
     this.snapshotRateHz = 0;
     this.predictionErrorM = 0;
+    this.residualAfterReplayM = 0;
+    this.expectedLeadM = 0;
+    this.desyncSmoothedM = 0;
+    this.desyncRecentMaxM = 0;
+    this.desyncPeakM = 0;
     this.lastSeenSnapshotTick = -1;
     this.latchJumpPressed = false;
     this.latchDashPressed = false;
@@ -1340,8 +1424,12 @@ export class ArenaScene {
    */
   private updateOnlineScoreboards(snapshot: ServerSnapshot): void {
     const match = snapshot.room.match;
-    const blue = match.scoreByTeamId.blue ?? 0;
-    const red = match.scoreByTeamId.red ?? 0;
+    const blue = match.mode === '2v2'
+      ? teamLivesFor(snapshot, 'blue')
+      : match.scoreByTeamId.blue ?? 0;
+    const red = match.mode === '2v2'
+      ? teamLivesFor(snapshot, 'red')
+      : match.scoreByTeamId.red ?? 0;
     let label = '';
     if (match.status === 'countdown') label = String(Math.max(1, Math.ceil(match.countdownSeconds)));
     else if (match.winnerTeamId) label = `${match.winnerTeamId.toUpperCase()} WINS`;
@@ -1408,6 +1496,13 @@ export class ArenaScene {
     const winnerTeamId = snapshot.room.match.winnerTeamId;
     if (winnerTeamId && winnerTeamId !== this.lastOnlineWinnerTeamId) {
       this.effects.onMatchWin();
+      const local = snapshot.room.players[this.multiplayer.localPlayerId];
+      const localWon = local?.teamId === winnerTeamId;
+      this.hud.showScoreEvent(
+        localWon ? 'VICTORY' : 'DEFEAT',
+        `${winnerTeamId.toUpperCase()} team wins`,
+        localWon ? 'good' : 'bad'
+      );
     }
     this.lastOnlineWinnerTeamId = winnerTeamId;
   }
@@ -1533,7 +1628,7 @@ export class ArenaScene {
     // During the pre-round countdown the player is frozen to look-only: send a neutral input that
     // carries just the fresh yaw/pitch (and sequence/time), so movement/combat are inert but the
     // seq stream + reconciliation keep advancing. The server also pins the player at spawn.
-    if (this.countdownActive) {
+    if (this.countdownActive || this.isLocalOnlineEliminated()) {
       const frozen = neutralNetInput(this.networkYaw, this.networkPitch);
       frozen.sequence = this.inputSeq;
       frozen.clientTimeMs = Date.now();
@@ -1659,9 +1754,17 @@ export class ArenaScene {
       if (event.throwerId === this.multiplayer.localPlayerId) {
         this.hud.showHitMarker('good');
         this.hud.pulseCrosshair('hit');
+        if (snapshot.room.match.mode === '2v2') {
+          const target = snapshot.room.players[event.targetId];
+          this.hud.showScoreEvent('HIT', `${target?.name ?? 'Opponent'} ${target?.lives ?? '-'} / ${TUNING.match.playerLives} lives`, 'good');
+        }
       } else if (event.targetId === this.multiplayer.localPlayerId) {
         this.hud.showHitMarker('bad');
         this.hud.pulseCrosshair('throw');
+        if (snapshot.room.match.mode === '2v2') {
+          const local = snapshot.room.players[event.targetId];
+          this.hud.showScoreEvent('LIFE LOST', `${local?.lives ?? '-'} / ${TUNING.match.playerLives} lives remaining`, 'bad');
+        }
       }
     }
   }
@@ -1977,6 +2080,21 @@ function distanceVec3(a: { x: number; y: number; z: number }, b: { x: number; y:
 
 function vector3ToVec3(v: Vector3): Vec3 {
   return { x: v.x, y: v.y, z: v.z };
+}
+
+function teamLivesFor(snapshot: ServerSnapshot, teamId: string): number {
+  let total = 0;
+  for (const player of Object.values(snapshot.room.players)) {
+    if (player.teamId === teamId) total += Math.max(0, player.lives);
+  }
+  return total;
+}
+
+function hasEliminatedPlayers(snapshot: ServerSnapshot): boolean {
+  for (const player of Object.values(snapshot.room.players)) {
+    if (player.combatState === 'eliminated') return true;
+  }
+  return false;
 }
 
 /**

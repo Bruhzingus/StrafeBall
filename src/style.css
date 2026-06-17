@@ -100,6 +100,7 @@ html, body {
 .hud-top-center { top: 16px; left: 50%; transform: translateX(-50%); text-align: center; }
 .hud-bottom-left { bottom: 16px; left: 16px; transform: rotate(1.1deg); }
 .hud-bottom-right { bottom: 16px; right: 16px; transform: rotate(-1deg); }
+.hud-hearts { top: 166px; right: 16px; min-width: 190px; transform: rotate(0.8deg); z-index: 12; }
 
 .hud-title {
   font-weight: 900;
@@ -118,6 +119,69 @@ html, body {
 .hud-warn { color: #c98800; font-weight: 900; }
 .hud-good { color: #1ba85a; font-weight: 900; }
 .hud-bad  { color: #e02418; font-weight: 900; }
+
+.hearts-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  margin-top: 3px;
+}
+
+.hearts-row--local {
+  font-weight: 900;
+}
+
+.hearts-row--opp {
+  opacity: 0.9;
+}
+
+.hearts-row em {
+  color: var(--school-red);
+  font-style: normal;
+  font-size: 10px;
+  font-weight: 900;
+}
+
+.hearts {
+  display: inline-flex;
+  gap: 2px;
+  letter-spacing: 0.02em;
+}
+
+.heart {
+  font-size: 18px;
+  line-height: 1;
+  -webkit-text-stroke: 1px var(--ink);
+}
+
+.heart--full {
+  color: var(--school-red);
+  text-shadow: 1px 1px 0 var(--ink);
+}
+
+.heart--empty {
+  color: rgba(21, 33, 59, 0.18);
+}
+
+.hearts-label {
+  margin-top: 7px;
+  font-size: 10px;
+  font-weight: 900;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  opacity: 0.68;
+}
+
+.hearts-warning {
+  margin-top: 8px;
+  padding-top: 6px;
+  border-top: 2px dashed rgba(21, 33, 59, 0.28);
+  color: var(--school-red);
+  font-size: 11px;
+  font-weight: 900;
+  text-transform: uppercase;
+}
 
 .stamina-meter {
   display: inline-flex;
@@ -1455,6 +1519,12 @@ html, body {
     top: auto;
     right: 10px;
     bottom: 10px;
+  }
+
+  .hud-hearts {
+    top: 10px;
+    right: 10px;
+    min-width: 160px;
   }
 
   .hud-bottom-right {

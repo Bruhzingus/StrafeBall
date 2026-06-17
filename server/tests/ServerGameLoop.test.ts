@@ -13,6 +13,31 @@ function playNow(loop: ServerGameLoop): void {
   loop.state.match = { ...loop.state.match, status: 'playing', countdownSeconds: 0 };
 }
 
+function create2v2Loop(): ServerGameLoop {
+  const loop = new ServerGameLoop('room', { mode: '2v2', playersPerTeam: 2 });
+  loop.addPlayer('a', 'A');
+  loop.addPlayer('b', 'B');
+  loop.addPlayer('c', 'C');
+  loop.addPlayer('d', 'D');
+  playNow(loop);
+  return loop;
+}
+
+function setLiveHitBall(loop: ServerGameLoop, ballId: string, throwerId: string, targetId: string): void {
+  const target = loop.state.players[targetId];
+  loop.state.balls[ballId] = {
+    ...loop.state.balls[ballId],
+    phase: 'live',
+    ownerKind: 'player',
+    ownerId: throwerId,
+    heldByPlayerId: null,
+    heldHand: null,
+    position: { ...target.movement.position, y: GAME_CONSTANTS.player.height * 0.5 },
+    velocity: vec3(0, 0, 24),
+    bounceCount: 0
+  };
+}
+
 describe('ServerGameLoop', () => {
   it('assigns two players and rejects a third', () => {
     const loop = new ServerGameLoop('room');
@@ -388,6 +413,100 @@ describe('ServerGameLoop', () => {
     expect(loop.state.players.a.score).toBe(1);
     expect(loop.state.players.a.dash.charges).toBe(GAME_CONSTANTS.dash.maxCharges);
     expect(loop.state.balls.ball_0.phase).toBe('dead');
+  });
+
+  describe('2v2 elimination rules', () => {
+    it('enemy hits remove one life without using the old score-to-5 path', () => {
+      const loop = create2v2Loop();
+      loop.state.players.a.dash.charges = GAME_CONSTANTS.dash.maxCharges - 1;
+      setLiveHitBall(loop, 'ball_0', 'a', 'b');
+
+      loop.step();
+
+      expect(loop.state.players.b.lives).toBe(GAME_CONSTANTS.match.playerLives - 1);
+      expect(loop.state.players.b.combatState).toBe('alive');
+      expect(loop.state.match.scoreByTeamId.blue).toBe(0);
+      expect(loop.state.players.a.dash.charges).toBe(GAME_CONSTANTS.dash.maxCharges);
+      expect(loop.state.match.status).toBe('playing');
+    });
+
+    it('friendly live balls do not remove lives or score', () => {
+      const loop = create2v2Loop();
+      setLiveHitBall(loop, 'ball_0', 'a', 'c');
+
+      loop.step();
+
+      expect(loop.state.players.c.lives).toBe(GAME_CONSTANTS.match.playerLives);
+      expect(loop.state.match.scoreByTeamId.blue).toBe(0);
+      expect(loop.state.balls.ball_0.phase).not.toBe('dead');
+    });
+
+    it('eliminates at zero lives, drops held balls, blocks actions, and buffs the teammate', () => {
+      const loop = create2v2Loop();
+      loop.state.players.b.movement.position = vec3(0, 0, 0);
+      expect(loop.handlePickup('b').ok).toBe(true);
+      const heldBallId = loop.state.players.b.hands.left.heldBallId;
+      expect(heldBallId).toBeTruthy();
+
+      loop.state.players.b.lives = 1;
+      setLiveHitBall(loop, 'ball_1', 'a', 'b');
+      loop.step();
+
+      expect(loop.state.players.b.lives).toBe(0);
+      expect(loop.state.players.b.combatState).toBe('eliminated');
+      expect(loop.state.players.b.hands.left.heldBallId).toBeNull();
+      expect(loop.state.players.b.hands.right.heldBallId).toBeNull();
+      expect(loop.state.balls[heldBallId!].heldByPlayerId).toBeNull();
+      expect(loop.handlePickup('b').ok).toBe(false);
+      expect(loop.handleThrow('b', { hand: 'left' }).ok).toBe(false);
+      expect(loop.state.players.d.lastPlayerBuffUntilMs ?? 0).toBeGreaterThan(0);
+    });
+
+    it('ends the match when both players on one team are eliminated', () => {
+      const loop = create2v2Loop();
+      loop.state.players.b.lives = 1;
+      loop.state.players.d.lives = 1;
+
+      setLiveHitBall(loop, 'ball_0', 'a', 'b');
+      loop.step();
+      setLiveHitBall(loop, 'ball_1', 'c', 'd');
+      loop.step();
+
+      expect(loop.state.players.b.combatState).toBe('eliminated');
+      expect(loop.state.players.d.combatState).toBe('eliminated');
+      expect(loop.state.match.status).toBe('complete');
+      expect(loop.state.match.winnerTeamId).toBe('blue');
+    });
+
+    it('eliminated players become cover that blocks balls but cannot take more damage', () => {
+      const loop = create2v2Loop();
+      loop.state.players.b.lives = 1;
+      setLiveHitBall(loop, 'ball_0', 'a', 'b');
+      loop.step();
+      expect(loop.state.players.b.combatState).toBe('eliminated');
+
+      loop.state.match = { ...loop.state.match, status: 'playing', winnerTeamId: null };
+      loop.state.balls.ball_1 = {
+        ...loop.state.balls.ball_1,
+        phase: 'live',
+        ownerKind: 'player',
+        ownerId: 'a',
+        heldByPlayerId: null,
+        heldHand: null,
+        position: {
+          x: loop.state.players.b.movement.position.x - 1,
+          y: GAME_CONSTANTS.player.height * 0.5,
+          z: loop.state.players.b.movement.position.z
+        },
+        velocity: vec3(24, 0, 0),
+        bounceCount: 0
+      };
+
+      for (let i = 0; i < 10 && loop.state.balls.ball_1.bounceCount === 0; i += 1) loop.step();
+
+      expect(loop.state.players.b.lives).toBe(0);
+      expect(loop.state.balls.ball_1.bounceCount).toBeGreaterThan(0);
+    });
   });
 
   it('does not score when a held or attached ball touches another player', () => {

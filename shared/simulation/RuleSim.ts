@@ -68,7 +68,9 @@ export function applyScore(match: MatchState, teamId: string, value = 1): MatchS
     ...match.scoreByTeamId,
     [teamId]: current + value
   };
-  const winnerTeamId = scoreByTeamId[teamId] >= match.scoreLimit ? teamId : match.winnerTeamId;
+  const winnerTeamId = match.mode === '2v2'
+    ? match.winnerTeamId
+    : scoreByTeamId[teamId] >= match.scoreLimit ? teamId : match.winnerTeamId;
 
   return {
     ...match,

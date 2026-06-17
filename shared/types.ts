@@ -8,6 +8,7 @@ export type HandSide = 'left' | 'right';
 export type SpawnSide = 'negativeZ' | 'positiveZ';
 export type LegalHalf = SpawnSide;
 export type MatchMode = '1v1' | '2v2';
+export type PlayerCombatState = 'waiting' | 'alive' | 'eliminated';
 
 export type BallPhase = 'loose' | 'held' | 'live' | 'dead' | 'deflected';
 export type BallOwnerKind = 'player' | 'launcher' | 'bot' | 'dummy' | null;
@@ -139,6 +140,10 @@ export interface PlayerState {
   hands: PlayerHandsState;
   dash: DashState;
   score: number;
+  lives: number;
+  combatState: PlayerCombatState;
+  eliminatedAtMs: number | null;
+  lastPlayerBuffUntilMs: number | null;
   connected: boolean;
   reconnectDeadlineAtMs: number | null;
   // Highest input sequence number the server has simulated for this player. The client uses

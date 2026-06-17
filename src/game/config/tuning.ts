@@ -185,6 +185,9 @@ export const TUNING = {
 
   match: {
     scoreLimit: GAME_CONSTANTS.match.scoreLimit,
+    playerLives: GAME_CONSTANTS.match.playerLives,
+    lastPlayerBuffMultiplier: GAME_CONSTANTS.match.lastPlayerBuffMultiplier,
+    lastPlayerBuffSeconds: GAME_CONSTANTS.match.lastPlayerBuffSeconds,
     noBoundariesSeconds: GAME_CONSTANTS.match.noBoundariesSeconds,
     halfCourtCountdownSeconds: GAME_CONSTANTS.match.halfCourtCountdownSeconds,
     resetVoteSeconds: GAME_CONSTANTS.match.resetVoteSeconds,

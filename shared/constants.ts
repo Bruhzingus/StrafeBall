@@ -108,6 +108,10 @@ export const GAME_CONSTANTS = {
     movementThrowScale: 0.35,
     secondThrowDelaySeconds: 0.2,
     fastDoubleThrowPenalty: 0.82,
+    // Anti "2-ball technique" (server-authoritative): if a player throws a second ball within
+    // this many seconds of their first throw, BOTH balls' speed is multiplied by the penalty below.
+    doubleThrowWindowSeconds: 0.3,
+    doubleThrowSpeedPenalty: 0.75,
     bounceRestitution: 0.58,
     impactSoundMinBounceHeight: 0.305,
     deadAfterBounces: 1,
@@ -212,6 +216,9 @@ export const GAME_CONSTANTS = {
   match: {
     teamIds: ['blue', 'red'] as string[],
     playersPerTeam: 2,
+    playerLives: 3,
+    lastPlayerBuffMultiplier: 1.2,
+    lastPlayerBuffSeconds: 60,
     disconnectForfeitSeconds: 15,
     scoreLimit: 5,
     noBoundariesSeconds: 120,

@@ -40,7 +40,8 @@ export function stepMovement(
   dt: number,
   boxes: AABB[],
   catchStanceActive: boolean,
-  c: GameConstants = GAME_CONSTANTS
+  c: GameConstants = GAME_CONSTANTS,
+  movementScale = 1
 ): MovementStepResult {
   let vx = movementIn.velocity.x;
   let vy = movementIn.velocity.y;
@@ -69,6 +70,7 @@ export function stepMovement(
   let backflipCooldown = internalIn.backflipCooldown;
 
   let dash = dashIn;
+  const speedScale = Number.isFinite(movementScale) ? Math.max(0.05, movementScale) : 1;
 
   const yaw = input.lookYawRadians;
   const pitch = clampLookPitch(input.lookPitchRadians, c);
@@ -125,7 +127,7 @@ export function stepMovement(
     const speed = Math.hypot(vx, vz);
     const overholdingSlide = slideHeldActive && slideTimer >= c.slide.overholdBrakeDelay;
     const tooSlow = speed < c.slide.minStartSpeed * 0.55;
-    const stoppedFromOverhold = overholdingSlide && speed <= c.player.crouchWalkSpeed;
+    const stoppedFromOverhold = overholdingSlide && speed <= c.player.crouchWalkSpeed * speedScale;
     if (
       stoppedFromOverhold ||
       (!slideHeldActive && (slideTimer > c.slide.maxDuration || (tooSlow && slideTimer >= c.slide.minDuration)))
@@ -157,8 +159,8 @@ export function stepMovement(
         sdz = fwdZ;
       }
     }
-    vx += sdx * c.slide.impulse;
-    vz += sdz * c.slide.impulse;
+    vx += sdx * c.slide.impulse * speedScale;
+    vz += sdz * c.slide.impulse * speedScale;
   }
 
   // --- jump / wall-jump (edge-triggered) ---
@@ -172,9 +174,9 @@ export function stepMovement(
         awX = away.x;
         awZ = away.z;
       }
-      vx += awX * c.wall.jumpAwaySpeed;
-      vz += awZ * c.wall.jumpAwaySpeed;
-      vy = c.wall.jumpUpSpeed;
+      vx += awX * c.wall.jumpAwaySpeed * speedScale;
+      vz += awZ * c.wall.jumpAwaySpeed * speedScale;
+      vy = c.wall.jumpUpSpeed * speedScale;
       wallRunning = false;
       wallRunTimer = 0;
       wallReattachCooldown = c.wall.reattachCooldownSeconds;
@@ -196,7 +198,7 @@ export function stepMovement(
         vz += wishZ * 0.45;
       }
     } else if (doubleJumpAvailable) {
-      const result = tryUpwardDash(dash, { x: vx, y: vy, z: vz }, c);
+      const result = tryUpwardDash(dash, { x: vx, y: vy, z: vz }, c, speedScale);
       if (result.ok) {
         dash = result.dash;
         vx = result.velocity.x;
@@ -215,7 +217,7 @@ export function stepMovement(
     const clientDash = sanitizeDashDirection(input.dashDirection);
     const ddx = clientDash ? clientDash.x : hasWish ? wishX : fwdX;
     const ddz = clientDash ? clientDash.z : hasWish ? wishZ : fwdZ;
-    const result = tryDash(dash, { x: vx, y: vy, z: vz }, { x: ddx, y: 0, z: ddz }, c);
+    const result = tryDash(dash, { x: vx, y: vy, z: vz }, { x: ddx, y: 0, z: ddz }, c, speedScale);
     if (result.ok) {
       dash = result.dash;
       vx = result.velocity.x;
@@ -232,9 +234,9 @@ export function stepMovement(
     backflipActive = true;
     backflipTimer = 0;
     backflipCooldown = c.backflip.cooldownSeconds;
-    vx += -fwdX * c.backflip.backwardImpulse;
-    vz += -fwdZ * c.backflip.backwardImpulse;
-    vy += c.backflip.verticalImpulse;
+    vx += -fwdX * c.backflip.backwardImpulse * speedScale;
+    vz += -fwdZ * c.backflip.backwardImpulse * speedScale;
+    vy += c.backflip.verticalImpulse * speedScale;
     grounded = false;
   }
 
@@ -286,15 +288,15 @@ export function stepMovement(
   if (grounded) {
     const brakingSlide = sliding && slideHeldActive && slideTimer >= c.slide.overholdBrakeDelay;
     const groundWishSpeed = brakingSlide || (crouching && !sliding)
-      ? c.player.crouchWalkSpeed
-      : c.player.maxGroundSpeed * speedMultiplier;
+      ? c.player.crouchWalkSpeed * speedScale
+      : c.player.maxGroundSpeed * speedMultiplier * speedScale;
     const accelerated = accelerate(vx, vz, wishX, wishZ, hasWish, groundWishSpeed, c.player.groundAcceleration, dt);
     vx = accelerated.vx;
     vz = accelerated.vz;
   } else {
     // CS-style air-strafe: A/D are the air-control keys. W/S conserves momentum in air but does
     // not add forward/back acceleration, so speed comes from side input plus mouse steering.
-    const accelerated = accelerate(vx, vz, airWishX, airWishZ, hasAirWish, c.player.airStrafeMaxSpeed, c.player.airAcceleration, dt);
+    const accelerated = accelerate(vx, vz, airWishX, airWishZ, hasAirWish, c.player.airStrafeMaxSpeed * speedScale, c.player.airAcceleration, dt);
     vx = accelerated.vx;
     vz = accelerated.vz;
   }
@@ -311,7 +313,7 @@ export function stepMovement(
   {
     if (grounded || wallRunning) {
       const speedSq = vx * vx + vz * vz;
-      const limit = c.player.softSpeedLimit;
+      const limit = c.player.softSpeedLimit * speedScale;
       if (speedSq > limit * limit) {
         const speed = Math.sqrt(speedSq);
         const bleed = (speed - limit) * Math.min(1, c.player.softLimitBleedRate * dt);
@@ -325,7 +327,7 @@ export function stepMovement(
   // --- crouch walk hard cap ---
   if (grounded && crouching && !sliding) {
     const speedSq = vx * vx + vz * vz;
-    const limit = c.player.crouchWalkSpeed;
+    const limit = c.player.crouchWalkSpeed * speedScale;
     if (speedSq > limit * limit) {
       const k = limit / Math.sqrt(speedSq);
       vx *= k;

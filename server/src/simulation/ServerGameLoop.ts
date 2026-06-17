@@ -7,6 +7,7 @@ import type {
   HandSide,
   MatchState,
   MatchMode,
+  PlayerCombatState,
   PlayerInput,
   PlayerState,
   RoomState,
@@ -153,6 +154,12 @@ interface RecentHit {
   throwerTeamId: string;
   value: number;
   atMs: number;
+  kind: 'score' | 'life';
+  defenderLivesBefore?: number;
+  defenderCombatStateBefore?: PlayerCombatState;
+  defenderEliminatedAtMsBefore?: number | null;
+  matchStatusBefore?: MatchState['status'];
+  winnerTeamIdBefore?: string | null;
   /** Thrower's dash state BEFORE the hit granted them a charge (restored on revert). */
   throwerDashBefore: DashState;
 }
@@ -188,6 +195,7 @@ const MAX_INPUT_QUEUE = SERVER_INPUT_QUEUE_LIMIT;
 // backgrounded/frozen tab doesn't keep walking or charging on the last-held input).
 const STALE_INPUT_MS = 1000;
 const RESET_VOTE_TTL_MS = GAME_CONSTANTS.match.resetVoteSeconds * 1000;
+const LAST_PLAYER_BUFF_MS = GAME_CONSTANTS.match.lastPlayerBuffSeconds * 1000;
 
 export class ServerGameLoop {
   public readonly tickRate: number;
@@ -209,6 +217,8 @@ export class ServerGameLoop {
   // is knocked over so a downed mat becomes walkable AND lets balls pass over it.
   private playerCollisionBoxes = createPlayerCollisionBoxes();
   private ballCollisionBoxes = createBallCollisionBoxes();
+  private readonly playerCollisionScratch: AABB[] = [];
+  private readonly ballCollisionScratch: AABB[] = [];
   private readonly knockedOverMatIds = new Set<string>();
 
   private readonly inputQueueByPlayerId = new Map<string, QueuedInput[]>();
@@ -219,6 +229,9 @@ export class ServerGameLoop {
   private readonly parryCooldownByPlayerId = new Map<string, number>();
   private readonly lastInputDebugAtByPlayerId = new Map<string, number>();
   private readonly resetVotesByPlayerId = new Map<string, number>();
+  // Anti "2-ball technique": tracks each player's most recent throw so a second throw landing
+  // within `doubleThrowWindowSeconds` of the first gets BOTH balls slowed (see handleThrow).
+  private readonly lastThrowByPlayerId = new Map<string, { atMs: number; ballId: string }>();
   private resetSerial = 0;
 
   // Cheap combat counters for the throttled server [perf] report (verify the lag-comp catch fix in
@@ -327,12 +340,14 @@ export class ServerGameLoop {
     this.parryCooldownByPlayerId.delete(playerId);
     this.lastInputDebugAtByPlayerId.delete(playerId);
     this.defenseHistoryByPlayerId.delete(playerId);
+    this.lastThrowByPlayerId.delete(playerId);
     this.catchAttemptByKey.delete(`${playerId}:left`);
     this.catchAttemptByKey.delete(`${playerId}:right`);
     this.lastCatchAttemptIdByKey.delete(`${playerId}:left`);
     this.lastCatchAttemptIdByKey.delete(`${playerId}:right`);
     this.resetVotesByPlayerId.delete(playerId);
     this.resolveResetVotesAfterRosterChange();
+    this.refreshLastPlayerBuffs(this.now());
   }
 
   /** Mark a player connected/disconnected (drives match pause + the connected flag). */
@@ -343,6 +358,7 @@ export class ServerGameLoop {
     player.reconnectDeadlineAtMs = connected ? null : reconnectDeadlineAtMs;
     if (connected) this.lastInputAtByPlayerId.set(playerId, this.now());
     this.resolveResetVotesAfterRosterChange();
+    this.refreshLastPlayerBuffs(this.now());
   }
 
   /**
@@ -372,6 +388,7 @@ export class ServerGameLoop {
     this.parryCooldownByPlayerId.clear();
     this.lastInputDebugAtByPlayerId.clear();
     this.defenseHistoryByPlayerId.clear();
+    this.lastThrowByPlayerId.clear();
     this.ballHistoryById.clear();
     this.catchAttemptByKey.clear();
     this.lastCatchAttemptIdByKey.clear();
@@ -415,6 +432,7 @@ export class ServerGameLoop {
   handlePickup(playerId: string): ActionResult {
     const player = this.state.players[playerId];
     if (!player) return { ok: false, reason: 'unknown-player' };
+    if (!this.isPlayerAlive(player)) return { ok: false, reason: 'eliminated' };
 
     const pp = player.movement.position;
     const allBalls = Object.values(this.state.balls);
@@ -450,6 +468,7 @@ export class ServerGameLoop {
   handleDrop(playerId: string, requestedHand?: HandSide): ActionResult {
     const player = this.state.players[playerId];
     if (!player) return { ok: false, reason: 'unknown-player' };
+    if (!this.isPlayerAlive(player)) return { ok: false, reason: 'eliminated' };
 
     const hand = requestedHand ?? preferredDropHand(player);
     if (!hand) return { ok: false, reason: 'empty-hands' };
@@ -471,6 +490,7 @@ export class ServerGameLoop {
   handleThrow(playerId: string, request: ThrowRequestPayload): ActionResult {
     const player = this.state.players[playerId];
     if (!player) return { ok: false, reason: 'unknown-player' };
+    if (!this.isPlayerAlive(player)) return { ok: false, reason: 'eliminated' };
     if (!request.hand) return { ok: false, reason: 'missing-hand' };
 
     const ballId = player.hands[request.hand].heldBallId;
@@ -498,6 +518,22 @@ export class ServerGameLoop {
       GAME_CONSTANTS.backflip.cooldownSeconds - (GAME_CONSTANTS.backflip.durationSeconds + GAME_CONSTANTS.backflip.qte.durationSeconds + 0.3);
     const isBackflipThrow = backflipTier >= 1 && player.movement.grounded && backflipRecent;
     const origin = add(computePlayerHandAnchor(player, request.hand), scale(forward, 0.16));
+
+    // Anti "2-ball technique": a second throw landing within doubleThrowWindowSeconds of this
+    // player's previous throw slows BOTH balls down, instead of only the new client-side throw.
+    const now = this.now();
+    const priorThrow = this.lastThrowByPlayerId.get(playerId);
+    const isDoubleThrow = !!priorThrow && (now - priorThrow.atMs) <= GAME_CONSTANTS.ball.doubleThrowWindowSeconds * 1000;
+    if (isDoubleThrow && priorThrow) {
+      const priorBall = this.state.balls[priorThrow.ballId];
+      if (priorBall && priorBall.phase === 'live' && priorBall.ownerId === playerId) {
+        this.state.balls[priorBall.id] = {
+          ...priorBall,
+          velocity: scale(priorBall.velocity, GAME_CONSTANTS.ball.doubleThrowSpeedPenalty)
+        };
+      }
+    }
+
     // Deterministic crouch-curve (Phase 6): curves perpendicular to AIM (not world axes), opposite
     // the throwing hand. Server-computed so the client can replay the exact same curve for prediction.
     const throwCalc = calculateThrow({
@@ -508,7 +544,8 @@ export class ServerGameLoop {
       crouching: player.movement.crouching || player.movement.sliding,
       backflipTier: isBackflipThrow ? backflipTier : 0
     });
-    const { velocity, curveAccel, dropScale, isSuper } = throwCalc;
+    const { velocity: rawVelocity, curveAccel, dropScale, isSuper } = throwCalc;
+    const velocity = isDoubleThrow ? scale(rawVelocity, GAME_CONSTANTS.ball.doubleThrowSpeedPenalty) : rawVelocity;
     // Fresh throw identity — assigned here so it lands on the live ball AND the throw event together.
     this.throwCounter += 1;
     const throwId = this.throwCounter;
@@ -522,6 +559,8 @@ export class ServerGameLoop {
       throwId
     });
     if (!result.ok) return result;
+
+    this.lastThrowByPlayerId.set(playerId, { atMs: now, ballId: ball.id });
 
     const dash = isBackflipThrow && backflipTier === GAME_CONSTANTS.backflip.qte.tierCount
       ? grantDashCharge(player.dash)
@@ -623,6 +662,11 @@ export class ServerGameLoop {
         this.recordDefenseSample(player);
         continue;
       }
+      if (!this.isPlayerAlive(player)) {
+        this.updateEliminatedPlayer(player, command.input, command.seq);
+        this.recordDefenseSample(player);
+        continue;
+      }
       const preVelocity = player.movement.velocity;
       this.updatePlayer(player, fixedDt, command.input, command.seq);
       // Mat knock-over uses the player's PRE-resolution velocity: the collision solver zeros the
@@ -685,6 +729,25 @@ export class ServerGameLoop {
       facing: facingFromAngles(input.lookYawRadians, input.lookPitchRadians),
       grounded: true,
       crouching: false,
+      sliding: false,
+      wallRunning: false,
+      dashingThisFrame: false,
+      speed: 0
+    };
+    player.lastProcessedInputSeq = seq;
+    this.previousInputByPlayerId.set(player.id, input);
+  }
+
+  /** Eliminated players become seated cover: no locomotion or combat, but look/acks still update. */
+  private updateEliminatedPlayer(player: PlayerState, input: PlayerInput, seq: number): void {
+    player.movement = {
+      ...player.movement,
+      velocity: vec3(),
+      yawRadians: input.lookYawRadians,
+      pitchRadians: input.lookPitchRadians,
+      facing: facingFromAngles(input.lookYawRadians, input.lookPitchRadians),
+      grounded: true,
+      crouching: true,
       sliding: false,
       wallRunning: false,
       dashingThisFrame: false,
@@ -805,8 +868,10 @@ export class ServerGameLoop {
       input,
       prevInput,
       dt,
-      this.playerCollisionBoxes,
-      catchStanceActive
+      this.collisionBoxesForPlayer(player.id),
+      catchStanceActive,
+      GAME_CONSTANTS,
+      this.playerMovementScale(player)
     );
     player.movement = result.movement;
     player.movementInternal = result.internal;
@@ -911,7 +976,7 @@ export class ServerGameLoop {
    * Parry/catch/hit each consume the ball — once one fires, later checks skip it that tick, so a
    * valid defense can never be bypassed by hit detection running first.
    */
-  private updateBalls(dt: number, scoringActive: boolean): void {
+  private updateBalls(dt: number, combatActive: boolean): void {
     const subDt = dt / LIVE_BALL_COMBAT_SUBSTEPS;
 
     for (const ballId in this.state.balls) {
@@ -938,7 +1003,7 @@ export class ServerGameLoop {
         const advanced = advanceBall(current, subDt);
         let resolved = advanced;
 
-        if (isBallCatchableInFlight(resolved)) {
+        if (combatActive && isBallCatchableInFlight(resolved)) {
           const segPrev = prevPos;
           const segCurr = resolved.position;
 
@@ -951,7 +1016,11 @@ export class ServerGameLoop {
             if (caught) {
               resolved = caught;
               combatDone = true;
-            } else if (scoringActive) {
+            } else {
+              const friendlyDeflect = this.tryFriendlyDeflect(resolved, segPrev, segCurr);
+              if (friendlyDeflect) {
+                resolved = friendlyDeflect;
+              }
               const hit = this.tryHit(resolved, segPrev, segCurr);
               if (hit) { resolved = hit; combatDone = true; }
             }
@@ -960,7 +1029,7 @@ export class ServerGameLoop {
 
         // World collision per substep so fast balls bounce correctly at sub-tick positions.
         const bounded = resolveBallBounds(resolved);
-        const collided = resolveBallStaticBoxes(bounded, this.ballCollisionBoxes,
+        const collided = resolveBallStaticBoxes(bounded, this.ballCollisionBoxesWithEliminatedCover(),
           this.debug.COLLISION_DEBUG ? this.logger : undefined);
         current = settleBallIfSlow(collided);
 
@@ -986,8 +1055,7 @@ export class ServerGameLoop {
 
     for (const targetId in this.state.players) {
       const target = this.state.players[targetId];
-      if (target.id === ownerId) continue;
-      if (target.teamId === this.state.players[ownerId]?.teamId) continue;
+      if (!this.canBallDamagePlayer(ball, target)) continue;
       const hitbox = playerHitCapsule(target);
       if (!sweptBallHitsBody(segPrev, segCurr, hitbox.base, hitbox.top, radius)) continue;
 
@@ -1003,20 +1071,20 @@ export class ServerGameLoop {
       // it (registerPlayerHit grants the scorer a dash charge).
       const throwerDashBefore = scorer ? { ...scorer.dash } : null;
       const dead = markBallDead(ball);
-      this.state = registerPlayerHit(this.state, ownerId);
+      const recentHit = scorer && throwerDashBefore
+        ? this.applyPlayerHit(ownerId, target, throwerDashBefore)
+        : null;
       this.combatMetrics.hits += 1;
       const nextScore = scorer ? this.state.match.scoreByTeamId[scorer.teamId] ?? 0 : previousScore;
       // Remember this hit briefly: a high-ping defender's well-timed catch may arrive after this and
       // legitimately claim the ball (resolveCatchReclaim), reverting the score it superseded.
-      if (scorer && throwerDashBefore) {
+      if (recentHit) {
         this.recentHitByBallId.set(ball.id, {
+          ...recentHit,
           ballId: ball.id,
           defenderId: target.id,
           throwerId: ownerId,
-          throwerTeamId: scorer.teamId,
-          value: 1,
-          atMs: this.stepNowMs,
-          throwerDashBefore
+          atMs: this.stepNowMs
         });
       }
       this.pendingCombatEvents.push({ type: 'hit-event', ballId: ball.id, throwerId: ownerId, targetId: target.id, serverTick: this.state.tick, serverTimeMs: this.stepNowMs });
@@ -1028,6 +1096,241 @@ export class ServerGameLoop {
       return dead;
     }
     return null;
+  }
+
+  private tryFriendlyDeflect(ball: BallState, segPrev: Vec3, segCurr: Vec3): BallState | null {
+    if (ball.phase !== 'live' || ball.ownerKind !== 'player' || !ball.ownerId) return null;
+    const owner = this.state.players[ball.ownerId];
+    if (!owner) return null;
+    const radius = playerBallHitRadius();
+
+    for (const targetId in this.state.players) {
+      const target = this.state.players[targetId];
+      if (target.id === owner.id) continue;
+      if (!this.isPlayerAlive(target)) continue;
+      if (!this.isSameTeam(owner, target)) continue;
+      const hitbox = playerHitCapsule(target);
+      if (!sweptBallHitsBody(segPrev, segCurr, hitbox.base, hitbox.top, radius)) continue;
+
+      const away = normalize(
+        vec3(segCurr.x - target.movement.position.x, 0.15, segCurr.z - target.movement.position.z),
+        normalize(scale(ball.velocity, -1), target.movement.facing)
+      );
+      this.throwCounter += 1;
+      const deflected = deflectBall(ball, target.id, away, GAME_CONSTANTS, this.throwCounter);
+      this.state.balls[ball.id] = deflected;
+      if (this.debug.NET_DEBUG) this.logger(`friendly deflect player=${target.id} ball=${ball.id} owner=${owner.id}`);
+      return deflected;
+    }
+
+    return null;
+  }
+
+  private applyPlayerHit(
+    throwerId: string,
+    target: PlayerState,
+    throwerDashBefore: DashState
+  ): Omit<RecentHit, 'ballId' | 'defenderId' | 'throwerId' | 'atMs'> | null {
+    const scorer = this.state.players[throwerId];
+    if (!scorer) return null;
+
+    if (this.state.match.mode !== '2v2') {
+      this.state = registerPlayerHit(this.state, throwerId);
+      return {
+        kind: 'score',
+        throwerTeamId: scorer.teamId,
+        value: 1,
+        throwerDashBefore
+      };
+    }
+
+    const targetLive = this.state.players[target.id];
+    if (!targetLive || !this.isPlayerAlive(targetLive)) return null;
+    const defenderLivesBefore = targetLive.lives;
+    const defenderCombatStateBefore = targetLive.combatState;
+    const defenderEliminatedAtMsBefore = targetLive.eliminatedAtMs;
+    const matchStatusBefore = this.state.match.status;
+    const winnerTeamIdBefore = this.state.match.winnerTeamId;
+
+    this.state.players[throwerId] = { ...scorer, dash: grantDashCharge(scorer.dash) };
+    targetLive.lives = Math.max(0, targetLive.lives - 1);
+    if (targetLive.lives <= 0) this.eliminatePlayer(targetLive.id);
+    this.refreshLastPlayerBuffs(this.stepNowMs);
+    this.check2v2Victory();
+
+    return {
+      kind: 'life',
+      throwerTeamId: scorer.teamId,
+      value: 1,
+      defenderLivesBefore,
+      defenderCombatStateBefore,
+      defenderEliminatedAtMsBefore,
+      matchStatusBefore,
+      winnerTeamIdBefore,
+      throwerDashBefore
+    };
+  }
+
+  private eliminatePlayer(playerId: string): void {
+    const player = this.state.players[playerId];
+    if (!player || player.combatState === 'eliminated') return;
+    this.dropAllHeldBalls(player);
+    player.lives = 0;
+    player.combatState = 'eliminated';
+    player.eliminatedAtMs = this.stepNowMs;
+    player.lastPlayerBuffUntilMs = null;
+    player.movement = {
+      ...player.movement,
+      velocity: vec3(),
+      grounded: true,
+      crouching: true,
+      sliding: false,
+      wallRunning: false,
+      dashingThisFrame: false,
+      speed: 0
+    };
+    this.catchAttemptByKey.delete(`${playerId}:left`);
+    this.catchAttemptByKey.delete(`${playerId}:right`);
+    this.parryCooldownByPlayerId.set(playerId, 0);
+  }
+
+  private check2v2Victory(): void {
+    if (this.state.match.mode !== '2v2' || this.state.match.status === 'complete') return;
+    for (const teamId of this.state.match.teamIds) {
+      const teamPlayers = Object.values(this.state.players).filter((player) => player.teamId === teamId);
+      if (teamPlayers.length < this.playersPerTeam) continue;
+      if (!teamPlayers.every((player) => player.combatState === 'eliminated')) continue;
+      const winnerTeamId = this.state.match.teamIds.find((candidate) => candidate !== teamId) ?? null;
+      if (!winnerTeamId) return;
+      this.state.match = {
+        ...this.state.match,
+        status: 'complete',
+        winnerTeamId,
+        countdownSeconds: 0
+      };
+      this.refreshLastPlayerBuffs(this.stepNowMs);
+      if (this.debug.NET_DEBUG) this.logger(`2v2 elimination win team=${winnerTeamId}`);
+      return;
+    }
+  }
+
+  private refreshLastPlayerBuffs(nowMs: number): void {
+    if (this.state.match.mode !== '2v2') {
+      for (const player of Object.values(this.state.players)) player.lastPlayerBuffUntilMs = null;
+      return;
+    }
+
+    for (const teamId of this.state.match.teamIds) {
+      const teamPlayers = Object.values(this.state.players).filter((player) => player.teamId === teamId);
+      const alive = teamPlayers.filter((player) => this.isPlayerAlive(player));
+      const eliminated = teamPlayers.filter((player) => player.combatState === 'eliminated');
+      const buffedPlayer = this.state.match.status !== 'complete' && alive.length === 1 && eliminated.length >= 1
+        ? alive[0]
+        : null;
+
+      for (const player of teamPlayers) {
+        if (buffedPlayer && player.id === buffedPlayer.id) {
+          if (!player.lastPlayerBuffUntilMs || player.lastPlayerBuffUntilMs <= nowMs) {
+            player.lastPlayerBuffUntilMs = nowMs + LAST_PLAYER_BUFF_MS;
+          }
+        } else {
+          player.lastPlayerBuffUntilMs = null;
+        }
+      }
+    }
+  }
+
+  private hasRecentHitAgainst(playerId: string): boolean {
+    for (const hit of this.recentHitByBallId.values()) {
+      if (hit.defenderId === playerId) return true;
+    }
+    return false;
+  }
+
+  private isSameTeam(a: PlayerState, b: PlayerState): boolean {
+    return a.teamId === b.teamId;
+  }
+
+  private isOpponent(a: PlayerState, b: PlayerState): boolean {
+    return a.teamId !== b.teamId;
+  }
+
+  private canBallDamagePlayer(ball: BallState, target: PlayerState): boolean {
+    if (!canScorePlayerHit(ball)) return false;
+    if (!this.isPlayerAlive(target)) return false;
+    if (!ball.ownerId || target.id === ball.ownerId) return false;
+    const owner = this.state.players[ball.ownerId];
+    if (!owner) return false;
+    return this.isOpponent(owner, target);
+  }
+
+  private canPlayerCatchBall(player: PlayerState, ball: BallState): boolean {
+    if (!this.isPlayerAlive(player)) return false;
+    if (!isBallCatchableInFlight(ball)) return false;
+    if (ball.ownerId !== null && ball.ownerId === player.id && ball.bounceCount <= 0) return false;
+    return true;
+  }
+
+  private canPlayerParryBall(player: PlayerState, ball: BallState): boolean {
+    if (!this.isPlayerAlive(player)) return false;
+    if (ball.phase !== 'live' || ball.ownerKind !== 'player' || !ball.ownerId) return false;
+    return ball.ownerId !== player.id;
+  }
+
+  private isPlayerAlive(player: PlayerState): boolean {
+    return player.combatState !== 'eliminated' && player.lives > 0;
+  }
+
+  private playerMovementScale(player: PlayerState): number {
+    if (
+      this.state.match.mode === '2v2' &&
+      this.isPlayerAlive(player) &&
+      (player.lastPlayerBuffUntilMs ?? 0) > this.stepNowMs
+    ) {
+      return GAME_CONSTANTS.match.lastPlayerBuffMultiplier;
+    }
+    return 1;
+  }
+
+  private collisionBoxesForPlayer(playerId: string): AABB[] {
+    this.playerCollisionScratch.length = 0;
+    for (const box of this.playerCollisionBoxes) this.playerCollisionScratch.push(box);
+    this.pushEliminatedCoverBoxes(this.playerCollisionScratch, playerId);
+    return this.playerCollisionScratch;
+  }
+
+  private ballCollisionBoxesWithEliminatedCover(): AABB[] {
+    if (!this.hasEliminatedPlayers()) return this.ballCollisionBoxes;
+    this.ballCollisionScratch.length = 0;
+    for (const box of this.ballCollisionBoxes) this.ballCollisionScratch.push(box);
+    this.pushEliminatedCoverBoxes(this.ballCollisionScratch);
+    return this.ballCollisionScratch;
+  }
+
+  private pushEliminatedCoverBoxes(target: AABB[], exceptPlayerId?: string): void {
+    for (const player of Object.values(this.state.players)) {
+      if (player.id === exceptPlayerId) continue;
+      if (player.combatState !== 'eliminated') continue;
+      const pos = player.movement.position;
+      const radius = GAME_CONSTANTS.player.radius * 0.95;
+      const height = GAME_CONSTANTS.player.height * GAME_CONSTANTS.player.crouchHeightMultiplier;
+      target.push({
+        minX: pos.x - radius,
+        maxX: pos.x + radius,
+        minY: pos.y,
+        maxY: pos.y + height,
+        minZ: pos.z - radius,
+        maxZ: pos.z + radius,
+        id: `eliminated_${player.id}`
+      });
+    }
+  }
+
+  private hasEliminatedPlayers(): boolean {
+    for (const player of Object.values(this.state.players)) {
+      if (player.combatState === 'eliminated') return true;
+    }
+    return false;
   }
 
   /**
@@ -1084,6 +1387,7 @@ export class ServerGameLoop {
     this.state.match = advanceNoBoundariesTimer(this.state.match, dt);
     for (const playerId in this.state.players) {
       const player = this.state.players[playerId];
+      if (!this.isPlayerAlive(player)) continue;
       this.state.match = applyHalfCourtRule(
         this.state.match,
         player.id,
@@ -1107,6 +1411,7 @@ export class ServerGameLoop {
     }
     const m = player.movement;
     const forward = normalize(m.facing, facingFromAngles(m.yawRadians, m.pitchRadians));
+    const active = this.isPlayerAlive(player);
     ring.push({
       serverTimeMs: this.stepNowMs,
       tick: this.state.tick,
@@ -1114,11 +1419,11 @@ export class ServerGameLoop {
       forward,
       yaw: m.yawRadians,
       pitch: m.pitchRadians,
-      leftHandEmpty: !player.hands.left.heldBallId,
-      rightHandEmpty: !player.hands.right.heldBallId,
+      leftHandEmpty: active && !player.hands.left.heldBallId,
+      rightHandEmpty: active && !player.hands.right.heldBallId,
       leftHeldBallId: player.hands.left.heldBallId,
       rightHeldBallId: player.hands.right.heldBallId,
-      heldBallCount: heldBallCount(player.hands),
+      heldBallCount: active ? heldBallCount(player.hands) : 0,
       dashing: m.dashingThisFrame
     });
   }
@@ -1169,6 +1474,7 @@ export class ServerGameLoop {
     // Acknowledge on the hand state so the client knows the attempt was received (whether or not it
     // ultimately catches — the catch resolves over the active window below).
     player.hands = setHandLastCatchAttemptId(player.hands, hand, attemptId);
+    if (!this.isPlayerAlive(player)) return;
 
     const now = this.stepNowMs;
     const existing = this.catchAttemptByKey.get(key);
@@ -1220,6 +1526,7 @@ export class ServerGameLoop {
     for (const defenderId in this.state.players) {
       if (defenderId === ownerId) continue;
       const defender = this.state.players[defenderId];
+      if (!this.canPlayerParryBall(defender, ball)) continue;
       const sample = this.sampleDefenseAt(defenderId, tickStartMs);
       const fail = this.parryFailReason(defender, sample, ball, segPrev, segCurr);
       if (fail) {
@@ -1278,6 +1585,7 @@ export class ServerGameLoop {
       // Can't catch your own direct throw before it touches anything. Once it bounces, rebounds are playable.
       if (ball.ownerId !== null && defenderId === ball.ownerId && ball.bounceCount <= 0) continue;
       const defender = this.state.players[defenderId];
+      if (!this.canPlayerCatchBall(defender, ball)) continue;
 
       for (const hand of ['left', 'right'] as const) {
         const key = `${defenderId}:${hand}`;
@@ -1320,6 +1628,8 @@ export class ServerGameLoop {
     const minTime = nowMs - GAME_CONSTANTS.combat.defenseMaxRewindMs - GAME_CONSTANTS.combat.defenseInputGraceMs;
     for (const defenderId in this.state.players) {
       const defender = this.state.players[defenderId];
+      const recentHitForDefender = this.hasRecentHitAgainst(defenderId);
+      if (!this.isPlayerAlive(defender) && !recentHitForDefender) continue;
       for (const hand of ['left', 'right'] as const) {
         const attempt = this.catchAttemptByKey.get(`${defenderId}:${hand}`);
         if (!attempt || attempt.resolved) continue;
@@ -1426,9 +1736,24 @@ export class ServerGameLoop {
 
   /** Revert a scored hit: decrement the thrower team's score, restore their dash, recompute outcome. */
   private revertHit(hit: RecentHit): void {
-    const current = this.state.match.scoreByTeamId[hit.throwerTeamId] ?? 0;
-    const scoreByTeamId = { ...this.state.match.scoreByTeamId, [hit.throwerTeamId]: Math.max(0, current - hit.value) };
-    this.state.match = recomputeMatchOutcome({ ...this.state.match, scoreByTeamId });
+    if (hit.kind === 'score') {
+      const current = this.state.match.scoreByTeamId[hit.throwerTeamId] ?? 0;
+      const scoreByTeamId = { ...this.state.match.scoreByTeamId, [hit.throwerTeamId]: Math.max(0, current - hit.value) };
+      this.state.match = recomputeMatchOutcome({ ...this.state.match, scoreByTeamId });
+    } else {
+      const defender = this.state.players[hit.defenderId];
+      if (defender) {
+        defender.lives = Math.max(1, hit.defenderLivesBefore ?? defender.lives);
+        defender.combatState = hit.defenderCombatStateBefore ?? 'alive';
+        defender.eliminatedAtMs = hit.defenderEliminatedAtMsBefore ?? null;
+      }
+      this.state.match = {
+        ...this.state.match,
+        status: hit.matchStatusBefore ?? this.state.match.status,
+        winnerTeamId: hit.winnerTeamIdBefore ?? null
+      };
+      this.refreshLastPlayerBuffs(this.stepNowMs);
+    }
     const thrower = this.state.players[hit.throwerId];
     if (thrower) this.state.players[hit.throwerId] = { ...thrower, dash: hit.throwerDashBefore };
     this.combatMetrics.hitReverts += 1;
@@ -2047,6 +2372,7 @@ function sideBleacherCourtFaceX(box: AABB): number {
  * limit, an already-'complete' match returns to 'playing'. Other statuses are untouched.
  */
 function recomputeMatchOutcome(match: MatchState): MatchState {
+  if (match.mode === '2v2') return match;
   let winnerTeamId: string | null = null;
   for (const teamId of match.teamIds) {
     if ((match.scoreByTeamId[teamId] ?? 0) >= match.scoreLimit) {
