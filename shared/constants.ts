@@ -211,7 +211,7 @@ export const GAME_CONSTANTS = {
 
   match: {
     teamIds: ['blue', 'red'] as string[],
-    playersPerTeam: 1,
+    playersPerTeam: 2,
     disconnectForfeitSeconds: 15,
     scoreLimit: 5,
     noBoundariesSeconds: 120,

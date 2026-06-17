@@ -6,6 +6,7 @@ import type {
   DashState,
   HandSide,
   MatchState,
+  MatchMode,
   PlayerInput,
   PlayerState,
   RoomState,
@@ -68,6 +69,9 @@ import { playerBallHitRadius, playerHitCapsule } from '../../../shared/simulatio
 
 export interface ServerGameLoopOptions {
   tickRate?: number;
+  mode?: MatchMode;
+  playersPerTeam?: number;
+  teamIds?: string[];
   logger?: (message: string) => void;
   /** Per-channel debug flags. All default OFF — a real playtest produces zero per-tick logging. */
   debug?: Partial<DebugFlags>;
@@ -104,6 +108,14 @@ type ActionResult = { ok: true; log?: string } | { ok: false; reason: string };
 interface QueuedInput {
   seq: number;
   input: PlayerInput;
+}
+
+interface PlayerSlot {
+  teamId: string;
+  spawnSide: SpawnSide;
+  teamSlotIndex: number;
+  position: Vec3;
+  yawRadians: number;
 }
 
 const EMPTY_THROW_EVENTS: ReadonlyArray<ThrowEvent> = [];
@@ -164,20 +176,11 @@ interface LegacyPlayerInput {
   rightHand: boolean;
 }
 
-const TEAM_BY_SIDE: Record<SpawnSide, string> = {
-  negativeZ: 'blue',
-  positiveZ: 'red'
-};
-
-const SPAWN_BY_SIDE: Record<SpawnSide, { position: Vec3; yawRadians: number }> = {
+const SPAWN_BASE_BY_SIDE: Record<SpawnSide, { position: Vec3; yawRadians: number }> = {
   negativeZ: { position: vec3(0, 0, -12), yawRadians: 0 },
   positiveZ: { position: vec3(0, 0, 12), yawRadians: Math.PI }
 };
 
-const TEAM_IDS = GAME_CONSTANTS.match.teamIds;
-const PLAYERS_PER_TEAM = GAME_CONSTANTS.match.playersPerTeam;
-const MAX_PLAYERS = TEAM_IDS.length * PLAYERS_PER_TEAM;
-const TEAMS_REQUIRED_TO_PLAY = Math.min(2, TEAM_IDS.length);
 // Max inputs buffered per player before we drop the oldest. Driven by netConfig so the buffer
 // scales with the active tick rate (~1 s of headroom) instead of a hardcoded 30Hz assumption.
 const MAX_INPUT_QUEUE = SERVER_INPUT_QUEUE_LIMIT;
@@ -194,6 +197,12 @@ export class ServerGameLoop {
   private readonly tickSeconds: number;
   private readonly logger: (message: string) => void;
   private readonly debug: DebugFlags;
+  private readonly matchMode: MatchMode;
+  private readonly teamIds: readonly string[];
+  private readonly playersPerTeam: number;
+  private readonly maxPlayers: number;
+  private readonly teamsRequiredToPlay: number;
+  private readonly playerSlots: readonly PlayerSlot[];
   /** Injectable wall-clock (ms). Defaults to Date.now; overridden by a virtual clock in tests. */
   private readonly now: () => number;
   // Players AND balls collide with bleachers + STANDING mats; both sets are rebuilt whenever a mat
@@ -253,6 +262,12 @@ export class ServerGameLoop {
     this.tickSeconds = 1 / this.tickRate;
     this.logger = options.logger ?? (() => undefined);
     this.now = options.now ?? Date.now;
+    this.teamIds = options.teamIds?.length ? [...options.teamIds] : [...GAME_CONSTANTS.match.teamIds];
+    this.playersPerTeam = Math.max(1, Math.trunc(options.playersPerTeam ?? 1));
+    this.maxPlayers = this.teamIds.length * this.playersPerTeam;
+    this.teamsRequiredToPlay = Math.min(2, this.teamIds.length);
+    this.matchMode = options.mode ?? (this.playersPerTeam >= 2 ? '2v2' : '1v1');
+    this.playerSlots = buildPlayerSlots(this.teamIds, this.playersPerTeam);
     // All flags default OFF. The legacy `debugInput` boolean maps to NET_DEBUG for compat; an
     // explicit `debug.NET_DEBUG` (if provided) wins over it.
     this.debug = {
@@ -272,22 +287,22 @@ export class ServerGameLoop {
   }
 
   addPlayer(playerId: string, rawName?: string): PlayerState | null {
-    if (this.playerCount() >= MAX_PLAYERS) return null;
+    if (this.playerCount() >= this.maxPlayers) return null;
     if (this.state.players[playerId]) return this.state.players[playerId];
 
     const slot = this.nextPlayerSlot();
     if (!slot) return null;
 
-    const spawn = SPAWN_BY_SIDE[slot.spawnSide];
     const name = sanitizeName(rawName, this.playerCount() + 1);
     const player = createPlayerState(playerId, slot.teamId, slot.spawnSide, {
       name,
       spawnSide: slot.spawnSide,
-      movement: this.spawnMovement(slot.spawnSide)
+      teamSlotIndex: slot.teamSlotIndex,
+      movement: this.spawnMovement(slot)
     });
 
     this.state.players[playerId] = player;
-    this.seedInputTracking(playerId, spawn.yawRadians);
+    this.seedInputTracking(playerId, slot.yawRadians);
     this.syncPlayerScores();
 
     // Warmup → playing once the configured roster is ready; (re)start the match clock fresh.
@@ -321,10 +336,11 @@ export class ServerGameLoop {
   }
 
   /** Mark a player connected/disconnected (drives match pause + the connected flag). */
-  setConnected(playerId: string, connected: boolean): void {
+  setConnected(playerId: string, connected: boolean, reconnectDeadlineAtMs: number | null = null): void {
     const player = this.state.players[playerId];
     if (!player) return;
     player.connected = connected;
+    player.reconnectDeadlineAtMs = connected ? null : reconnectDeadlineAtMs;
     if (connected) this.lastInputAtByPlayerId.set(playerId, this.now());
     this.resolveResetVotesAfterRosterChange();
   }
@@ -659,7 +675,7 @@ export class ServerGameLoop {
    * is what keeps the local player from wedging after a reset). No throws/catches/pickups/drops.
    */
   private updatePlayerLookOnly(player: PlayerState, input: PlayerInput, seq: number): void {
-    const spawn = SPAWN_BY_SIDE[player.spawnSide];
+    const spawn = this.slotForPlayer(player);
     player.movement = {
       ...player.movement,
       position: { ...spawn.position },
@@ -971,6 +987,7 @@ export class ServerGameLoop {
     for (const targetId in this.state.players) {
       const target = this.state.players[targetId];
       if (target.id === ownerId) continue;
+      if (target.teamId === this.state.players[ownerId]?.teamId) continue;
       const hitbox = playerHitCapsule(target);
       if (!sweptBallHitsBody(segPrev, segCurr, hitbox.base, hitbox.top, radius)) continue;
 
@@ -1544,9 +1561,11 @@ export class ServerGameLoop {
       createPlayerState(player.id, player.teamId, player.legalHalf, {
         name: player.name,
         spawnSide: player.spawnSide,
+        teamSlotIndex: player.teamSlotIndex,
         score: 0,
         connected: player.connected,
-        movement: this.spawnMovement(player.spawnSide)
+        reconnectDeadlineAtMs: player.reconnectDeadlineAtMs,
+        movement: this.spawnMovement(this.slotForPlayer(player))
       })
     );
 
@@ -1555,9 +1574,9 @@ export class ServerGameLoop {
     // Preserve the running tick so it stays monotonic across the reset (see createFreshRoomState).
     this.state = this.createFreshRoomState(players, this.state.tick);
     for (const player of players) {
-      this.seedInputTracking(player.id, SPAWN_BY_SIDE[player.spawnSide].yawRadians);
+      this.seedInputTracking(player.id, this.slotForPlayer(player).yawRadians);
     }
-    if (this.hasFullRoster(players) && this.connectedTeamCount(players) >= TEAMS_REQUIRED_TO_PLAY) this.startMatch();
+    if (this.hasFullRoster(players) && this.connectedTeamCount(players) >= this.teamsRequiredToPlay) this.startMatch();
     this.syncResetVoteState();
     if (this.debug.NET_DEBUG) this.logger(`room reset by player=${triggerPlayerId} players=${players.length} serial=${this.resetSerial}`);
   }
@@ -1672,11 +1691,11 @@ export class ServerGameLoop {
   }
 
   private hasEnoughConnectedTeamsToPlay(players?: PlayerState[]): boolean {
-    return this.connectedTeamCount(players) >= TEAMS_REQUIRED_TO_PLAY;
+    return this.connectedTeamCount(players) >= this.teamsRequiredToPlay;
   }
 
   private hasFullRoster(players: PlayerState[] = Object.values(this.state.players)): boolean {
-    return players.length >= MAX_PLAYERS;
+    return players.length >= this.maxPlayers;
   }
 
   private startMatch(): void {
@@ -1725,23 +1744,38 @@ export class ServerGameLoop {
     return { seq, input: lastInput };
   }
 
-  private nextPlayerSlot(): { teamId: string; spawnSide: SpawnSide } | null {
-    const usedSides = new Set(Object.values(this.state.players).map((player) => player.spawnSide));
-    // Current duel mode uses one spawn side per team. This is the seam for the future 2v2 spawn
-    // grid: add extra slots per side here without changing join/match-start code.
-    if (!usedSides.has('negativeZ')) return { teamId: TEAM_BY_SIDE.negativeZ, spawnSide: 'negativeZ' };
-    if (!usedSides.has('positiveZ')) return { teamId: TEAM_BY_SIDE.positiveZ, spawnSide: 'positiveZ' };
+  private slotForPlayer(player: Pick<PlayerState, 'teamId' | 'teamSlotIndex' | 'spawnSide'>): PlayerSlot {
+    const slot = this.playerSlots.find((candidate) =>
+      candidate.teamId === player.teamId && candidate.teamSlotIndex === player.teamSlotIndex
+    );
+    if (slot) return slot;
+    const fallback = SPAWN_BASE_BY_SIDE[player.spawnSide];
+    return {
+      teamId: player.teamId,
+      spawnSide: player.spawnSide,
+      teamSlotIndex: player.teamSlotIndex,
+      position: { ...fallback.position },
+      yawRadians: fallback.yawRadians
+    };
+  }
+
+  private nextPlayerSlot(): PlayerSlot | null {
+    const usedSlots = new Set(
+      Object.values(this.state.players).map((player) => `${player.teamId}:${player.teamSlotIndex}`)
+    );
+    for (const slot of this.playerSlots) {
+      if (!usedSlots.has(`${slot.teamId}:${slot.teamSlotIndex}`)) return slot;
+    }
     return null;
   }
 
-  private spawnMovement(spawnSide: SpawnSide): PlayerState['movement'] {
-    const spawn = SPAWN_BY_SIDE[spawnSide];
+  private spawnMovement(slot: PlayerSlot): PlayerState['movement'] {
     return {
-      position: spawn.position,
+      position: { ...slot.position },
       velocity: vec3(),
-      yawRadians: spawn.yawRadians,
+      yawRadians: slot.yawRadians,
       pitchRadians: 0,
-      facing: facingFromAngles(spawn.yawRadians, 0),
+      facing: facingFromAngles(slot.yawRadians, 0),
       grounded: true,
       crouching: false,
       sliding: false,
@@ -1800,11 +1834,15 @@ export class ServerGameLoop {
         resetSerial: this.resetSerial
       })
     });
-    const match = createMatchState(this.roomId, TEAM_IDS);
+    const match = createMatchState(this.roomId, [...this.teamIds], {
+      mode: this.matchMode,
+      playersPerTeam: this.playersPerTeam,
+      maxPlayers: this.maxPlayers
+    });
     // Start in warmup until the configured roster is present (#15). With a full roster we enter the pre-round
     // COUNTDOWN (startMatch is also called by the reset/join paths and re-affirms this); the match
     // clock shouldn't run while the creator waits for an opponent.
-    const readyToStart = this.hasFullRoster(players) && this.connectedTeamCount(players) >= TEAMS_REQUIRED_TO_PLAY;
+    const readyToStart = this.hasFullRoster(players) && this.connectedTeamCount(players) >= this.teamsRequiredToPlay;
     return {
       ...room,
       match: {
@@ -1824,6 +1862,31 @@ function createInitialBalls(): BallState[] {
     balls.push(createBallState(`ball_${i}`, vec3(start + i * spacing, GAME_CONSTANTS.ball.radius + 0.05, 0)));
   }
   return balls;
+}
+
+function buildPlayerSlots(teamIds: readonly string[], playersPerTeam: number): PlayerSlot[] {
+  const slots: PlayerSlot[] = [];
+  const clampedPerTeam = Math.max(1, playersPerTeam);
+  const laneOffsets = clampedPerTeam <= 1
+    ? [0]
+    : [-1.9, 1.9];
+
+  for (let teamSlotIndex = 0; teamSlotIndex < clampedPerTeam; teamSlotIndex += 1) {
+    for (let teamIndex = 0; teamIndex < teamIds.length; teamIndex += 1) {
+      const spawnSide: SpawnSide = teamIndex % 2 === 0 ? 'negativeZ' : 'positiveZ';
+      const base = SPAWN_BASE_BY_SIDE[spawnSide];
+      const x = laneOffsets[Math.min(teamSlotIndex, laneOffsets.length - 1)] ?? 0;
+      slots.push({
+        teamId: teamIds[teamIndex],
+        spawnSide,
+        teamSlotIndex,
+        position: vec3(x, base.position.y, base.position.z),
+        yawRadians: base.yawRadians
+      });
+    }
+  }
+
+  return slots;
 }
 
 /**

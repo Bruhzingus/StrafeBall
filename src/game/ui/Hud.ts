@@ -5,6 +5,7 @@ import { BallManager } from '../ball/BallManager';
 import { BallState } from '../ball/BallState';
 import { Crosshair } from './Crosshair';
 import type { ServerSnapshot } from '../../../shared/protocol';
+import type { PlayerState, RoomState } from '../../../shared/types';
 import { SERVER_TICK_RATE, SNAPSHOT_RATE } from '../../../shared/netConfig';
 
 export class Hud {
@@ -266,10 +267,18 @@ export class Hud {
     const room = snapshot.room;
     this.updateCountdown(room.match.status, room.match.countdownSeconds);
     this.updateBoundaryClock(room.match.boundary.elapsedSeconds, room.match.boundary.noBoundaries);
+    const players = Object.values(room.players).sort(compareHudPlayers);
     const local = room.players[localPlayerId];
-    const opponent = Object.values(room.players).find((player) => player.id !== localPlayerId);
-    const localScore = local ? room.match.scoreByTeamId[local.teamId] ?? 0 : 0;
-    const opponentScore = opponent ? room.match.scoreByTeamId[opponent.teamId] ?? 0 : 0;
+    const localTeamId = local?.teamId ?? room.match.teamIds[0] ?? 'blue';
+    const opponentTeamId = room.match.teamIds.find((teamId) => teamId !== localTeamId) ?? room.match.teamIds[1] ?? 'red';
+    const localTeam = players.filter((player) => player.teamId === localTeamId);
+    const opponentTeam = players.filter((player) => player.teamId === opponentTeamId);
+    const localScore = room.match.scoreByTeamId[localTeamId] ?? 0;
+    const opponentScore = room.match.scoreByTeamId[opponentTeamId] ?? 0;
+    const rosterLabel = formatHudRoster(localTeam, room.match.playersPerTeam, localPlayerId);
+    const opponentLabel = formatHudRoster(opponentTeam, room.match.playersPerTeam, localPlayerId);
+    const roomStatus = onlineRoomStatus(room);
+    const disconnectStatus = onlineDisconnectStatus(players);
     const noBoundariesTime = Math.max(0, TUNING.match.noBoundariesSeconds - room.match.boundary.elapsedSeconds);
     const resetVoteText = room.resetVote.voteCount > 0
       ? `<div class="scoreboard-msg hud-warn">Reset vote: ${room.resetVote.voteCount}/${room.resetVote.requiredVotes}</div>`
@@ -293,19 +302,23 @@ export class Hud {
     }
 
     const winner = room.match.winnerTeamId
-      ? `<div class="scoreboard-msg hud-good">Winner: ${escapeHtml(room.match.winnerTeamId)}</div>`
+      ? `<div class="scoreboard-msg hud-good">Winner: ${escapeHtml(room.match.winnerTeamId === localTeamId ? 'Your Team' : 'Opponents')}</div>`
       : '';
 
     this.setHtml(this.topCenter, `
-      <div class="scoreboard-title">Private Duel</div>
+      <div class="scoreboard-title">${room.match.mode === '2v2' ? 'Team Match' : 'Private Duel'}</div>
       <div class="scoreboard-digits">
-        <span class="scoreboard-team">${escapeHtml(local?.name ?? 'YOU')}</span>
+        <span class="scoreboard-team">YOUR TEAM</span>
         <span class="scoreboard-num scoreboard-num--blue">${localScore}</span>
         <span class="scoreboard-sep">-</span>
         <span class="scoreboard-num scoreboard-num--red">${opponentScore}</span>
-        <span class="scoreboard-team">${escapeHtml(opponent?.name ?? 'OPP')}</span>
+        <span class="scoreboard-team">${room.match.mode === '2v2' ? 'OPP TEAM' : 'OPP'}</span>
       </div>
-      <div class="scoreboard-sub">First to ${room.match.scoreLimit}</div>
+      <div class="scoreboard-sub">First to ${room.match.scoreLimit} &middot; ${players.length}/${room.match.maxPlayers} players</div>
+      <div class="scoreboard-msg">You: ${rosterLabel}</div>
+      <div class="scoreboard-msg">Opp: ${opponentLabel}</div>
+      ${roomStatus ? `<div class="scoreboard-msg hud-warn">${escapeHtml(roomStatus)}</div>` : ''}
+      ${disconnectStatus ? `<div class="scoreboard-msg hud-bad">${escapeHtml(disconnectStatus)}</div>` : ''}
       <div class="${room.match.boundary.noBoundaries ? 'hud-bad' : 'hud-warn'}" style="text-align:center;margin-top:3px">
         ${room.match.boundary.noBoundaries ? 'NO BOUNDARIES' : `Half-court: ${noBoundariesTime.toFixed(0)}s`}
       </div>
@@ -325,11 +338,21 @@ export class Hud {
       catching: left?.mode === 'catching' || right?.mode === 'catching',
       parryReady: !!left?.heldBallId && !!right?.heldBallId
     });
+    const teammateLine = localTeam
+      .filter((player) => player.id !== localPlayerId)
+      .map((player) => `${player.name}${player.connected === false ? ' (DC)' : ''}`)
+      .join(' / ') || (room.match.mode === '2v2' ? 'Open' : '-');
+    const opponentsLine = opponentTeam
+      .map((player) => `${player.name}${player.connected === false ? ' (DC)' : ''}`)
+      .join(' / ') || 'Open';
     this.setHtml(this.bottomLeft, `
       <div class="hud-title">Server State</div>
       <div>M1 L [${escapeHtml(left?.heldBallId ?? '-')}]: ${escapeHtml(left?.mode ?? 'empty')}</div>
       <div>M2 R [${escapeHtml(right?.heldBallId ?? '-')}]: ${escapeHtml(right?.mode ?? 'empty')}</div>
       <div>Stamina: ${staminaHtml}</div>
+      <div>Team: ${escapeHtml(localTeamId)} slot ${local ? local.teamSlotIndex + 1 : '-'}</div>
+      <div>Teammate: ${escapeHtml(teammateLine)}</div>
+      <div>Opponents: ${escapeHtml(opponentsLine)}</div>
       <div>Catch: face ball inside cone</div>
       <div>Balls - ${this.networkBallTally(snapshot)}</div>
       <div style="max-width:320px;white-space:normal">${this.networkBallList(snapshot)}</div>
@@ -560,4 +583,39 @@ function escapeHtml(value: string): string {
     .replace(/>/g, '&gt;')
     .replace(/"/g, '&quot;')
     .replace(/'/g, '&#039;');
+}
+
+function compareHudPlayers(a: PlayerState, b: PlayerState): number {
+  if (a.teamId !== b.teamId) return a.teamId.localeCompare(b.teamId);
+  if (a.teamSlotIndex !== b.teamSlotIndex) return a.teamSlotIndex - b.teamSlotIndex;
+  return a.id.localeCompare(b.id);
+}
+
+function formatHudRoster(players: PlayerState[], playersPerTeam: number, localPlayerId: string): string {
+  const names = players.map((player) => escapeHtml(player.id === localPlayerId ? `${player.name} (You)` : player.name));
+  while (names.length < playersPerTeam) names.push('Open');
+  return names.join(' / ');
+}
+
+function onlineRoomStatus(room: RoomState): string {
+  const playerCount = Object.keys(room.players).length;
+  const missingSeats = Math.max(0, room.match.maxPlayers - playerCount);
+  if (room.match.status === 'countdown') {
+    return `Teams ready. Round starts in ${Math.max(1, Math.ceil(room.match.countdownSeconds))}s.`;
+  }
+  if (missingSeats > 0) {
+    return `Waiting for ${missingSeats} more player${missingSeats === 1 ? '' : 's'}.`;
+  }
+  if (room.match.status === 'complete') {
+    return 'Match complete.';
+  }
+  return '';
+}
+
+function onlineDisconnectStatus(players: PlayerState[]): string {
+  const disconnected = players.filter((player) => player.connected === false);
+  if (disconnected.length === 0) return '';
+  return disconnected
+    .map((player) => `${player.name} ${Math.max(0, Math.ceil(((player.reconnectDeadlineAtMs ?? 0) - Date.now()) / 1000))}s`)
+    .join(' / ');
 }

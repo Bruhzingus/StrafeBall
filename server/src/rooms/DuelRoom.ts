@@ -27,6 +27,7 @@ import { advanceSnapshotDeadline } from './snapshotScheduler';
 
 export interface DuelRoomOptions {
   name?: string;
+  mode?: '1v1' | '2v2';
 }
 
 // All timing/rate constants now come from the centralized netConfig — never hardcode a rate here.
@@ -58,11 +59,13 @@ interface Bucket {
 }
 
 export class DuelRoom extends Room {
-  maxClients = GAME_CONSTANTS.match.teamIds.length * GAME_CONSTANTS.match.playersPerTeam;
+  maxClients = GAME_CONSTANTS.match.teamIds.length;
   autoDispose = true;
 
   private game!: ServerGameLoop;
   private readonly debug: DebugFlags = resolveServerDebugFlags();
+  private roomMode: '1v1' | '2v2' = '1v1';
+  private playersPerTeam = 1;
   private readonly buckets = new Map<string, Map<string, Bucket>>();
   private readonly createdAtMs = Date.now();
   private rateWindowStartedAtMs = 0;
@@ -93,20 +96,28 @@ export class DuelRoom extends Room {
   private readonly inputPacketsThisWindowByPlayerId = new Map<string, number>();
   private readonly eventLoopDelay = monitorEventLoopDelay({ resolution: 20 });
 
-  onCreate(): void {
+  onCreate(options: DuelRoomOptions = {}): void {
     activeRoomCount += 1;
     this.eventLoopDelay.enable();
     this.setPrivate(true);
     this.patchRate = COLYSEUS_PATCH_RATE_MS;
+    this.roomMode = options.mode === '2v2' ? '2v2' : '1v1';
+    this.playersPerTeam = this.roomMode === '2v2' ? GAME_CONSTANTS.match.playersPerTeam : 1;
+    this.maxClients = GAME_CONSTANTS.match.teamIds.length * this.playersPerTeam;
     // Coarse built-in backstop on top of the per-type token buckets below (#11).
     this.maxMessagesPerSecond = Math.max(150, Math.ceil(SERVER_TICK_RATE * 3));
     this.game = new ServerGameLoop(this.roomId, {
       tickRate: SERVER_TICK_RATE,
+      mode: this.roomMode,
+      playersPerTeam: this.playersPerTeam,
       logger: (message) => this.log(message),
       debug: this.debug
     });
     // One-time room-created line describing the active net config + the manual-snapshot patch mode.
-    this.log(`room created ${describeNetConfig()} colyseusPatchRate=${formatPatchRate(COLYSEUS_PATCH_RATE_MS)}`);
+    this.log(
+      `room created mode=${this.roomMode} playersPerTeam=${this.playersPerTeam} ${describeNetConfig()} ` +
+      `colyseusPatchRate=${formatPatchRate(COLYSEUS_PATCH_RATE_MS)}`
+    );
 
     this.onMessage('input', (client, message: Partial<InputCommand> | (Partial<PlayerInput> & { sequence?: number }) | undefined) => {
       if (!this.allow(client, 'input')) return;
@@ -257,7 +268,7 @@ export class DuelRoom extends Room {
   // Unconsented disconnect: pause the player and give them a window to reconnect with their
   // state intact (#12). If the window elapses, the framework proceeds to onLeave.
   async onDrop(client: Client, _code?: number): Promise<void> {
-    this.game.setConnected(client.sessionId, false);
+    this.game.setConnected(client.sessionId, false, Date.now() + RECONNECT_SECONDS * 1000);
     this.log(`player dropped id=${client.sessionId} — awaiting reconnection`);
     try {
       await this.allowReconnection(client, RECONNECT_SECONDS);
@@ -267,7 +278,7 @@ export class DuelRoom extends Room {
   }
 
   onReconnect(client: Client): void {
-    this.game.setConnected(client.sessionId, true);
+    this.game.setConnected(client.sessionId, true, null);
     this.log(`player reconnected id=${client.sessionId}`);
   }
 

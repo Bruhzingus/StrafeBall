@@ -1134,6 +1134,30 @@ html, body {
 .multiplayer-status[data-status="error"] { color: var(--school-red); }
 .multiplayer-status[data-status="offline"] { color: var(--school-blue); }
 
+.multiplayer-room-summary {
+  margin-top: 8px;
+  color: #21314f;
+  font-size: 12px;
+  line-height: 1.45;
+}
+
+.multiplayer-room-summary__line + .multiplayer-room-summary__line {
+  margin-top: 3px;
+}
+
+.multiplayer-room-summary__open {
+  color: rgba(33, 49, 79, 0.56);
+  font-style: italic;
+}
+
+.multiplayer-room-notice {
+  min-height: 18px;
+  margin-top: 6px;
+  color: #40557d;
+  font-size: 11px;
+  font-weight: 700;
+}
+
 .multiplayer-modal {
   position: fixed;
   inset: 0;

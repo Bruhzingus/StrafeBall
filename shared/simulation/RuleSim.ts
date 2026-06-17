@@ -4,6 +4,7 @@ import type {
   BoundaryEvent,
   HalfCourtViolationState,
   LegalHalf,
+  MatchMode,
   MatchState,
   Vec3
 } from '../types';
@@ -22,10 +23,13 @@ export function createMatchState(
 
   const base: MatchState = {
     id,
+    mode: '1v1',
     status: 'playing',
     elapsedSeconds: 0,
     scoreLimit: constants.match.scoreLimit,
     teamIds: [...teamIds],
+    playersPerTeam: 1,
+    maxPlayers: Math.max(2, teamIds.length),
     scoreByTeamId,
     winnerTeamId: null,
     countdownSeconds: 0,
@@ -41,6 +45,7 @@ export function createMatchState(
     ...base,
     ...overrides,
     id,
+    mode: (overrides.mode ?? base.mode) as MatchMode,
     teamIds: overrides.teamIds ? [...overrides.teamIds] : base.teamIds,
     scoreByTeamId: { ...base.scoreByTeamId, ...overrides.scoreByTeamId },
     boundary: {

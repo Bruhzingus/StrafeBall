@@ -24,6 +24,7 @@ export function createPlayerState(
     name: overrides.name ?? id,
     teamId,
     spawnSide,
+    teamSlotIndex: overrides.teamSlotIndex ?? 0,
     legalHalf,
     movement: {
       position: vec3(),
@@ -43,6 +44,7 @@ export function createPlayerState(
     dash: createDashState(),
     score: 0,
     connected: true,
+    reconnectDeadlineAtMs: overrides.reconnectDeadlineAtMs ?? null,
     lastProcessedInputSeq: 0
   };
 

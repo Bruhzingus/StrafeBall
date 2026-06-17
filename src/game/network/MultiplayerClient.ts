@@ -14,7 +14,7 @@ import type {
   ThrowEvent,
   ThrowRequest
 } from '../../../shared/protocol';
-import type { HandSide, PlayerInput, Vec3 } from '../../../shared/types';
+import type { HandSide, MatchMode, PlayerInput, Vec3 } from '../../../shared/types';
 import { PERF_REPORT_INTERVAL_MS } from '../../../shared/netConfig';
 
 export type ConnectionStatus = 'offline' | 'connecting' | 'connected' | 'error';
@@ -79,8 +79,8 @@ export class MultiplayerClient {
     return this.status === 'connected' && this.room !== null;
   }
 
-  async createRoom(name: string): Promise<void> {
-    await this.connect(() => this.client.create('duel', { name: cleanName(name) }));
+  async createRoom(name: string, mode: MatchMode = '1v1'): Promise<void> {
+    await this.connect(() => this.client.create('duel', { name: cleanName(name), mode }));
   }
 
   async joinRoom(roomId: string, name: string): Promise<void> {

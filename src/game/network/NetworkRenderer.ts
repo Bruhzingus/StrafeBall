@@ -1141,6 +1141,7 @@ function createScratchPlayer(movement: PlayerState['movement']): PlayerState {
     name: '',
     teamId: '',
     spawnSide: 'negativeZ',
+    teamSlotIndex: 0,
     legalHalf: 'negativeZ',
     movement,
     movementInternal: {
@@ -1165,6 +1166,7 @@ function createScratchPlayer(movement: PlayerState['movement']): PlayerState {
     dash: { charges: 0, rechargeTimerSeconds: 0, cooldownSeconds: 0 },
     score: 0,
     connected: true,
+    reconnectDeadlineAtMs: null,
     lastProcessedInputSeq: 0
   };
 }

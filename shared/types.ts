@@ -7,6 +7,7 @@ export interface Vec3 {
 export type HandSide = 'left' | 'right';
 export type SpawnSide = 'negativeZ' | 'positiveZ';
 export type LegalHalf = SpawnSide;
+export type MatchMode = '1v1' | '2v2';
 
 export type BallPhase = 'loose' | 'held' | 'live' | 'dead' | 'deflected';
 export type BallOwnerKind = 'player' | 'launcher' | 'bot' | 'dummy' | null;
@@ -131,6 +132,7 @@ export interface PlayerState {
   name: string;
   teamId: string;
   spawnSide: SpawnSide;
+  teamSlotIndex: number;
   legalHalf: LegalHalf;
   movement: PlayerMovementState;
   movementInternal: MovementInternalState;
@@ -138,6 +140,7 @@ export interface PlayerState {
   dash: DashState;
   score: number;
   connected: boolean;
+  reconnectDeadlineAtMs: number | null;
   // Highest input sequence number the server has simulated for this player. The client uses
   // it to discard acknowledged inputs and replay only the unacknowledged ones (reconciliation).
   lastProcessedInputSeq: number;
@@ -194,10 +197,13 @@ export interface MatchBoundaryState {
 
 export interface MatchState {
   id: string;
+  mode: MatchMode;
   status: MatchStatus;
   elapsedSeconds: number;
   scoreLimit: number;
   teamIds: string[];
+  playersPerTeam: number;
+  maxPlayers: number;
   scoreByTeamId: Record<string, number>;
   winnerTeamId: string | null;
   boundary: MatchBoundaryState;

@@ -1,5 +1,6 @@
 import { GAME_CONSTANTS } from '../../../shared/constants';
 import type { LobbyMode } from '../practice/LobbyModePortals';
+import type { MatchMode, RoomState } from '../../../shared/types';
 import { MultiplayerClient } from './MultiplayerClient';
 
 type PendingAction = (() => Promise<void>) | null;
@@ -18,6 +19,9 @@ export class MultiplayerOverlay {
   private readonly statusValue: HTMLSpanElement;
   private readonly roomValue: HTMLSpanElement;
   private readonly pingValue: HTMLSpanElement;
+  private readonly capacityValue: HTMLSpanElement;
+  private readonly rosterValue: HTMLDivElement;
+  private readonly noticeValue: HTMLDivElement;
   private readonly errorValue: HTMLDivElement;
   private readonly createButton: HTMLButtonElement;
   private readonly joinButton: HTMLButtonElement;
@@ -44,7 +48,8 @@ export class MultiplayerOverlay {
     pingMs: undefined as number | null | undefined,
     errorMessage: '',
     selectedMode: null as LobbyMode | null,
-    modalOpen: false
+    modalOpen: false,
+    roomSummaryKey: ''
   };
 
   constructor(private readonly client: MultiplayerClient) {
@@ -94,6 +99,9 @@ export class MultiplayerOverlay {
         </div>
         <div class="multiplayer-line">Status <span class="multiplayer-status">practice</span></div>
         <div class="multiplayer-line">Ping <span class="multiplayer-ping">-</span></div>
+        <div class="multiplayer-line">Capacity <span class="multiplayer-capacity">0 / 0</span></div>
+        <div class="multiplayer-room-summary"></div>
+        <div class="multiplayer-room-notice"></div>
         <div class="multiplayer-error"></div>
       </div>
 
@@ -118,6 +126,9 @@ export class MultiplayerOverlay {
     this.statusValue = this.mustQuery<HTMLSpanElement>('.multiplayer-status');
     this.roomValue = this.mustQuery<HTMLSpanElement>('.multiplayer-room');
     this.pingValue = this.mustQuery<HTMLSpanElement>('.multiplayer-ping');
+    this.capacityValue = this.mustQuery<HTMLSpanElement>('.multiplayer-capacity');
+    this.rosterValue = this.mustQuery<HTMLDivElement>('.multiplayer-room-summary');
+    this.noticeValue = this.mustQuery<HTMLDivElement>('.multiplayer-room-notice');
     this.errorValue = this.mustQuery<HTMLDivElement>('.multiplayer-error');
     this.createButton = this.mustQuery<HTMLButtonElement>('.multiplayer-create');
     this.joinButton = this.mustQuery<HTMLButtonElement>('.multiplayer-join');
@@ -174,8 +185,13 @@ export class MultiplayerOverlay {
   }
 
   update(): void {
+    const snapshot = this.client.latestSnapshot;
+    if (this.client.connected && snapshot) {
+      this.selectedMode = snapshot.room.match.mode;
+    }
     const connected = this.client.connected;
     const busy = this.client.status === 'connecting';
+    const roomSummary = summarizeRoom(snapshot?.room ?? null, this.client.localPlayerId);
     if (
       this.lastRendered.connected === connected &&
       this.lastRendered.busy === busy &&
@@ -184,7 +200,8 @@ export class MultiplayerOverlay {
       this.lastRendered.pingMs === this.client.pingMs &&
       this.lastRendered.errorMessage === this.client.errorMessage &&
       this.lastRendered.selectedMode === this.selectedMode &&
-      this.lastRendered.modalOpen === this.modalOpen
+      this.lastRendered.modalOpen === this.modalOpen &&
+      this.lastRendered.roomSummaryKey === roomSummary.key
     ) {
       return;
     }
@@ -196,26 +213,30 @@ export class MultiplayerOverlay {
       pingMs: this.client.pingMs,
       errorMessage: this.client.errorMessage,
       selectedMode: this.selectedMode,
-      modalOpen: this.modalOpen
+      modalOpen: this.modalOpen,
+      roomSummaryKey: roomSummary.key
     };
 
     const statusLabel = busy
       ? 'connecting...'
-      : connected ? 'connected' : this.client.status === 'error' ? 'needs attention' : 'practice';
+      : connected ? roomSummary.statusLabel : this.client.status === 'error' ? 'needs attention' : 'practice';
     this.statusValue.textContent = statusLabel;
     this.statusValue.dataset.status = this.client.status;
     this.roomValue.textContent = this.client.roomId || 'Practice';
     this.pingValue.textContent = this.client.pingMs === null ? '-' : `${this.client.pingMs} ms`;
+    this.capacityValue.textContent = roomSummary.capacityLabel;
+    this.rosterValue.innerHTML = roomSummary.rosterHtml;
+    this.noticeValue.textContent = roomSummary.noticeText;
     this.errorValue.textContent = friendlyError(this.client.errorMessage);
 
     const supported = this.modeSupported(this.selectedMode);
     this.modeTitle.textContent = MODE_LABEL[this.selectedMode];
     this.modeSubtitle.textContent = this.selectedMode === '1v1'
       ? 'Classic private duel. Create a code or join a friend.'
-      : 'The lobby UI is ready; server-side 2v2 gets enabled in the next 2v2 phase.';
+      : 'Two players per side. Fill both seats on each team before the match starts.';
     this.modeNotice.textContent = supported
       ? 'Tip: use F11 fullscreen before the match starts.'
-      : '2v2 is staged here, but the server is still configured for 1v1 rooms.';
+      : '2v2 is disabled in the active build configuration.';
     this.panel.dataset.mode = this.selectedMode;
     for (const button of this.modeButtons) {
       button.classList.toggle('multiplayer-mode-tab--active', button.dataset.mode === this.selectedMode);
@@ -237,7 +258,7 @@ export class MultiplayerOverlay {
 
   private createRoom = (): void => {
     if (!this.modeSupported(this.selectedMode)) return;
-    this.runWithFullscreenCheck(() => this.client.createRoom(this.nameInput.value));
+    this.runWithFullscreenCheck(() => this.client.createRoom(this.nameInput.value, this.selectedMode));
   };
 
   private joinRoom = (): void => {
@@ -378,4 +399,101 @@ function isLikelyFullscreen(): boolean {
   const widthDelta = Math.abs(window.innerWidth - screen.availWidth);
   const heightDelta = Math.abs(window.innerHeight - screen.availHeight);
   return widthDelta <= 8 && heightDelta <= 8;
+}
+
+function summarizeRoom(room: RoomState | null, localPlayerId: string): {
+  key: string;
+  statusLabel: string;
+  capacityLabel: string;
+  rosterHtml: string;
+  noticeText: string;
+} {
+  if (!room) {
+    return {
+      key: 'practice',
+      statusLabel: 'practice',
+      capacityLabel: '0 / 0',
+      rosterHtml: '',
+      noticeText: 'Warm up in the practice court, then create or join a room.'
+    };
+  }
+
+  const players = Object.values(room.players).sort(compareRosterPlayers);
+  const maxPlayers = room.match.maxPlayers;
+  const missingSeats = Math.max(0, maxPlayers - players.length);
+  const disconnected = players.filter((player) => player.connected === false);
+  const local = room.players[localPlayerId];
+  const localTeamId = local?.teamId ?? room.match.teamIds[0] ?? 'blue';
+  const yourTeam = players.filter((player) => player.teamId === localTeamId);
+  const opponentTeam = players.filter((player) => player.teamId !== localTeamId);
+  const statusLabel = disconnected.length > 0
+    ? 'reconnect pending'
+    : room.match.status === 'warmup'
+      ? 'waiting'
+      : room.match.status === 'countdown'
+        ? 'countdown'
+        : room.match.status === 'complete'
+          ? 'complete'
+          : 'connected';
+
+  let noticeText = 'Teams ready.';
+  if (disconnected.length > 0) {
+    noticeText = disconnected
+      .map((player) => `${player.name} ${formatReconnectSeconds(player.reconnectDeadlineAtMs)}s`)
+      .join(' · ');
+  } else if (missingSeats > 0) {
+    noticeText = `Waiting for ${missingSeats} more player${missingSeats === 1 ? '' : 's'}.`;
+  } else if (room.match.status === 'countdown') {
+    noticeText = `Teams locked. Round starts in ${Math.max(1, Math.ceil(room.match.countdownSeconds))}s.`;
+  }
+
+  const rosterHtml = `
+    <div class="multiplayer-room-summary__line"><strong>${room.match.mode === '2v2' ? 'Your Team' : 'You'}</strong> ${formatRoster(yourTeam, room.match.playersPerTeam, localPlayerId)}</div>
+    <div class="multiplayer-room-summary__line"><strong>${room.match.mode === '2v2' ? 'Opponents' : 'Opponent'}</strong> ${formatRoster(opponentTeam, room.match.playersPerTeam, localPlayerId)}</div>
+  `;
+
+  return {
+    key: [
+      room.match.mode,
+      room.match.status,
+      room.match.countdownSeconds.toFixed(0),
+      players.length,
+      maxPlayers,
+      disconnected.map((player) => `${player.id}:${formatReconnectSeconds(player.reconnectDeadlineAtMs)}`).join(','),
+      players.map((player) => `${player.id}:${player.connected ? 1 : 0}:${player.teamId}:${player.teamSlotIndex}:${player.name}`).join('|')
+    ].join('~'),
+    statusLabel,
+    capacityLabel: `${players.length} / ${maxPlayers}`,
+    rosterHtml,
+    noticeText
+  };
+}
+
+function formatRoster(players: RoomState['players'][string][], slotsPerTeam: number, localPlayerId: string): string {
+  const names = players.map((player) => {
+    const suffix = player.id === localPlayerId ? ' (You)' : player.connected === false ? ' (DC)' : '';
+    return `${escapeHtml(player.name)}${suffix}`;
+  });
+  while (names.length < slotsPerTeam) names.push('<span class="multiplayer-room-summary__open">Open</span>');
+  return names.join(' / ');
+}
+
+function formatReconnectSeconds(deadlineAtMs: number | null): number {
+  if (!deadlineAtMs) return 0;
+  return Math.max(0, Math.ceil((deadlineAtMs - Date.now()) / 1000));
+}
+
+function compareRosterPlayers(a: RoomState['players'][string], b: RoomState['players'][string]): number {
+  if (a.teamId !== b.teamId) return a.teamId.localeCompare(b.teamId);
+  if (a.teamSlotIndex !== b.teamSlotIndex) return a.teamSlotIndex - b.teamSlotIndex;
+  return a.id.localeCompare(b.id);
+}
+
+function escapeHtml(value: string): string {
+  return value
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&#039;');
 }
