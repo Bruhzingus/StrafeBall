@@ -174,7 +174,10 @@ const SPAWN_BY_SIDE: Record<SpawnSide, { position: Vec3; yawRadians: number }> =
   positiveZ: { position: vec3(0, 0, 12), yawRadians: Math.PI }
 };
 
-const TEAM_IDS = ['blue', 'red'];
+const TEAM_IDS = GAME_CONSTANTS.match.teamIds;
+const PLAYERS_PER_TEAM = GAME_CONSTANTS.match.playersPerTeam;
+const MAX_PLAYERS = TEAM_IDS.length * PLAYERS_PER_TEAM;
+const TEAMS_REQUIRED_TO_PLAY = Math.min(2, TEAM_IDS.length);
 // Max inputs buffered per player before we drop the oldest. Driven by netConfig so the buffer
 // scales with the active tick rate (~1 s of headroom) instead of a hardcoded 30Hz assumption.
 const MAX_INPUT_QUEUE = SERVER_INPUT_QUEUE_LIMIT;
@@ -269,26 +272,26 @@ export class ServerGameLoop {
   }
 
   addPlayer(playerId: string, rawName?: string): PlayerState | null {
-    if (Object.keys(this.state.players).length >= 2) return null;
+    if (this.playerCount() >= MAX_PLAYERS) return null;
     if (this.state.players[playerId]) return this.state.players[playerId];
 
-    const spawnSide = this.nextSpawnSide();
-    if (!spawnSide) return null;
+    const slot = this.nextPlayerSlot();
+    if (!slot) return null;
 
-    const spawn = SPAWN_BY_SIDE[spawnSide];
-    const name = sanitizeName(rawName, Object.keys(this.state.players).length + 1);
-    const player = createPlayerState(playerId, TEAM_BY_SIDE[spawnSide], spawnSide, {
+    const spawn = SPAWN_BY_SIDE[slot.spawnSide];
+    const name = sanitizeName(rawName, this.playerCount() + 1);
+    const player = createPlayerState(playerId, slot.teamId, slot.spawnSide, {
       name,
-      spawnSide,
-      movement: this.spawnMovement(spawnSide)
+      spawnSide: slot.spawnSide,
+      movement: this.spawnMovement(slot.spawnSide)
     });
 
     this.state.players[playerId] = player;
     this.seedInputTracking(playerId, spawn.yawRadians);
     this.syncPlayerScores();
 
-    // Warmup → playing once two players are present; (re)start the match clock fresh.
-    if (Object.keys(this.state.players).length === 2 && this.state.match.status !== 'complete') {
+    // Warmup → playing once the configured roster is ready; (re)start the match clock fresh.
+    if (this.hasFullRoster() && this.hasEnoughConnectedTeamsToPlay() && this.state.match.status !== 'complete') {
       this.startMatch();
     }
     this.syncResetVoteState();
@@ -327,18 +330,19 @@ export class ServerGameLoop {
   }
 
   /**
-   * Handle a player abandoning (a non-consented leave that didn't reconnect in time). If a match
-   * is in progress, the remaining player wins by forfeit. Then the player is removed.
+   * Handle a player abandoning (a non-consented leave that didn't reconnect in time). If that leaves
+   * only one connected team in an active match, the remaining team wins by forfeit.
    */
   abandon(playerId: string): void {
     const player = this.state.players[playerId];
     if (!player) return;
-    const others = Object.values(this.state.players).filter((p) => p.id !== playerId);
     // A match "in progress" includes the pre-round countdown — leaving during it still forfeits.
     const matchInProgress = this.state.match.status === 'playing' || this.state.match.status === 'countdown';
-    if (matchInProgress && others.length === 1) {
-      this.forfeitTo(others[0].teamId);
-      if (this.debug.NET_DEBUG) this.logger(`forfeit win team=${others[0].teamId} (opponent abandoned)`);
+    const remainingTeams = this.connectedTeamIds(playerId);
+    if (matchInProgress && remainingTeams.length === 1) {
+      const winnerTeamId = remainingTeams[0];
+      this.forfeitTo(winnerTeamId);
+      if (this.debug.NET_DEBUG) this.logger(`forfeit win team=${winnerTeamId} (opponent abandoned)`);
     }
     this.removePlayer(playerId);
   }
@@ -591,7 +595,7 @@ export class ServerGameLoop {
     this.advanceCountdown(fixedDt);
 
     const counting = this.state.match.status === 'countdown';
-    const active = this.connectedCount() >= 2 && this.state.match.status === 'playing';
+    const active = this.hasEnoughConnectedTeamsToPlay() && this.state.match.status === 'playing';
 
     for (const playerId in this.state.players) {
       const player = this.state.players[playerId];
@@ -614,7 +618,7 @@ export class ServerGameLoop {
 
     // Move balls, record their swept positions, and resolve combat per live ball in the correct
     // order (parry → catch → hit). Scoring/hit only counts while the match is active; catch/parry
-    // need an opponent's live ball, which only exists with two players present anyway. During the
+    // need an opponent's live ball, which only exists once opposing teams are present. During the
     // countdown balls are still settled (so loose balls rest) but no combat is resolved.
     this.updateBalls(fixedDt, active);
 
@@ -1553,7 +1557,7 @@ export class ServerGameLoop {
     for (const player of players) {
       this.seedInputTracking(player.id, SPAWN_BY_SIDE[player.spawnSide].yawRadians);
     }
-    if (players.length === 2) this.startMatch();
+    if (this.hasFullRoster(players) && this.connectedTeamCount(players) >= TEAMS_REQUIRED_TO_PLAY) this.startMatch();
     this.syncResetVoteState();
     if (this.debug.NET_DEBUG) this.logger(`room reset by player=${triggerPlayerId} players=${players.length} serial=${this.resetSerial}`);
   }
@@ -1650,6 +1654,31 @@ export class ServerGameLoop {
     return count;
   }
 
+  private playerCount(players: PlayerState[] = Object.values(this.state.players)): number {
+    return players.length;
+  }
+
+  private connectedTeamIds(exceptPlayerId?: string, players: PlayerState[] = Object.values(this.state.players)): string[] {
+    const teams = new Set<string>();
+    for (const player of players) {
+      if (player.id === exceptPlayerId || player.connected === false) continue;
+      teams.add(player.teamId);
+    }
+    return [...teams];
+  }
+
+  private connectedTeamCount(players?: PlayerState[]): number {
+    return this.connectedTeamIds(undefined, players).length;
+  }
+
+  private hasEnoughConnectedTeamsToPlay(players?: PlayerState[]): boolean {
+    return this.connectedTeamCount(players) >= TEAMS_REQUIRED_TO_PLAY;
+  }
+
+  private hasFullRoster(players: PlayerState[] = Object.values(this.state.players)): boolean {
+    return players.length >= MAX_PLAYERS;
+  }
+
   private startMatch(): void {
     // Begin with a pre-round COUNTDOWN rather than jumping straight to 'playing'. During it the
     // server pins players to spawn (see pinPlayersToSpawn / step) so the round starts cleanly and
@@ -1696,10 +1725,12 @@ export class ServerGameLoop {
     return { seq, input: lastInput };
   }
 
-  private nextSpawnSide(): SpawnSide | null {
+  private nextPlayerSlot(): { teamId: string; spawnSide: SpawnSide } | null {
     const usedSides = new Set(Object.values(this.state.players).map((player) => player.spawnSide));
-    if (!usedSides.has('negativeZ')) return 'negativeZ';
-    if (!usedSides.has('positiveZ')) return 'positiveZ';
+    // Current duel mode uses one spawn side per team. This is the seam for the future 2v2 spawn
+    // grid: add extra slots per side here without changing join/match-start code.
+    if (!usedSides.has('negativeZ')) return { teamId: TEAM_BY_SIDE.negativeZ, spawnSide: 'negativeZ' };
+    if (!usedSides.has('positiveZ')) return { teamId: TEAM_BY_SIDE.positiveZ, spawnSide: 'positiveZ' };
     return null;
   }
 
@@ -1770,16 +1801,16 @@ export class ServerGameLoop {
       })
     });
     const match = createMatchState(this.roomId, TEAM_IDS);
-    // Start in warmup until two players are present (#15). With two present we enter the pre-round
+    // Start in warmup until the configured roster is present (#15). With a full roster we enter the pre-round
     // COUNTDOWN (startMatch is also called by the reset/join paths and re-affirms this); the match
     // clock shouldn't run while the creator waits for an opponent.
-    const twoPlayers = players.length >= 2;
+    const readyToStart = this.hasFullRoster(players) && this.connectedTeamCount(players) >= TEAMS_REQUIRED_TO_PLAY;
     return {
       ...room,
       match: {
         ...match,
-        status: twoPlayers ? 'countdown' : 'warmup',
-        countdownSeconds: twoPlayers ? GAME_CONSTANTS.match.countdownSeconds : 0
+        status: readyToStart ? 'countdown' : 'warmup',
+        countdownSeconds: readyToStart ? GAME_CONSTANTS.match.countdownSeconds : 0
       }
     };
   }

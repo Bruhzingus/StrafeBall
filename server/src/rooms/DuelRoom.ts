@@ -7,6 +7,7 @@ import type {
   ServerSnapshot
 } from '../../../shared/protocol';
 import type { PlayerInput } from '../../../shared/types';
+import { GAME_CONSTANTS } from '../../../shared/constants';
 import {
   CLIENT_INPUT_RATE,
   MAX_ACCUMULATOR_CLAMP_MS,
@@ -32,8 +33,8 @@ export interface DuelRoomOptions {
 // Visual state is sent through explicit `snapshot` messages, not Colyseus Schema patches, so we
 // keep the manual snapshot cadence (SNAPSHOT_RATE) explicit and decoupled from the sim tick.
 const COLYSEUS_PATCH_RATE_MS: number | null = null;
-// How long a dropped player has to reconnect before they forfeit (#12).
-const RECONNECT_SECONDS = 20;
+// How long a dropped player has to reconnect before their team may forfeit (#12).
+const RECONNECT_SECONDS = GAME_CONSTANTS.match.disconnectForfeitSeconds;
 // Hard cap on concurrent duel rooms per process (#19 — cheap DoS guard).
 const MAX_ROOMS = 200;
 let activeRoomCount = 0;
@@ -57,7 +58,7 @@ interface Bucket {
 }
 
 export class DuelRoom extends Room {
-  maxClients = 2;
+  maxClients = GAME_CONSTANTS.match.teamIds.length * GAME_CONSTANTS.match.playersPerTeam;
   autoDispose = true;
 
   private game!: ServerGameLoop;

@@ -210,6 +210,9 @@ export const GAME_CONSTANTS = {
   },
 
   match: {
+    teamIds: ['blue', 'red'] as string[],
+    playersPerTeam: 1,
+    disconnectForfeitSeconds: 15,
     scoreLimit: 5,
     noBoundariesSeconds: 120,
     halfCourtCountdownSeconds: 10,

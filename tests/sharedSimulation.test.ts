@@ -347,8 +347,8 @@ describe('backflip QTE tiers', () => {
 
   it('dead-center is the top tier and equals the fastest speed', () => {
     expect(backflipQteTier(0)).toBe(tierCount);
-    // Top tier = 10% above the legacy backflip super (quick × 2.0) → quick × 2.2.
-    expect(backflipQteSpeed(tierCount)).toBeCloseTo(GAME_CONSTANTS.ball.quickThrowSpeed * 2.2, 5);
+    const topMultiplier = GAME_CONSTANTS.backflip.qte.tierSpeedMultipliers[tierCount - 1];
+    expect(backflipQteSpeed(tierCount)).toBeCloseTo(GAME_CONSTANTS.ball.quickThrowSpeed * topMultiplier, 5);
   });
 
   it('the edge of the hit zone is the slowest tier (a regular quick throw)', () => {
