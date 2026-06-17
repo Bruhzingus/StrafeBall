@@ -40,6 +40,47 @@ export interface ThrowEvent {
   resetSerial: number;
 }
 
+/**
+ * Immediate combat events broadcast BEFORE the next snapshot so clients react in the same
+ * render frame. Numeric enums keep payloads tiny (no string discriminators on the wire).
+ */
+export interface CatchEvent {
+  type: 'catch-event';
+  ballId: string;
+  catcherId: string;
+  hand: HandSide;
+  serverTick: number;
+  serverTimeMs: number;
+  /** True when lag-comp reclaim caught a ball that had already hit/passed the defender. */
+  reclaim: boolean;
+}
+
+export interface ParryEvent {
+  type: 'parry-event';
+  ballId: string;
+  deflectorId: string;
+  serverTick: number;
+  serverTimeMs: number;
+}
+
+export interface HitEvent {
+  type: 'hit-event';
+  ballId: string;
+  throwerId: string;
+  targetId: string;
+  serverTick: number;
+  serverTimeMs: number;
+}
+
+export interface HitRevertEvent {
+  type: 'hit-revert-event';
+  ballId: string;
+  throwerId: string;
+  targetId: string;
+  serverTick: number;
+  serverTimeMs: number;
+}
+
 export interface PickupRequest {
   type: 'pickup';
   playerId: string;
@@ -85,6 +126,10 @@ export type ClientMessage =
 export type ServerMessage =
   | ServerSnapshot
   | ThrowEvent
+  | CatchEvent
+  | ParryEvent
+  | HitEvent
+  | HitRevertEvent
   | { type: 'joined-room'; room: RoomState; playerId: string }
   | { type: 'player-joined'; playerId: string }
   | { type: 'player-left'; playerId: string }

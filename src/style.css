@@ -612,6 +612,65 @@ html, body {
   opacity: 0.9;
 }
 
+/* === Center stamina segments — one transparent grey block per dash charge === */
+.stamina-widget {
+  position: absolute;
+  left: 50%;
+  top: 67%;
+  transform: translateX(-50%);
+  pointer-events: none;
+  z-index: 11;
+  display: flex;
+  gap: 8px;
+}
+
+.stamina-widget-seg {
+  position: relative;
+  width: 52px;
+  height: 9px;
+  border-radius: 4px;
+  background: rgba(22, 22, 22, 0.48);
+  box-shadow: 0 0 0 1px rgba(255, 255, 255, 0.08);
+  overflow: hidden;
+  transition: box-shadow 0.25s ease;
+}
+
+/* Inner fill — sweeps left-to-right as the charge recharges. */
+.stamina-widget-seg-fill {
+  position: absolute;
+  left: 0; top: 0; bottom: 0;
+  width: 0%;
+  border-radius: 4px;
+  background: rgba(165, 165, 165, 0.65);
+  transition: width 0.13s linear;
+}
+
+/* Leading-edge shimmer while recharging. */
+.stamina-widget-seg--charging .stamina-widget-seg-fill::after {
+  content: '';
+  position: absolute;
+  right: 0; top: 0; bottom: 0;
+  width: 4px;
+  background: rgba(255, 255, 255, 0.72);
+  border-radius: 2px;
+}
+
+/* Full: brighter fill, no width transition (snap to 100%). */
+.stamina-widget-seg--full .stamina-widget-seg-fill {
+  background: rgba(205, 205, 205, 0.72);
+  transition: none;
+}
+
+/* Brief glow burst when a charge finishes recharging. */
+.stamina-widget-seg--glow {
+  animation: stamina-seg-glow 0.42s ease-out forwards;
+}
+
+@keyframes stamina-seg-glow {
+  0%   { box-shadow: 0 0 0 2px rgba(240, 240, 240, 0.75), 0 0 10px rgba(200, 200, 200, 0.55); }
+  100% { box-shadow: 0 0 0 1px rgba(255, 255, 255, 0.08); }
+}
+
 @media (max-width: 640px) {
   .score-event {
     min-width: 188px;

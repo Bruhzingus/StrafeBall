@@ -1,5 +1,5 @@
 import { GAME_CONSTANTS } from '../../../shared/constants';
-import { DEBUG_DEFAULTS, SERVER_INPUT_QUEUE_LIMIT, SERVER_TICK_RATE, type DebugFlags } from '../../../shared/netConfig';
+import { DEBUG_DEFAULTS, LIVE_BALL_COMBAT_SUBSTEPS, SERVER_INPUT_QUEUE_LIMIT, SERVER_STEP_MS, SERVER_TICK_RATE, type DebugFlags } from '../../../shared/netConfig';
 import type {
   BallState,
   DashState,
@@ -11,7 +11,7 @@ import type {
   SpawnSide,
   Vec3
 } from '../../../shared/types';
-import type { ServerSnapshot, ThrowEvent } from '../../../shared/protocol';
+import type { CatchEvent, HitEvent, HitRevertEvent, ParryEvent, ServerSnapshot, ThrowEvent } from '../../../shared/protocol';
 import { TimeRing, type BallSample, type DefenseSample } from './DefenseHistory';
 import {
   advanceBall,
@@ -119,6 +119,8 @@ interface CatchAttempt {
   clickTimeMs: number;
   /** Lag-comp rewind (ms) applied when evaluating this attempt against ball/defense history. */
   rewindMs: number;
+  /** Raw client timestamp of the click (sub-tick precision anchor for future RTT-aware rewind). */
+  clientClickMs: number;
   resolved: boolean;
 }
 
@@ -231,6 +233,8 @@ export class ServerGameLoop {
   private throwCounter = 0;
   // Throw events accepted this step, drained by the room and broadcast before the next snapshot.
   private pendingThrowEvents: ThrowEvent[] = [];
+  // Immediate combat events (catch/parry/hit/revert) queued each step, broadcast before snapshot.
+  private pendingCombatEvents: Array<CatchEvent | ParryEvent | HitEvent | HitRevertEvent> = [];
   // Wall-clock time of the current step, captured once at the top of step() for history timestamps.
   private stepNowMs = 0;
 
@@ -812,6 +816,8 @@ export class ServerGameLoop {
    * valid defense can never be bypassed by hit detection running first.
    */
   private updateBalls(dt: number, scoringActive: boolean): void {
+    const subDt = dt / LIVE_BALL_COMBAT_SUBSTEPS;
+
     for (const ballId in this.state.balls) {
       const ball = this.state.balls[ballId];
       if (ball.phase === 'held' && ball.heldByPlayerId && ball.heldHand) {
@@ -824,43 +830,49 @@ export class ServerGameLoop {
 
       if (ball.phase === 'loose') continue;
 
-      // (1) previous position before the move; (2) move; (3) swept segment is [prevPos, curr].
-      const prevPos = cloneVec3(ball.position);
-      const advanced = advanceBall(ball, dt);
-      let resolved = advanced;
+      // Run LIVE_BALL_COMBAT_SUBSTEPS sub-steps per tick. Each sub-step advances the ball by
+      // subDt, then runs the full parry→catch→hit pipeline against that sub-tick swept segment.
+      // At 128Hz × 2 substeps = 256Hz effective live-ball combat checks — fast balls that would
+      // tunnel through catch/hit range between two 128Hz ticks are still caught/registered.
+      let current = ball;
+      let combatDone = false;
 
-      // (4-6) Ball combat against the swept segment, in order. A 'live' ball can be parried, caught,
-      // or hit; a 'dead' ball that just bounced (still fast, ≤1 bounce) can still be CAUGHT out of the
-      // air (it can no longer score, so parry/hit self-skip it). Each helper, on success, returns the
-      // new ball state (deflected/held/dead) and we stop further combat on this ball this tick.
-      if (isBallCatchableInFlight(resolved)) {
-        const segPrev = prevPos;
-        const segCurr = resolved.position;
-        const tickStartMs = this.stepNowMs;
+      for (let sub = 0; sub < LIVE_BALL_COMBAT_SUBSTEPS && !combatDone; sub++) {
+        const prevPos = cloneVec3(current.position);
+        const advanced = advanceBall(current, subDt);
+        let resolved = advanced;
 
-        // Parry/hit self-gate to 'live' inside, so they no-op on a bounced 'dead' ball.
-        const parried = this.tryAutoParry(resolved, segPrev, segCurr, dt, tickStartMs);
-        if (parried) {
-          resolved = parried;
-        } else {
-          const caught = this.tryCatchAttempts(resolved, segPrev, segCurr, dt, tickStartMs);
-          if (caught) {
-            resolved = caught;
-          } else if (scoringActive) {
-            const hit = this.tryHit(resolved, segPrev, segCurr);
-            if (hit) resolved = hit;
+        if (isBallCatchableInFlight(resolved)) {
+          const segPrev = prevPos;
+          const segCurr = resolved.position;
+
+          const parried = this.tryAutoParry(resolved, segPrev, segCurr, subDt, this.stepNowMs);
+          if (parried) {
+            resolved = parried;
+            // Deflected ball stays in flight — continue remaining substeps.
+          } else {
+            const caught = this.tryCatchAttempts(resolved, segPrev, segCurr, subDt, this.stepNowMs);
+            if (caught) {
+              resolved = caught;
+              combatDone = true;
+            } else if (scoringActive) {
+              const hit = this.tryHit(resolved, segPrev, segCurr);
+              if (hit) { resolved = hit; combatDone = true; }
+            }
           }
         }
+
+        // World collision per substep so fast balls bounce correctly at sub-tick positions.
+        const bounded = resolveBallBounds(resolved);
+        const collided = resolveBallStaticBoxes(bounded, this.ballCollisionBoxes,
+          this.debug.COLLISION_DEBUG ? this.logger : undefined);
+        current = settleBallIfSlow(collided);
+
+        if (!combatDone && (current.phase === 'dead' || current.phase === 'loose')) combatDone = true;
       }
 
-      // (7) world collision / bounce / settle on whatever survived combat.
-      const bounded = resolveBallBounds(resolved);
-      const collided = resolveBallStaticBoxes(bounded, this.ballCollisionBoxes, this.debug.COLLISION_DEBUG ? this.logger : undefined);
-      const finalBall = settleBallIfSlow(collided);
-      this.state.balls[ball.id] = finalBall;
-
-      // Record swept position history for lag-comp (only live/deflected balls are interaction-relevant).
-      this.recordBallSample(finalBall);
+      this.state.balls[ball.id] = current;
+      this.recordBallSample(current);
     }
   }
 
@@ -905,6 +917,7 @@ export class ServerGameLoop {
           throwerDashBefore
         });
       }
+      this.pendingCombatEvents.push({ type: 'hit-event', ballId: ball.id, throwerId: ownerId, targetId: target.id, serverTick: this.state.tick, serverTimeMs: this.stepNowMs });
       if (this.debug.NET_DEBUG) {
         this.logger(`hit confirmed scorer=${ownerId} target=${target.id} ball=${ball.id}`);
         if (nextScore !== previousScore) this.logger(`score changed team=${scorer?.teamId ?? 'unknown'} score=${nextScore}`);
@@ -1072,14 +1085,19 @@ export class ServerGameLoop {
     // keeps it server-only with no per-client RTT plumbing; the active window scans a span of recent
     // history so a click a touch early/late around the in-cone moment still lands.
     const rewindMs = clamp(GAME_CONSTANTS.combat.catchRewindMs, GAME_CONSTANTS.combat.defenseInputGraceMs, GAME_CONSTANTS.combat.defenseMaxRewindMs);
+    // Sub-tick anchor: clamp clientTimeMs offset to one tick window so clock skew can't corrupt it.
+    const clientClickMs = input.clientTimeMs ?? 0;
+    const subTickOffset = clientClickMs > 0 ? clamp(now - clientClickMs, 0, SERVER_STEP_MS) : 0;
+    const openedAtMs = now - subTickOffset;
     this.catchAttemptByKey.set(key, {
       hand,
       attemptId,
-      openedAtMs: now,
-      activeUntilMs: now + GAME_CONSTANTS.combat.catchStartupMs + GAME_CONSTANTS.combat.catchActiveMs,
-      cooldownUntilMs: now + GAME_CONSTANTS.combat.catchCooldownMs,
-      clickTimeMs: now - rewindMs,
+      openedAtMs,
+      activeUntilMs: openedAtMs + GAME_CONSTANTS.combat.catchStartupMs + GAME_CONSTANTS.combat.catchActiveMs,
+      cooldownUntilMs: openedAtMs + GAME_CONSTANTS.combat.catchCooldownMs,
+      clickTimeMs: openedAtMs - rewindMs,
       rewindMs,
+      clientClickMs,
       resolved: false
     });
     this.combatMetrics.catchAttemptsOpened += 1;
@@ -1114,6 +1132,7 @@ export class ServerGameLoop {
       this.parryCooldownByPlayerId.set(defenderId, GAME_CONSTANTS.parry.cooldownSeconds);
       this.combatMetrics.parries += 1;
       if (ball.isSuper) this.dropOneHeldBall(defender); // super-parry drops a defender ball
+      this.pendingCombatEvents.push({ type: 'parry-event', ballId: ball.id, deflectorId: defenderId, serverTick: this.state.tick, serverTimeMs: this.stepNowMs });
       if (this.debug.PARRY_DEBUG || this.debug.NET_DEBUG) {
         this.logger(`parry SUCCESS defender=${defenderId} ball=${ball.id} super=${ball.isSuper} throwId=${this.throwCounter}`);
       }
@@ -1240,7 +1259,7 @@ export class ServerGameLoop {
           if (fail) continue;
 
           const facing = sample ? sample.forward : defender.movement.facing;
-          this.applyCatch(defenderId, hand, ballId, facing, attempt, nowMs);
+          this.applyCatch(defenderId, hand, ballId, facing, attempt, nowMs, true);
           this.combatMetrics.reclaimCatches += 1;
           if (this.debug.CATCH_DEBUG || this.debug.NET_DEBUG) {
             this.logger(`catch RECLAIM defender=${defenderId} hand=${hand} ball=${ballId} id=${attempt.attemptId} rewindMs=${attempt.rewindMs}`);
@@ -1256,7 +1275,7 @@ export class ServerGameLoop {
    * any hit this catch superseded reverted, and the ball's swept history dropped. Shared by the
    * present-time path (tryCatchAttempts) and the lag-comp reclaim (resolveCatchReclaim).
    */
-  private applyCatch(defenderId: string, hand: HandSide, ballId: string, facing: Vec3, attempt: CatchAttempt, nowMs: number): BallState {
+  private applyCatch(defenderId: string, hand: HandSide, ballId: string, facing: Vec3, attempt: CatchAttempt, nowMs: number, reclaim = false): BallState {
     attempt.resolved = true;
     this.catchAttemptByKey.set(`${defenderId}:${hand}`, attempt);
     const defender = this.state.players[defenderId];
@@ -1274,6 +1293,7 @@ export class ServerGameLoop {
     this.undoRecentHitIfClaimed(ballId, defenderId, nowMs);
     this.ballHistoryById.delete(ballId);
     this.combatMetrics.catches += 1;
+    this.pendingCombatEvents.push({ type: 'catch-event', ballId, catcherId: defenderId, hand, serverTick: this.state.tick, serverTimeMs: nowMs, reclaim });
     return caught;
   }
 
@@ -1298,6 +1318,7 @@ export class ServerGameLoop {
     const thrower = this.state.players[hit.throwerId];
     if (thrower) this.state.players[hit.throwerId] = { ...thrower, dash: hit.throwerDashBefore };
     this.combatMetrics.hitReverts += 1;
+    this.pendingCombatEvents.push({ type: 'hit-revert-event', ballId: hit.ballId, throwerId: hit.throwerId, targetId: hit.defenderId, serverTick: this.state.tick, serverTimeMs: this.stepNowMs });
     this.syncPlayerScores();
     if (this.debug.CATCH_DEBUG || this.debug.NET_DEBUG) {
       this.logger(`hit reverted (lag-comp catch) thrower=${hit.throwerId} defender=${hit.defenderId} ball=${hit.ballId}`);

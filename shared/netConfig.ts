@@ -17,7 +17,7 @@
  *   E. 30 sim / 30 input / 30 snapshots  (baseline — safest for a 1 vCPU box)
  */
 
-export type NetMode = 'A_90_90_60' | 'A_72_72_60' | 'A_60_60_60' | 'B_60_60_30' | 'C_30_30_30';
+export type NetMode = 'A_128_128_90' | 'A_90_90_60' | 'A_72_72_60' | 'A_60_60_60' | 'B_60_60_30' | 'C_30_30_30';
 
 export interface NetModeConfig {
   /** Server fixed simulation steps per second. */
@@ -35,6 +35,11 @@ export interface NetModeConfig {
 }
 
 const MODES: Record<NetMode, NetModeConfig> = {
+  // A — 128Hz sim/input with 90Hz snapshots. Sim dt ~7.8ms; snapshot interval ~11.1ms.
+  // With LIVE_BALL_COMBAT_SUBSTEPS=2 effective combat checks run at ~256Hz.
+  // 50ms interp covers ~4.5 snapshots at the nominal 90Hz rate; adaptive client logic
+  // clamps it lower (35ms) when jitter is low for sharper visual response.
+  A_128_128_90: { serverTickRate: 128, clientInputRate: 128, snapshotRate: 90, interpolationDelayMs: 50 },
   // A — 90Hz sim/input with 60Hz snapshots. Sim/input dt ~11.1ms; snapshot interval ~16.7ms (interp
   // delay tracks the SNAPSHOT rate, not the sim rate, so 75ms still covers ~4 snapshots of jitter).
   A_90_90_60: { serverTickRate: 90, clientInputRate: 90, snapshotRate: 60, interpolationDelayMs: 75 },
@@ -75,8 +80,8 @@ function resolveProcessMode(): NetMode {
   return DEFAULT_NET_MODE;
 }
 
-/** Compiled default mode. Per playtest decision: 90 sim / 90 input / 60 snapshots. */
-export const DEFAULT_NET_MODE: NetMode = 'A_90_90_60';
+/** Compiled default mode. StrafeBall 1.3: 128 sim / 128 input / 90 snapshots. */
+export const DEFAULT_NET_MODE: NetMode = 'A_128_128_90';
 
 /**
  * Active mode resolved at module load from process.env (server) or the compiled default (client).
@@ -115,10 +120,10 @@ export const INTERPOLATION_DELAY_MS = active.interpolationDelayMs;
 
 /**
  * How frequently the room loop wakes to drain the fixed-step accumulator. Wake faster than the sim
- * rate so timer jitter can't starve a step. 150Hz wake (≈6.7ms) comfortably feeds a 90Hz sim
- * (~1.7 wakes per step of headroom).
+ * rate so timer jitter can't starve a step. 200Hz wake (5ms) comfortably feeds a 128Hz sim
+ * (~1.56 wakes per step of headroom).
  */
-export const ROOM_LOOP_WAKE_RATE = 150;
+export const ROOM_LOOP_WAKE_RATE = 200;
 export const ROOM_LOOP_WAKE_INTERVAL_MS = 1000 / ROOM_LOOP_WAKE_RATE;
 
 /**
@@ -208,11 +213,19 @@ export function resolveServerDebugFlags(env: Record<string, string | undefined> 
   };
 }
 
+/**
+ * Combat sub-steps per live ball per server tick. Each sub-step advances the ball dt/N and runs
+ * the full parry→catch→hit pipeline against that sub-tick segment. At 128Hz × 2 = 256Hz effective
+ * live-ball interaction checks. Only affects live/deflected balls; held and loose balls skip it.
+ */
+export const LIVE_BALL_COMBAT_SUBSTEPS = 2;
+
 /** Human-readable summary of the active config, for the one-time room-created log line. */
 export function describeNetConfig(): string {
   return (
     `mode=${ACTIVE_NET_MODE} sim=${SERVER_TICK_RATE}Hz input=${CLIENT_INPUT_RATE}Hz ` +
     `snapshots=${SNAPSHOT_RATE}Hz interpDelay=${INTERPOLATION_DELAY_MS}ms ` +
+    `combatSubsteps=${LIVE_BALL_COMBAT_SUBSTEPS} effectiveCombat=${SERVER_TICK_RATE * LIVE_BALL_COMBAT_SUBSTEPS}Hz ` +
     `loopWake=${ROOM_LOOP_WAKE_RATE}Hz`
   );
 }

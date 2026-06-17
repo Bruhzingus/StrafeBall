@@ -24,6 +24,10 @@ export class Hud {
   private scoreEventTimer: number | null = null;
   private qteEventTimer: number | null = null;
   private debugVisible = true;
+  private readonly staminaWidget: HTMLDivElement;
+  private readonly staminaWidgetSegs: HTMLDivElement[] = [];
+  private readonly staminaWidgetFills: HTMLDivElement[] = [];
+  private readonly lastSegState: Array<'empty' | 'charging' | 'full'> = [];
 
   constructor(parent: HTMLElement) {
     this.root = document.createElement('div');
@@ -48,6 +52,22 @@ export class Hud {
     this.countdown = document.createElement('div');
     this.countdown.className = 'countdown';
     this.root.appendChild(this.countdown);
+
+    // Center stamina segments — one block + inner fill per charge, pre-built, no per-frame allocations.
+    this.staminaWidget = document.createElement('div');
+    this.staminaWidget.className = 'stamina-widget';
+    for (let i = 0; i < TUNING.dash.maxCharges; i++) {
+      const seg = document.createElement('div');
+      seg.className = 'stamina-widget-seg';
+      const fill = document.createElement('div');
+      fill.className = 'stamina-widget-seg-fill';
+      seg.appendChild(fill);
+      this.staminaWidget.appendChild(seg);
+      this.staminaWidgetSegs.push(seg);
+      this.staminaWidgetFills.push(fill);
+      this.lastSegState.push('empty');
+    }
+    this.root.appendChild(this.staminaWidget);
 
     // Controls panel is static — write it once.
     this.bottomRight.innerHTML = `
@@ -125,6 +145,7 @@ export class Hud {
         ? 'full'
         : `+1 in ${Math.max(0, TUNING.dash.rechargeSeconds - player.dash.rechargeTimer).toFixed(1)}s`;
     const staminaHtml = this.staminaBar(player.dash.charges, TUNING.dash.maxCharges, dashRecharge);
+    this.updateStaminaWidget(player.dash.charges, TUNING.dash.maxCharges);
 
     // Bhop: grace window visible while it's active so you can time re-jumps.
     const bhopHtml = movement.bhopGraceTimer > 0
@@ -258,6 +279,7 @@ export class Hud {
     const staminaHtml = local
       ? this.staminaBar(local.dash.charges, TUNING.dash.maxCharges, local.dash.charges >= TUNING.dash.maxCharges ? 'full' : `+1 in ${Math.max(0, TUNING.dash.rechargeSeconds - local.dash.rechargeTimerSeconds).toFixed(1)}s`)
       : this.staminaBar(0, TUNING.dash.maxCharges, '-');
+    this.updateStaminaWidget(local?.dash.charges ?? 0, TUNING.dash.maxCharges);
     this.setHtml(this.bottomLeft, `
       <div class="hud-title">Server State</div>
       <div>M1 L [${escapeHtml(left?.heldBallId ?? '-')}]: ${escapeHtml(left?.mode ?? 'empty')}</div>
@@ -395,6 +417,46 @@ export class Hud {
 
   private charge01(hand: { chargeSeconds: number }): number {
     return Math.min(1, hand.chargeSeconds / TUNING.ball.maxChargeSeconds);
+  }
+
+  private updateStaminaWidget(charges: number, maxCharges: number): void {
+    const clamped = Math.min(maxCharges, Math.max(0, charges));
+    const full = Math.floor(clamped);
+    const partial = clamped - full;
+
+    for (let i = 0; i < this.staminaWidgetSegs.length; i++) {
+      const seg = this.staminaWidgetSegs[i];
+      const fill = this.staminaWidgetFills[i];
+      const prev = this.lastSegState[i];
+
+      if (i < full) {
+        if (prev !== 'full') {
+          this.lastSegState[i] = 'full';
+          seg.classList.remove('stamina-widget-seg--charging');
+          seg.classList.add('stamina-widget-seg--full');
+          fill.style.width = '100%';
+          if (prev === 'charging') {
+            // Brief glow burst when a charge completes.
+            seg.classList.add('stamina-widget-seg--glow');
+            window.setTimeout(() => seg.classList.remove('stamina-widget-seg--glow'), 420);
+          }
+        }
+      } else if (i === full && partial > 0.004) {
+        if (prev !== 'charging') {
+          this.lastSegState[i] = 'charging';
+          seg.classList.remove('stamina-widget-seg--full', 'stamina-widget-seg--glow');
+          seg.classList.add('stamina-widget-seg--charging');
+        }
+        // Update fill every tick during recharge — just a style.width write, very cheap.
+        fill.style.width = `${(partial * 100).toFixed(1)}%`;
+      } else {
+        if (prev !== 'empty') {
+          this.lastSegState[i] = 'empty';
+          seg.classList.remove('stamina-widget-seg--full', 'stamina-widget-seg--charging', 'stamina-widget-seg--glow');
+          fill.style.width = '0%';
+        }
+      }
+    }
   }
 
   private staminaBar(charges: number, maxCharges: number, rechargeText: string): string {
