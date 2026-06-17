@@ -1719,14 +1719,22 @@ function resolveBallBounds(ball: BallState): BallState {
     velocity.y = -Math.abs(velocity.y) * e;
     hitWallOrCeiling = true;
   }
-  if (position.x < minX || position.x > maxX) {
-    position.x = clamp(position.x, minX, maxX);
-    velocity.x *= -e;
+  if (position.x < minX) {
+    position.x = minX;
+    velocity.x = Math.abs(velocity.x) * e;
+    hitWallOrCeiling = true;
+  } else if (position.x > maxX) {
+    position.x = maxX;
+    velocity.x = -Math.abs(velocity.x) * e;
     hitWallOrCeiling = true;
   }
-  if (position.z < minZ || position.z > maxZ) {
-    position.z = clamp(position.z, minZ, maxZ);
-    velocity.z *= -e;
+  if (position.z < minZ) {
+    position.z = minZ;
+    velocity.z = Math.abs(velocity.z) * e;
+    hitKillNow = true;
+  } else if (position.z > maxZ) {
+    position.z = maxZ;
+    velocity.z = -Math.abs(velocity.z) * e;
     hitKillNow = true;
   }
 
