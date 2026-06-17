@@ -129,6 +129,27 @@ export class BallPredictor {
       this.balls.delete(snapshotBall.id);
       return null;
     }
+    if (snapshotBall.bounceCount !== entry.sim.bounceCount) {
+      entry.sim = {
+        ...snapshotBall,
+        position: { ...snapshotBall.position },
+        velocity: { ...snapshotBall.velocity },
+        curveAccel: { ...snapshotBall.curveAccel }
+      };
+      entry.simTimeMs = renderServerTimeMs;
+      entry.render.x = snapshotBall.position.x;
+      entry.render.y = snapshotBall.position.y;
+      entry.render.z = snapshotBall.position.z;
+      entry.correctionCount += 1;
+      return {
+        position: entry.render,
+        snapped: true,
+        errorM: 0,
+        correctionCount: entry.correctionCount,
+        throwId: entry.throwId,
+        snapReason: 'bounce'
+      };
+    }
 
     // Advance the deterministic sim forward to the render time (catch up missed substeps).
     let snapReason = '';

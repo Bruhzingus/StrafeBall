@@ -141,6 +141,89 @@ describe('ServerGameLoop', () => {
       expect(ended.bounceCount).toBeGreaterThanOrEqual(2);
     });
 
+    it('scores after a live ball bounces once off a side wall', () => {
+      const loop = new ServerGameLoop('room');
+      loop.addPlayer('a', 'A');
+      loop.addPlayer('b', 'B');
+      playNow(loop);
+
+      loop.state.players.b.movement.position = vec3(8.2, 0, 0);
+      loop.state.balls.ball_0 = {
+        ...loop.state.balls.ball_0,
+        phase: 'live',
+        ownerKind: 'player',
+        ownerId: 'a',
+        heldByPlayerId: null,
+        heldHand: null,
+        position: vec3(9.2, GAME_CONSTANTS.player.height * 0.5, 0),
+        velocity: vec3(34, 0, 0),
+        bounceCount: 0
+      };
+
+      for (let i = 0; i < 90 && loop.state.match.scoreByTeamId.blue === 0; i += 1) {
+        loop.step();
+      }
+
+      expect(loop.state.match.scoreByTeamId.blue).toBe(1);
+      expect(loop.state.balls.ball_0.phase).toBe('dead');
+    });
+
+    it('scores after a live ball bounces once off the ceiling', () => {
+      const loop = new ServerGameLoop('room');
+      loop.addPlayer('a', 'A');
+      loop.addPlayer('b', 'B');
+      playNow(loop);
+
+      const maxY = GAME_CONSTANTS.map.wallHeight - GAME_CONSTANTS.ball.radius;
+      loop.state.players.b.movement.position = vec3(0, 0, 0);
+      loop.state.balls.ball_0 = {
+        ...loop.state.balls.ball_0,
+        phase: 'live',
+        ownerKind: 'player',
+        ownerId: 'a',
+        heldByPlayerId: null,
+        heldHand: null,
+        position: vec3(0, maxY - 0.08, 0),
+        velocity: vec3(0, 18, 0),
+        bounceCount: 0
+      };
+
+      for (let i = 0; i < 90 && loop.state.match.scoreByTeamId.blue === 0; i += 1) {
+        loop.step();
+      }
+
+      expect(loop.state.match.scoreByTeamId.blue).toBe(1);
+      expect(loop.state.balls.ball_0.phase).toBe('dead');
+    });
+
+    it('scores after a live ball bounces once off a back wall', () => {
+      const loop = new ServerGameLoop('room');
+      loop.addPlayer('a', 'A');
+      loop.addPlayer('b', 'B');
+      playNow(loop);
+
+      const maxZ = GAME_CONSTANTS.map.halfLength - GAME_CONSTANTS.ball.radius;
+      loop.state.players.b.movement.position = vec3(0, 0, 16.4);
+      loop.state.balls.ball_0 = {
+        ...loop.state.balls.ball_0,
+        phase: 'live',
+        ownerKind: 'player',
+        ownerId: 'a',
+        heldByPlayerId: null,
+        heldHand: null,
+        position: vec3(0, GAME_CONSTANTS.player.height * 0.5, maxZ - 0.08),
+        velocity: vec3(0, 0, 24),
+        bounceCount: 0
+      };
+
+      for (let i = 0; i < 90 && loop.state.match.scoreByTeamId.blue === 0; i += 1) {
+        loop.step();
+      }
+
+      expect(loop.state.match.scoreByTeamId.blue).toBe(1);
+      expect(loop.state.balls.ball_0.phase).toBe('dead');
+    });
+
     it('kills a live ball on its FIRST floor bounce (floor is not part of the survive rule)', () => {
       const loop = new ServerGameLoop('room');
       loop.addPlayer('a', 'A');
@@ -742,9 +825,34 @@ describe('ServerGameLoop', () => {
       expect(loop.state.match.scoreByTeamId.blue).toBe(0);
     });
 
+    it('can catch a live ball after one wall bounce', () => {
+      const loop = defenderFacingIncoming();
+      loop.state.balls.ball_0 = {
+        ...loop.state.balls.ball_0,
+        phase: 'live',
+        ownerKind: 'player',
+        ownerId: 'a',
+        heldByPlayerId: null,
+        heldHand: null,
+        bounceCount: 1,
+        position: vec3(0, eye, -2),
+        velocity: vec3(0, 0, 8),
+        throwId: 1
+      };
+
+      loop.handleInput('b', { lookYawRadians: Math.PI, leftCatchAttemptId: 1, sequence: 2 }, 2);
+      loop.step();
+
+      const ball = loop.state.balls.ball_0;
+      expect(ball.phase).toBe('held');
+      expect(ball.heldByPlayerId).toBe('b');
+      expect(loop.state.players.b.hands.left.heldBallId).toBe('ball_0');
+      expect(loop.state.match.scoreByTeamId.blue).toBe(0);
+    });
+
     it('CAN catch a ball that has bounced once (dead but still fast, in the air)', () => {
       const loop = defenderFacingIncoming();
-      // A live ball turns 'dead' on its first floor/back-wall/bleacher bounce (it can no longer
+      // A live ball turns 'dead' on its first floor/cover bounce (it can no longer
       // SCORE), but a fast once-bounced ball is still a real ball in the air you should be able to
       // catch. Simulate that state directly: dead, bounceCount 1, fast, in front of the defender.
       loop.state.balls.ball_0 = {
@@ -941,7 +1049,7 @@ describe('ServerGameLoop', () => {
       expect(loop.state.match.scoreByTeamId.blue).toBe(1); // far too late — no revival
     });
 
-    it('auto-parries an incoming live ball when the defender holds two balls and aims at it', () => {
+    it('auto-parries an incoming live ball after one wall bounce', () => {
       const loop = defenderFacingIncoming();
       // Give 'b' two held balls so they are in the parry stance.
       loop.state.players.b.hands.left.heldBallId = 'ball_4';
@@ -954,7 +1062,7 @@ describe('ServerGameLoop', () => {
       loop.state.balls.ball_0 = {
         ...loop.state.balls.ball_0,
         phase: 'live', ownerKind: 'player', ownerId: 'a',
-        position: vec3(0, eye, -0.6), velocity: vec3(0, 0, 6), bounceCount: 0, throwId: 2
+        position: vec3(0, eye, -0.6), velocity: vec3(0, 0, 6), bounceCount: 1, throwId: 2
       };
       loop.step();
       const ball = loop.state.balls.ball_0;

@@ -2,6 +2,7 @@ import { Mesh, Vector3 } from '@babylonjs/core';
 import { BallOwner, BallState, HandSide } from './BallState';
 import { TUNING } from '../config/tuning';
 import { CollisionWorld } from '../map/Collider';
+import { BLEACHER_LAYOUT } from '../../../shared/simulation/MapGeometry';
 
 let nextBallId = 1;
 
@@ -125,7 +126,7 @@ export class Ball {
       const normalImpactSpeed = Math.abs(this.velocity.z);
       p.z = Math.max(minZ, Math.min(maxZ, p.z));
       this.velocity.z *= -TUNING.ball.bounceRestitution;
-      this.onBounce(normalImpactSpeed);
+      this.onWallCeilingBounce(normalImpactSpeed);
     }
   }
 
@@ -145,19 +146,28 @@ export class Ball {
       const penY = Math.min(p.y - (b.minY - r), (b.maxY + r) - p.y);
       const penZ = Math.min(p.z - (b.minZ - r), (b.maxZ + r) - p.z);
       let normalImpactSpeed = 0;
+      let hitAxis: 'x' | 'y' | 'z';
 
       if (penX <= penY && penX <= penZ) {
         normalImpactSpeed = Math.abs(this.velocity.x);
         p.x = p.x < (b.minX + b.maxX) * 0.5 ? b.minX - r : b.maxX + r;
         this.velocity.x *= -e;
+        hitAxis = 'x';
       } else if (penY <= penZ) {
         normalImpactSpeed = Math.abs(this.velocity.y);
         p.y = p.y < (b.minY + b.maxY) * 0.5 ? b.minY - r : b.maxY + r;
         this.velocity.y *= -e;
+        hitAxis = 'y';
       } else {
         normalImpactSpeed = Math.abs(this.velocity.z);
         p.z = p.z < (b.minZ + b.maxZ) * 0.5 ? b.minZ - r : b.maxZ + r;
         this.velocity.z *= -e;
+        hitAxis = 'z';
+      }
+      if (hitAxis === 'x' && b.kind === 'bleacher') {
+        p.x = sideBleacherCourtFaceX(b);
+        this.onWallCeilingBounce(normalImpactSpeed);
+        break;
       }
       this.onBounce(normalImpactSpeed);
     }
@@ -191,4 +201,15 @@ export class Ball {
     if (reboundHeight < TUNING.ball.impactSoundMinBounceHeight) return;
     this.onImpact(Math.max(4, normalImpactSpeed));
   }
+}
+
+const SIDE_BLEACHER_COURT_FACE_X =
+  TUNING.map.halfWidth -
+  BLEACHER_LAYOUT.wallInset -
+  BLEACHER_LAYOUT.tierCount * BLEACHER_LAYOUT.tierRun -
+  TUNING.ball.radius;
+
+function sideBleacherCourtFaceX(box: { minX: number; maxX: number }): number {
+  const centerX = (box.minX + box.maxX) * 0.5;
+  return centerX >= 0 ? SIDE_BLEACHER_COURT_FACE_X : -SIDE_BLEACHER_COURT_FACE_X;
 }

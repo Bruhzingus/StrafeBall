@@ -36,6 +36,8 @@ import { isIllegalHalfCourtPosition } from '../../../shared/simulation/RuleSim';
 import { sweptBallHitsBody } from '../../../shared/simulation/CollisionMath';
 import { playerBallHitRadius, playerHitCapsule } from '../../../shared/simulation/PlayerHitbox';
 
+type PendingOnlineScoreEvent = { teamId: string; score: number; delta: number; dueAtMs: number };
+
 export class ArenaScene {
   public readonly scene: Scene;
 
@@ -91,6 +93,7 @@ export class ArenaScene {
   // only (movement/combat zeroed) and the HUD shows the countdown. Driven by the snapshot.
   private countdownActive = false;
   private lastOnlineScoreByTeamId: Record<string, number> = {};
+  private pendingOnlineScoreEvents: PendingOnlineScoreEvent[] = [];
   private lastOnlineWinnerTeamId: string | null = null;
   private lastResetSerial = -1;
   private lastResetVoteKey = '';
@@ -110,7 +113,7 @@ export class ArenaScene {
   private static readonly MAT_RESTORE_HOLD_SECONDS = 0.6;
   // Fixed timestep for input send + prediction + reconciliation replay. Driven entirely by the
   // shared net config (must equal the server's fixed dt for reconciliation residual ≈ 0). At the
-  // active A_180_180_96 mode this is 1/180; the fixed-step loop below then sends at 180Hz.
+  // active A_144_144_96 mode this is 1/144; the fixed-step loop below then sends at 144Hz.
   private static readonly NET_FIXED_DT = CLIENT_FIXED_DT;
   private netAccumulator = 0;
   private inputSeq = 0;
@@ -863,6 +866,7 @@ export class ArenaScene {
       this.networkRenderer.update(snapshot, this.multiplayer.localPlayerId, dt, this.predictedMovement);
       this.applyOnlineMats(snapshot);
       this.handleOnlineScoreEvents(snapshot);
+      this.flushPendingOnlineScoreEvents(snapshot);
       this.handleOnlineWinnerEvent(snapshot);
       this.updateOnlineScoreboards(snapshot);
       this.updateOnlineCourtLines(snapshot);
@@ -1164,6 +1168,7 @@ export class ArenaScene {
     this.knockedNetMatIds.clear();
     this.netCollisionBoxes = createPlayerCollisionBoxes();
     this.lastOnlineScoreByTeamId = {};
+    this.pendingOnlineScoreEvents = [];
     this.lastOnlineWinnerTeamId = null;
     this.lastResetSerial = -1;
     this.lastResetVoteKey = '';
@@ -1180,6 +1185,7 @@ export class ArenaScene {
     this.onlineChargeSeconds.right = 0;
     this.resetPrediction('exit-online');
     this.lastOnlineScoreByTeamId = {};
+    this.pendingOnlineScoreEvents = [];
     this.lastOnlineWinnerTeamId = null;
     this.lastResetSerial = -1;
     this.lastResetVoteKey = '';
@@ -1266,10 +1272,50 @@ export class ArenaScene {
     for (const [teamId, score] of Object.entries(scores)) {
       const previous = this.lastOnlineScoreByTeamId[teamId] ?? score;
       const delta = score - previous;
-      if (delta > 0) this.showOnlineScoreEvent(snapshot, teamId, score, delta);
+      if (delta > 0) {
+        if (this.isPenaltyScoreEvent(snapshot, teamId)) {
+          this.showOnlineScoreEvent(snapshot, teamId, score, delta);
+        } else {
+          this.queueOnlineScoreEvent(teamId, score, delta);
+        }
+      }
     }
 
     this.lastOnlineScoreByTeamId = { ...scores };
+    this.cancelRevertedPendingScoreEvents(snapshot);
+  }
+
+  private queueOnlineScoreEvent(teamId: string, score: number, delta: number): void {
+    const dueAtMs = performance.now() + GAME_CONSTANTS.combat.catchHitGraceMs + 40;
+    this.pendingOnlineScoreEvents.push({ teamId, score, delta, dueAtMs });
+  }
+
+  private cancelRevertedPendingScoreEvents(snapshot: ServerSnapshot): void {
+    const scores = snapshot.room.match.scoreByTeamId;
+    this.pendingOnlineScoreEvents = this.pendingOnlineScoreEvents.filter((event) => {
+      return (scores[event.teamId] ?? 0) >= event.score;
+    });
+  }
+
+  private flushPendingOnlineScoreEvents(snapshot: ServerSnapshot): void {
+    if (this.pendingOnlineScoreEvents.length === 0) return;
+    this.cancelRevertedPendingScoreEvents(snapshot);
+
+    const now = performance.now();
+    const remaining: PendingOnlineScoreEvent[] = [];
+    for (const event of this.pendingOnlineScoreEvents) {
+      if (event.dueAtMs > now) {
+        remaining.push(event);
+        continue;
+      }
+      this.showOnlineScoreEvent(snapshot, event.teamId, event.score, event.delta, false);
+    }
+    this.pendingOnlineScoreEvents = remaining;
+  }
+
+  private isPenaltyScoreEvent(snapshot: ServerSnapshot, scoringTeamId: string): boolean {
+    const boundaryEvent = snapshot.room.match.boundary.lastEvent;
+    return boundaryEvent.type === 'half-court-penalty' && boundaryEvent.opponentTeamId === scoringTeamId;
   }
 
   private handleOnlineWinnerEvent(snapshot: ServerSnapshot): void {
@@ -1304,6 +1350,7 @@ export class ArenaScene {
     this.onlineChargeSeconds.right = 0;
     this.player.hands.clearHands();
     this.lastOnlineScoreByTeamId = {};
+    this.pendingOnlineScoreEvents = [];
     this.lastOnlineWinnerTeamId = null;
     this.hud.showScoreEvent('RESET', 'Room reset', 'neutral');
   }
@@ -1321,13 +1368,12 @@ export class ArenaScene {
     }
   }
 
-  private showOnlineScoreEvent(snapshot: ServerSnapshot, scoringTeamId: string, score: number, delta: number): void {
+  private showOnlineScoreEvent(snapshot: ServerSnapshot, scoringTeamId: string, score: number, delta: number, allowPenaltyLabel = true): void {
     const local = snapshot.room.players[this.multiplayer.localPlayerId];
     const scorer = Object.values(snapshot.room.players).find((player) => player.teamId === scoringTeamId);
     const scorerName = scorer?.name ?? scoringTeamId.toUpperCase();
     const localScored = local?.teamId === scoringTeamId;
-    const boundaryEvent = snapshot.room.match.boundary.lastEvent;
-    const wasPenalty = boundaryEvent.type === 'half-court-penalty' && boundaryEvent.opponentTeamId === scoringTeamId;
+    const wasPenalty = allowPenaltyLabel && this.isPenaltyScoreEvent(snapshot, scoringTeamId);
 
     if (wasPenalty) {
       this.hud.showScoreEvent(`PENALTY +${delta}`, `${scorerName} ${score} / ${snapshot.room.match.scoreLimit}`, localScored ? 'good' : 'bad');

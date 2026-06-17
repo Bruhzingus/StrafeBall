@@ -10,6 +10,8 @@ export interface AABB {
   maxY: number;
   minZ: number;
   maxZ: number;
+  kind?: 'bleacher' | 'mat';
+  id?: string;
 }
 
 /** Build an AABB from a center and half-extents (the natural form for box meshes). */

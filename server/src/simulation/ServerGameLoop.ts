@@ -53,6 +53,7 @@ import { createResetVoteState, createRoomState, registerPlayerHit } from '../../
 import { createPlayerState, grantDashCharge } from '../../../shared/simulation/PlayerSim';
 import { advanceNoBoundariesTimer, applyHalfCourtRule, createMatchState } from '../../../shared/simulation/RuleSim';
 import {
+  BLEACHER_LAYOUT,
   MAT_SPECS,
   createBallCollisionBoxes,
   createPlayerCollisionBoxes,
@@ -1818,11 +1819,11 @@ function resolveBallBounds(ball: BallState): BallState {
   if (position.z < minZ) {
     position.z = minZ;
     velocity.z = Math.abs(velocity.z) * e;
-    hitKillNow = true;
+    hitWallOrCeiling = true;
   } else if (position.z > maxZ) {
     position.z = maxZ;
     velocity.z = -Math.abs(velocity.z) * e;
-    hitKillNow = true;
+    hitWallOrCeiling = true;
   }
 
   if (!hitWallOrCeiling && !hitKillNow) return ball;
@@ -1858,6 +1859,7 @@ function resolveBallStaticBoxes(ball: BallState, boxes: AABB[], logger?: (messag
   const velocity = { ...ball.velocity };
   let bounced = false;
   let hitBox: AABB | null = null;
+  let hitAxis: 'x' | 'y' | 'z' | null = null;
 
   for (const box of boxes) {
     if (position.x < box.minX - r || position.x > box.maxX + r) continue;
@@ -1871,28 +1873,56 @@ function resolveBallStaticBoxes(ball: BallState, boxes: AABB[], logger?: (messag
     if (penX <= penY && penX <= penZ) {
       position.x = position.x < (box.minX + box.maxX) * 0.5 ? box.minX - r : box.maxX + r;
       velocity.x = (position.x < (box.minX + box.maxX) * 0.5 ? -1 : 1) * Math.abs(velocity.x) * e;
+      hitAxis = 'x';
     } else if (penY <= penZ) {
       position.y = position.y < (box.minY + box.maxY) * 0.5 ? box.minY - r : box.maxY + r;
       velocity.y = (position.y < (box.minY + box.maxY) * 0.5 ? -1 : 1) * Math.abs(velocity.y) * e;
+      hitAxis = 'y';
     } else {
       position.z = position.z < (box.minZ + box.maxZ) * 0.5 ? box.minZ - r : box.maxZ + r;
       velocity.z = (position.z < (box.minZ + box.maxZ) * 0.5 ? -1 : 1) * Math.abs(velocity.z) * e;
+      hitAxis = 'z';
     }
 
     bounced = true;
     hitBox = box;
+    if (isSideWallLikeStaticBounce(hitBox, hitAxis)) {
+      position.x = sideBleacherCourtFaceX(hitBox);
+      break;
+    }
   }
 
   if (!bounced) return ball;
-  const resolved = applyBallBounce({ ...ball, position, velocity });
+  const resolvedBall = { ...ball, position, velocity };
+  const resolved = isSideWallLikeStaticBounce(hitBox, hitAxis)
+    ? applyWallCeilingBounce(resolvedBall)
+    : applyBallBounce(resolvedBall);
   if (hitBox?.kind === 'bleacher') {
     logger?.(
       `bleacher collision ball=${ball.id} box=${hitBox.id ?? 'unknown'}` +
+      ` axis=${hitAxis ?? 'unknown'}` +
       ` pos=(${position.x.toFixed(2)},${position.y.toFixed(2)},${position.z.toFixed(2)})` +
       ` vel=(${velocity.x.toFixed(2)},${velocity.y.toFixed(2)},${velocity.z.toFixed(2)})`
     );
   }
   return resolved;
+}
+
+function isSideWallLikeStaticBounce(box: AABB | null, axis: 'x' | 'y' | 'z' | null): boolean {
+  // In the actual gym, the side bleachers occupy the low side-wall lane. A low bank shot hits
+  // those X faces before it can reach the arena bounds, so classify that impact like a side wall.
+  return axis === 'x' && box?.kind === 'bleacher';
+}
+
+const SIDE_BLEACHER_COURT_FACE_X =
+  GAME_CONSTANTS.map.halfWidth -
+  BLEACHER_LAYOUT.wallInset -
+  BLEACHER_LAYOUT.tierCount * BLEACHER_LAYOUT.tierRun -
+  GAME_CONSTANTS.ball.radius;
+
+function sideBleacherCourtFaceX(box: AABB): number {
+  const centerX = (box.minX + box.maxX) * 0.5;
+  return centerX >= 0 ? SIDE_BLEACHER_COURT_FACE_X : -SIDE_BLEACHER_COURT_FACE_X;
 }
 
 /**
