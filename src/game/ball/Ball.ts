@@ -23,7 +23,7 @@ export class Ball {
 
   // The mesh is the ball's VISUAL, created by the ModelLoader and injected here. Gameplay
   // (state machine, physics, collision radius) is independent of it.
-  constructor(public readonly mesh: Mesh, position: Vector3) {
+  constructor(public readonly mesh: Mesh, position: Vector3, private readonly onImpact?: (speed: number) => void) {
     this.mesh.position.copyFrom(position);
   }
 
@@ -49,13 +49,13 @@ export class Ball {
     else this.curveAccel.setAll(0);
   }
 
-  drop(position: Vector3): void {
+  drop(position: Vector3, velocity = new Vector3(0, -1.4, 0)): void {
     this.state = BallState.Dead;
     this.owner = null;
     this.heldHand = null;
     this.isSuper = false;
     this.bounceCount = 1;
-    this.velocity.set(0, 0.3, 0);
+    this.velocity.copyFrom(velocity);
     this.mesh.position.copyFrom(position);
   }
 
@@ -101,27 +101,31 @@ export class Ball {
     const maxY = TUNING.map.wallHeight - r;
 
     if (p.y < r) {
+      const impactSpeed = this.velocity.length();
       p.y = r;
       this.velocity.y = Math.abs(this.velocity.y) * TUNING.ball.bounceRestitution;
-      this.onBounce();
+      this.onBounce(impactSpeed);
     }
 
     if (p.y > maxY) {
+      const impactSpeed = this.velocity.length();
       p.y = maxY;
       this.velocity.y = -Math.abs(this.velocity.y) * TUNING.ball.bounceRestitution;
-      this.onWallCeilingBounce();
+      this.onWallCeilingBounce(impactSpeed);
     }
 
     if (p.x < minX || p.x > maxX) {
+      const impactSpeed = this.velocity.length();
       p.x = Math.max(minX, Math.min(maxX, p.x));
       this.velocity.x *= -TUNING.ball.bounceRestitution;
-      this.onWallCeilingBounce();
+      this.onWallCeilingBounce(impactSpeed);
     }
 
     if (p.z < minZ || p.z > maxZ) {
+      const impactSpeed = this.velocity.length();
       p.z = Math.max(minZ, Math.min(maxZ, p.z));
       this.velocity.z *= -TUNING.ball.bounceRestitution;
-      this.onBounce();
+      this.onBounce(impactSpeed);
     }
   }
 
@@ -137,6 +141,7 @@ export class Ball {
       if (p.x < b.minX - r || p.x > b.maxX + r) continue;
       if (p.y < b.minY - r || p.y > b.maxY + r) continue;
       if (p.z < b.minZ - r || p.z > b.maxZ + r) continue;
+      const impactSpeed = this.velocity.length();
 
       const penX = Math.min(p.x - (b.minX - r), (b.maxX + r) - p.x);
       const penY = Math.min(p.y - (b.minY - r), (b.maxY + r) - p.y);
@@ -152,26 +157,33 @@ export class Ball {
         p.z = p.z < (b.minZ + b.maxZ) * 0.5 ? b.minZ - r : b.maxZ + r;
         this.velocity.z *= -e;
       }
-      this.onBounce();
+      this.onBounce(impactSpeed);
     }
   }
 
-  private onBounce(): void {
+  private onBounce(impactSpeed: number): void {
     this.bounceCount += 1;
+    this.emitImpact(impactSpeed);
     if (this.bounceCount >= TUNING.ball.deadAfterBounces) {
       this.makeDead();
     }
   }
 
-  private onWallCeilingBounce(): void {
+  private onWallCeilingBounce(impactSpeed: number): void {
     if (this.state !== BallState.Live) {
-      this.onBounce();
+      this.onBounce(impactSpeed);
       return;
     }
 
+    this.emitImpact(impactSpeed);
     this.bounceCount += 1;
     if (this.bounceCount > 1) {
       this.makeDead();
     }
+  }
+
+  private emitImpact(speed: number): void {
+    if (!this.onImpact || speed < 6) return;
+    this.onImpact(speed);
   }
 }

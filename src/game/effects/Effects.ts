@@ -46,7 +46,7 @@ export class Effects {
     this.sound.whoosh(0.78);
   }
 
-  onCatch(): void {
+  onCatch(_speed = 0): void {
     this.sound.click();
     this.triggerFlash(0.16, 0.18, '90, 230, 150');
   }
@@ -55,8 +55,8 @@ export class Effects {
   onCatchAttempt(_side: 'left' | 'right'): void {
   }
 
-  onParry(): void {
-    this.sound.thud(0.55);
+  onParry(speed = 18): void {
+    this.sound.ping(speed, 0.55);
     this.triggerFlash(0.2, 0.26, '120, 180, 255');
   }
 
@@ -71,13 +71,15 @@ export class Effects {
     this.triggerFlash(0.18, 0.1 + 0.12 * strength, '255, 207, 46'); // school-gold
   }
 
-  onSlide(): void {
+  onSlide(speed = 0): void {
     this.sound.whoosh(0.4);
+    if (speed > 4.5) this.sound.squeak(0.65 + Math.min(0.45, speed / 18));
     this.triggerFlash(0.1, 0.09, '80, 160, 255');
   }
 
-  onDash(): void {
+  onDash(speed = 0): void {
     this.sound.whoosh(1.3);
+    this.sound.squeak(0.9 + Math.min(0.35, speed / 20));
     this.triggerFlash(0.12, 0.14, '240, 220, 80');
   }
 
@@ -87,15 +89,15 @@ export class Effects {
   }
 
   /** The player failed to catch/block and took a hit. */
-  onPlayerHit(position: Vector3): void {
-    this.sound.thud(1);
+  onPlayerHit(position: Vector3, speed = 24): void {
+    this.sound.ping(speed, 1);
     this.triggerFlash(0.45, 0.45, '255, 70, 70');
     this.triggerSpark(position, new Color3(1, 0.35, 0.3));
   }
 
   /** A player throw connected with a target dummy. */
-  onDummyHit(): void {
-    this.sound.thud(0.7);
+  onDummyHit(speed = 24): void {
+    this.sound.ping(speed, 0.7);
     this.triggerFlash(0.16, 0.18, '255, 180, 50');
   }
 

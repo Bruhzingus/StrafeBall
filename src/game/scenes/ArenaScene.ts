@@ -25,13 +25,14 @@ import { settings } from '../config/Settings';
 import { MultiplayerClient } from '../network/MultiplayerClient';
 import { MultiplayerOverlay } from '../network/MultiplayerOverlay';
 import { NetworkRenderer } from '../network/NetworkRenderer';
-import type { ServerSnapshot } from '../../../shared/protocol';
+import type { CatchEvent, ServerSnapshot } from '../../../shared/protocol';
 import type { DashState, MovementInternalState, PlayerInput, PlayerMovementState, PlayerState, Vec3 } from '../../../shared/types';
 import { stepMovement, facingFromAngles } from '../../../shared/simulation/MovementSim';
 import { grantDashCharge } from '../../../shared/simulation/PlayerSim';
 import { backflipPitchOffset } from '../../../shared/simulation/AimMath';
 import { CLIENT_FIXED_DT, PENDING_INPUT_LIMIT, MAX_ACCUMULATOR_STEPS, PERF_REPORT_INTERVAL_MS } from '../../../shared/netConfig';
 import { createPlayerCollisionBoxes, type AABB } from '../../../shared/simulation/MapGeometry';
+import { isIllegalHalfCourtPosition } from '../../../shared/simulation/RuleSim';
 import { sweptBallHitsBody } from '../../../shared/simulation/CollisionMath';
 import { playerBallHitRadius, playerHitCapsule } from '../../../shared/simulation/PlayerHitbox';
 
@@ -109,7 +110,7 @@ export class ArenaScene {
   private static readonly MAT_RESTORE_HOLD_SECONDS = 0.6;
   // Fixed timestep for input send + prediction + reconciliation replay. Driven entirely by the
   // shared net config (must equal the server's fixed dt for reconciliation residual ≈ 0). At the
-  // active A_90_90_60 mode this is 1/90; the fixed-step loop below then sends at 90Hz.
+  // active A_180_180_96 mode this is 1/180; the fixed-step loop below then sends at 180Hz.
   private static readonly NET_FIXED_DT = CLIENT_FIXED_DT;
   private netAccumulator = 0;
   private inputSeq = 0;
@@ -143,6 +144,10 @@ export class ArenaScene {
   private perfReportFrameCount = 0;
   private perfReportInputCount = 0;
   private perfReportFrameMsTotal = 0;
+  private footstepTimer = 0;
+  private squeakCooldown = 0;
+  private lastGroundMoveDir: Vec3 = { x: 0, y: 0, z: 1 };
+  private lastGroundSpeed = 0;
 
   // Input latches: accumulate edge-triggered inputs across render frames so they survive to the
   // next fixed-step packet boundary. They survive whether render runs faster OR slower than the
@@ -175,7 +180,7 @@ export class ArenaScene {
     this.targetDummies = this.scene.meshes.filter((mesh): mesh is Mesh => mesh instanceof Mesh && !!mesh.metadata?.targetDummy);
 
     // Balls collide with bleachers only (mats are immune to balls — they pass through).
-    this.ballManager = new BallManager(loader, this.gym.ballCollision);
+    this.ballManager = new BallManager(loader, this.gym.ballCollision, (speed) => this.sound.ping(speed, 0.42));
     this.ballManager.spawnCenterLineBalls();
 
     this.sound = new SoundManager();
@@ -288,9 +293,8 @@ export class ArenaScene {
 
       const v = ball.velocity;
       const speed = Math.sqrt(v.x * v.x + v.y * v.y + v.z * v.z);
-      this.sound.ping(speed);
       ball.makeDead();
-      this.effects.onPlayerHit(b);
+      this.effects.onPlayerHit(b, speed);
     }
   }
 
@@ -583,8 +587,8 @@ export class ArenaScene {
     const snap = this.player.lastMovementSnapshot;
 
     // Fire one-shot effects on state transitions so every slide/dash/backflip has audio+visual.
-    if (!wasSliding && snap.sliding) this.effects.onSlide();
-    if (snap.dashingThisFrame) this.effects.onDash();
+    if (!wasSliding && snap.sliding) this.effects.onSlide(snap.speed);
+    if (snap.dashingThisFrame) this.effects.onDash(snap.speed);
     if (!wasBackflipActive && this.player.backflip.active) this.effects.onBackflip();
 
     this.prevSliding = snap.sliding;
@@ -601,18 +605,20 @@ export class ArenaScene {
     this.ballManager.update(dt);
     this.checkBotHitsPlayer(dt);
     this.updateOfflineMats(dt);
+    this.updateLocalMovementFoley(dt, vector3ToVec3(snap.velocity), snap.grounded, snap.sliding, snap.dashingThisFrame, snap.wallRunning);
 
     // Each landed hit grants the thrower one dash charge (locked rule).
     const hits = this.rules.scoring.updateAgainstDummies(this.ballManager.balls, this.targetDummies, dt);
-    for (let i = 0; i < hits; i += 1) {
+    for (const hit of hits) {
       this.player.dash.addChargeFromHit();
-      this.effects.onDummyHit();
+      this.effects.onDummyHit(hit.speed);
     }
-    if (hits > 0) {
-      this.hud.showScoreEvent(`HIT +${hits}`, `${this.rules.scoring.playerHits} / ${TUNING.match.scoreLimit}`, 'good');
+    if (hits.length > 0) {
+      this.hud.showScoreEvent(`HIT +${hits.length}`, `${this.rules.scoring.playerHits} / ${TUNING.match.scoreLimit}`, 'good');
     }
 
     this.rules.boundary.update(dt, this.player.root.position);
+    this.updateOfflineCourtLines();
     this.effects.update(dt);
 
     // Advance the moving dummy's oscillation + the live 3D scoreboards (offline shows practice score:
@@ -817,8 +823,8 @@ export class ArenaScene {
     if (this.predictedMovement && this.predictedInternal) {
       const nowSliding = this.predictedMovement.sliding;
       const nowBackflip = this.predictedInternal.backflipActive;
-      if (!this.prevSliding && nowSliding) this.effects.onSlide();
-      if (this.predictedMovement.dashingThisFrame) this.effects.onDash();
+      if (!this.prevSliding && nowSliding) this.effects.onSlide(this.predictedMovement.speed);
+      if (this.predictedMovement.dashingThisFrame) this.effects.onDash(this.predictedMovement.speed);
       if (!this.prevBackflipActive && nowBackflip) this.effects.onBackflip();
       this.prevSliding = nowSliding;
       this.prevBackflipActive = nowBackflip;
@@ -828,6 +834,14 @@ export class ArenaScene {
     // The camera is parented to root, so it follows automatically; look angles are untouched.
     if (this.predictedMovement && this.predictedInternal) {
       this.applyPredicted(this.predictedMovement, this.predictedInternal);
+      this.updateLocalMovementFoley(
+        dt,
+        this.predictedMovement.velocity,
+        this.predictedMovement.grounded,
+        this.predictedMovement.sliding,
+        this.predictedMovement.dashingThisFrame,
+        this.predictedMovement.wallRunning
+      );
     }
 
     // Server-side actions outside the movement input stream. Reset votes are always allowed.
@@ -843,11 +857,15 @@ export class ArenaScene {
       // Seed live-ball visual prediction from any throw events that arrived this frame BEFORE the
       // renderer update so a freshly-thrown ball predicts from its very first rendered frame.
       this.networkRenderer.applyThrowEvents(this.multiplayer.drainThrowEvents());
+      const catchEvents = this.multiplayer.drainCatchEvents();
+      this.handleOnlineCatchEvents(catchEvents);
+      this.networkRenderer.applyCatchEvents(catchEvents);
       this.networkRenderer.update(snapshot, this.multiplayer.localPlayerId, dt, this.predictedMovement);
       this.applyOnlineMats(snapshot);
       this.handleOnlineScoreEvents(snapshot);
       this.handleOnlineWinnerEvent(snapshot);
       this.updateOnlineScoreboards(snapshot);
+      this.updateOnlineCourtLines(snapshot);
     }
 
     this.effects.update(dt);
@@ -1425,15 +1443,88 @@ export class ArenaScene {
       const handAck = local?.hands[side].lastCatchAttemptId ?? 0;
       const attemptFresh = attempt ? now - attempt.openedAtMs <= catchConfirmWindowMs : false;
 
-      if (becameHeld && attempt && attemptFresh && handAck >= attempt.id) {
-        this.effects.onCatch();
-        this.recentCatchAttemptBySide[side] = null;
-      } else if (attempt && !attemptFresh) {
+      if ((becameHeld && attempt && attemptFresh && handAck >= attempt.id) || (attempt && !attemptFresh)) {
         this.recentCatchAttemptBySide[side] = null;
       }
 
       this.lastOnlineHeldBallId[side] = currentHeld;
     }
+  }
+
+  private handleOnlineCatchEvents(events: readonly CatchEvent[]): void {
+    for (const event of events) {
+      if (event.catcherId !== this.multiplayer.localPlayerId) continue;
+      this.effects.onCatch(event.absorbedSpeed);
+      this.player.movement.addCatchRecoil(new Vector3(
+        event.incomingVelocity.x,
+        event.incomingVelocity.y,
+        event.incomingVelocity.z
+      ));
+      this.recentCatchAttemptBySide[event.hand] = null;
+    }
+  }
+
+  private updateLocalMovementFoley(
+    dt: number,
+    velocity: Vec3,
+    grounded: boolean,
+    sliding: boolean,
+    dashingThisFrame: boolean,
+    wallRunning: boolean
+  ): void {
+    const speed = Math.hypot(velocity.x, velocity.z);
+    this.squeakCooldown = Math.max(0, this.squeakCooldown - dt);
+
+    if (!grounded || sliding || wallRunning) {
+      this.footstepTimer = 0;
+    } else if (speed > 1.25) {
+      this.footstepTimer -= dt;
+      if (this.footstepTimer <= 0) {
+        const cadence = 0.4 - Math.min(0.18, (speed - 1.25) * 0.025);
+        this.sound.footstep(Math.min(1, speed / TUNING.player.maxGroundSpeed));
+        this.footstepTimer = Math.max(0.18, cadence);
+      }
+    } else {
+      this.footstepTimer = 0;
+    }
+
+    if (grounded && speed > 2.8) {
+      const dirX = velocity.x / speed;
+      const dirZ = velocity.z / speed;
+      const turnDot = dirX * this.lastGroundMoveDir.x + dirZ * this.lastGroundMoveDir.z;
+      const hardTurn = this.lastGroundSpeed > 3.5 && turnDot < 0.72;
+      if (!dashingThisFrame && hardTurn && this.squeakCooldown <= 0) {
+        this.sound.squeak(0.7 + Math.min(0.35, speed / 18));
+        this.squeakCooldown = 0.12;
+      }
+      this.lastGroundMoveDir = { x: dirX, y: 0, z: dirZ };
+      this.lastGroundSpeed = speed;
+    } else if (speed < 1.2) {
+      this.lastGroundSpeed = speed;
+    }
+  }
+
+  private updateOfflineCourtLines(): void {
+    this.gym.setCourtLineState({
+      negativeHalfActive: false,
+      positiveHalfActive: isIllegalHalfCourtPosition('negativeZ', vector3ToVec3(this.player.root.position)),
+      suddenDeath: this.rules.boundary.noBoundaries
+    });
+  }
+
+  private updateOnlineCourtLines(snapshot: ServerSnapshot): void {
+    let negativeHalfActive = false;
+    let positiveHalfActive = false;
+    for (const player of Object.values(snapshot.room.players)) {
+      if (!isIllegalHalfCourtPosition(player.legalHalf, player.movement.position)) continue;
+      if (player.legalHalf === 'negativeZ') positiveHalfActive = true;
+      else negativeHalfActive = true;
+    }
+    this.gym.setCourtLineState({
+      negativeHalfActive,
+      positiveHalfActive,
+      suddenDeath: snapshot.room.match.boundary.noBoundaries
+    });
   }
 
   private sendOnlineHandActions(dt: number, local: PlayerState): void {

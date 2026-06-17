@@ -37,7 +37,11 @@ export const GAME_CONSTANTS = {
     minDuration: 0.28,
     // Shortened from 1.2 → slides end sooner.
     maxDuration: 1.0,
-    jumpBonus: 1.12
+    jumpBonus: 1.12,
+    // Holding the slide too long turns it from a boost into a hard brake until the player settles.
+    overholdBrakeDelay: 0.42,
+    overholdFrictionMultiplier: 2.6,
+    overholdStopSpeed: 0.85
   },
 
   wall: {
@@ -126,6 +130,11 @@ export const GAME_CONSTANTS = {
     cooldownSeconds: 0.45,
     catchBoostSpeed: 3,
     catchBoostDuration: 0.25,
+    momentumRecoilMinSpeed: 14,
+    momentumRecoilMaxSpeed: 32,
+    momentumRecoilMinDistance: 0.035,
+    momentumRecoilMaxDistance: 0.14,
+    momentumRecoilDuration: 0.2,
     // A live ball that bounces off the floor/back wall/bleachers becomes 'dead' (it can no longer
     // SCORE a hit), but it's still a fast ball in the air you should be able to catch. Allow catching
     // a dead ball that has bounced at most this many times and is still moving above this speed.

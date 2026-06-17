@@ -126,7 +126,7 @@ export function markBallDead(ball: BallState, velocity: Vec3 = ball.velocity): B
   };
 }
 
-export function dropHeldBall(ball: BallState, position: Vec3, velocity: Vec3 = vec3(0, 0.3, 0)): BallState {
+export function dropHeldBall(ball: BallState, position: Vec3, velocity: Vec3 = vec3(0, -1.4, 0)): BallState {
   return {
     ...markBallDead(ball, velocity),
     position: cloneVec3(position),

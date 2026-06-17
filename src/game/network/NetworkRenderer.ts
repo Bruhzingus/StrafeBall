@@ -1,5 +1,5 @@
 import { Color3, Mesh, MeshBuilder, PBRMaterial, Quaternion, Scene, TransformNode, Vector3 } from '@babylonjs/core';
-import type { ServerSnapshot, ThrowEvent } from '../../../shared/protocol';
+import type { CatchEvent, ServerSnapshot, ThrowEvent } from '../../../shared/protocol';
 import type { BallState, HandSide, PlayerState, Vec3 } from '../../../shared/types';
 import { BallPredictor } from './BallPredictor';
 import { TUNING } from '../config/tuning';
@@ -58,6 +58,14 @@ interface BallVisual {
   mesh: Mesh;
 }
 
+interface CatchRecoilTrack {
+  dirX: number;
+  dirZ: number;
+  baseDistance: number;
+  remaining: number;
+  duration: number;
+}
+
 type RemotePlayerDebug = { logTimer: number };
 
 interface BufferedSnapshot {
@@ -112,6 +120,7 @@ export class NetworkRenderer {
   private readonly playerDebug = new Map<string, RemotePlayerDebug>();
   private readonly balls = new Map<string, BallVisual>();
   private readonly remoteArmAnimations = new Map<string, RemoteArmAnimations>();
+  private readonly catchRecoilByPlayerId = new Map<string, CatchRecoilTrack>();
   // Deterministic visual prediction for live thrown balls (seeded by throw events). Visual only.
   private readonly ballPredictor = new BallPredictor();
   private readonly materials = new Map<string, PBRMaterial>();
@@ -191,6 +200,33 @@ export class NetworkRenderer {
     }
   }
 
+  applyCatchEvents(events: readonly CatchEvent[]): void {
+    for (const event of events) {
+      const speed = event.absorbedSpeed;
+      if (speed < TUNING.catch.momentumRecoilMinSpeed) continue;
+      const horizontal = Math.hypot(event.incomingVelocity.x, event.incomingVelocity.z);
+      if (horizontal <= 0.001) continue;
+      const strength = Math.max(
+        0,
+        Math.min(
+          1,
+          (speed - TUNING.catch.momentumRecoilMinSpeed) /
+            Math.max(0.001, TUNING.catch.momentumRecoilMaxSpeed - TUNING.catch.momentumRecoilMinSpeed)
+        )
+      );
+      const distance =
+        TUNING.catch.momentumRecoilMinDistance +
+        (TUNING.catch.momentumRecoilMaxDistance - TUNING.catch.momentumRecoilMinDistance) * strength;
+      this.catchRecoilByPlayerId.set(event.catcherId, {
+        dirX: -event.incomingVelocity.x / horizontal,
+        dirZ: -event.incomingVelocity.z / horizontal,
+        baseDistance: distance,
+        remaining: TUNING.catch.momentumRecoilDuration,
+        duration: TUNING.catch.momentumRecoilDuration
+      });
+    }
+  }
+
   getDebugStats(): NetworkRendererDebugStats {
     // Keep the live buffer size / age fields fresh; rate-style metrics come from the rolling window.
     this.debugStats.remoteInterpolationBufferSize = this.snapshotBuffer.length;
@@ -233,6 +269,7 @@ export class NetworkRenderer {
     this.materials.clear();
     this.playerDebug.clear();
     this.remoteArmAnimations.clear();
+    this.catchRecoilByPlayerId.clear();
   }
 
   private bufferSnapshot(snapshot: ServerSnapshot): void {
@@ -435,13 +472,20 @@ export class NetworkRenderer {
       const visual = this.ensurePlayer(player);
       this.updateRemoteArmAnimations(player, dt);
       const target = player.movement.position;
+      const recoil = this.advanceCatchRecoil(player.id, dt);
+      const recoilDistance = recoil ? recoil.baseDistance * (recoil.remaining / recoil.duration) : 0;
+      const recoilX = recoil ? recoil.dirX * recoilDistance : 0;
+      const recoilZ = recoil ? recoil.dirZ * recoilDistance : 0;
       if (isNetworkRenderDebugEnabled()) {
-        const error = distanceVec3({ x: visual.root.position.x, y: visual.root.position.y, z: visual.root.position.z }, target);
+        const error = distanceVec3(
+          { x: visual.root.position.x, y: visual.root.position.y, z: visual.root.position.z },
+          { x: target.x + recoilX, y: target.y, z: target.z + recoilZ }
+        );
         if (error > NetworkRenderer.HUGE_ERROR_SNAP_METERS) {
           console.log(`[remote/${player.id.slice(-4)}] snap largeError=${error.toFixed(2)}m`);
         }
       }
-      visual.root.position.set(target.x, target.y, target.z);
+      visual.root.position.set(target.x + recoilX, target.y, target.z + recoilZ);
       visual.root.rotation.y = 0;
       // Backflip body tumble: rotate the whole rig backward about its mid-height so the remote
       // avatar visibly flips. Pivot at body center (not the feet) by lifting the root by the
@@ -480,7 +524,19 @@ export class NetworkRenderer {
       this.players.delete(id);
       this.playerDebug.delete(id);
       this.remoteArmAnimations.delete(id);
+      this.catchRecoilByPlayerId.delete(id);
     }
+  }
+
+  private advanceCatchRecoil(playerId: string, dt: number): CatchRecoilTrack | null {
+    const track = this.catchRecoilByPlayerId.get(playerId);
+    if (!track) return null;
+    track.remaining = Math.max(0, track.remaining - dt);
+    if (track.remaining <= 0 || track.baseDistance <= 0.001) {
+      this.catchRecoilByPlayerId.delete(playerId);
+      return null;
+    }
+    return track;
   }
 
   private updateRemoteArmAnimations(player: PlayerState, dt: number): void {

@@ -45,6 +45,18 @@ export class SoundManager {
     this.noiseBurst(0.08, 0.3 * gain, 900 * speedScale);
   }
 
+  footstep(speed = 1): void {
+    const step = Math.max(0.2, Math.min(1, speed));
+    this.tone('triangle', 170 + 35 * step, 118 + 24 * step, 0.045, 0.02 + 0.012 * step);
+    this.noiseBurst(0.03, 0.007 + 0.004 * step, 520 + 180 * step);
+  }
+
+  squeak(intensity = 1): void {
+    const grip = Math.max(0.35, Math.min(1.35, intensity));
+    this.tone('square', 1450 * grip, 980 * grip, 0.08, 0.035 * grip);
+    this.tone('triangle', 980 * grip, 760 * grip, 0.11, 0.024 * grip);
+  }
+
   /** Legacy hook for impacts: now uses the rubber ping at standard speed. */
   thud(gain = 1): void {
     this.ping(24, gain);

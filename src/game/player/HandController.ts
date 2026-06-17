@@ -115,13 +115,21 @@ export class HandController {
 
   dropOneBall(position: Vector3): void {
     if (this.right.ball) {
-      this.ballManager.dropBall(this.right.ball, position.add(new Vector3(0.35, 1.0, 0)));
+      this.ballManager.dropBall(
+        this.right.ball,
+        position.add(new Vector3(0.35, 1.0, 0)),
+        dropReleaseVelocity(Vector3.Zero())
+      );
       this.right.ball = null;
       this.right.visualHolding = false;
       return;
     }
     if (this.left.ball) {
-      this.ballManager.dropBall(this.left.ball, position.add(new Vector3(-0.35, 1.0, 0)));
+      this.ballManager.dropBall(
+        this.left.ball,
+        position.add(new Vector3(-0.35, 1.0, 0)),
+        dropReleaseVelocity(Vector3.Zero())
+      );
       this.left.ball = null;
       this.left.visualHolding = false;
     }
@@ -185,12 +193,20 @@ export class HandController {
     if (input.wasKeyPressed(CONTROL_KEYS.drop)) {
       if (this.right.ball) {
         this.lastAction = `drop #${this.right.ball.id} (right)`;
-        this.ballManager.dropBall(this.right.ball, movement.position.add(new Vector3(0.4, 1, 0)));
+        this.ballManager.dropBall(
+          this.right.ball,
+          movement.position.add(new Vector3(0.4, 1, 0)),
+          dropReleaseVelocity(movement.velocity)
+        );
         this.right.ball = null;
         this.right.visualHolding = false;
       } else if (this.left.ball) {
         this.lastAction = `drop #${this.left.ball.id} (left)`;
-        this.ballManager.dropBall(this.left.ball, movement.position.add(new Vector3(-0.4, 1, 0)));
+        this.ballManager.dropBall(
+          this.left.ball,
+          movement.position.add(new Vector3(-0.4, 1, 0)),
+          dropReleaseVelocity(movement.velocity)
+        );
         this.left.ball = null;
         this.left.visualHolding = false;
       }
@@ -348,4 +364,12 @@ export class HandController {
     this.lastThrowTime = this.elapsed;
     this.effects.playerThrow();
   }
+}
+
+function dropReleaseVelocity(playerVelocity: Vector3): Vector3 {
+  return new Vector3(
+    playerVelocity.x,
+    Math.min(playerVelocity.y, 0) - 1.4,
+    playerVelocity.z
+  );
 }

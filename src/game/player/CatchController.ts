@@ -111,6 +111,7 @@ export class CatchController {
       if (!candidate) continue;
 
       this.hands.forceCatchBall(side, candidate);
+      this.movement.addCatchRecoil(candidate.velocity);
       this.movement.addCatchBoost();
       this.dash.addChargeFromHit();
       this.trackingTimeByBall.delete(candidate.id);
@@ -146,7 +147,7 @@ export class CatchController {
         .add(new Vector3(0, TUNING.parry.deflectUpVelocity, 0));
       ball.state = BallState.Dead;
       this.parryCooldown = TUNING.parry.cooldownSeconds;
-      this.effects.onParry();
+      this.effects.onParry(incomingSpeed);
 
       if (wasSuper) {
         this.hands.dropOneBall(movement.position);

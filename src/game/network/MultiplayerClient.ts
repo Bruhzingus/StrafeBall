@@ -1,5 +1,6 @@
 import { Client, Room } from '@colyseus/sdk';
 import type {
+  CatchEvent,
   CatchParryRequest,
   DropRequest,
   InputCommand,
@@ -17,6 +18,7 @@ export type ConnectionStatus = 'offline' | 'connecting' | 'connected' | 'error';
 
 /** Shared empty array returned by drainThrowEvents when nothing is queued (no per-call allocation). */
 const EMPTY_THROW_EVENTS: readonly ThrowEvent[] = [];
+const EMPTY_CATCH_EVENTS: readonly CatchEvent[] = [];
 
 export class MultiplayerClient {
   public readonly serverUrl: string;
@@ -29,6 +31,7 @@ export class MultiplayerClient {
   // Throw events received since the last drain. The renderer drains these each frame to seed/refresh
   // deterministic live-ball visual prediction. Bounded: cleared on drain and on leave/reset.
   private throwEventQueue: ThrowEvent[] = [];
+  private catchEventQueue: CatchEvent[] = [];
   public snapshotDebug = {
     receivedPerSecond: 0,
     uniqueTicksPerSecond: 0,
@@ -87,6 +90,7 @@ export class MultiplayerClient {
     this.localPlayerId = '';
     this.latestSnapshot = null;
     this.throwEventQueue = [];
+    this.catchEventQueue = [];
     this.resetSnapshotDebug();
   }
 
@@ -139,6 +143,13 @@ export class MultiplayerClient {
     return events;
   }
 
+  drainCatchEvents(): readonly CatchEvent[] {
+    if (this.catchEventQueue.length === 0) return EMPTY_CATCH_EVENTS;
+    const events = this.catchEventQueue;
+    this.catchEventQueue = [];
+    return events;
+  }
+
   requestReset(): void {
     this.room?.send('reset', { type: 'reset', playerId: this.localPlayerId } satisfies ResetRequest);
   }
@@ -188,6 +199,12 @@ export class MultiplayerClient {
       this.throwEventQueue.push(message);
     });
 
+    room.onMessage('catch-event', (message: CatchEvent) => {
+      if (this.room !== room) return;
+      if (this.catchEventQueue.length >= 16) this.catchEventQueue.shift();
+      this.catchEventQueue.push(message);
+    });
+
     room.onMessage('joined-room', (message: Extract<ServerMessage, { type: 'joined-room' }>) => {
       if (this.room !== room) return;
       this.localPlayerId = message.playerId;
@@ -224,6 +241,7 @@ export class MultiplayerClient {
       this.localPlayerId = '';
       this.latestSnapshot = null;
       this.throwEventQueue = [];
+      this.catchEventQueue = [];
       this.resetSnapshotDebug();
     });
   }

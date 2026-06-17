@@ -435,7 +435,7 @@ export class ServerGameLoop {
     const ball = this.state.balls[ballId];
     if (!ball) return { ok: false, reason: 'missing-ball' };
 
-    const result = dropBallFromHand(player.hands, hand, ball, heldBallPosition(player, hand));
+    const result = dropBallFromHand(player.hands, hand, ball, heldBallPosition(player, hand), dropReleaseVelocity(player.movement.velocity));
     if (!result.ok) return result;
 
     this.state.players[playerId] = { ...player, hands: result.hands };
@@ -1309,6 +1309,8 @@ export class ServerGameLoop {
     this.catchAttemptByKey.set(`${defenderId}:${hand}`, attempt);
     const defender = this.state.players[defenderId];
     const present = this.state.balls[ballId];
+    const absorbedSpeed = length(present.velocity);
+    const incomingVelocity = cloneVec3(present.velocity);
     const caught = catchBall(present, defenderId, hand);
     this.state.balls[ballId] = caught;
     const boostDir = normalize(vec3(facing.x, 0, facing.z), vec3(0, 0, 1));
@@ -1322,7 +1324,17 @@ export class ServerGameLoop {
     this.undoRecentHitIfClaimed(ballId, defenderId, nowMs);
     this.ballHistoryById.delete(ballId);
     this.combatMetrics.catches += 1;
-    this.pendingCombatEvents.push({ type: 'catch-event', ballId, catcherId: defenderId, hand, serverTick: this.state.tick, serverTimeMs: nowMs, reclaim });
+    this.pendingCombatEvents.push({
+      type: 'catch-event',
+      ballId,
+      catcherId: defenderId,
+      hand,
+      absorbedSpeed,
+      incomingVelocity,
+      serverTick: this.state.tick,
+      serverTimeMs: nowMs,
+      reclaim
+    });
     return caught;
   }
 
@@ -1542,7 +1554,7 @@ export class ServerGameLoop {
     if (!ballId) return;
     const ball = this.state.balls[ballId];
     if (!ball) return;
-    const result = dropBallFromHand(player.hands, hand, ball, heldBallPosition(player, hand));
+    const result = dropBallFromHand(player.hands, hand, ball, heldBallPosition(player, hand), dropReleaseVelocity(player.movement.velocity));
     if (!result.ok) return;
     this.state.players[player.id] = { ...player, hands: result.hands };
     this.state.balls[ballId] = result.ball;
@@ -1554,7 +1566,7 @@ export class ServerGameLoop {
       if (!ballId) continue;
       const ball = this.state.balls[ballId];
       if (!ball) continue;
-      const result = dropBallFromHand(player.hands, hand, ball, heldBallPosition(player, hand));
+      const result = dropBallFromHand(player.hands, hand, ball, heldBallPosition(player, hand), dropReleaseVelocity(player.movement.velocity));
       if (!result.ok) continue;
       player.hands = result.hands;
       this.state.balls[ballId] = result.ball;
@@ -1988,6 +2000,14 @@ function updateHandCharge(hands: PlayerState['hands'], side: HandSide, pressed: 
 
 function heldBallPosition(player: PlayerState, hand: HandSide): Vec3 {
   return computePlayerHandAnchor(player, hand);
+}
+
+function dropReleaseVelocity(velocity: Vec3): Vec3 {
+  return {
+    x: velocity.x,
+    y: Math.min(velocity.y, 0) - 1.4,
+    z: velocity.z
+  };
 }
 
 /** Return hands with the given hand's lastCatchAttemptId bumped (ack of a received attempt). */

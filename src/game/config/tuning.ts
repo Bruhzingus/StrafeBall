@@ -48,7 +48,10 @@ export const TUNING = {
     frictionMultiplier: GAME_CONSTANTS.slide.frictionMultiplier,
     minDuration: GAME_CONSTANTS.slide.minDuration,
     maxDuration: GAME_CONSTANTS.slide.maxDuration,
-    jumpBonus: GAME_CONSTANTS.slide.jumpBonus
+    jumpBonus: GAME_CONSTANTS.slide.jumpBonus,
+    overholdBrakeDelay: GAME_CONSTANTS.slide.overholdBrakeDelay,
+    overholdFrictionMultiplier: GAME_CONSTANTS.slide.overholdFrictionMultiplier,
+    overholdStopSpeed: GAME_CONSTANTS.slide.overholdStopSpeed
   },
 
   dash: {
@@ -161,6 +164,11 @@ export const TUNING = {
     cooldownSeconds: GAME_CONSTANTS.catch.cooldownSeconds,
     catchBoostSpeed: GAME_CONSTANTS.catch.catchBoostSpeed,
     catchBoostDuration: GAME_CONSTANTS.catch.catchBoostDuration,
+    momentumRecoilMinSpeed: GAME_CONSTANTS.catch.momentumRecoilMinSpeed,
+    momentumRecoilMaxSpeed: GAME_CONSTANTS.catch.momentumRecoilMaxSpeed,
+    momentumRecoilMinDistance: GAME_CONSTANTS.catch.momentumRecoilMinDistance,
+    momentumRecoilMaxDistance: GAME_CONSTANTS.catch.momentumRecoilMaxDistance,
+    momentumRecoilDuration: GAME_CONSTANTS.catch.momentumRecoilDuration,
     bouncedCatchMaxBounces: GAME_CONSTANTS.catch.bouncedCatchMaxBounces,
     bouncedCatchMinSpeed: GAME_CONSTANTS.catch.bouncedCatchMinSpeed
   },

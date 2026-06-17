@@ -49,6 +49,8 @@ export interface CatchEvent {
   ballId: string;
   catcherId: string;
   hand: HandSide;
+  absorbedSpeed: number;
+  incomingVelocity: Vec3;
   serverTick: number;
   serverTimeMs: number;
   /** True when lag-comp reclaim caught a ball that had already hit/passed the defender. */

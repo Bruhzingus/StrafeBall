@@ -14,7 +14,8 @@ export class BallManager {
 
   constructor(
     private readonly loader: ModelLoader,
-    private readonly collision: CollisionWorld
+    private readonly collision: CollisionWorld,
+    private readonly onBallImpact?: (speed: number) => void
   ) {}
 
   spawnCenterLineBalls(): void {
@@ -26,7 +27,7 @@ export class BallManager {
     for (let i = 0; i < count; i += 1) {
       const position = new Vector3(start + i * spacing, TUNING.ball.radius + 0.05, 0);
       const visual = createBallMesh(this.loader.scene, `ball_${i}`, position);
-      this.balls.push(new Ball(visual, position));
+      this.balls.push(new Ball(visual, position, this.onBallImpact));
     }
   }
 
@@ -117,8 +118,8 @@ export class BallManager {
     ball.throw(owner, safeNormalize(direction).scale(speed), isSuper, dropScale, curveAccel);
   }
 
-  dropBall(ball: Ball, position: Vector3): void {
-    ball.drop(position);
+  dropBall(ball: Ball, position: Vector3, velocity?: Vector3): void {
+    ball.drop(position, velocity);
   }
 
   getLiveThreatsToward(position: Vector3): Ball[] {

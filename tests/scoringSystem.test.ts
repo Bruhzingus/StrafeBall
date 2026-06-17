@@ -36,7 +36,7 @@ describe('ScoringSystem.updateAgainstDummies', () => {
 
     const hits = scoring.updateAgainstDummies([ball], [dummy], DT);
 
-    expect(hits).toBe(1);
+    expect(hits).toHaveLength(1);
     expect(scoring.playerHits).toBe(1);
     expect((dummy.metadata as { hitCount: number }).hitCount).toBe(1);
     expect(ball.state).toBe(BallState.Dead); // the ball is consumed on hit
@@ -46,7 +46,7 @@ describe('ScoringSystem.updateAgainstDummies', () => {
     const scoring = new ScoringSystem();
     const ball = makeBall(BallState.Live, 'launcher', new Vector3(0, 1, 0));
     const dummy = makeDummy(new Vector3(0, 1, 0));
-    expect(scoring.updateAgainstDummies([ball], [dummy], DT)).toBe(0);
+    expect(scoring.updateAgainstDummies([ball], [dummy], DT)).toHaveLength(0);
     expect(scoring.playerHits).toBe(0);
   });
 
@@ -54,21 +54,21 @@ describe('ScoringSystem.updateAgainstDummies', () => {
     const scoring = new ScoringSystem();
     const ball = makeBall(BallState.Held, 'player', new Vector3(0, 1, 0));
     const dummy = makeDummy(new Vector3(0, 1, 0));
-    expect(scoring.updateAgainstDummies([ball], [dummy], DT)).toBe(0);
+    expect(scoring.updateAgainstDummies([ball], [dummy], DT)).toHaveLength(0);
   });
 
   it('ignores balls beyond the hit radius', () => {
     const scoring = new ScoringSystem();
     const ball = makeBall(BallState.Live, 'player', new Vector3(0, 1, 0));
     const dummy = makeDummy(new Vector3(TUNING.ball.hitRadius + 1, 1, 0));
-    expect(scoring.updateAgainstDummies([ball], [dummy], DT)).toBe(0);
+    expect(scoring.updateAgainstDummies([ball], [dummy], DT)).toHaveLength(0);
   });
 
   it('counts only one hit per ball even with multiple dummies in range', () => {
     const scoring = new ScoringSystem();
     const ball = makeBall(BallState.Live, 'player', new Vector3(0, 1, 0));
     const dummies = [makeDummy(new Vector3(0, 1, 0)), makeDummy(new Vector3(0, 1, 0))];
-    expect(scoring.updateAgainstDummies([ball], dummies, DT)).toBe(1);
+    expect(scoring.updateAgainstDummies([ball], dummies, DT)).toHaveLength(1);
   });
 
   it('isWin becomes true at the score limit', () => {

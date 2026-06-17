@@ -204,7 +204,7 @@ export function dropBallFromHand(
   side: HandSide,
   ball: BallState,
   position: Vec3,
-  velocity: Vec3 = vec3(0, 0.3, 0)
+  velocity: Vec3 = vec3(0, -1.4, 0)
 ): DropFromHandResult | { ok: false; reason: 'empty-hand' | 'hand-ball-mismatch' } {
   const hand = hands[side];
   if (!hand.heldBallId) return { ok: false, reason: 'empty-hand' };

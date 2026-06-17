@@ -46,6 +46,8 @@ export class MovementController {
   private groundHeight = 0;
   // Normal (pointing into the court) of the wall currently being run on; drives wall-jump.
   private lastWallNormal = Vector3.Zero();
+  private catchRecoilOffset = 0;
+  private slideHoldActive = false;
 
   constructor(
     private readonly root: TransformNode,
@@ -58,6 +60,8 @@ export class MovementController {
   update(dt: number, input: InputManager, catchStanceActive: boolean): MovementSnapshot {
     this.dashingThisFrame = false;
     this.crouching = input.isKeyDown(CONTROL_KEYS.crouch) || input.isKeyDown(CONTROL_KEYS.crouchAlt);
+    this.slideHoldActive = input.isKeyDown(CONTROL_KEYS.slide) || this.crouching;
+    this.tickVisualFeedback(dt);
 
     const moveX = (input.isKeyDown(CONTROL_KEYS.right) ? 1 : 0) - (input.isKeyDown(CONTROL_KEYS.left) ? 1 : 0);
     const moveZ = (input.isKeyDown(CONTROL_KEYS.forward) ? 1 : 0) - (input.isKeyDown(CONTROL_KEYS.backward) ? 1 : 0);
@@ -109,6 +113,26 @@ export class MovementController {
     this.catchBoostTimer = TUNING.catch.catchBoostDuration;
   }
 
+  addCatchRecoil(incomingVelocity: Vector3): void {
+    const horizontalSpeed = Math.hypot(incomingVelocity.x, incomingVelocity.z);
+    if (horizontalSpeed < TUNING.catch.momentumRecoilMinSpeed) return;
+    const range = Math.max(0.001, TUNING.catch.momentumRecoilMaxSpeed - TUNING.catch.momentumRecoilMinSpeed);
+    const strength = Math.max(0, Math.min(1, (horizontalSpeed - TUNING.catch.momentumRecoilMinSpeed) / range));
+    const distance =
+      TUNING.catch.momentumRecoilMinDistance +
+      (TUNING.catch.momentumRecoilMaxDistance - TUNING.catch.momentumRecoilMinDistance) * strength;
+    this.catchRecoilOffset = Math.max(this.catchRecoilOffset, distance);
+  }
+
+  tickVisualFeedback(dt: number): void {
+    if (this.catchRecoilOffset > 0) {
+      const decay = Math.exp(-dt / TUNING.catch.momentumRecoilDuration);
+      this.catchRecoilOffset *= decay;
+      if (this.catchRecoilOffset < 0.002) this.catchRecoilOffset = 0;
+    }
+    this.camera.position.z = -this.catchRecoilOffset;
+  }
+
   private updateTimers(dt: number): void {
     this.dash.update(dt);
     this.backflip.update(dt);
@@ -117,14 +141,18 @@ export class MovementController {
     if (this.wallReattachCooldown > 0) this.wallReattachCooldown = Math.max(0, this.wallReattachCooldown - dt);
     if (this.catchBoostTimer > 0) this.catchBoostTimer = Math.max(0, this.catchBoostTimer - dt);
     if (this.dashActiveTimer > 0) this.dashActiveTimer = Math.max(0, this.dashActiveTimer - dt);
-
     if (this.sliding) {
       this.slideTimer += dt;
-      const tooSlow = this.horizontalSpeed() < TUNING.slide.minStartSpeed * 0.55;
+      const speed = this.horizontalSpeed();
+      const tooSlow = speed < TUNING.slide.minStartSpeed * 0.55;
+      const overholdingSlide = this.slideHoldActive && this.slideTimer >= TUNING.slide.overholdBrakeDelay;
       // Honor slide.minDuration before the speed-based cancel so a slide into a ramp/wall (which
       // bleeds speed fast) doesn't flicker out a frame or two after it starts. The hard cap
       // (maxDuration) always ends it.
-      if (this.slideTimer > TUNING.slide.maxDuration || (tooSlow && this.slideTimer >= TUNING.slide.minDuration)) {
+      if (
+        (overholdingSlide && speed <= TUNING.slide.overholdStopSpeed) ||
+        (!this.slideHoldActive && (this.slideTimer > TUNING.slide.maxDuration || (tooSlow && this.slideTimer >= TUNING.slide.minDuration)))
+      ) {
         this.sliding = false;
       }
     }
@@ -301,7 +329,11 @@ export class MovementController {
     if (!this.grounded) return;
     // While dashing, skip friction so the burst carries (the dash should be felt).
     if (this.dashActiveTimer > 0 && !this.sliding) return;
-    const friction = TUNING.player.friction * (this.sliding ? TUNING.slide.frictionMultiplier : 1);
+    const slideFrictionMultiplier =
+      this.sliding && this.slideHoldActive && this.slideTimer >= TUNING.slide.overholdBrakeDelay
+        ? TUNING.slide.overholdFrictionMultiplier
+        : TUNING.slide.frictionMultiplier;
+    const friction = TUNING.player.friction * (this.sliding ? slideFrictionMultiplier : 1);
     // Exponential decay = exactly frame-rate independent (v(t) = v0 * e^(-friction*t)).
     const decay = Math.exp(-friction * dt);
     this.velocity.x *= decay;

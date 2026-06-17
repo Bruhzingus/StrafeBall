@@ -5,6 +5,7 @@ import { applyBallBounce, createBallState, settleBallIfSlow } from '../shared/si
 import {
   autoParryBall,
   catchBallInHand,
+  dropBallFromHand,
   heldBallCount,
   throwBallFromHand,
   tryPickupBall
@@ -152,6 +153,32 @@ describe('shared movement simulation', () => {
     expect(second.dash.charges).toBe(first.dash.charges);
     expect(second.internal.doubleJumpAvailable).toBe(false);
   });
+
+  it('overholding a slide brakes the player down to a stop instead of preserving momentum', () => {
+    const player = createPlayerState('p1', 'blue');
+    player.movement.velocity = vec3(8, 0, 0);
+    player.movement.grounded = true;
+
+    let state = stepMovement(
+      player.movement,
+      player.movementInternal,
+      player.dash,
+      { ...neutralInput(), slidePressed: true, slideHeld: true, crouchHeld: true },
+      neutralInput(),
+      1 / 72,
+      [],
+      false
+    );
+
+    const held = { ...neutralInput(), slideHeld: true, crouchHeld: true };
+    const steps = Math.ceil((GAME_CONSTANTS.slide.overholdBrakeDelay + 0.8) * 72);
+    for (let i = 0; i < steps; i += 1) {
+      state = stepMovement(state.movement, state.internal, state.dash, held, held, 1 / 72, [], false);
+    }
+
+    expect(state.movement.speed).toBeLessThan(1);
+    expect(state.movement.sliding).toBe(false);
+  });
 });
 
 describe('shared ball state transitions', () => {
@@ -205,6 +232,17 @@ describe('shared ball state transitions', () => {
     expect(caught.ball.phase).toBe('held');
     expect(caught.ball.heldByPlayerId).toBe('p1');
     expect(caught.hands.left.heldBallId).toBe('b1');
+  });
+
+  it('dropping a held ball releases it downward instead of hovering', () => {
+    const player = createPlayerState('p1', 'blue');
+    const pickup = ok(tryPickupBall(player, player.hands, createBallState('b1', vec3())));
+
+    const dropped = ok(dropBallFromHand(pickup.hands, 'left', pickup.ball, vec3(0, 1, 0)));
+
+    expect(dropped.ball.phase).toBe('dead');
+    expect(dropped.ball.velocity.y).toBeLessThan(0);
+    expect(dropped.ball.heldByPlayerId).toBeNull();
   });
 
   it('live becomes deflected on auto-parry', () => {

@@ -79,6 +79,7 @@ export class PlayerController {
    */
   updateOnline(dt: number): void {
     this.updateLook();
+    this.movement.tickVisualFeedback(dt);
     this.hands.tickVisualAnimations(dt);
     this.viewmodel.update(dt, this.hands);
     this.camera.getViewMatrix(true);

@@ -119,10 +119,19 @@ export function stepMovement(
   if (wallReattachCooldown > 0) wallReattachCooldown = Math.max(0, wallReattachCooldown - dt);
   if (catchBoostTimer > 0) catchBoostTimer = Math.max(0, catchBoostTimer - dt);
   if (dashActiveTimer > 0) dashActiveTimer = Math.max(0, dashActiveTimer - dt);
+  const slideHeldActive = input.slideHeld || input.crouchHeld;
   if (sliding) {
     slideTimer += dt;
-    const tooSlow = Math.hypot(vx, vz) < c.slide.minStartSpeed * 0.55;
-    if (slideTimer > c.slide.maxDuration || (tooSlow && slideTimer >= c.slide.minDuration)) sliding = false;
+    const speed = Math.hypot(vx, vz);
+    const overholdingSlide = slideHeldActive && slideTimer >= c.slide.overholdBrakeDelay;
+    const tooSlow = speed < c.slide.minStartSpeed * 0.55;
+    const stoppedFromOverhold = overholdingSlide && speed <= c.slide.overholdStopSpeed;
+    if (
+      stoppedFromOverhold ||
+      (!slideHeldActive && (slideTimer > c.slide.maxDuration || (tooSlow && slideTimer >= c.slide.minDuration)))
+    ) {
+      sliding = false;
+    }
   }
 
   // --- start slide (edge-triggered) ---
@@ -261,7 +270,9 @@ export function stepMovement(
 
   // --- friction (before accel, Quake order) ---
   if (grounded && !(dashActiveTimer > 0 && !sliding)) {
-    const friction = c.player.friction * (sliding ? c.slide.frictionMultiplier : 1);
+    const overholdingSlide = sliding && slideHeldActive && slideTimer >= c.slide.overholdBrakeDelay;
+    const slideFrictionMultiplier = overholdingSlide ? c.slide.overholdFrictionMultiplier : c.slide.frictionMultiplier;
+    const friction = c.player.friction * (sliding ? slideFrictionMultiplier : 1);
     const decay = Math.exp(-friction * dt);
     vx *= decay;
     vz *= decay;

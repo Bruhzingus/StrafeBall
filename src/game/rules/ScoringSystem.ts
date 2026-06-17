@@ -10,6 +10,10 @@ import { TUNING } from '../config/tuning';
 const DUMMY_BODY_BASE_Y = 0.15;
 const DUMMY_BODY_TOP_Y = 2.0;
 
+export interface DummyHitResult {
+  speed: number;
+}
+
 export class ScoringSystem {
   public playerHits = 0;
 
@@ -18,8 +22,8 @@ export class ScoringSystem {
    * ball's path this tick vs the dummy's full vertical body axis — so headshots register and a
    * fast throw can't tunnel through a dummy between frames. Returns the number of new hits.
    */
-  updateAgainstDummies(balls: Ball[], targetDummies: AbstractMesh[], dt: number): number {
-    let hitsThisFrame = 0;
+  updateAgainstDummies(balls: Ball[], targetDummies: AbstractMesh[], dt: number): DummyHitResult[] {
+    const hitsThisFrame: DummyHitResult[] = [];
     const radius = TUNING.ball.hitRadius;
 
     for (const ball of balls) {
@@ -34,7 +38,7 @@ export class ScoringSystem {
         const top = { x: d.x, y: DUMMY_BODY_TOP_Y, z: d.z };
         if (!sweptBallHitsBody(prev, curr, base, top, radius)) continue;
         this.playerHits += 1;
-        hitsThisFrame += 1;
+        hitsThisFrame.push({ speed: ball.velocity.length() });
         dummy.metadata.hitCount = (dummy.metadata.hitCount ?? 0) + 1;
         ball.makeDead();
         break;
