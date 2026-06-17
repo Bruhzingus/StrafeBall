@@ -9,36 +9,36 @@ export const TUNING = {
 
   player: {
     height: GAME_CONSTANTS.player.height,
-    eyeHeight: 1.58,
+    eyeHeight: GAME_CONSTANTS.player.eyeHeight,
     radius: GAME_CONSTANTS.player.radius,
     lookPitchLimitRadians: GAME_CONSTANTS.player.lookPitchLimitRadians,
-    groundAcceleration: 24,
-    airAcceleration: 11,
+    groundAcceleration: GAME_CONSTANTS.player.groundAcceleration,
+    airAcceleration: GAME_CONSTANTS.player.airAcceleration,
     // Air "wish speed" cap (Source-style airspeedcap). Small on purpose: the projection in
     // accelerate() means only velocity perpendicular to your current motion can be added,
     // which is exactly what lets mouse-turning while strafing build speed (air-strafing).
-    airStrafeMaxSpeed: 1.3,
-    friction: 10,
+    airStrafeMaxSpeed: GAME_CONSTANTS.player.airStrafeMaxSpeed,
+    friction: GAME_CONSTANTS.player.friction,
     // Mirrors GAME_CONSTANTS.player.maxGroundSpeed (strafe top speed −30%). Kept in sync so offline
     // practice feels the same as the server-authoritative online movement.
     maxGroundSpeed: GAME_CONSTANTS.player.maxGroundSpeed,
-    softSpeedLimit: 18,
+    softSpeedLimit: GAME_CONSTANTS.player.softSpeedLimit,
     // Rate (per second) that speed above the soft limit bleeds off. dt-scaled so it's
     // frame-rate independent.
-    softLimitBleedRate: 1.2,
-    gravity: 22,
+    softLimitBleedRate: GAME_CONSTANTS.player.softLimitBleedRate,
+    gravity: GAME_CONSTANTS.player.gravity,
     // Gravity is stronger while falling so jumps feel snappy and weighty, not floaty.
-    fallGravityMultiplier: 1.45,
+    fallGravityMultiplier: GAME_CONSTANTS.player.fallGravityMultiplier,
     // Mirrors GAME_CONSTANTS.player.jumpSpeed (jump −35%). Kept in sync with the server sim.
     jumpSpeed: GAME_CONSTANTS.player.jumpSpeed,
-    bhopGraceSeconds: 0.12,
+    bhopGraceSeconds: GAME_CONSTANTS.player.bhopGraceSeconds,
     bhopPerfectWindowSeconds: 0.07,
-    bhopSpeedBonus: 1.035,
-    crouchHeightMultiplier: 0.62,
-    catchStanceSpeedMultiplier: 0.72,
+    bhopSpeedBonus: GAME_CONSTANTS.player.bhopSpeedBonus,
+    crouchHeightMultiplier: GAME_CONSTANTS.player.crouchHeightMultiplier,
+    catchStanceSpeedMultiplier: GAME_CONSTANTS.player.catchStanceSpeedMultiplier,
     // Max height a surface (bleacher tier) can be above the feet to still count as
     // standable ground this tick. Bigger steps must be jumped onto.
-    stepHeight: 0.45
+    stepHeight: GAME_CONSTANTS.player.stepHeight
   },
 
   slide: {
@@ -65,27 +65,27 @@ export const TUNING = {
 
   wall: {
     // How far off "parallel to the wall" your travel can be and still attach (looser = easier).
-    runTriggerAngleDegrees: 55,
-    runMaxSeconds: 1.1,
-    runGravityScale: 0.15,
+    runTriggerAngleDegrees: GAME_CONSTANTS.wall.runTriggerAngleDegrees,
+    runMaxSeconds: GAME_CONSTANTS.wall.runMaxSeconds,
+    runGravityScale: GAME_CONSTANTS.wall.runGravityScale,
     // Vertical velocity is clamped to this floor while wall-running (gentle, controlled slide).
-    runMaxFallSpeed: -2.0,
+    runMaxFallSpeed: GAME_CONSTANTS.wall.runMaxFallSpeed,
     // Small upward kick when a wall-run starts so you climb a little.
-    runStartUpBoost: 2.2,
-    minEntrySpeed: 2.0,
-    jumpAwaySpeed: 9.5,
-    jumpUpSpeed: 8.5,
-    reattachCooldownSeconds: 0.2
+    runStartUpBoost: GAME_CONSTANTS.wall.runStartUpBoost,
+    minEntrySpeed: GAME_CONSTANTS.wall.minEntrySpeed,
+    jumpAwaySpeed: GAME_CONSTANTS.wall.jumpAwaySpeed,
+    jumpUpSpeed: GAME_CONSTANTS.wall.jumpUpSpeed,
+    reattachCooldownSeconds: GAME_CONSTANTS.wall.reattachCooldownSeconds
   },
 
   backflip: {
-    cooldownSeconds: 2.6,
-    durationSeconds: 0.72,
-    verticalImpulse: 10.5,
-    backwardImpulse: 4.8,
-    superWindowStart: 0.25,
-    superWindowEnd: 0.52,
-    superThrowMultiplier: 2.0,
+    cooldownSeconds: GAME_CONSTANTS.backflip.cooldownSeconds,
+    durationSeconds: GAME_CONSTANTS.backflip.durationSeconds,
+    verticalImpulse: GAME_CONSTANTS.backflip.verticalImpulse,
+    backwardImpulse: GAME_CONSTANTS.backflip.backwardImpulse,
+    superWindowStart: GAME_CONSTANTS.backflip.superWindowStart,
+    superWindowEnd: GAME_CONSTANTS.backflip.superWindowEnd,
+    superThrowMultiplier: GAME_CONSTANTS.backflip.superThrowMultiplier,
     qte: GAME_CONSTANTS.backflip.qte
   },
 
@@ -108,7 +108,12 @@ export const TUNING = {
     fastDoubleThrowPenalty: GAME_CONSTANTS.ball.fastDoubleThrowPenalty,
     bounceRestitution: GAME_CONSTANTS.ball.bounceRestitution,
     deadAfterBounces: GAME_CONSTANTS.ball.deadAfterBounces,
-    hitRadius: GAME_CONSTANTS.ball.hitRadius
+    deflectedDeadAfterBounces: GAME_CONSTANTS.ball.deflectedDeadAfterBounces,
+    settleSpeed: GAME_CONSTANTS.ball.settleSpeed,
+    hitRadius: GAME_CONSTANTS.ball.hitRadius,
+    liveHitMinSpeed: GAME_CONSTANTS.ball.liveHitMinSpeed,
+    looseFriction: GAME_CONSTANTS.ball.looseFriction,
+    pickupVerticalTolerance: GAME_CONSTANTS.ball.pickupVerticalTolerance
   },
 
   // Held-ball viewmodel placement (camera-space, visual only — does not affect aim).
@@ -160,7 +165,8 @@ export const TUNING = {
     coneDegrees: GAME_CONSTANTS.parry.coneDegrees,
     rangeMeters: GAME_CONSTANTS.parry.rangeMeters,
     cooldownSeconds: GAME_CONSTANTS.parry.cooldownSeconds,
-    deflectSpeedMultiplier: GAME_CONSTANTS.parry.deflectSpeedMultiplier
+    deflectSpeedMultiplier: GAME_CONSTANTS.parry.deflectSpeedMultiplier,
+    deflectUpVelocity: GAME_CONSTANTS.parry.deflectUpVelocity
   },
 
   match: {

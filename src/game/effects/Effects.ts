@@ -51,13 +51,8 @@ export class Effects {
     this.triggerFlash(0.16, 0.18, '90, 230, 150');
   }
 
-  /**
-   * Instant local feedback when the player clicks to attempt a catch (before the server confirms).
-   * Deliberately subtle — a light click — so it reads as "catch attempt" without implying success
-   * (the authoritative catch fires onCatch() once the server confirms it).
-   */
+  /** Catch attempts are intentionally silent; only a confirmed catch should sound successful. */
   onCatchAttempt(_side: 'left' | 'right'): void {
-    this.sound.click();
   }
 
   onParry(): void {

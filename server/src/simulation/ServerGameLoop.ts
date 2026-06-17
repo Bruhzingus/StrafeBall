@@ -28,11 +28,9 @@ import {
   closestPointOnSegment,
   distance,
   length,
-  lerp,
   normalize,
   scale,
   sweptBallHitsBody,
-  sweptSegmentInCone,
   vec3
 } from '../../../shared/simulation/CollisionMath';
 import {
@@ -40,9 +38,13 @@ import {
   cancelCharge,
   dropBallFromHand,
   heldBallCount,
+  sweptCatchFailReason,
+  sweptParryFailReason,
   tickHands,
   throwBallFromHand,
-  tryPickupBall
+  tryPickupBall,
+  type SweptCatchFailReason,
+  type SweptParryFailReason
 } from '../../../shared/simulation/HandSim';
 import { createResetVoteState, createRoomState, registerPlayerHit } from '../../../shared/simulation/MatchSim';
 import { createPlayerState } from '../../../shared/simulation/PlayerSim';
@@ -57,7 +59,7 @@ import {
 import { facingFromAngles, stepMovement } from '../../../shared/simulation/MovementSim';
 import { clampLookPitch } from '../../../shared/simulation/AimMath';
 import { computePlayerHandAnchor } from '../../../shared/simulation/HandAnchors';
-import { curveAccelForThrow, isCurveThrow, backflipQteSpeed } from '../../../shared/simulation/ThrowMath';
+import { calculateThrow, isCurveThrow } from '../../../shared/simulation/ThrowMath';
 import { playerBallHitRadius, playerHitCapsule } from '../../../shared/simulation/PlayerHitbox';
 
 export interface ServerGameLoopOptions {
@@ -110,27 +112,10 @@ interface CatchAttempt {
 }
 
 /** Reason a catch attempt failed to land — surfaced under CATCH_DEBUG (Phase 13). */
-type CatchFailReason =
-  | 'no-empty-hand'
-  | 'wrong-hand'
-  | 'dashing'
-  | 'ball-not-live'
-  | 'out-of-range'
-  | 'angle-too-wide'
-  | 'too-early'
-  | 'too-late'
-  | 'cooldown'
-  | 'owner-invalid'
-  | 'stale-attempt';
+type CatchFailReason = SweptCatchFailReason;
 
 /** Reason an auto-parry failed — surfaced under PARRY_DEBUG (Phase 13). */
-type ParryFailReason =
-  | 'no-two-balls'
-  | 'cooldown'
-  | 'ball-not-live'
-  | 'owner-invalid'
-  | 'out-of-range'
-  | 'angle-too-wide';
+type ParryFailReason = SweptParryFailReason;
 
 interface LegacyPlayerInput {
   jump: boolean;
@@ -323,6 +308,17 @@ export class ServerGameLoop {
     const player = this.state.players[playerId];
     if (!player) return false;
 
+    // Reject inputs from BEFORE the latest room reset. After a reset the client restarts its input
+    // sequence at 0, but pre-reset packets (high seq) may still be in flight; if accepted, they bump
+    // lastEnqueuedSeq back to a stale-high value and every fresh post-reset input is then dropped as
+    // a "duplicate" — freezing the player at spawn. A MISSING resetSerial (undefined) means a legacy
+    // client that predates the field and is allowed through; a present value (including 0, the
+    // pre-first-reset baseline) is gated strictly against the current timeline.
+    if (rawInput.resetSerial !== undefined) {
+      const inputResetSerial = Math.max(0, Math.trunc(Number(rawInput.resetSerial) || 0));
+      if (inputResetSerial < this.resetSerial) return true; // stale timeline → drop
+    }
+
     const lastSeq = this.lastEnqueuedSeqByPlayerId.get(playerId) ?? 0;
     const sequence = Number.isFinite(seq) ? seq : 0;
     if (sequence > 0 && sequence <= lastSeq) return true; // stale/duplicate
@@ -425,19 +421,18 @@ export class ServerGameLoop {
     const backflipRecent = player.movementInternal.backflipCooldown >
       GAME_CONSTANTS.backflip.cooldownSeconds - (GAME_CONSTANTS.backflip.durationSeconds + GAME_CONSTANTS.backflip.qte.durationSeconds + 0.3);
     const isBackflipThrow = backflipTier >= 1 && player.movement.grounded && backflipRecent;
-    const isSuper = isBackflipThrow;
-
-    const baseSpeed = charge01 <= 0.05
-      ? GAME_CONSTANTS.ball.quickThrowSpeed
-      : lerp(GAME_CONSTANTS.ball.quickThrowSpeed, GAME_CONSTANTS.ball.chargedThrowSpeed, charge01);
-    const speed = isBackflipThrow ? backflipQteSpeed(backflipTier) : baseSpeed;
-    const velocity = add(scale(forward, speed), scale(player.movement.velocity, GAME_CONSTANTS.ball.movementThrowScale));
     const origin = add(computePlayerHandAnchor(player, request.hand), scale(forward, 0.16));
     // Deterministic crouch-curve (Phase 6): curves perpendicular to AIM (not world axes), opposite
     // the throwing hand. Server-computed so the client can replay the exact same curve for prediction.
-    const crouching = player.movement.crouching || player.movement.sliding;
-    const curveAccel = curveAccelForThrow(forward, request.hand, crouching);
-    const dropScale = isSuper ? GAME_CONSTANTS.ball.chargedDropScale : lerp(GAME_CONSTANTS.ball.quickDropScale, GAME_CONSTANTS.ball.chargedDropScale, charge01);
+    const throwCalc = calculateThrow({
+      hand: request.hand,
+      forward,
+      playerVelocity: player.movement.velocity,
+      charge01,
+      crouching: player.movement.crouching || player.movement.sliding,
+      backflipTier: isBackflipThrow ? backflipTier : 0
+    });
+    const { velocity, curveAccel, dropScale, isSuper } = throwCalc;
     // Fresh throw identity — assigned here so it lands on the live ball AND the throw event together.
     this.throwCounter += 1;
     const throwId = this.throwCounter;
@@ -478,7 +473,7 @@ export class ServerGameLoop {
     if (this.debug.THROW_DEBUG) {
       this.logger(
         `throw accepted player=${playerId} ball=${ball.id} hand=${request.hand} throwId=${throwId}` +
-        ` charge=${charge01.toFixed(2)} crouchCurve=${Number(crouching)} super=${Number(isSuper)}` +
+        ` charge=${charge01.toFixed(2)} crouchCurve=${Number(player.movement.crouching || player.movement.sliding)} super=${Number(isSuper)}` +
         ` yaw=${player.movement.yawRadians.toFixed(3)} pitch=${player.movement.pitchRadians.toFixed(3)}` +
         ` origin=(${origin.x.toFixed(2)},${origin.y.toFixed(2)},${origin.z.toFixed(2)})` +
         ` vel=(${velocity.x.toFixed(2)},${velocity.y.toFixed(2)},${velocity.z.toFixed(2)})` +
@@ -1044,20 +1039,16 @@ export class ServerGameLoop {
     segPrev: Vec3,
     segCurr: Vec3
   ): ParryFailReason | null {
-    const twoBalls = sample ? sample.heldBallCount >= GAME_CONSTANTS.ball.maxHeldBalls : heldBallCount(defender.hands) >= GAME_CONSTANTS.ball.maxHeldBalls;
-    if (!twoBalls) return 'no-two-balls';
-    const cooldown = this.parryCooldownByPlayerId.get(defender.id) ?? 0;
-    if (cooldown > 0) return 'cooldown';
-    if (ball.phase !== 'live') return 'ball-not-live';
-    if (ball.ownerId === defender.id) return 'owner-invalid';
-    const origin = sample ? sample.eye : add(defender.movement.position, vec3(0, GAME_CONSTANTS.player.eyeHeight, 0));
-    const forward = sample ? sample.forward : defender.movement.facing;
-    const coneDegrees = ball.isSuper ? GAME_CONSTANTS.catch.superParryConeDegrees : GAME_CONSTANTS.parry.coneDegrees;
-    // Range check on the closest swept approach, then cone.
-    const closest = closestPointOnSegment(segPrev, segCurr, origin);
-    if (distance(origin, closest) > GAME_CONSTANTS.parry.rangeMeters) return 'out-of-range';
-    if (!sweptSegmentInCone(origin, forward, segPrev, segCurr, coneDegrees, GAME_CONSTANTS.parry.rangeMeters)) return 'angle-too-wide';
-    return null;
+    return sweptParryFailReason({
+      heldBallCount: sample ? sample.heldBallCount : heldBallCount(defender.hands),
+      parryCooldownSeconds: this.parryCooldownByPlayerId.get(defender.id) ?? 0,
+      defenderPlayerId: defender.id,
+      ball,
+      origin: sample ? sample.eye : add(defender.movement.position, vec3(0, GAME_CONSTANTS.player.eyeHeight, 0)),
+      forward: sample ? sample.forward : defender.movement.facing,
+      segmentStart: segPrev,
+      segmentEnd: segCurr
+    });
   }
 
   /**
@@ -1124,6 +1115,28 @@ export class ServerGameLoop {
     attempt: CatchAttempt,
     now: number
   ): CatchFailReason | null {
+    {
+      const handEmpty = sample
+        ? (hand === 'left' ? sample.leftHandEmpty : sample.rightHandEmpty)
+        : !defender.hands[hand].heldBallId;
+      return sweptCatchFailReason({
+        handEmpty,
+        dashing: sample ? sample.dashing : defender.movement.dashingThisFrame,
+        defenderPlayerId: defender.id,
+        ball,
+        origin: sample ? sample.eye : add(defender.movement.position, vec3(0, GAME_CONSTANTS.player.eyeHeight, 0)),
+        forward: sample ? sample.forward : defender.movement.facing,
+        segmentStart: segPrev,
+        segmentEnd: segCurr,
+        timing: {
+          nowMs: now,
+          openedAtMs: attempt.openedAtMs,
+          startupMs: GAME_CONSTANTS.combat.catchStartupMs,
+          activeUntilMs: attempt.activeUntilMs
+        }
+      });
+    }
+    /*
     // Timing window: too-early before startup elapses, too-late after the active window.
     if (now < attempt.openedAtMs + GAME_CONSTANTS.combat.catchStartupMs) return 'too-early';
     if (now > attempt.activeUntilMs) return 'too-late';
@@ -1143,6 +1156,7 @@ export class ServerGameLoop {
     if (distance(origin, closest) > GAME_CONSTANTS.catch.rangeMeters) return 'out-of-range';
     if (!sweptSegmentInCone(origin, forward, segPrev, segCurr, GAME_CONSTANTS.catch.coneDegrees, GAME_CONSTANTS.catch.rangeMeters)) return 'angle-too-wide';
     return null;
+    */
   }
 
   /** Defensive sample nearest the requested time, clamped to the max-rewind window. */
@@ -1375,6 +1389,14 @@ export class ServerGameLoop {
     this.lastInputAtByPlayerId.set(playerId, Date.now());
     this.lastEnqueuedSeqByPlayerId.set(playerId, 0);
     this.parryCooldownByPlayerId.set(playerId, 0);
+    // CRITICAL: the client restarts its input sequence at 0 on a reset (resetPrediction). The player
+    // object is REUSED across a room reset, so its lastProcessedInputSeq still holds the pre-reset
+    // (high) value. If we don't clear it, the server acks that stale-high seq, the client's
+    // reconcile filters EVERY fresh input as "already acked" (seq <= ack), replays nothing, and the
+    // local player gets snapped back to spawn each frame — the "stuck after reset" freeze. Reset it
+    // so the server's ack stream restarts from 0 in lock-step with the client.
+    const player = this.state.players[playerId];
+    if (player) player.lastProcessedInputSeq = 0;
     // Fresh defense history + cleared catch-attempt state (reset/respawn/rejoin must not reuse old
     // history across a discontinuity — that would lag-comp against pre-reset positions).
     this.defenseHistoryByPlayerId.set(playerId, new TimeRing<DefenseSample>(GAME_CONSTANTS.combat.defenseHistoryMs));
@@ -1586,7 +1608,8 @@ function defaultInput(yawRadians = 0): PlayerInput {
     rightHandReleased: false,
     leftCatchAttemptId: 0,
     rightCatchAttemptId: 0,
-    backflipThrowTier: 0
+    backflipThrowTier: 0,
+    resetSerial: 0
   };
 }
 
@@ -1637,7 +1660,8 @@ function normalizeInput(input: Partial<PlayerInput>, fallback: PlayerInput = def
     leftCatchAttemptId: Math.max(0, Math.trunc(finiteNumber(input.leftCatchAttemptId, fallback.leftCatchAttemptId))),
     rightCatchAttemptId: Math.max(0, Math.trunc(finiteNumber(input.rightCatchAttemptId, fallback.rightCatchAttemptId))),
     // Backflip QTE tier is a one-shot value carried on the release packet; clamp to [0, tierCount].
-    backflipThrowTier: clamp(Math.trunc(finiteNumber(input.backflipThrowTier, 0)), 0, GAME_CONSTANTS.backflip.qte.tierCount)
+    backflipThrowTier: clamp(Math.trunc(finiteNumber(input.backflipThrowTier, 0)), 0, GAME_CONSTANTS.backflip.qte.tierCount),
+    resetSerial: Math.max(0, Math.trunc(finiteNumber(input.resetSerial, fallback.resetSerial)))
   };
 }
 

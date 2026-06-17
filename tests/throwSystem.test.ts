@@ -37,9 +37,9 @@ describe('ThrowSystem.calculateThrow', () => {
     expect(r.dropScale).toBeCloseTo(TUNING.ball.chargedDropScale, 6);
   });
 
-  it('dashing forces a quick throw regardless of charge', () => {
+  it('dashing uses the same charged throw speed as the authoritative server path', () => {
     const r = system.calculateThrow(baseRequest({ charge01: 1, isDashing: true }));
-    expect(r.velocity.length()).toBeCloseTo(TUNING.ball.quickThrowSpeed, 4);
+    expect(r.velocity.length()).toBeCloseTo(TUNING.ball.chargedThrowSpeed, 4);
   });
 
   it('backflip QTE top tier uses the tiered speed, marks the throw super, and ignores charge', () => {

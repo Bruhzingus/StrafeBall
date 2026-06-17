@@ -9,6 +9,7 @@ import { Hud } from '../ui/Hud';
 import { BackflipQteController } from '../player/BackflipQteController';
 import { BackflipQteHud } from '../ui/BackflipQteHud';
 import { backflipQteSpeed } from '../../../shared/simulation/ThrowMath';
+import { GAME_CONSTANTS } from '../../../shared/constants';
 import { SettingsPanel } from '../ui/SettingsPanel';
 import { MatchRules } from '../rules/MatchRules';
 import { TUNING } from '../config/tuning';
@@ -82,6 +83,8 @@ export class ArenaScene {
   // the server's hand.lastCatchAttemptId catches up, at which point we stop re-sending it.
   private nextCatchAttemptId = 1;
   private readonly pendingCatchAttemptId: Record<'left' | 'right', number> = { left: 0, right: 0 };
+  private readonly recentCatchAttemptBySide: Record<'left' | 'right', { id: number; openedAtMs: number } | null> = { left: null, right: null };
+  private readonly lastOnlineHeldBallId: Record<'left' | 'right', string | null> = { left: null, right: null };
   // True while the authoritative match is in its pre-round countdown: local input is frozen to look
   // only (movement/combat zeroed) and the HUD shows the countdown. Driven by the snapshot.
   private countdownActive = false;
@@ -105,7 +108,7 @@ export class ArenaScene {
   private static readonly MAT_RESTORE_HOLD_SECONDS = 0.6;
   // Fixed timestep for input send + prediction + reconciliation replay. Driven entirely by the
   // shared net config (must equal the server's fixed dt for reconciliation residual ≈ 0). At the
-  // active A_72_72_60 mode this is 1/72; the fixed-step loop below then sends at 72Hz.
+  // active A_90_90_60 mode this is 1/90; the fixed-step loop below then sends at 90Hz.
   private static readonly NET_FIXED_DT = CLIENT_FIXED_DT;
   private netAccumulator = 0;
   private inputSeq = 0;
@@ -645,6 +648,10 @@ export class ArenaScene {
     this.latchRightHandPressed ||= this.input.wasMousePressed(MOUSE_BUTTON.rightHand);
     this.latchLeftHandReleased ||= this.input.wasMouseReleased(MOUSE_BUTTON.leftHand);
     this.latchRightHandReleased ||= this.input.wasMouseReleased(MOUSE_BUTTON.rightHand);
+    if (this.latchPickupPressed) {
+      this.recentCatchAttemptBySide.left = null;
+      this.recentCatchAttemptBySide.right = null;
+    }
 
     const snapshot = this.multiplayer.latestSnapshot;
     const local = snapshot?.room.players[this.multiplayer.localPlayerId] ?? null;
@@ -655,6 +662,7 @@ export class ArenaScene {
     // Backflip landing QTE (online): runs client-side; on a hit it latches a release + tier onto the
     // input stream (handled below) and suppresses the normal hand action so the click doesn't charge.
     const qteActive = this.updateBackflipQteOnline(dt, local);
+    this.handleOnlineCatchSuccessAudio(local);
 
     // Hand edges are folded into the fixed input stream. Process them before building packets so
     // catch ids and throw releases ride the same ordered tick as crouch/look/charge state.
@@ -1082,6 +1090,15 @@ export class ArenaScene {
     return Math.max(0, Date.now() - this.lastAckedInputClientTimeMs);
   }
 
+  private resetOnlineCatchAudioTracking(): void {
+    this.pendingCatchAttemptId.left = 0;
+    this.pendingCatchAttemptId.right = 0;
+    this.recentCatchAttemptBySide.left = null;
+    this.recentCatchAttemptBySide.right = null;
+    this.lastOnlineHeldBallId.left = null;
+    this.lastOnlineHeldBallId.right = null;
+  }
+
   private enterOnlineMode(): void {
     if (this.onlineModeActive) return;
     this.onlineModeActive = true;
@@ -1146,8 +1163,7 @@ export class ArenaScene {
     this.lastSentInput = neutralNetInput(this.networkYaw, this.networkPitch);
     this.lastReconciledTick = -1;
     // Drop any in-flight catch attempt across a prediction reset (enter/exit online, server reset).
-    this.pendingCatchAttemptId.left = 0;
-    this.pendingCatchAttemptId.right = 0;
+    this.resetOnlineCatchAudioTracking();
     this.debugLogTimer = 0;
     this.lastAckedSeq = 0;
     this.lastAckedInputClientTimeMs = 0;
@@ -1317,6 +1333,7 @@ export class ArenaScene {
       const frozen = neutralNetInput(this.networkYaw, this.networkPitch);
       frozen.sequence = this.inputSeq;
       frozen.clientTimeMs = Date.now();
+      frozen.resetSerial = this.currentResetSerial();
       return frozen;
     }
     const crouchDown = this.input.isKeyDown(CONTROL_KEYS.crouch) || this.input.isKeyDown(CONTROL_KEYS.crouchAlt);
@@ -1358,8 +1375,44 @@ export class ArenaScene {
       leftCatchAttemptId: this.pendingCatchAttemptId.left,
       rightCatchAttemptId: this.pendingCatchAttemptId.right,
       // One-shot backflip QTE tier; the server reads it on the throw-release tick (0 = normal throw).
-      backflipThrowTier: this.pendingBackflipTier
+      backflipThrowTier: this.pendingBackflipTier,
+      // Stamp the timeline this input belongs to so the server can drop pre-reset packets still in
+      // flight after a room reset (otherwise they freeze the player at spawn).
+      resetSerial: this.currentResetSerial()
     };
+  }
+
+  /** The latest server resetSerial we've seen, as a non-negative int (−1 sentinel → 0 = unknown). */
+  private currentResetSerial(): number {
+    return Math.max(0, this.lastResetSerial);
+  }
+
+  private handleOnlineCatchSuccessAudio(local: PlayerState | null): void {
+    const now = Date.now();
+    // Covers the server active catch window, rewind/history slack, and snapshot/network delay.
+    const catchConfirmWindowMs =
+      GAME_CONSTANTS.combat.catchCooldownMs +
+      GAME_CONSTANTS.combat.defenseHistoryMs +
+      GAME_CONSTANTS.combat.defenseInputGraceMs +
+      500;
+
+    for (const side of ['left', 'right'] as const) {
+      const currentHeld = local?.hands[side].heldBallId ?? null;
+      const previousHeld = this.lastOnlineHeldBallId[side];
+      const becameHeld = previousHeld === null && currentHeld !== null;
+      const attempt = this.recentCatchAttemptBySide[side];
+      const handAck = local?.hands[side].lastCatchAttemptId ?? 0;
+      const attemptFresh = attempt ? now - attempt.openedAtMs <= catchConfirmWindowMs : false;
+
+      if (becameHeld && attempt && attemptFresh && handAck >= attempt.id) {
+        this.effects.onCatch();
+        this.recentCatchAttemptBySide[side] = null;
+      } else if (attempt && !attemptFresh) {
+        this.recentCatchAttemptBySide[side] = null;
+      }
+
+      this.lastOnlineHeldBallId[side] = currentHeld;
+    }
   }
 
   private sendOnlineHandActions(dt: number, local: PlayerState): void {
@@ -1405,10 +1458,12 @@ export class ArenaScene {
       this.onlineCharging[side] = false;
       this.onlineChargeSeconds[side] = 0;
       // Empty-hand click = a server-authoritative timed CATCH attempt. Assign a fresh latched id
-      // (carried on every input packet until acked) and play instant local catch feedback. The
-      // server decides success against history; the client never decides the catch itself.
+      // (carried on every input packet until acked). The server decides success against history;
+      // the client only plays catch audio once a snapshot confirms a ball entered the hand.
       if (pressed) {
-        this.pendingCatchAttemptId[side] = this.nextCatchAttemptId;
+        const attemptId = this.nextCatchAttemptId;
+        this.pendingCatchAttemptId[side] = attemptId;
+        this.recentCatchAttemptBySide[side] = { id: attemptId, openedAtMs: Date.now() };
         this.nextCatchAttemptId += 1;
         this.effects.onCatchAttempt(side);
       }
@@ -1653,6 +1708,7 @@ function neutralNetInput(yawRadians: number, pitchRadians = 0): PlayerInput {
     rightHandReleased: false,
     leftCatchAttemptId: 0,
     rightCatchAttemptId: 0,
-    backflipThrowTier: 0
+    backflipThrowTier: 0,
+    resetSerial: 0
   };
 }

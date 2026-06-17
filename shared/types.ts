@@ -54,6 +54,15 @@ export interface PlayerInput {
    * a valid tier sets the throw's speed (tier 1 = quick, top tier = fastest) and marks it golden.
    */
   backflipThrowTier: number;
+  /**
+   * The server `resetSerial` this input was produced under (the latest the client has seen). The
+   * server rejects any input whose resetSerial is OLDER than its current one, so pre-reset packets
+   * still in flight when a room reset happens are discarded instead of corrupting the post-reset
+   * input stream (which otherwise bumps the server's last-seen sequence back to a stale-high value
+   * and makes every fresh input look like a duplicate — the "stuck after reset" freeze). 0 = a
+   * client that predates this field; the server treats 0 as "unknown" and does not reject it.
+   */
+  resetSerial: number;
 }
 
 export type PlayerHandMode = 'empty' | 'holding' | 'charging' | 'catching';

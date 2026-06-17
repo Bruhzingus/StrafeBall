@@ -79,7 +79,7 @@ export const GAME_CONSTANTS = {
       // covers [0, edge0]; tier 4 covers [edge0, edge1]; … tier 1 covers [edge3, edge4=1]. Non-uniform
       // on purpose: a SMALL center band (hard to land the top tier) and progressively WIDER outer
       // bands (the slower tiers are easier / span more of the sweep time).
-      tierBandEdges: [0.13, 0.33, 0.57, 0.80, 1.0] as number[],
+      tierBandEdges: [0.08, 0.20, 0.35, 0.62, 1.0] as number[],
       // Tier speed multipliers applied to quickThrowSpeed, slowest (tier 1) → fastest (tier 5).
       // Tier 5 = 10% faster than the old backflip super (quick×2.0): quick×2.2. Tier 1 = quick×1.0.
       tierSpeedMultipliers: [1.0, 1.3, 1.6, 1.9, 2.2] as number[]

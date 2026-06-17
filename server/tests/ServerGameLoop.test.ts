@@ -464,6 +464,38 @@ describe('ServerGameLoop', () => {
     expect(loop.state.resetVote.requiredVotes).toBe(2);
   });
 
+  it('drops pre-reset inputs after a room reset so the player is not frozen at spawn', () => {
+    const loop = new ServerGameLoop('room');
+    loop.addPlayer('a', 'A');
+    loop.addPlayer('b', 'B');
+
+    // Both vote → room reset. resetSerial goes 0 → 1; match enters countdown. Force 'playing' so a
+    // movement input would integrate if accepted.
+    expect(loop.handleReset('a').ok).toBe(true);
+    expect(loop.handleReset('b').ok).toBe(true);
+    expect(loop.state.resetVote.resetSerial).toBe(1);
+    playNow(loop);
+
+    const spawn = { ...loop.state.players.a.movement.position };
+    const movedXZ = () => {
+      const p = loop.state.players.a.movement.position;
+      return Math.hypot(p.x - spawn.x, p.z - spawn.z);
+    };
+
+    // A pre-reset packet (old timeline, resetSerial 0) with a HIGH seq still in flight. It must be
+    // rejected — otherwise it bumps the server's last-seen seq and freezes the fresh input stream.
+    loop.handleInput('a', { moveZ: 1, sequence: 9999, resetSerial: 0 }, 9999);
+    loop.step();
+    expect(movedXZ()).toBeCloseTo(0, 4); // ignored, no movement
+
+    // A fresh post-reset packet (current timeline, low seq) must be accepted and move the player.
+    for (let i = 1; i <= 6; i++) {
+      loop.handleInput('a', { moveZ: 1, sequence: i, resetSerial: 1 }, i);
+      loop.step();
+    }
+    expect(movedXZ()).toBeGreaterThan(0.05); // accepted → moved off spawn
+  });
+
   it('recomputes reset votes when a player leaves', () => {
     const loop = new ServerGameLoop('room');
     loop.addPlayer('a', 'A');

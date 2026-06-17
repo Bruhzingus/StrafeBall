@@ -10,13 +10,14 @@
  *
  * To switch test configs, change ACTIVE_NET_MODE below (or set VITE_NET_MODE / NET_MODE env).
  * The supported modes:
- *   A. 72 sim / 72 input / 60 snapshots  (target — sharper input with 60Hz snapshots)
- *   B. 60 sim / 60 input / 60 snapshots  (legacy full-rate fallback)
- *   C. 60 sim / 60 input / 30 snapshots  (bandwidth fallback)
- *   D. 30 sim / 30 input / 30 snapshots  (baseline — safest for a 1 vCPU box)
+ *   A. 90 sim / 90 input / 60 snapshots  (target — sharpest input with 60Hz snapshots)
+ *   B. 72 sim / 72 input / 60 snapshots  (sharper input with 60Hz snapshots)
+ *   C. 60 sim / 60 input / 60 snapshots  (legacy full-rate fallback)
+ *   D. 60 sim / 60 input / 30 snapshots  (bandwidth fallback)
+ *   E. 30 sim / 30 input / 30 snapshots  (baseline — safest for a 1 vCPU box)
  */
 
-export type NetMode = 'A_72_72_60' | 'A_60_60_60' | 'B_60_60_30' | 'C_30_30_30';
+export type NetMode = 'A_90_90_60' | 'A_72_72_60' | 'A_60_60_60' | 'B_60_60_30' | 'C_30_30_30';
 
 export interface NetModeConfig {
   /** Server fixed simulation steps per second. */
@@ -34,7 +35,10 @@ export interface NetModeConfig {
 }
 
 const MODES: Record<NetMode, NetModeConfig> = {
-  // A — 72Hz sim/input with 60Hz snapshots. Snapshot interval ~16.7ms; 75ms covers ~4 snapshots.
+  // A — 90Hz sim/input with 60Hz snapshots. Sim/input dt ~11.1ms; snapshot interval ~16.7ms (interp
+  // delay tracks the SNAPSHOT rate, not the sim rate, so 75ms still covers ~4 snapshots of jitter).
+  A_90_90_60: { serverTickRate: 90, clientInputRate: 90, snapshotRate: 60, interpolationDelayMs: 75 },
+  // 72Hz sim/input with 60Hz snapshots. Snapshot interval ~16.7ms; 75ms covers ~4 snapshots.
   A_72_72_60: { serverTickRate: 72, clientInputRate: 72, snapshotRate: 60, interpolationDelayMs: 75 },
   // Legacy full 60Hz. Snapshot interval ~16.7ms; a 75ms delay covers ~4 snapshots of jitter headroom.
   A_60_60_60: { serverTickRate: 60, clientInputRate: 60, snapshotRate: 60, interpolationDelayMs: 75 },
@@ -71,8 +75,8 @@ function resolveProcessMode(): NetMode {
   return DEFAULT_NET_MODE;
 }
 
-/** Compiled default mode. Per playtest decision: 72 sim / 72 input / 60 snapshots. */
-export const DEFAULT_NET_MODE: NetMode = 'A_72_72_60';
+/** Compiled default mode. Per playtest decision: 90 sim / 90 input / 60 snapshots. */
+export const DEFAULT_NET_MODE: NetMode = 'A_90_90_60';
 
 /**
  * Active mode resolved at module load from process.env (server) or the compiled default (client).
@@ -111,9 +115,10 @@ export const INTERPOLATION_DELAY_MS = active.interpolationDelayMs;
 
 /**
  * How frequently the room loop wakes to drain the fixed-step accumulator. Wake faster than the sim
- * rate so timer jitter can't starve a step. 120Hz wake (≈8.3ms) comfortably feeds a 72Hz sim.
+ * rate so timer jitter can't starve a step. 150Hz wake (≈6.7ms) comfortably feeds a 90Hz sim
+ * (~1.7 wakes per step of headroom).
  */
-export const ROOM_LOOP_WAKE_RATE = 120;
+export const ROOM_LOOP_WAKE_RATE = 150;
 export const ROOM_LOOP_WAKE_INTERVAL_MS = 1000 / ROOM_LOOP_WAKE_RATE;
 
 /**

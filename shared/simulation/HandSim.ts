@@ -1,12 +1,58 @@
 import { GAME_CONSTANTS, type GameConstants } from '../constants';
 import type { BallState, HandSide, HandState, PlayerHandsState, PlayerState, Vec3, ValidationResult } from '../types';
-import { catchBall, deflectBall, dropHeldBall, holdBall, isBallPickupEligible, throwHeldBall, type ThrowBallRequest } from './BallSim';
-import { cloneVec3, isWithinCone, normalize, vec3 } from './CollisionMath';
+import { catchBall, deflectBall, dropHeldBall, holdBall, isBallCatchableInFlight, isBallPickupEligible, throwHeldBall, type ThrowBallRequest } from './BallSim';
+import { closestPointOnSegment, distance, cloneVec3, isWithinCone, normalize, sweptSegmentInCone, vec3 } from './CollisionMath';
 
 export type PickupValidationReason = 'hands-full' | 'ball-not-pickup-eligible';
 export type ThrowHandValidationReason = 'empty-hand' | 'hand-ball-mismatch' | 'ball-not-held' | 'wrong-player' | 'wrong-hand';
 export type CatchValidationReason = 'hand-full' | 'catch-cooldown' | 'not-live' | 'outside-catch-cone' | 'not-tracked';
 export type ParryValidationReason = 'hands-not-full' | 'parry-cooldown' | 'not-live' | 'outside-parry-cone';
+export type SweptCatchFailReason =
+  | 'no-empty-hand'
+  | 'dashing'
+  | 'ball-not-live'
+  | 'out-of-range'
+  | 'angle-too-wide'
+  | 'too-early'
+  | 'too-late'
+  | 'catch-cooldown'
+  | 'owner-invalid';
+export type SweptParryFailReason =
+  | 'no-two-balls'
+  | 'parry-cooldown'
+  | 'ball-not-live'
+  | 'owner-invalid'
+  | 'out-of-range'
+  | 'angle-too-wide';
+
+export interface SweptCatchRequest {
+  handEmpty: boolean;
+  handCooldownSeconds?: number;
+  dashing: boolean;
+  defenderPlayerId?: string | null;
+  ball: Pick<BallState, 'phase' | 'velocity' | 'bounceCount' | 'ownerId'>;
+  origin: Vec3;
+  forward: Vec3;
+  segmentStart: Vec3;
+  segmentEnd: Vec3;
+  timing?: {
+    nowMs: number;
+    openedAtMs: number;
+    startupMs: number;
+    activeUntilMs: number;
+  };
+}
+
+export interface SweptParryRequest {
+  heldBallCount: number;
+  parryCooldownSeconds: number;
+  defenderPlayerId?: string | null;
+  ball: Pick<BallState, 'phase' | 'isSuper' | 'ownerId'>;
+  origin: Vec3;
+  forward: Vec3;
+  segmentStart: Vec3;
+  segmentEnd: Vec3;
+}
 
 export interface PickupResult {
   ok: true;
@@ -231,6 +277,60 @@ export function autoParryBall(
     ball: deflectBall(ball, player.id, normalize(aimForward, vec3(0, 0, 1)), constants),
     parryCooldownSeconds: constants.parry.cooldownSeconds
   };
+}
+
+export function sweptCatchFailReason(
+  request: SweptCatchRequest,
+  constants: GameConstants = GAME_CONSTANTS
+): SweptCatchFailReason | null {
+  if (request.timing) {
+    if (request.timing.nowMs < request.timing.openedAtMs + request.timing.startupMs) return 'too-early';
+    if (request.timing.nowMs > request.timing.activeUntilMs) return 'too-late';
+  }
+  if (!request.handEmpty) return 'no-empty-hand';
+  if ((request.handCooldownSeconds ?? 0) > 0) return 'catch-cooldown';
+  if (request.dashing) return 'dashing';
+  if (!isBallCatchableInFlight(request.ball, constants)) return 'ball-not-live';
+  if (request.ball.ownerId !== null && request.ball.ownerId === request.defenderPlayerId) return 'owner-invalid';
+
+  const closest = closestPointOnSegment(request.segmentStart, request.segmentEnd, request.origin);
+  if (distance(request.origin, closest) > constants.catch.rangeMeters) return 'out-of-range';
+  if (!sweptSegmentInCone(
+    request.origin,
+    request.forward,
+    request.segmentStart,
+    request.segmentEnd,
+    constants.catch.coneDegrees,
+    constants.catch.rangeMeters
+  )) {
+    return 'angle-too-wide';
+  }
+  return null;
+}
+
+export function sweptParryFailReason(
+  request: SweptParryRequest,
+  constants: GameConstants = GAME_CONSTANTS
+): SweptParryFailReason | null {
+  if (request.heldBallCount < constants.ball.maxHeldBalls) return 'no-two-balls';
+  if (request.parryCooldownSeconds > 0) return 'parry-cooldown';
+  if (request.ball.phase !== 'live') return 'ball-not-live';
+  if (request.ball.ownerId !== null && request.ball.ownerId === request.defenderPlayerId) return 'owner-invalid';
+
+  const coneDegrees = request.ball.isSuper ? constants.catch.superParryConeDegrees : constants.parry.coneDegrees;
+  const closest = closestPointOnSegment(request.segmentStart, request.segmentEnd, request.origin);
+  if (distance(request.origin, closest) > constants.parry.rangeMeters) return 'out-of-range';
+  if (!sweptSegmentInCone(
+    request.origin,
+    request.forward,
+    request.segmentStart,
+    request.segmentEnd,
+    coneDegrees,
+    constants.parry.rangeMeters
+  )) {
+    return 'angle-too-wide';
+  }
+  return null;
 }
 
 function tickHand(hand: HandState, dt: number, constants: GameConstants): HandState {

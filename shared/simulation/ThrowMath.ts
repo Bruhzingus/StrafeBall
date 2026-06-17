@@ -1,6 +1,25 @@
 import { GAME_CONSTANTS, type GameConstants } from '../constants';
 import type { HandSide, Vec3 } from '../types';
-import { cross, normalize, scale, vec3 } from './CollisionMath';
+import { add, cross, lerp, normalize, scale, vec3 } from './CollisionMath';
+
+export interface ThrowCalculationRequest {
+  hand: HandSide;
+  forward: Vec3;
+  playerVelocity: Vec3;
+  charge01: number;
+  crouching: boolean;
+  backflipTier?: number;
+  fastDoubleThrowPenalty?: boolean;
+}
+
+export interface ThrowCalculationResult {
+  velocity: Vec3;
+  curveAccel: Vec3;
+  dropScale: number;
+  isSuper: boolean;
+  charge01: number;
+  speed: number;
+}
 
 /**
  * Deterministic curve acceleration for a crouch throw (Phase 6). A crouch throw curves SIDEWAYS
@@ -25,6 +44,51 @@ export function curveAccelForThrow(
   // Curve toward the side opposite the throwing hand: left hand → +right, right hand → −right.
   const sign = hand === 'left' ? 1 : -1;
   return scale(flatRight, sign * constants.ball.curveStrength);
+}
+
+/**
+ * Shared throw calculation for offline practice, client prediction, and the authoritative server.
+ * Keep every gameplay-affecting throw value here so a "charged/crouch/backflip throw" means the
+ * same thing everywhere.
+ */
+export function calculateThrow(
+  request: ThrowCalculationRequest,
+  constants: GameConstants = GAME_CONSTANTS
+): ThrowCalculationResult {
+  const forward = normalize(request.forward, vec3(0, 0, 1));
+  const charge01 = Math.max(0, Math.min(1, request.charge01));
+  const backflipTier = Math.max(0, Math.trunc(request.backflipTier ?? 0));
+  const isSuper = backflipTier >= 1;
+
+  let speed = charge01 <= 0.05
+    ? constants.ball.quickThrowSpeed
+    : lerp(constants.ball.quickThrowSpeed, constants.ball.chargedThrowSpeed, charge01);
+
+  if (request.fastDoubleThrowPenalty) {
+    speed *= constants.ball.fastDoubleThrowPenalty;
+  }
+
+  if (isSuper) {
+    speed = backflipQteSpeed(backflipTier, constants);
+  }
+
+  const velocity = add(
+    scale(forward, speed),
+    scale(request.playerVelocity, constants.ball.movementThrowScale)
+  );
+  const curveAccel = curveAccelForThrow(forward, request.hand, request.crouching, constants);
+  const dropScale = isSuper
+    ? constants.ball.chargedDropScale
+    : lerp(constants.ball.quickDropScale, constants.ball.chargedDropScale, charge01);
+
+  return {
+    velocity,
+    curveAccel,
+    dropScale,
+    isSuper,
+    charge01,
+    speed
+  };
 }
 
 /** True if `curveAccel` is non-trivial (used to tag throw events as curve throws for the client). */

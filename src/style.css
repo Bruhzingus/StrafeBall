@@ -500,22 +500,22 @@ html, body {
   border: 3px solid var(--ink);
   border-radius: 7px;
   box-shadow: 3px 3px 0 var(--ink);
-  /* Sticker-style discrete tier bands matching the scoring edges (small GOLD center = fastest,
+  /* Sticker-style discrete tier bands matching the scoring edges (tiny GOLD center = fastest,
      wider blue then red toward the edges = slower), on a cream base outside the hit zone.
      Hard color stops give the chunky comic look. Stops are full-bar %: center 50%, hit zone ±31%,
-     band edges from tierBandEdges×hitHalfWidth → ±4 / ±10.2 / ±17.7 / ±24.8 / ±31%. */
+     band edges from tierBandEdges×hitHalfWidth → ±2.5 / ±6.2 / ±10.85 / ±19.2 / ±31%. */
   background: linear-gradient(
     to right,
     var(--paper) 0%, var(--paper) 19%,
-    var(--school-red) 19%, var(--school-red) 25.2%,
-    var(--school-blue) 25.2%, var(--school-blue) 32.3%,
-    var(--school-gold) 32.3%, var(--school-gold) 39.8%,
-    #ffe07a 39.8%, #ffe07a 46%,
-    var(--school-gold) 46%, var(--school-gold) 54%,
-    #ffe07a 54%, #ffe07a 60.2%,
-    var(--school-gold) 60.2%, var(--school-gold) 67.7%,
-    var(--school-blue) 67.7%, var(--school-blue) 74.8%,
-    var(--school-red) 74.8%, var(--school-red) 81%,
+    var(--school-red) 19%, var(--school-red) 30.78%,
+    var(--school-blue) 30.78%, var(--school-blue) 39.15%,
+    var(--school-gold) 39.15%, var(--school-gold) 43.8%,
+    #ffe07a 43.8%, #ffe07a 47.52%,
+    #fff4cc 47.52%, #fff4cc 52.48%,
+    #ffe07a 52.48%, #ffe07a 56.2%,
+    var(--school-gold) 56.2%, var(--school-gold) 60.85%,
+    var(--school-blue) 60.85%, var(--school-blue) 69.22%,
+    var(--school-red) 69.22%, var(--school-red) 81%,
     var(--paper) 81%, var(--paper) 100%
   );
   overflow: hidden;
