@@ -285,6 +285,9 @@ export class ArenaScene {
       const prev = { x: b.x - ball.velocity.x * dt, y: b.y - ball.velocity.y * dt, z: b.z - ball.velocity.z * dt };
       if (!sweptBallHitsBody(prev, b, hitbox.base, hitbox.top, radius)) continue;
 
+      const v = ball.velocity;
+      const speed = Math.sqrt(v.x * v.x + v.y * v.y + v.z * v.z);
+      this.sound.ping(speed);
       ball.makeDead();
       this.effects.onPlayerHit(b);
     }

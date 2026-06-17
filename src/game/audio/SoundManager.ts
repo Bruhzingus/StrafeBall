@@ -31,10 +31,27 @@ export class SoundManager {
     this.noiseBurst(0.13, 0.1, 1100 * rate);
   }
 
-  /** Low impact thud for a ball striking the player / a target. `gain` scales the volume. */
+  /**
+   * Classic echoing rubber dodgeball "ping" impact. Pitch varies with ball speed.
+   * Reference speed is 24 m/s (standard quick throw).
+   */
+  ping(speed: number, gain = 1): void {
+    const speedScale = Math.max(0.4, speed / 24);
+    const baseFreq = 720 * speedScale;
+
+    // Core rubber impact: sharp high start sweeping to resonance
+    this.tone('sine', baseFreq * 1.5, baseFreq, 0.12, 0.6 * gain);
+    // Hollow body resonance: the characteristic "donk"
+    this.tone('triangle', baseFreq * 0.8, baseFreq * 0.4, 0.35, 0.25 * gain);
+    // Echoing hollow tail: long decaying low resonance
+    this.tone('sine', baseFreq * 0.4, baseFreq * 0.35, 0.6, 0.15 * gain);
+    // Texture: short noise burst for the initial slap
+    this.noiseBurst(0.08, 0.1 * gain, 900 * speedScale);
+  }
+
+  /** Legacy hook for impacts: now uses the rubber ping at standard speed. */
   thud(gain = 1): void {
-    this.tone('sine', 150, 55, 0.22, 0.5 * gain);
-    this.noiseBurst(0.05, 0.18 * gain, 500);
+    this.ping(24, gain);
   }
 
   /** Short, bright click for a successful catch. */
