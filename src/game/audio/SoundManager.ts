@@ -12,7 +12,7 @@ export class SoundManager {
   private master: GainNode | null = null;
   private unlockBound = false;
 
-  constructor(private readonly masterVolume = 0.5) {
+  constructor(private readonly masterVolume = 0.8) {
     this.installUnlock();
   }
 
@@ -25,28 +25,24 @@ export class SoundManager {
     }
   }
 
-  /** Thrown-ball whoosh. `rate` shifts the pitch (the bot throws a touch lower than the player). */
+  /** Thrown-ball whoosh. `rate` shifts the pitch. */
   whoosh(rate = 1): void {
-    this.tone('triangle', 520 * rate, 150 * rate, 0.16, 0.16);
-    this.noiseBurst(0.13, 0.1, 1100 * rate);
+    this.tone('triangle', 520 * rate, 150 * rate, 0.16, 0.3);
+    this.noiseBurst(0.13, 0.2, 1100 * rate);
   }
 
-  /**
-   * Classic echoing rubber dodgeball "ping" impact. Pitch varies with ball speed.
-   * Reference speed is 24 m/s (standard quick throw).
-   */
   ping(speed: number, gain = 1): void {
     const speedScale = Math.max(0.4, speed / 24);
     const baseFreq = 720 * speedScale;
 
     // Core rubber impact: sharp high start sweeping to resonance
-    this.tone('sine', baseFreq * 1.5, baseFreq, 0.12, 0.6 * gain);
+    this.tone('sine', baseFreq * 1.5, baseFreq, 0.12, 1.2 * gain);
     // Hollow body resonance: the characteristic "donk"
-    this.tone('triangle', baseFreq * 0.8, baseFreq * 0.4, 0.35, 0.25 * gain);
+    this.tone('triangle', baseFreq * 0.8, baseFreq * 0.4, 0.35, 0.6 * gain);
     // Echoing hollow tail: long decaying low resonance
-    this.tone('sine', baseFreq * 0.4, baseFreq * 0.35, 0.6, 0.15 * gain);
+    this.tone('sine', baseFreq * 0.4, baseFreq * 0.35, 0.6, 0.4 * gain);
     // Texture: short noise burst for the initial slap
-    this.noiseBurst(0.08, 0.1 * gain, 900 * speedScale);
+    this.noiseBurst(0.08, 0.3 * gain, 900 * speedScale);
   }
 
   /** Legacy hook for impacts: now uses the rubber ping at standard speed. */
@@ -137,7 +133,10 @@ export class SoundManager {
 
   private resume = (): void => {
     const ctx = this.ensureContext();
-    if (ctx && ctx.state === 'suspended') ctx.resume().catch(() => undefined);
+    if (ctx && ctx.state === 'suspended') {
+      console.log('[audio] user gesture detected: resuming AudioContext');
+      ctx.resume().catch((e) => console.error('[audio] failed to resume context:', e));
+    }
   };
 
   private ensureContext(): AudioContext | null {

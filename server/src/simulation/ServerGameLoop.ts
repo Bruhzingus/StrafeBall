@@ -503,6 +503,9 @@ export class ServerGameLoop {
     this.state.players[playerId] = { ...player, hands: result.hands, dash };
     this.state.balls[ball.id] = result.ball;
 
+    // Attach backflip tier to the ball state for defensive logic
+    (this.state.balls[ball.id] as any).backflipTier = isBackflipThrow ? backflipTier : 0;
+
     // Emit an authoritative throw event so the client can start deterministic visual prediction
     // immediately (before the next snapshot). Drained + broadcast by the room each loop wake.
     this.pendingThrowEvents.push({
@@ -893,6 +896,11 @@ export class ServerGameLoop {
       if (target.id === ownerId) continue;
       const hitbox = playerHitCapsule(target);
       if (!sweptBallHitsBody(segPrev, segCurr, hitbox.base, hitbox.top, radius)) continue;
+
+      // Defense Break: Nice/Perfect backflip throws (Tier 3+) force players to drop balls
+      if ((ball as any).backflipTier >= 3) {
+        this.scatterHeldBalls(target);
+      }
 
       const scorer = this.state.players[ownerId];
       const previousScore = scorer ? this.state.match.scoreByTeamId[scorer.teamId] ?? 0 : 0;
@@ -1532,6 +1540,23 @@ export class ServerGameLoop {
     }
   }
 
+  /** Force drops all held balls with a scattering impulse. */
+  private scatterHeldBalls(player: PlayerState): void {
+    for (const hand of ['left', 'right'] as const) {
+      const ballId = player.hands[hand].heldBallId;
+      if (!ballId) continue;
+      const ball = this.state.balls[ballId];
+      if (!ball) continue;
+      const res = dropBallFromHand(player.hands, hand, ball, heldBallPosition(player, hand));
+      if (!res.ok) continue;
+      player.hands = res.hands;
+      const angle = Math.random() * Math.PI * 2;
+      const speed = 6 + Math.random() * 4;
+      res.ball.velocity = vec3(Math.cos(angle) * speed, 5, Math.sin(angle) * speed);
+      this.state.balls[ballId] = res.ball;
+    }
+  }
+
   private connectedCount(): number {
     let count = 0;
     for (const playerId in this.state.players) {
@@ -1783,13 +1808,13 @@ function resolveBallStaticBoxes(ball: BallState, boxes: AABB[], logger?: (messag
 
     if (penX <= penY && penX <= penZ) {
       position.x = position.x < (box.minX + box.maxX) * 0.5 ? box.minX - r : box.maxX + r;
-      velocity.x *= -e;
+      velocity.x = (position.x < (box.minX + box.maxX) * 0.5 ? -1 : 1) * Math.abs(velocity.x) * e;
     } else if (penY <= penZ) {
       position.y = position.y < (box.minY + box.maxY) * 0.5 ? box.minY - r : box.maxY + r;
-      velocity.y *= -e;
+      velocity.y = (position.y < (box.minY + box.maxY) * 0.5 ? -1 : 1) * Math.abs(velocity.y) * e;
     } else {
       position.z = position.z < (box.minZ + box.maxZ) * 0.5 ? box.minZ - r : box.maxZ + r;
-      velocity.z *= -e;
+      velocity.z = (position.z < (box.minZ + box.maxZ) * 0.5 ? -1 : 1) * Math.abs(velocity.z) * e;
     }
 
     bounced = true;

@@ -17,7 +17,7 @@
  *   E. 30 sim / 30 input / 30 snapshots  (baseline — safest for a 1 vCPU box)
  */
 
-export type NetMode = 'A_128_128_90' | 'A_90_90_60' | 'A_72_72_60' | 'A_60_60_60' | 'B_60_60_30' | 'C_30_30_30';
+export type NetMode = 'A_144_144_128' | 'A_128_128_90' | 'A_90_90_60' | 'A_72_72_60' | 'A_60_60_60' | 'B_60_60_30' | 'C_30_30_30';
 
 export interface NetModeConfig {
   /** Server fixed simulation steps per second. */
@@ -35,6 +35,9 @@ export interface NetModeConfig {
 }
 
 const MODES: Record<NetMode, NetModeConfig> = {
+  // Ultra-high rate for high-refresh monitors. Snapshot interval ~7.8ms.
+  // 40ms interp delay covers ~5 snapshots of jitter headroom.
+  A_144_144_128: { serverTickRate: 144, clientInputRate: 144, snapshotRate: 128, interpolationDelayMs: 40 },
   // A — 128Hz sim/input with 90Hz snapshots. Sim dt ~7.8ms; snapshot interval ~11.1ms.
   // With LIVE_BALL_COMBAT_SUBSTEPS=2 effective combat checks run at ~256Hz.
   // 50ms interp covers ~4.5 snapshots at the nominal 90Hz rate; adaptive client logic
@@ -81,7 +84,7 @@ function resolveProcessMode(): NetMode {
 }
 
 /** Compiled default mode. StrafeBall 1.3: 128 sim / 128 input / 90 snapshots. */
-export const DEFAULT_NET_MODE: NetMode = 'A_128_128_90';
+export const DEFAULT_NET_MODE: NetMode = 'A_144_144_128';
 
 /**
  * Active mode resolved at module load from process.env (server) or the compiled default (client).
