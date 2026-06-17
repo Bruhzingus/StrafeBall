@@ -125,7 +125,7 @@ export function stepMovement(
     const speed = Math.hypot(vx, vz);
     const overholdingSlide = slideHeldActive && slideTimer >= c.slide.overholdBrakeDelay;
     const tooSlow = speed < c.slide.minStartSpeed * 0.55;
-    const stoppedFromOverhold = overholdingSlide && speed <= c.slide.overholdStopSpeed;
+    const stoppedFromOverhold = overholdingSlide && speed <= c.player.crouchWalkSpeed;
     if (
       stoppedFromOverhold ||
       (!slideHeldActive && (slideTimer > c.slide.maxDuration || (tooSlow && slideTimer >= c.slide.minDuration)))
@@ -138,8 +138,11 @@ export function stepMovement(
   const slidePressed = input.slidePressed;
   const crouchPressed = input.crouchPressed || (input.crouchHeld && !prevInput.crouchHeld);
   const hsBeforeSlide = Math.hypot(vx, vz);
-  const wantsSlide = slidePressed || (crouchPressed && hsBeforeSlide > c.slide.minStartSpeed);
-  if (grounded && !sliding && wantsSlide && hsBeforeSlide >= c.slide.minStartSpeed) {
+  const wantsSlide = slidePressed || (crouchPressed && hsBeforeSlide > c.player.crouchWalkSpeed);
+  const canSlideFromSpeed = slidePressed
+    ? hsBeforeSlide >= c.slide.minStartSpeed
+    : hsBeforeSlide > c.player.crouchWalkSpeed;
+  if (grounded && !sliding && wantsSlide && canSlideFromSpeed) {
     sliding = true;
     slideTimer = 0;
     let sdx = wishX;
@@ -281,7 +284,11 @@ export function stepMovement(
   // --- accelerate toward wish dir ---
   const speedMultiplier = (catchStanceActive ? c.player.catchStanceSpeedMultiplier : 1) + (catchBoostTimer > 0 ? 0.1 : 0);
   if (grounded) {
-    const accelerated = accelerate(vx, vz, wishX, wishZ, hasWish, c.player.maxGroundSpeed * speedMultiplier, c.player.groundAcceleration, dt);
+    const brakingSlide = sliding && slideHeldActive && slideTimer >= c.slide.overholdBrakeDelay;
+    const groundWishSpeed = brakingSlide || (crouching && !sliding)
+      ? c.player.crouchWalkSpeed
+      : c.player.maxGroundSpeed * speedMultiplier;
+    const accelerated = accelerate(vx, vz, wishX, wishZ, hasWish, groundWishSpeed, c.player.groundAcceleration, dt);
     vx = accelerated.vx;
     vz = accelerated.vz;
   } else {
@@ -312,6 +319,17 @@ export function stepMovement(
         vx *= k;
         vz *= k;
       }
+    }
+  }
+
+  // --- crouch walk hard cap ---
+  if (grounded && crouching && !sliding) {
+    const speedSq = vx * vx + vz * vz;
+    const limit = c.player.crouchWalkSpeed;
+    if (speedSq > limit * limit) {
+      const k = limit / Math.sqrt(speedSq);
+      vx *= k;
+      vz *= k;
     }
   }
 

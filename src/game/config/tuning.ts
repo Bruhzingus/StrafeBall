@@ -22,6 +22,7 @@ export const TUNING = {
     // Mirrors GAME_CONSTANTS.player.maxGroundSpeed (strafe top speed −30%). Kept in sync so offline
     // practice feels the same as the server-authoritative online movement.
     maxGroundSpeed: GAME_CONSTANTS.player.maxGroundSpeed,
+    crouchWalkSpeed: GAME_CONSTANTS.player.crouchWalkSpeed,
     softSpeedLimit: GAME_CONSTANTS.player.softSpeedLimit,
     // Rate (per second) that speed above the soft limit bleeds off. dt-scaled so it's
     // frame-rate independent.

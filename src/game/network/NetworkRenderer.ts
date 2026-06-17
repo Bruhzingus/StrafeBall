@@ -6,7 +6,10 @@ import { TUNING } from '../config/tuning';
 import { computePlayerHandAnchor } from '../../../shared/simulation/HandAnchors';
 import { backflipPitchOffset, lookVectorsFromAngles } from '../../../shared/simulation/AimMath';
 import { playerAimOriginHeight, playerHitCapsule } from '../../../shared/simulation/PlayerHitbox';
-import { ballVariantForState, createBallMesh, getBallMaterial } from '../ball/BallVisualFactory';
+import { isBallPickupStateEligible } from '../../../shared/simulation/BallSim';
+import { ballVariantForState, createBallMesh, getBallMaterial, updateBallBlobShadow } from '../ball/BallVisualFactory';
+import type { BallVisualEffects } from '../ball/BallVisualEffects';
+import { BALL_QTE_TRAIL_SPEED_THRESHOLD, BALL_TRAIL_INTERVAL_SECONDS } from '../ball/BallVisualEffects';
 import {
   EXTRAPOLATION_LIMIT_MS,
   HUGE_ERROR_SNAP_METERS,
@@ -56,6 +59,9 @@ interface RemoteArmAnimations {
 
 interface BallVisual {
   mesh: Mesh;
+  trailTimer: number;
+  impactPulse: number;
+  lastBounceCount: number;
 }
 
 interface CatchRecoilTrack {
@@ -161,7 +167,7 @@ export class NetworkRenderer {
   private readonly renderPlayerMovement = createScratchMovement(this.renderPlayerPosition);
   private readonly renderPlayerScratch: PlayerState = createScratchPlayer(this.renderPlayerMovement);
 
-  constructor(private readonly scene: Scene) {}
+  constructor(private readonly scene: Scene, private readonly ballVisualEffects?: BallVisualEffects) {}
 
   /**
    * @param localPredicted the local player's present-time PREDICTED movement (from ArenaScene's
@@ -185,7 +191,7 @@ export class NetworkRenderer {
     // Live thrown balls render at PRESENT server time via deterministic prediction, reconciled
     // against the newest authoritative snapshot; everything else uses the interpolated render snapshot.
     const newest = this.snapshotBuffer[this.snapshotBuffer.length - 1];
-    this.updateBalls(renderSnapshot.balls, renderSnapshot.players, localPlayerId, localPredicted ?? null, newest);
+    this.updateBalls(renderSnapshot.balls, renderSnapshot.players, localPlayerId, localPredicted ?? null, newest, dt);
   }
 
   /** Seed/refresh live-ball visual prediction from authoritative throw events (called by the scene). */
@@ -580,11 +586,13 @@ export class NetworkRenderer {
     players: PlayerState[],
     localPlayerId: string,
     localPredicted: PlayerState['movement'] | null,
-    newest: BufferedSnapshot | undefined
+    newest: BufferedSnapshot | undefined,
+    dt: number
   ): void {
     const seen = this.seenBalls;
     seen.clear();
     const presentTimeMs = newest ? newest.serverTimeMs : 0;
+    const highlightedBallId = localPredicted ? findPickupLookBallId(balls, localPredicted) : null;
 
     for (const ball of balls) {
       seen.add(ball.id);
@@ -667,9 +675,17 @@ export class NetworkRenderer {
         }
       }
       visual.mesh.position.set(target.x, target.y, target.z);
-      const desiredMaterial = getBallMaterial(this.scene, ballVariantForState(ball));
+      if (ball.bounceCount > visual.lastBounceCount) visual.impactPulse = Math.max(visual.impactPulse, 1);
+      visual.lastBounceCount = ball.bounceCount;
+      const desiredMaterial = getBallMaterial(
+        this.scene,
+        ball.id === highlightedBallId
+          ? ballVariantForState({ phase: ball.phase, isSuper: ball.isSuper, highlighted: true })
+          : ballVariantForState(ball)
+      );
       if (visual.mesh.material !== desiredMaterial) visual.mesh.material = desiredMaterial;
       visual.mesh.setEnabled(true);
+      this.updateBallEffects(visual, ball, dt);
       // Update the stored continuity in place (allocate one only the first time we see this ball).
       if (previous) {
         copyBallContinuity(previous, ball);
@@ -1049,9 +1065,39 @@ export class NetworkRenderer {
     if (isNetworkRenderDebugEnabled()) {
       console.log(`[net/ball] created id=${ball.id} phase=${ball.phase} variant=${ballVariantForState(ball)}`);
     }
-    const visual = { mesh };
+    const visual = { mesh, trailTimer: 0, impactPulse: 0, lastBounceCount: ball.bounceCount };
     this.balls.set(ball.id, visual);
     return visual;
+  }
+
+  private updateBallEffects(visual: BallVisual, ball: BallState, dt: number): void {
+    if (this.ballVisualEffects && ball.isSuper && (ball.phase === 'live' || ball.phase === 'deflected') && !ball.heldByPlayerId) {
+      const speedSq =
+        ball.velocity.x * ball.velocity.x +
+        ball.velocity.y * ball.velocity.y +
+        ball.velocity.z * ball.velocity.z;
+      if (speedSq >= BALL_QTE_TRAIL_SPEED_THRESHOLD * BALL_QTE_TRAIL_SPEED_THRESHOLD) {
+        visual.trailTimer -= dt;
+        if (visual.trailTimer <= 0) {
+          this.ballVisualEffects.spawnTrail(visual.mesh.position, ball.velocity);
+          visual.trailTimer = BALL_TRAIL_INTERVAL_SECONDS;
+        }
+      } else {
+        visual.trailTimer = 0;
+      }
+    } else {
+      visual.trailTimer = 0;
+    }
+
+    if (visual.impactPulse > 0) {
+      const amount = visual.impactPulse;
+      visual.mesh.scaling.set(1 + amount * 0.16, 1 - amount * 0.22, 1 + amount * 0.16);
+      visual.impactPulse = Math.max(0, visual.impactPulse - dt * 5.8);
+    } else if (visual.mesh.scaling.x !== 1 || visual.mesh.scaling.y !== 1 || visual.mesh.scaling.z !== 1) {
+      visual.mesh.scaling.setAll(1);
+    }
+
+    updateBallBlobShadow(visual.mesh);
   }
 
   private material(key: string): PBRMaterial {
@@ -1251,6 +1297,36 @@ function cloneBallState(ball: BallState): BallState {
     velocity: { ...ball.velocity },
     curveAccel: { ...ball.curveAccel }
   };
+}
+
+function findPickupLookBallId(balls: BallState[], movement: PlayerState['movement']): string | null {
+  const look = lookVectorsFromAngles(movement.yawRadians, movement.pitchRadians).forward;
+  const originX = movement.position.x;
+  const originY = movement.position.y + playerAimOriginHeight(movement);
+  const originZ = movement.position.z;
+  const maxDistance = TUNING.ball.pickupRadius + 0.65;
+  const maxDistanceSq = maxDistance * maxDistance;
+  let bestId: string | null = null;
+  let bestScore = Number.NEGATIVE_INFINITY;
+
+  for (const ball of balls) {
+    if (!isBallPickupStateEligible(ball)) continue;
+    const dx = ball.position.x - originX;
+    const dy = ball.position.y - originY;
+    const dz = ball.position.z - originZ;
+    const distSq = dx * dx + dy * dy + dz * dz;
+    if (distSq <= 0.0001 || distSq > maxDistanceSq) continue;
+
+    const dot = (dx * look.x + dy * look.y + dz * look.z) / Math.sqrt(distSq);
+    if (dot < 0.78) continue;
+    const score = dot * 2 - distSq * 0.04;
+    if (score > bestScore) {
+      bestId = ball.id;
+      bestScore = score;
+    }
+  }
+
+  return bestId;
 }
 
 function interpolateSnapshots(before: BufferedSnapshot, after: BufferedSnapshot, t: number, targetTimeMs: number): BufferedSnapshot {

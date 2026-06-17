@@ -21,6 +21,9 @@ export class Ball {
   // Sustained sideways acceleration (world space) for crouch curve throws; applied only
   // during the first live flight. Zero for straight throws.
   public curveAccel = Vector3.Zero();
+  // Visual-only state updated by BallManager. These never feed back into gameplay physics.
+  public visualTrailTimer = 0;
+  public impactPulse = 0;
 
   // The mesh is the ball's VISUAL, created by the ModelLoader and injected here. Gameplay
   // (state machine, physics, collision radius) is independent of it.
@@ -199,7 +202,9 @@ export class Ball {
   }
 
   private emitImpact(normalImpactSpeed: number): void {
-    if (!this.onImpact || normalImpactSpeed <= 0) return;
+    if (normalImpactSpeed <= 0) return;
+    this.impactPulse = Math.max(this.impactPulse, Math.min(1, normalImpactSpeed / 18));
+    if (!this.onImpact) return;
     const reboundSpeed = normalImpactSpeed * TUNING.ball.bounceRestitution;
     const reboundHeight = (reboundSpeed * reboundSpeed) / (2 * TUNING.ball.gravity);
     if (reboundHeight < TUNING.ball.impactSoundMinBounceHeight) return;

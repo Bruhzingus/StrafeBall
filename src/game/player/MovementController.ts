@@ -86,7 +86,12 @@ export class MovementController {
     if (this.grounded) {
       // Ground: accelerate up to the (possibly slowed) walk speed. Excess speed carried in
       // from bhop/slide isn't removed by accelerate — friction (above) bleeds it on non-jump frames.
-      this.accelerate(wishDir, TUNING.player.maxGroundSpeed * speedMultiplier, TUNING.player.groundAcceleration, dt);
+      const brakingSlide =
+        this.sliding && this.slideHoldActive && this.slideTimer >= TUNING.slide.overholdBrakeDelay;
+      const groundWishSpeed = brakingSlide || (this.crouching && !this.sliding)
+        ? TUNING.player.crouchWalkSpeed
+        : TUNING.player.maxGroundSpeed * speedMultiplier;
+      this.accelerate(wishDir, groundWishSpeed, TUNING.player.groundAcceleration, dt);
     } else {
       // CS-style air-strafe: A/D are the air-control keys. W/S preserves momentum but does not add
       // forward/back air acceleration, so speed comes from mouse-turning with side input.
@@ -95,6 +100,7 @@ export class MovementController {
 
     this.applyGravity(dt);
     this.applySoftSpeedLimit(dt);
+    this.applyCrouchWalkSpeedLimit();
 
     // Integrate position (scalar to avoid allocating a temp vector every frame).
     this.root.position.x += this.velocity.x * dt;
@@ -150,7 +156,7 @@ export class MovementController {
       // bleeds speed fast) doesn't flicker out a frame or two after it starts. The hard cap
       // (maxDuration) always ends it.
       if (
-        (overholdingSlide && speed <= TUNING.slide.overholdStopSpeed) ||
+        (overholdingSlide && speed <= TUNING.player.crouchWalkSpeed) ||
         (!this.slideHoldActive && (this.slideTimer > TUNING.slide.maxDuration || (tooSlow && this.slideTimer >= TUNING.slide.minDuration)))
       ) {
         this.sliding = false;
@@ -163,8 +169,12 @@ export class MovementController {
     // Using the crouch PRESS (not the held state) stops a held-crouch from re-applying the slide
     // impulse every frame the instant a previous slide ends.
     const crouchPressed = input.wasKeyPressed(CONTROL_KEYS.crouch) || input.wasKeyPressed(CONTROL_KEYS.crouchAlt);
-    const wantsSlide = input.wasKeyPressed(CONTROL_KEYS.slide) || (crouchPressed && this.horizontalSpeed() > TUNING.slide.minStartSpeed);
-    if (!this.grounded || this.sliding || !wantsSlide || this.horizontalSpeed() < TUNING.slide.minStartSpeed) return;
+    const speed = this.horizontalSpeed();
+    const wantsSlide = input.wasKeyPressed(CONTROL_KEYS.slide) || (crouchPressed && speed > TUNING.player.crouchWalkSpeed);
+    const canSlideFromSpeed = input.wasKeyPressed(CONTROL_KEYS.slide)
+      ? speed >= TUNING.slide.minStartSpeed
+      : speed > TUNING.player.crouchWalkSpeed;
+    if (!this.grounded || this.sliding || !wantsSlide || !canSlideFromSpeed) return;
 
     this.sliding = true;
     this.slideTimer = 0;
@@ -367,6 +377,17 @@ export class MovementController {
     const k = newSpeed / speed;
     this.velocity.x = vx * k;
     this.velocity.z = vz * k;
+  }
+
+  private applyCrouchWalkSpeedLimit(): void {
+    if (!this.grounded || !this.crouching || this.sliding) return;
+    const speedSq = this.velocity.x * this.velocity.x + this.velocity.z * this.velocity.z;
+    const limit = TUNING.player.crouchWalkSpeed;
+    if (speedSq <= limit * limit) return;
+    const speed = Math.sqrt(speedSq);
+    const k = limit / speed;
+    this.velocity.x *= k;
+    this.velocity.z *= k;
   }
 
   private updateGroundState(): void {

@@ -7,16 +7,25 @@ import { safeNormalize } from '../utils/math';
 import { CollisionWorld } from '../map/Collider';
 import { ModelLoader } from '../assets/ModelLoader';
 import { isBallPickupStateEligible } from '../../../shared/simulation/BallSim';
-import { ballVariantForState, createBallMesh, getBallMaterial } from './BallVisualFactory';
+import { ballVariantForState, createBallMesh, getBallMaterial, updateBallBlobShadow } from './BallVisualFactory';
+import type { BallVisualEffects } from './BallVisualEffects';
+import { BALL_QTE_TRAIL_SPEED_THRESHOLD, BALL_TRAIL_INTERVAL_SECONDS } from './BallVisualEffects';
 
 export class BallManager {
   public readonly balls: Ball[] = [];
+  private highlightedBallId: number | null = null;
 
   constructor(
     private readonly loader: ModelLoader,
     private readonly collision: CollisionWorld,
-    private readonly onBallImpact?: (speed: number, bounceCount: number, position: Vector3) => void
+    private readonly onBallImpact?: (speed: number, bounceCount: number, position: Vector3) => void,
+    private readonly visualEffects?: BallVisualEffects
   ) {}
+
+  createBall(name: string, position: Vector3): Ball {
+    const visual = createBallMesh(this.loader.scene, name, position);
+    return new Ball(visual, position, this.onBallImpact);
+  }
 
   spawnCenterLineBalls(): void {
     this.clear();
@@ -26,8 +35,7 @@ export class BallManager {
 
     for (let i = 0; i < count; i += 1) {
       const position = new Vector3(start + i * spacing, TUNING.ball.radius + 0.05, 0);
-      const visual = createBallMesh(this.loader.scene, `ball_${i}`, position);
-      this.balls.push(new Ball(visual, position, this.onBallImpact));
+      this.balls.push(this.createBall(`ball_${i}`, position));
     }
   }
 
@@ -36,16 +44,91 @@ export class BallManager {
       ball.mesh.dispose();
     }
     this.balls.length = 0;
+    this.highlightedBallId = null;
   }
 
   update(dt: number): void {
-    // Super balls glow; swap the shared material based on live state (cheap, cached materials).
+    // Swap shared material/effect state only from ball state; gameplay physics stays in Ball.
     for (const ball of this.balls) {
-      // Only reassign when it actually changes (on a throw/catch transition) so we don't dirty
-      // Babylon's render state / break sub-mesh batching every frame.
-      const desired = getBallMaterial(ball.mesh.getScene(), ballVariantForState({ phase: ball.state, isSuper: ball.isSuper }));
-      if (ball.mesh.material !== desired) ball.mesh.material = desired;
       ball.update(dt, this.collision);
+      this.updateBallVisual(ball, dt);
+    }
+  }
+
+  setPickupHighlight(ball: Ball | null): void {
+    this.highlightedBallId = ball?.id ?? null;
+  }
+
+  findPickupLookCandidate(origin: Vector3, forward: Vector3): Ball | null {
+    const maxDistance = TUNING.ball.pickupRadius + 0.65;
+    const maxDistanceSq = maxDistance * maxDistance;
+    const forwardLenSq = forward.x * forward.x + forward.y * forward.y + forward.z * forward.z;
+    if (forwardLenSq <= 0.0001) return null;
+
+    const invForwardLen = 1 / Math.sqrt(forwardLenSq);
+    let best: Ball | null = null;
+    let bestScore = Number.NEGATIVE_INFINITY;
+
+    for (const ball of this.balls) {
+      if (!this.canPickup(ball)) continue;
+      const dx = ball.mesh.position.x - origin.x;
+      const dy = ball.mesh.position.y - origin.y;
+      const dz = ball.mesh.position.z - origin.z;
+      const distSq = dx * dx + dy * dy + dz * dz;
+      if (distSq <= 0.0001 || distSq > maxDistanceSq) continue;
+
+      const dot = (dx * forward.x + dy * forward.y + dz * forward.z) / Math.sqrt(distSq) * invForwardLen;
+      if (dot < 0.78) continue;
+      const score = dot * 2 - distSq * 0.04;
+      if (score > bestScore) {
+        best = ball;
+        bestScore = score;
+      }
+    }
+
+    return best;
+  }
+
+  private updateBallVisual(ball: Ball, dt: number): void {
+    // Only reassign when it actually changes (on a throw/catch transition) so we don't dirty
+    // Babylon's render state / break sub-mesh batching every frame.
+    const desired = getBallMaterial(
+      ball.mesh.getScene(),
+      ballVariantForState({ phase: ball.state, isSuper: ball.isSuper, highlighted: ball.id === this.highlightedBallId })
+    );
+    if (ball.mesh.material !== desired) ball.mesh.material = desired;
+    this.updateTrail(ball, dt);
+    this.updateImpactSquash(ball, dt);
+    updateBallBlobShadow(ball.mesh);
+  }
+
+  private updateTrail(ball: Ball, dt: number): void {
+    if (!this.visualEffects || ball.state !== BallState.Live || !ball.isSuper) {
+      ball.visualTrailTimer = 0;
+      return;
+    }
+
+    const speedSq = ball.velocity.x * ball.velocity.x + ball.velocity.y * ball.velocity.y + ball.velocity.z * ball.velocity.z;
+    if (speedSq < BALL_QTE_TRAIL_SPEED_THRESHOLD * BALL_QTE_TRAIL_SPEED_THRESHOLD) {
+      ball.visualTrailTimer = 0;
+      return;
+    }
+
+    ball.visualTrailTimer -= dt;
+    if (ball.visualTrailTimer > 0) return;
+    this.visualEffects.spawnTrail(ball.mesh.position, ball.velocity);
+    ball.visualTrailTimer = BALL_TRAIL_INTERVAL_SECONDS;
+  }
+
+  private updateImpactSquash(ball: Ball, dt: number): void {
+    if (ball.impactPulse > 0) {
+      const amount = ball.impactPulse;
+      ball.mesh.scaling.set(1 + amount * 0.16, 1 - amount * 0.22, 1 + amount * 0.16);
+      ball.impactPulse = Math.max(0, ball.impactPulse - dt * 5.8);
+      return;
+    }
+    if (ball.mesh.scaling.x !== 1 || ball.mesh.scaling.y !== 1 || ball.mesh.scaling.z !== 1) {
+      ball.mesh.scaling.setAll(1);
     }
   }
 

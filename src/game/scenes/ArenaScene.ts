@@ -4,6 +4,7 @@ import { PlayerController } from '../player/PlayerController';
 import { GymArena } from '../map/GymArena';
 import { ModelLoader } from '../assets/ModelLoader';
 import { BallManager } from '../ball/BallManager';
+import { BallVisualEffects } from '../ball/BallVisualEffects';
 import { BallState } from '../ball/BallState';
 import { Hud } from '../ui/Hud';
 import { BackflipQteController } from '../player/BackflipQteController';
@@ -42,10 +43,12 @@ import { createPlayerCollisionBoxes, type AABB } from '../../../shared/simulatio
 import { isIllegalHalfCourtPosition } from '../../../shared/simulation/RuleSim';
 import { sweptBallHitsBody } from '../../../shared/simulation/CollisionMath';
 import { playerBallHitRadius, playerHitCapsule } from '../../../shared/simulation/PlayerHitbox';
+import { cameraForward } from '../utils/vector';
 
 type PendingOnlineScoreEvent = { teamId: string; score: number; delta: number; dueAtMs: number };
 const BALL_BOUNCE_GAIN = 0.42 * 0.7;
 const BALL_BOUNCE_DECAY = 0.72;
+const MIN_BALL_BOUNCE_GAIN = 0.00001;
 const AUDIO_UP = { x: 0, y: 1, z: 0 };
 
 export class ArenaScene {
@@ -58,6 +61,7 @@ export class ArenaScene {
   private readonly rules = new MatchRules();
   private readonly targetDummies: Mesh[] = [];
   private readonly sound: SoundManager;
+  private readonly ballVisualEffects: BallVisualEffects;
   private readonly effects: Effects;
   private readonly quickBot: PracticeBot;
   private readonly chargeBot: PracticeBot;
@@ -197,14 +201,16 @@ export class ArenaScene {
     this.gym.build();
     // All meshes with targetDummy metadata — includes both static and the moving dummy.
     this.targetDummies = this.scene.meshes.filter((mesh): mesh is Mesh => mesh instanceof Mesh && !!mesh.metadata?.targetDummy);
+    this.sound = new SoundManager();
+    this.ballVisualEffects = new BallVisualEffects(this.scene);
 
     // Balls collide with bleachers only (mats are immune to balls — they pass through).
     this.ballManager = new BallManager(loader, this.gym.ballCollision, (speed, bounceCount, position) => {
+      this.ballVisualEffects.spawnImpact(position, speed);
       this.playBallBounceSound(speed, bounceCount, position);
-    });
+    }, this.ballVisualEffects);
     this.ballManager.spawnCenterLineBalls();
 
-    this.sound = new SoundManager();
     this.effects = new Effects(this.scene, this.sound);
 
     this.player = new PlayerController(this.scene, this.input, this.ballManager, this.gym.collision, this.effects);
@@ -219,7 +225,7 @@ export class ArenaScene {
     this.backflipQteHud = new BackflipQteHud(hudRoot);
     this.settingsPanel = new SettingsPanel();
     this.multiplayerOverlay = new MultiplayerOverlay(this.multiplayer);
-    this.networkRenderer = new NetworkRenderer(this.scene);
+    this.networkRenderer = new NetworkRenderer(this.scene, this.ballVisualEffects);
   }
 
   update(): void {
@@ -271,6 +277,8 @@ export class ArenaScene {
     this.multiplayer.dispose();
     this.networkRenderer.dispose();
     this.settingsPanel.dispose();
+    this.ballManager.clear();
+    this.ballVisualEffects.dispose();
     this.quickBot.dispose();
     this.chargeBot.dispose();
     this.practiceWall.dispose();
@@ -316,6 +324,7 @@ export class ArenaScene {
       const speed = Math.sqrt(v.x * v.x + v.y * v.y + v.z * v.z);
       ball.makeDead();
       this.effects.onPlayerHit(b, speed);
+      this.ballVisualEffects.spawnImpact(b, speed);
       this.hud.showHitMarker('bad');
     }
   }
@@ -624,8 +633,12 @@ export class ArenaScene {
     if (this.chargeBot.update(dt, playerPos)) this.effects.botThrow();
     this.practiceWall.update(dt);
 
+    this.ballManager.setPickupHighlight(
+      this.ballManager.findPickupLookCandidate(this.player.camera.globalPosition, cameraForward(this.player.camera))
+    );
     this.ballManager.update(dt);
     this.checkBotHitsPlayer(dt);
+    this.ballVisualEffects.update(dt);
     this.updateOfflineMats(dt);
     this.updateLocalMovementFoley(dt, vector3ToVec3(snap.velocity), snap.grounded, snap.sliding, snap.dashingThisFrame, snap.wallRunning);
 
@@ -885,7 +898,7 @@ export class ArenaScene {
       this.handleOnlineCatchEvents(catchEvents);
       this.networkRenderer.applyCatchEvents(catchEvents);
       this.handleOnlineParryEvents(this.multiplayer.drainParryEvents(), snapshot);
-      this.handleOnlineHitEvents(this.multiplayer.drainHitEvents());
+      this.handleOnlineHitEvents(this.multiplayer.drainHitEvents(), snapshot);
       this.handleOnlineHitRevertEvents(this.multiplayer.drainHitRevertEvents());
       this.networkRenderer.update(snapshot, this.multiplayer.localPlayerId, dt, this.predictedMovement);
       this.applyOnlineMats(snapshot);
@@ -897,6 +910,7 @@ export class ArenaScene {
     }
 
     this.effects.update(dt);
+    this.ballVisualEffects.update(dt);
     this.gym.update(this.elapsed);
     this.gym.updateScoreboards(dt);
     this.logLocalPositionWriters(dt);
@@ -1400,12 +1414,14 @@ export class ArenaScene {
       if (previous === undefined || ball.bounceCount <= previous) continue;
 
       const speed = Math.max(4, Math.hypot(ball.velocity.x, ball.velocity.y, ball.velocity.z));
+      this.ballVisualEffects.spawnImpact(ball.position, speed);
       this.playBallBounceSound(speed, ball.bounceCount, ball.position);
     }
   }
 
   private playBallBounceSound(speed: number, bounceCount: number, position: { x: number; y: number; z: number }): void {
     const gain = BALL_BOUNCE_GAIN * Math.pow(BALL_BOUNCE_DECAY, Math.max(0, bounceCount - 1));
+    if (!Number.isFinite(gain) || gain <= MIN_BALL_BOUNCE_GAIN) return;
     const forward = this.player.camera.getForwardRay().direction;
     this.sound.pingAt(speed, position, this.player.camera.globalPosition, forward, AUDIO_UP, gain);
   }
@@ -1620,8 +1636,15 @@ export class ArenaScene {
     }
   }
 
-  private handleOnlineHitEvents(events: readonly HitEvent[]): void {
+  private handleOnlineHitEvents(events: readonly HitEvent[], snapshot: ServerSnapshot): void {
     for (const event of events) {
+      const ball = snapshot.room.balls[event.ballId];
+      if (ball) {
+        this.ballVisualEffects.spawnImpact(
+          ball.position,
+          Math.max(12, Math.hypot(ball.velocity.x, ball.velocity.y, ball.velocity.z))
+        );
+      }
       if (event.throwerId === this.multiplayer.localPlayerId) {
         this.hud.showHitMarker('good');
         this.hud.pulseCrosshair('hit');

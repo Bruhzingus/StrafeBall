@@ -39,7 +39,7 @@ export class Hud {
     parent.appendChild(this.root);
 
     this.crosshair = new Crosshair(this.root);
-    this.topLeft = this.panel('hud-top-left');
+    this.topLeft = this.panel('hud-debug-panel');
     this.topLeft.style.display = 'none';
     this.topCenter = this.panel('hud-top-center');
     this.bottomLeft = this.panel('hud-bottom-left');
@@ -86,7 +86,7 @@ export class Hud {
       <div class="hud-title">Quick Start</div>
       <div><span class="key">M1</span><span class="key">M2</span> hands / catch / throw</div>
       <div><span class="key">E</span> pickup or stand mat <span class="key">R</span> drop</div>
-      <div><span class="key">Shift</span> dash <span class="key">C</span> slide <span class="key">Q</span> backflip</div>
+      <div><span class="key">Shift</span> dash <span class="key">Ctrl</span> slide / crouch <span class="key">Q</span> backflip</div>
       <div><span class="key">F</span> fake <span class="key">K</span> reset <span class="key">Tab</span> debug</div>
     `;
   }

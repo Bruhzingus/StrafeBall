@@ -20,6 +20,9 @@ interface LegacyAudioListener {
   setOrientation?: (x: number, y: number, z: number, xUp: number, yUp: number, zUp: number) => void;
 }
 
+const MIN_AUDIO_PARAM_VALUE = 0.0001;
+const MIN_AUDIBLE_PEAK = 0.00001;
+
 export class SoundManager {
   private ctx: AudioContext | null = null;
   private master: GainNode | null = null;
@@ -66,7 +69,13 @@ export class SoundManager {
     panner.connect(this.master);
 
     this.pingTo(speed, gain, panner);
-    window.setTimeout(() => panner.disconnect(), 700);
+    window.setTimeout(() => {
+      try {
+        panner.disconnect();
+      } catch {
+        // Some browsers throw if the node already disconnected during context teardown.
+      }
+    }, 700);
   }
 
   private pingTo(speed: number, gain = 1, destination?: AudioNode): void {
@@ -156,18 +165,18 @@ export class SoundManager {
 
     oscA.type = 'square';
     oscB.type = 'sawtooth';
-    oscA.frequency.setValueAtTime(760, now);
-    oscB.frequency.setValueAtTime(782, now);
-    oscA.detune.setValueAtTime(4, now);
-    oscB.detune.setValueAtTime(-6, now);
+    oscA.frequency.setValueAtTime(185, now);
+    oscB.frequency.setValueAtTime(193, now);
+    oscA.detune.setValueAtTime(5, now);
+    oscB.detune.setValueAtTime(-7, now);
 
     filter.type = 'bandpass';
-    filter.frequency.setValueAtTime(1350, now);
-    filter.Q.value = 0.9;
+    filter.frequency.setValueAtTime(420, now);
+    filter.Q.value = 0.7;
 
     toneGain.gain.setValueAtTime(0.0001, now);
-    toneGain.gain.linearRampToValueAtTime(0.28, now + 0.02);
-    toneGain.gain.linearRampToValueAtTime(0.24, now + duration - 0.16);
+    toneGain.gain.linearRampToValueAtTime(0.21, now + 0.02);
+    toneGain.gain.linearRampToValueAtTime(0.18, now + duration - 0.16);
     toneGain.gain.exponentialRampToValueAtTime(0.0001, now + duration);
 
     oscA.connect(toneGain);
@@ -179,7 +188,7 @@ export class SoundManager {
     oscA.stop(now + duration + 0.03);
     oscB.stop(now + duration + 0.03);
 
-    this.noiseBurst(0.09, 0.02, 2200);
+    this.noiseBurst(0.1, 0.015, 900);
   }
 
   private installUnlock(): void {
@@ -238,16 +247,16 @@ export class SoundManager {
   private tone(type: OscillatorType, freqStart: number, freqEnd: number, duration: number, peak: number, destination?: AudioNode): void {
     const ctx = this.ensureContext();
     const output = destination ?? this.master;
-    if (!ctx || !output) return;
+    if (!ctx || !output || !Number.isFinite(peak) || peak <= MIN_AUDIBLE_PEAK) return;
     const now = ctx.currentTime;
     const osc = ctx.createOscillator();
     const gain = ctx.createGain();
     osc.type = type;
     osc.frequency.setValueAtTime(freqStart, now);
     if (freqEnd !== freqStart) osc.frequency.exponentialRampToValueAtTime(Math.max(1, freqEnd), now + duration);
-    gain.gain.setValueAtTime(0.0001, now);
-    gain.gain.exponentialRampToValueAtTime(peak, now + 0.006);
-    gain.gain.exponentialRampToValueAtTime(0.0001, now + duration);
+    gain.gain.setValueAtTime(MIN_AUDIO_PARAM_VALUE, now);
+    gain.gain.exponentialRampToValueAtTime(Math.max(MIN_AUDIO_PARAM_VALUE, peak), now + 0.006);
+    gain.gain.exponentialRampToValueAtTime(MIN_AUDIO_PARAM_VALUE, now + duration);
     osc.connect(gain).connect(output);
     osc.start(now);
     osc.stop(now + duration + 0.02);
@@ -257,7 +266,7 @@ export class SoundManager {
   private noiseBurst(duration: number, peak: number, filterFreq: number, destination?: AudioNode): void {
     const ctx = this.ensureContext();
     const output = destination ?? this.master;
-    if (!ctx || !output) return;
+    if (!ctx || !output || !Number.isFinite(peak) || peak <= MIN_AUDIBLE_PEAK) return;
     const now = ctx.currentTime;
     const frames = Math.max(1, Math.floor(ctx.sampleRate * duration));
     const buffer = ctx.createBuffer(1, frames, ctx.sampleRate);
@@ -270,8 +279,8 @@ export class SoundManager {
     filter.type = 'lowpass';
     filter.frequency.value = filterFreq;
     const gain = ctx.createGain();
-    gain.gain.setValueAtTime(peak, now);
-    gain.gain.exponentialRampToValueAtTime(0.0001, now + duration);
+    gain.gain.setValueAtTime(Math.max(MIN_AUDIO_PARAM_VALUE, peak), now);
+    gain.gain.exponentialRampToValueAtTime(MIN_AUDIO_PARAM_VALUE, now + duration);
     src.connect(filter).connect(gain).connect(output);
     src.start(now);
     src.stop(now + duration);

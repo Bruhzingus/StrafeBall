@@ -14,6 +14,7 @@ export const GAME_CONSTANTS = {
     friction: 10,
     // Strafe/ground top speed reduced 30% (8.5 → 5.95) for tighter, more deliberate movement.
     maxGroundSpeed: 5.95,
+    crouchWalkSpeed: 2.0,
     softSpeedLimit: 18,
     softLimitBleedRate: 1.2,
     gravity: 22,
@@ -38,8 +39,8 @@ export const GAME_CONSTANTS = {
     // Shortened from 1.2 → slides end sooner.
     maxDuration: 1.0,
     jumpBonus: 1.12,
-    // Holding the slide too long turns it from a boost into a hard brake until the player settles.
-    overholdBrakeDelay: 0.42,
+    // Holding slide/crouch keeps the burst briefly, then bleeds into a slow crouch walk.
+    overholdBrakeDelay: 0.75,
     overholdFrictionMultiplier: 2.6,
     overholdStopSpeed: 0.85
   },
@@ -87,7 +88,7 @@ export const GAME_CONSTANTS = {
       tierBandEdges: [0.08, 0.20, 0.35, 0.62, 1.0] as number[],
       // Tier speed multipliers applied to quickThrowSpeed, slowest (tier 1) → fastest (tier 5).
       // Tier 5 = 10% faster than the old backflip super (quick×2.0): quick×2.2. Tier 1 = quick×1.0.
-      tierSpeedMultipliers: [1.0, 1.3, 1.6, 1.9, 2.2] as number[]
+      tierSpeedMultipliers: [1.0, 1.3, 1.6, 1.9, 2.42] as number[]
     }
   },
 
@@ -128,7 +129,7 @@ export const GAME_CONSTANTS = {
     trackingSeconds: 0,
     // Reduced 1 ft (0.305 m) from 3.62 -> 3.315 m for a tighter catch reach.
     rangeMeters: 3.315,
-    cooldownSeconds: 0.45,
+    cooldownSeconds: 0.47,
     catchBoostSpeed: 3,
     catchBoostDuration: 0.25,
     momentumRecoilMinSpeed: 14,
@@ -171,7 +172,7 @@ export const GAME_CONSTANTS = {
     catchStartupMs: 0,       // 0–30ms: earliest the attempt can catch (0 = lands on the click tick)
     catchActiveMs: 220,      // active window the swept ball must cross the cone within (covers
                              // anticipation + the rewind scan; not a "free block" — cone/range gated)
-    catchCooldownMs: 320,    // ~250–400ms recovery before another attempt is allowed
+    catchCooldownMs: 470,    // ~250–400ms recovery before another attempt is allowed
     // LAG COMPENSATION. A catch click is judged against the world the defender SAW, not the present
     // server state. The defender's view trails the server by ~(interpolation delay + their ping),
     // and the click takes another ~ping to arrive — so by the time a fast straight throw's catch

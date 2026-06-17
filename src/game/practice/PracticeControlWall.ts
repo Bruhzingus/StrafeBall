@@ -5,9 +5,8 @@ import {
 import type { PracticeState, BotDifficulty } from './PracticeState';
 import type { BallManager } from '../ball/BallManager';
 import { TUNING } from '../config/tuning';
-import { Ball } from '../ball/Ball';
+import type { Ball } from '../ball/Ball';
 import { BallState } from '../ball/BallState';
-import { createBallMesh } from '../ball/BallVisualFactory';
 
 const BUTTON_COOLDOWN = 0.6;
 
@@ -212,8 +211,7 @@ export class PracticeControlWall {
 
   spawnPracticeBall(): Ball | null {
     const pos = new Vector3((Math.random() - 0.5) * 4, 0.35, -3 + (Math.random() - 0.5) * 2);
-    const visual = createBallMesh(this.scene, `practice_extra_${Date.now()}`, pos);
-    const ball = new Ball(visual, pos);
+    const ball = this.ballManager.createBall(`practice_extra_${Date.now()}`, pos);
     this.ballManager.balls.push(ball);
     return ball;
   }
