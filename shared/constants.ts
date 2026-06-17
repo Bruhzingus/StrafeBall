@@ -108,6 +108,7 @@ export const GAME_CONSTANTS = {
     secondThrowDelaySeconds: 0.2,
     fastDoubleThrowPenalty: 0.82,
     bounceRestitution: 0.58,
+    impactSoundMinBounceHeight: 0.305,
     deadAfterBounces: 1,
     deflectedDeadAfterBounces: 1,
     settleSpeed: 0.2,

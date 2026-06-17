@@ -97,6 +97,7 @@ export interface NetworkRendererDebugStats {
   ballInterpolationBufferSize: number;
   renderDelayMs: number;
   latestSnapshotAgeMs: number;
+  oldestSnapshotAgeMs: number;
   // New metrics, sampled over a rolling ~1s window.
   bufferUnderrunsPerSec: number;
   bufferOverrunsPerSec: number;
@@ -232,8 +233,11 @@ export class NetworkRenderer {
     this.debugStats.remoteInterpolationBufferSize = this.snapshotBuffer.length;
     this.debugStats.ballInterpolationBufferSize = this.snapshotBuffer.length;
     this.debugStats.renderDelayMs = NetworkRenderer.INTERPOLATION_DELAY_MS;
-    this.debugStats.latestSnapshotAgeMs =
-      this.latestSnapshotReceivedAtMs > 0 ? Date.now() - this.latestSnapshotReceivedAtMs : 0;
+    const now = Date.now();
+    const oldest = this.snapshotBuffer[0];
+    const newest = this.snapshotBuffer[this.snapshotBuffer.length - 1];
+    this.debugStats.latestSnapshotAgeMs = newest ? Math.max(0, now - newest.serverTimeMs) : 0;
+    this.debugStats.oldestSnapshotAgeMs = oldest ? Math.max(0, now - oldest.serverTimeMs) : 0;
     return this.debugStats;
   }
 
@@ -1125,6 +1129,7 @@ function emptyDebugStats(): NetworkRendererDebugStats {
     ballInterpolationBufferSize: 0,
     renderDelayMs: INTERPOLATION_DELAY_MS,
     latestSnapshotAgeMs: 0,
+    oldestSnapshotAgeMs: 0,
     bufferUnderrunsPerSec: 0,
     bufferOverrunsPerSec: 0,
     avgSnapshotIntervalMs: 0,

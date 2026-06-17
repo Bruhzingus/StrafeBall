@@ -101,31 +101,31 @@ export class Ball {
     const maxY = TUNING.map.wallHeight - r;
 
     if (p.y < r) {
-      const impactSpeed = this.velocity.length();
+      const normalImpactSpeed = Math.abs(this.velocity.y);
       p.y = r;
       this.velocity.y = Math.abs(this.velocity.y) * TUNING.ball.bounceRestitution;
-      this.onBounce(impactSpeed);
+      this.onBounce(normalImpactSpeed);
     }
 
     if (p.y > maxY) {
-      const impactSpeed = this.velocity.length();
+      const normalImpactSpeed = Math.abs(this.velocity.y);
       p.y = maxY;
       this.velocity.y = -Math.abs(this.velocity.y) * TUNING.ball.bounceRestitution;
-      this.onWallCeilingBounce(impactSpeed);
+      this.onWallCeilingBounce(normalImpactSpeed);
     }
 
     if (p.x < minX || p.x > maxX) {
-      const impactSpeed = this.velocity.length();
+      const normalImpactSpeed = Math.abs(this.velocity.x);
       p.x = Math.max(minX, Math.min(maxX, p.x));
       this.velocity.x *= -TUNING.ball.bounceRestitution;
-      this.onWallCeilingBounce(impactSpeed);
+      this.onWallCeilingBounce(normalImpactSpeed);
     }
 
     if (p.z < minZ || p.z > maxZ) {
-      const impactSpeed = this.velocity.length();
+      const normalImpactSpeed = Math.abs(this.velocity.z);
       p.z = Math.max(minZ, Math.min(maxZ, p.z));
       this.velocity.z *= -TUNING.ball.bounceRestitution;
-      this.onBounce(impactSpeed);
+      this.onBounce(normalImpactSpeed);
     }
   }
 
@@ -141,49 +141,54 @@ export class Ball {
       if (p.x < b.minX - r || p.x > b.maxX + r) continue;
       if (p.y < b.minY - r || p.y > b.maxY + r) continue;
       if (p.z < b.minZ - r || p.z > b.maxZ + r) continue;
-      const impactSpeed = this.velocity.length();
-
       const penX = Math.min(p.x - (b.minX - r), (b.maxX + r) - p.x);
       const penY = Math.min(p.y - (b.minY - r), (b.maxY + r) - p.y);
       const penZ = Math.min(p.z - (b.minZ - r), (b.maxZ + r) - p.z);
+      let normalImpactSpeed = 0;
 
       if (penX <= penY && penX <= penZ) {
+        normalImpactSpeed = Math.abs(this.velocity.x);
         p.x = p.x < (b.minX + b.maxX) * 0.5 ? b.minX - r : b.maxX + r;
         this.velocity.x *= -e;
       } else if (penY <= penZ) {
+        normalImpactSpeed = Math.abs(this.velocity.y);
         p.y = p.y < (b.minY + b.maxY) * 0.5 ? b.minY - r : b.maxY + r;
         this.velocity.y *= -e;
       } else {
+        normalImpactSpeed = Math.abs(this.velocity.z);
         p.z = p.z < (b.minZ + b.maxZ) * 0.5 ? b.minZ - r : b.maxZ + r;
         this.velocity.z *= -e;
       }
-      this.onBounce(impactSpeed);
+      this.onBounce(normalImpactSpeed);
     }
   }
 
-  private onBounce(impactSpeed: number): void {
+  private onBounce(normalImpactSpeed: number): void {
     this.bounceCount += 1;
-    this.emitImpact(impactSpeed);
+    this.emitImpact(normalImpactSpeed);
     if (this.bounceCount >= TUNING.ball.deadAfterBounces) {
       this.makeDead();
     }
   }
 
-  private onWallCeilingBounce(impactSpeed: number): void {
+  private onWallCeilingBounce(normalImpactSpeed: number): void {
     if (this.state !== BallState.Live) {
-      this.onBounce(impactSpeed);
+      this.onBounce(normalImpactSpeed);
       return;
     }
 
-    this.emitImpact(impactSpeed);
+    this.emitImpact(normalImpactSpeed);
     this.bounceCount += 1;
     if (this.bounceCount > 1) {
       this.makeDead();
     }
   }
 
-  private emitImpact(speed: number): void {
-    if (!this.onImpact || speed < 6) return;
-    this.onImpact(speed);
+  private emitImpact(normalImpactSpeed: number): void {
+    if (!this.onImpact || normalImpactSpeed <= 0) return;
+    const reboundSpeed = normalImpactSpeed * TUNING.ball.bounceRestitution;
+    const reboundHeight = (reboundSpeed * reboundSpeed) / (2 * TUNING.ball.gravity);
+    if (reboundHeight < TUNING.ball.impactSoundMinBounceHeight) return;
+    this.onImpact(Math.max(4, normalImpactSpeed));
   }
 }

@@ -114,6 +114,7 @@ export const TUNING = {
     secondThrowDelaySeconds: GAME_CONSTANTS.ball.secondThrowDelaySeconds,
     fastDoubleThrowPenalty: GAME_CONSTANTS.ball.fastDoubleThrowPenalty,
     bounceRestitution: GAME_CONSTANTS.ball.bounceRestitution,
+    impactSoundMinBounceHeight: GAME_CONSTANTS.ball.impactSoundMinBounceHeight,
     deadAfterBounces: GAME_CONSTANTS.ball.deadAfterBounces,
     deflectedDeadAfterBounces: GAME_CONSTANTS.ball.deflectedDeadAfterBounces,
     settleSpeed: GAME_CONSTANTS.ball.settleSpeed,

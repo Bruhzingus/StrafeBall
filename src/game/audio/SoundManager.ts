@@ -26,23 +26,23 @@ export class SoundManager {
   }
 
   /** Thrown-ball whoosh. `rate` shifts the pitch. */
-  whoosh(rate = 1): void {
-    this.tone('triangle', 520 * rate, 150 * rate, 0.16, 0.3);
-    this.noiseBurst(0.13, 0.2, 1100 * rate);
+  whoosh(rate = 1, gain = 1): void {
+    this.tone('triangle', 520 * rate, 150 * rate, 0.16, 0.3 * gain);
+    this.noiseBurst(0.13, 0.2 * gain, 1100 * rate);
   }
 
   ping(speed: number, gain = 1): void {
-    const speedScale = Math.max(0.4, speed / 24);
-    const baseFreq = 720 * speedScale;
+    const speedScale = Math.max(0.55, Math.min(1.15, 0.58 + speed / 52));
+    const baseFreq = 460 * speedScale;
 
-    // Core rubber impact: sharp high start sweeping to resonance
-    this.tone('sine', baseFreq * 1.5, baseFreq, 0.12, 1.2 * gain);
-    // Hollow body resonance: the characteristic "donk"
-    this.tone('triangle', baseFreq * 0.8, baseFreq * 0.4, 0.35, 0.6 * gain);
-    // Echoing hollow tail: long decaying low resonance
-    this.tone('sine', baseFreq * 0.4, baseFreq * 0.35, 0.6, 0.4 * gain);
+    // Core rubber impact: lower and less glassy than before.
+    this.tone('sine', baseFreq * 1.2, baseFreq * 0.82, 0.12, 1.05 * gain);
+    // Hollow body resonance: the characteristic gym-ball "donk".
+    this.tone('triangle', baseFreq * 0.72, baseFreq * 0.34, 0.32, 0.52 * gain);
+    // Echoing hollow tail: long decaying low resonance.
+    this.tone('sine', baseFreq * 0.34, baseFreq * 0.28, 0.52, 0.32 * gain);
     // Texture: short noise burst for the initial slap
-    this.noiseBurst(0.08, 0.3 * gain, 900 * speedScale);
+    this.noiseBurst(0.07, 0.24 * gain, 650 * speedScale);
   }
 
   footstep(speed = 1): void {
@@ -51,10 +51,10 @@ export class SoundManager {
     this.noiseBurst(0.03, 0.007 + 0.004 * step, 520 + 180 * step);
   }
 
-  squeak(intensity = 1): void {
+  squeak(intensity = 1, gain = 1): void {
     const grip = Math.max(0.35, Math.min(1.35, intensity));
-    this.tone('square', 1450 * grip, 980 * grip, 0.08, 0.035 * grip);
-    this.tone('triangle', 980 * grip, 760 * grip, 0.11, 0.024 * grip);
+    this.tone('square', 1120 * grip, 760 * grip, 0.08, 0.035 * grip * gain);
+    this.tone('triangle', 760 * grip, 560 * grip, 0.11, 0.024 * grip * gain);
   }
 
   /** Legacy hook for impacts: now uses the rubber ping at standard speed. */

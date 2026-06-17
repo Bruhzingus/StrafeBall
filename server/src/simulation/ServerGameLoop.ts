@@ -705,6 +705,35 @@ export class ServerGameLoop {
     return this.lastSnapshotBuildMs;
   }
 
+  getDebugBufferStats(): {
+    inputQueues: number;
+    pendingThrowEvents: number;
+    pendingCombatEvents: number;
+    defenseHistoryEntries: number;
+    ballHistoryEntries: number;
+    catchAttempts: number;
+    recentHits: number;
+  } {
+    let inputQueues = 0;
+    for (const queue of this.inputQueueByPlayerId.values()) inputQueues += queue.length;
+
+    let defenseHistoryEntries = 0;
+    for (const ring of this.defenseHistoryByPlayerId.values()) defenseHistoryEntries += ring.size;
+
+    let ballHistoryEntries = 0;
+    for (const ring of this.ballHistoryById.values()) ballHistoryEntries += ring.size;
+
+    return {
+      inputQueues,
+      pendingThrowEvents: this.pendingThrowEvents.length,
+      pendingCombatEvents: this.pendingCombatEvents.length,
+      defenseHistoryEntries,
+      ballHistoryEntries,
+      catchAttempts: this.catchAttemptByKey.size,
+      recentHits: this.recentHitByBallId.size
+    };
+  }
+
   snapshot(): ServerSnapshot {
     const startedAt = performance.now();
     // No deep clone (#17): Colyseus serializes the message when broadcasting, so each client

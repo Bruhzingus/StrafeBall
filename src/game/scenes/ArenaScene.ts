@@ -900,10 +900,12 @@ export class ArenaScene {
         ` uniqueSnapshots=${snap.uniqueTicksPerSecond.toFixed(1)}/s` +
         ` renderSnapshots=${this.snapshotRateHz.toFixed(1)}/s` +
         ` snapMs avg=${snap.averageMsBetweenSnapshots.toFixed(1)} max=${snap.maxMsBetweenSnapshots.toFixed(1)}` +
-        ` dupSnapshots=${snap.duplicateOrOutOfOrder}` +
+        ` dupSnapshots=${snap.duplicateOrOutOfOrder} staleDropped=${snap.staleDropped}` +
         ` inputPackets=${(this.perfReportInputCount / elapsed).toFixed(1)}/s` +
         ` pendingInputs=${this.pendingInputs.length}` +
         ` residualAfterReplay=${this.residualAfterReplayM.toFixed(3)}m` +
+        ` oldestSnapshotAge=${render.oldestSnapshotAgeMs.toFixed(1)}ms` +
+        ` wsBuffered=${snap.socketBufferedAmount}B` +
         ` remoteUnderruns=${render.bufferUnderrunsPerSec.toFixed(1)}/s` +
         ` ballBuffer=${render.ballInterpolationBufferSize}` +
         ` activeMeshes=${activeMeshes}`
@@ -1106,12 +1108,15 @@ export class ArenaScene {
         ` avgMs=${snapshotDebug.averageMsBetweenSnapshots.toFixed(1)}` +
         ` maxMs=${snapshotDebug.maxMsBetweenSnapshots.toFixed(1)}` +
         ` dup=${snapshotDebug.duplicateOrOutOfOrder}` +
+        ` staleDropped=${snapshotDebug.staleDropped}` +
         ` inputPackets=${(this.onlineRateLogInputCount / elapsed).toFixed(1)}/s` +
         ` renderFps=${(this.onlineRateLogFrameCount / elapsed).toFixed(1)}` +
         ` remoteBuffer=${renderStats.remoteInterpolationBufferSize}` +
         ` ballBuffer=${renderStats.ballInterpolationBufferSize}` +
         ` renderDelay=${renderStats.renderDelayMs}ms` +
         ` latestSnapshotAge=${renderStats.latestSnapshotAgeMs}ms` +
+        ` oldestSnapshotAge=${renderStats.oldestSnapshotAgeMs}ms` +
+        ` wsBuffered=${snapshotDebug.socketBufferedAmount}B` +
         ` underruns=${renderStats.bufferUnderrunsPerSec.toFixed(1)}/s` +
         ` overruns=${renderStats.bufferOverrunsPerSec.toFixed(1)}/s` +
         ` interpAvgMs=${renderStats.avgSnapshotIntervalMs.toFixed(1)}` +

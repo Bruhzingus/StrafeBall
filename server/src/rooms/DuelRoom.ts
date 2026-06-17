@@ -1,5 +1,5 @@
 import { Client, Room } from 'colyseus';
-import { performance } from 'node:perf_hooks';
+import { monitorEventLoopDelay, performance } from 'node:perf_hooks';
 import type {
   ClientMessage,
   InputCommand,
@@ -34,9 +34,6 @@ const COLYSEUS_PATCH_RATE_MS: number | null = null;
 const RECONNECT_SECONDS = 20;
 // Hard cap on concurrent duel rooms per process (#19 — cheap DoS guard).
 const MAX_ROOMS = 200;
-// A late timer wake may need more than one due snapshot, but never let a bad pause dump a burst.
-const MAX_SNAPSHOT_SENDS_PER_WAKE = 3;
-
 let activeRoomCount = 0;
 
 // Per-message-type rate limits: { capacity (burst), refillPerSecond } (#11).
@@ -88,9 +85,11 @@ export class DuelRoom extends Room {
   // is exactly the old coupled behavior — no accumulator drift, lowest latency.
   private readonly snapshotCoupledToTick = SNAPSHOT_RATE === SERVER_TICK_RATE;
   private readonly inputPacketsThisWindowByPlayerId = new Map<string, number>();
+  private readonly eventLoopDelay = monitorEventLoopDelay({ resolution: 20 });
 
   onCreate(): void {
     activeRoomCount += 1;
+    this.eventLoopDelay.enable();
     this.setPrivate(true);
     this.patchRate = COLYSEUS_PATCH_RATE_MS;
     // Coarse built-in backstop on top of the per-type token buckets below (#11).
@@ -187,7 +186,6 @@ export class DuelRoom extends Room {
 
       // Drain fixed sim steps, capped to avoid a spiral-of-death after a long pause.
       let steps = 0;
-      let snapshotSendsThisWake = 0;
       while (this.simulationAccumulatorMs + 0.001 >= SERVER_STEP_MS && steps < MAX_ACCUMULATOR_STEPS) {
         this.simulationAccumulatorMs -= SERVER_STEP_MS;
         steps += 1;
@@ -205,9 +203,8 @@ export class DuelRoom extends Room {
         if (this.snapshotCoupledToTick) {
           const snapshotAt = performance.now();
           this.broadcastSnapshot(snapshotAt, snapshotAt);
-          snapshotSendsThisWake += 1;
         } else {
-          snapshotSendsThisWake = this.broadcastDueSnapshot(performance.now(), snapshotSendsThisWake);
+          this.broadcastDueSnapshot(performance.now());
         }
       }
 
@@ -276,6 +273,7 @@ export class DuelRoom extends Room {
 
   onDispose(): void {
     activeRoomCount = Math.max(0, activeRoomCount - 1);
+    this.eventLoopDelay.disable();
     this.log('room disposed');
     this.game.dispose();
   }
@@ -339,24 +337,33 @@ export class DuelRoom extends Room {
     const avgSnapshotBuildMs = this.snapshotsThisWindow > 0 ? this.snapshotBuildMsTotal / this.snapshotsThisWindow : 0;
     const avgSnapshotBroadcastMs = this.snapshotsThisWindow > 0 ? this.snapshotBroadcastMsTotal / this.snapshotsThisWindow : 0;
     const avgSnapshotLateMs = this.snapshotsThisWindow > 0 ? this.snapshotLateMsTotal / this.snapshotsThisWindow : 0;
+    const eventLoopDelayAvgMs = this.eventLoopDelay.mean > 0 ? this.eventLoopDelay.mean / 1e6 : 0;
+    const eventLoopDelayMaxMs = this.eventLoopDelay.max > 0 ? this.eventLoopDelay.max / 1e6 : 0;
+    const socketBuffer = this.socketBufferStats();
+    const buffers = this.game.getDebugBufferStats();
 
     // Combat counters for this window (verify the lag-comp catch fix in production).
     const c = this.game.drainCombatMetrics();
 
     this.log(
       `[perf] simTicks=${(this.simTicksThisWindow / elapsedSeconds).toFixed(1)}/s ` +
-      `snapshots=${(this.snapshotsThisWindow / elapsedSeconds).toFixed(1)}/s ` +
+      `snapshots=${(this.snapshotsThisWindow / elapsedSeconds).toFixed(1)}/s target=${SNAPSHOT_RATE}/s ` +
       `simTickMs avg=${avgSimTickMs.toFixed(2)} max=${this.simTickMsMax.toFixed(2)} ` +
       `snapshotBuildMs avg=${avgSnapshotBuildMs.toFixed(3)} max=${this.snapshotBuildMsMax.toFixed(3)} ` +
       `snapshotBroadcastMs avg=${avgSnapshotBroadcastMs.toFixed(3)} max=${this.snapshotBroadcastMsMax.toFixed(3)} ` +
-      `snapshotLateMs avg=${avgSnapshotLateMs.toFixed(2)} max=${this.snapshotLateMsMax.toFixed(2)} skips=${this.snapshotDeadlineSkipsThisWindow} ` +
+      `snapshotLateMs avg=${avgSnapshotLateMs.toFixed(2)} max=${this.snapshotLateMsMax.toFixed(2)} dropped=${this.snapshotDeadlineSkipsThisWindow} ` +
       `players=${players} balls=${balls.length} liveBalls=${liveBalls} ` +
       `inputPackets={${inputRates || 'none'}} ` +
+      `buffers={input=${buffers.inputQueues} throw=${buffers.pendingThrowEvents} combat=${buffers.pendingCombatEvents} defenseHist=${buffers.defenseHistoryEntries} ballHist=${buffers.ballHistoryEntries} catch=${buffers.catchAttempts} hit=${buffers.recentHits}} ` +
       `combat={catchTry=${c.catchAttemptsOpened} catch=${c.catches} reclaim=${c.reclaimCatches} parry=${c.parries} hit=${c.hits} revert=${c.hitReverts}} ` +
       `stepCapHits=${this.stepCapHitsThisWindow} ` +
       `snapshotBytes avg=${avgPayload} max=${this.snapshotPayloadBytesMax} ` +
+      `wsBuffered avg=${socketBuffer.avgBytes}B max=${socketBuffer.maxBytes}B ` +
+      `eventLoopMs avg=${eventLoopDelayAvgMs.toFixed(2)} max=${eventLoopDelayMaxMs.toFixed(2)} ` +
       `mem heapUsed=${mb(mem.heapUsed)}MB heapTotal=${mb(mem.heapTotal)}MB rss=${mb(mem.rss)}MB`
     );
+
+    this.eventLoopDelay.reset();
   }
 
   /**
@@ -388,20 +395,15 @@ export class DuelRoom extends Room {
     for (const event of combatEvents) this.broadcast(event.type, event);
   }
 
-  private broadcastDueSnapshot(actualNowMs: number, sendsThisWake: number): number {
-    if (actualNowMs + 0.001 < this.nextSnapshotDueAtMs) return sendsThisWake;
-
-    if (sendsThisWake >= MAX_SNAPSHOT_SENDS_PER_WAKE) {
-      const skipped = Math.max(1, Math.floor((actualNowMs - this.nextSnapshotDueAtMs) / SNAPSHOT_INTERVAL_MS) + 1);
-      this.snapshotDeadlineSkipsThisWindow += skipped;
-      this.nextSnapshotDueAtMs = actualNowMs + SNAPSHOT_INTERVAL_MS;
-      return sendsThisWake;
-    }
+  private broadcastDueSnapshot(actualNowMs: number): void {
+    if (actualNowMs + 0.001 < this.nextSnapshotDueAtMs) return;
 
     const dueAtMs = this.nextSnapshotDueAtMs;
+    const dropped = Math.max(0, Math.floor((actualNowMs - dueAtMs) / SNAPSHOT_INTERVAL_MS));
+    this.snapshotDeadlineSkipsThisWindow += dropped;
     this.broadcastSnapshot(dueAtMs, actualNowMs);
-    this.nextSnapshotDueAtMs += SNAPSHOT_INTERVAL_MS;
-    return sendsThisWake + 1;
+    // Snapshots are disposable: if we're late, send ONE fresh state and pace from "now".
+    this.nextSnapshotDueAtMs = actualNowMs + SNAPSHOT_INTERVAL_MS;
   }
 
   private broadcastSnapshot(dueAtMs: number, actualNowMs: number): void {
@@ -411,6 +413,26 @@ export class DuelRoom extends Room {
     this.broadcast('snapshot', snapshot);
     const broadcastMs = performance.now() - broadcastStartedAt;
     this.recordSnapshot(snapshot, buildMs, broadcastMs, Math.max(0, actualNowMs - dueAtMs));
+  }
+
+  private socketBufferStats(): { avgBytes: number; maxBytes: number } {
+    if (this.clients.length === 0) return { avgBytes: 0, maxBytes: 0 };
+
+    let total = 0;
+    let samples = 0;
+    let maxBytes = 0;
+    for (const client of this.clients) {
+      const buffered = readClientBufferedAmount(client);
+      if (buffered === null) continue;
+      total += buffered;
+      samples += 1;
+      maxBytes = Math.max(maxBytes, buffered);
+    }
+
+    return {
+      avgBytes: samples > 0 ? Math.round(total / samples) : 0,
+      maxBytes
+    };
   }
 
   /** Token-bucket rate limit per client per message type (#11). Returns false if over limit. */
@@ -450,4 +472,13 @@ export class DuelRoom extends Room {
 
 function formatPatchRate(patchRateMs: number | null): string {
   return patchRateMs === null ? 'disabled(manual snapshots)' : `${(1000 / patchRateMs).toFixed(1)}Hz`;
+}
+
+function readClientBufferedAmount(client: Client): number | null {
+  const raw = client as Client & {
+    ref?: { bufferedAmount?: number; ws?: { getBufferedAmount?: () => number } };
+  };
+  if (typeof raw.ref?.bufferedAmount === 'number') return raw.ref.bufferedAmount;
+  const uwsAmount = raw.ref?.ws?.getBufferedAmount?.();
+  return typeof uwsAmount === 'number' ? uwsAmount : null;
 }

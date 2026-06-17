@@ -78,8 +78,8 @@ export class Effects {
   }
 
   onDash(speed = 0): void {
-    this.sound.whoosh(1.3);
-    this.sound.squeak(0.9 + Math.min(0.35, speed / 20));
+    this.sound.whoosh(0.95, 0.7);
+    this.sound.squeak(0.58 + Math.min(0.22, speed / 28), 0.7);
     this.triggerFlash(0.12, 0.14, '240, 220, 80');
   }
 

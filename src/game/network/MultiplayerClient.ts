@@ -37,7 +37,9 @@ export class MultiplayerClient {
     uniqueTicksPerSecond: 0,
     averageMsBetweenSnapshots: 0,
     maxMsBetweenSnapshots: 0,
-    duplicateOrOutOfOrder: 0
+    duplicateOrOutOfOrder: 0,
+    staleDropped: 0,
+    socketBufferedAmount: 0
   };
 
   private readonly client: Client;
@@ -53,6 +55,7 @@ export class MultiplayerClient {
   private snapshotIntervalTotalMs = 0;
   private snapshotIntervalCount = 0;
   private snapshotIntervalMaxMs = 0;
+  private snapshotWindowStaleDropped = 0;
   // Incremented on every connect() call. Lets an awaited join() detect it was superseded by a
   // newer call (e.g. user double-clicks Create) and leave the orphaned room rather than
   // overwriting this.room and leaking the server-side session.
@@ -189,6 +192,10 @@ export class MultiplayerClient {
     room.onMessage('snapshot', (message: ServerSnapshot) => {
       if (this.room !== room) return;
       this.recordSnapshotReceived(message);
+      if (this.latestSnapshot && message.tick <= this.latestSnapshot.tick) {
+        this.snapshotWindowStaleDropped += 1;
+        return;
+      }
       this.latestSnapshot = message;
     });
 
@@ -275,13 +282,16 @@ export class MultiplayerClient {
       uniqueTicksPerSecond: this.snapshotWindowUniqueCount / (elapsed / 1000),
       averageMsBetweenSnapshots: this.snapshotIntervalCount > 0 ? this.snapshotIntervalTotalMs / this.snapshotIntervalCount : 0,
       maxMsBetweenSnapshots: this.snapshotIntervalMaxMs,
-      duplicateOrOutOfOrder: this.snapshotWindowDuplicateCount
+      duplicateOrOutOfOrder: this.snapshotWindowDuplicateCount,
+      staleDropped: this.snapshotWindowStaleDropped,
+      socketBufferedAmount: this.socketBufferedAmount()
     };
 
     this.snapshotWindowStartedAtMs = now;
     this.snapshotWindowCount = 0;
     this.snapshotWindowUniqueCount = 0;
     this.snapshotWindowDuplicateCount = 0;
+    this.snapshotWindowStaleDropped = 0;
     this.snapshotIntervalTotalMs = 0;
     this.snapshotIntervalCount = 0;
     this.snapshotIntervalMaxMs = 0;
@@ -293,12 +303,15 @@ export class MultiplayerClient {
       uniqueTicksPerSecond: 0,
       averageMsBetweenSnapshots: 0,
       maxMsBetweenSnapshots: 0,
-      duplicateOrOutOfOrder: 0
+      duplicateOrOutOfOrder: 0,
+      staleDropped: 0,
+      socketBufferedAmount: 0
     };
     this.snapshotWindowStartedAtMs = 0;
     this.snapshotWindowCount = 0;
     this.snapshotWindowUniqueCount = 0;
     this.snapshotWindowDuplicateCount = 0;
+    this.snapshotWindowStaleDropped = 0;
     this.lastSnapshotReceivedAtMs = 0;
     this.lastSnapshotTick = -1;
     this.snapshotIntervalTotalMs = 0;
@@ -322,6 +335,18 @@ export class MultiplayerClient {
     if (this.pingTimer === null) return;
     window.clearInterval(this.pingTimer);
     this.pingTimer = null;
+  }
+
+  private socketBufferedAmount(): number {
+    const room = this.room as Room & {
+      connection?: {
+        ws?: { bufferedAmount?: number };
+        transport?: { ws?: { bufferedAmount?: number } };
+      };
+    };
+    return room.connection?.ws?.bufferedAmount
+      ?? room.connection?.transport?.ws?.bufferedAmount
+      ?? 0;
   }
 }
 
