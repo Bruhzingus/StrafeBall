@@ -1,7 +1,7 @@
 import { Vector3 } from '@babylonjs/core';
 import { GAME_CONSTANTS } from '../../../shared/constants';
 import type { DashState, Vec3 } from '../../../shared/types';
-import { advanceDashState, canSpendDashCharge, grantDashCharge, tryDash as tryDashSim } from '../../../shared/simulation/PlayerSim';
+import { advanceDashState, canSpendDashCharge, grantDashCharge, tryDash as tryDashSim, tryUpwardDash as tryUpwardDashSim } from '../../../shared/simulation/PlayerSim';
 
 export class DashController {
   // Explicit number type: constants are `as const`, so maxCharges has literal type 3
@@ -20,6 +20,13 @@ export class DashController {
 
   tryDash(currentVelocity: Vector3, dashDirection: Vector3): Vector3 | null {
     const result = tryDashSim(this.snapshotDashState(), toSharedVec3(currentVelocity), toSharedVec3(dashDirection));
+    if (!result.ok) return null;
+    this.applyDashState(result.dash);
+    return toBabylonVector(result.velocity);
+  }
+
+  tryUpwardDash(currentVelocity: Vector3): Vector3 | null {
+    const result = tryUpwardDashSim(this.snapshotDashState(), toSharedVec3(currentVelocity));
     if (!result.ok) return null;
     this.applyDashState(result.dash);
     return toBabylonVector(result.velocity);

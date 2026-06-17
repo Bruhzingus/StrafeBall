@@ -28,6 +28,7 @@ import { NetworkRenderer } from '../network/NetworkRenderer';
 import type { ServerSnapshot } from '../../../shared/protocol';
 import type { DashState, MovementInternalState, PlayerInput, PlayerMovementState, PlayerState, Vec3 } from '../../../shared/types';
 import { stepMovement, facingFromAngles } from '../../../shared/simulation/MovementSim';
+import { grantDashCharge } from '../../../shared/simulation/PlayerSim';
 import { backflipPitchOffset } from '../../../shared/simulation/AimMath';
 import { CLIENT_FIXED_DT, PENDING_INPUT_LIMIT, MAX_ACCUMULATOR_STEPS, PERF_REPORT_INTERVAL_MS } from '../../../shared/netConfig';
 import { createPlayerCollisionBoxes, type AABB } from '../../../shared/simulation/MapGeometry';
@@ -353,11 +354,19 @@ export class ArenaScene {
   private onBackflipQteHit(tier: number): void {
     const maxTier = TUNING.backflip.qte.tierCount;
     const strength = maxTier > 1 ? (tier - 1) / (maxTier - 1) : 1;
+    if (tier >= maxTier) this.grantLocalStamina();
     this.effects.onBackflipThrow(tier, maxTier);
     this.backflipQteHud.flashResult(true);
     const labels = ['SLOW', 'OK', 'NICE', 'GREAT', 'PERFECT!'];
     const label = labels[Math.max(0, Math.min(labels.length - 1, tier - 1))];
     this.hud.showQteEvent(label, 'BACKFLIP THROW', strength);
+  }
+
+  private grantLocalStamina(): void {
+    this.player.dash.addChargeFromHit();
+    if (this.predictedDash) {
+      this.predictedDash = grantDashCharge(this.predictedDash);
+    }
   }
 
   /** Clear all backflip-QTE state + hide the bar (used on mode transitions and resets). */
@@ -984,6 +993,7 @@ export class ArenaScene {
     this.player.camera.rotation.x = this.networkPitch + backflipPitchOffset(internal.backflipActive, internal.backflipTimer);
     this.player.camera.rotation.y = 0;
     this.player.camera.rotation.z = 0;
+    this.player.applyWallRunLean(ArenaScene.NET_FIXED_DT, movement.wallRunning, internal.lastWallNormalX, internal.lastWallNormalZ);
     // Crouch/slide lowers the eye height so the view follows the (shortened) body. Online mode
     // skips the offline MovementController, so the camera Y must be driven here from the predicted
     // crouch state. Smoothed exponentially toward the target so it dips/rises instead of snapping.
@@ -1001,6 +1011,7 @@ export class ArenaScene {
       sliding: movement.sliding,
       crouching: movement.crouching,
       wallRunning: movement.wallRunning,
+      wallNormal: new Vector3(internal.lastWallNormalX, 0, internal.lastWallNormalZ),
       dashingThisFrame: movement.dashingThisFrame,
       speed: movement.speed,
       bhopGraceTimer: internal.jumpGraceTimer,

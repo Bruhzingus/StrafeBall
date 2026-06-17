@@ -2,7 +2,9 @@ import { GAME_CONSTANTS } from '../../../shared/constants';
 import { DEBUG_DEFAULTS, SERVER_INPUT_QUEUE_LIMIT, SERVER_TICK_RATE, type DebugFlags } from '../../../shared/netConfig';
 import type {
   BallState,
+  DashState,
   HandSide,
+  MatchState,
   PlayerInput,
   PlayerState,
   RoomState,
@@ -47,7 +49,7 @@ import {
   type SweptParryFailReason
 } from '../../../shared/simulation/HandSim';
 import { createResetVoteState, createRoomState, registerPlayerHit } from '../../../shared/simulation/MatchSim';
-import { createPlayerState } from '../../../shared/simulation/PlayerSim';
+import { createPlayerState, grantDashCharge } from '../../../shared/simulation/PlayerSim';
 import { advanceNoBoundariesTimer, applyHalfCourtRule, createMatchState } from '../../../shared/simulation/RuleSim';
 import {
   MAT_SPECS,
@@ -72,6 +74,13 @@ export interface ServerGameLoopOptions {
    * existing callers (and tests) keep compiling. Prefer `debug` for new code.
    */
   debugInput?: boolean;
+  /**
+   * Wall-clock source (ms). Defaults to Date.now. Injectable so combat timing (catch windows,
+   * defensive/ball history timestamps, stale-input detection) can be driven by a deterministic
+   * virtual clock in tests — the only way to exercise the real 90Hz tick spacing + network latency
+   * without sleeping. Production passes nothing and gets Date.now.
+   */
+  now?: () => number;
 }
 
 export interface ThrowRequestPayload {
@@ -108,7 +117,25 @@ interface CatchAttempt {
   cooldownUntilMs: number;
   /** Server time we rewind defense+ball history to (derived from the input's client/seq timing). */
   clickTimeMs: number;
+  /** Lag-comp rewind (ms) applied when evaluating this attempt against ball/defense history. */
+  rewindMs: number;
   resolved: boolean;
+}
+
+/**
+ * A hit the server applied this recently. If a lag-compensated catch from the SAME defender
+ * legitimately claims that ball within `catchHitGraceMs`, the hit's score is reverted (the
+ * high-ping defender's well-timed catch arrived after the server had already scored the hit).
+ */
+interface RecentHit {
+  ballId: string;
+  defenderId: string;
+  throwerId: string;
+  throwerTeamId: string;
+  value: number;
+  atMs: number;
+  /** Thrower's dash state BEFORE the hit granted them a charge (restored on revert). */
+  throwerDashBefore: DashState;
 }
 
 /** Reason a catch attempt failed to land — surfaced under CATCH_DEBUG (Phase 13). */
@@ -157,6 +184,8 @@ export class ServerGameLoop {
   private readonly tickSeconds: number;
   private readonly logger: (message: string) => void;
   private readonly debug: DebugFlags;
+  /** Injectable wall-clock (ms). Defaults to Date.now; overridden by a virtual clock in tests. */
+  private readonly now: () => number;
   // Players AND balls collide with bleachers + STANDING mats; both sets are rebuilt whenever a mat
   // is knocked over so a downed mat becomes walkable AND lets balls pass over it.
   private playerCollisionBoxes = createPlayerCollisionBoxes();
@@ -173,6 +202,17 @@ export class ServerGameLoop {
   private readonly resetVotesByPlayerId = new Map<string, number>();
   private resetSerial = 0;
 
+  // Cheap combat counters for the throttled server [perf] report (verify the lag-comp catch fix in
+  // production). Plain integers, no allocations; drained + reset each report window by the room.
+  private readonly combatMetrics = {
+    catchAttemptsOpened: 0, // distinct catch clicks accepted
+    catches: 0,             // catches that landed (present-time OR lag-comp reclaim)
+    reclaimCatches: 0,      // of those, ones the lag-comp reclaim pass claimed (high-ping saves)
+    parries: 0,
+    hits: 0,
+    hitReverts: 0           // hits undone because a lag-comp catch superseded them
+  };
+
   // --- Server-authoritative combat (catch attempts + lag-compensated defense) ---
   // Per-player defensive-state history (eye/aim/hands/dashing per tick), rewound to the click
   // moment when validating a catch/parry so a high-ping defender is judged fairly. Capped by age.
@@ -184,6 +224,9 @@ export class ServerGameLoop {
   private readonly catchAttemptByKey = new Map<string, CatchAttempt>();
   // Highest catch-attempt id consumed per player+hand (dedupe latched re-sends). Keyed as above.
   private readonly lastCatchAttemptIdByKey = new Map<string, number>();
+  // Hits applied in the last ~catchHitGraceMs, keyed by ballId. A lag-compensated catch from the
+  // hit defender can revert the score if their well-timed catch arrived after the server scored.
+  private readonly recentHitByBallId = new Map<string, RecentHit>();
   // Monotonic throw identity — assigned to each new live throw/deflect (see BallState.throwId).
   private throwCounter = 0;
   // Throw events accepted this step, drained by the room and broadcast before the next snapshot.
@@ -196,6 +239,7 @@ export class ServerGameLoop {
     this.tickRate = options.tickRate ?? SERVER_TICK_RATE;
     this.tickSeconds = 1 / this.tickRate;
     this.logger = options.logger ?? (() => undefined);
+    this.now = options.now ?? Date.now;
     // All flags default OFF. The legacy `debugInput` boolean maps to NET_DEBUG for compat; an
     // explicit `debug.NET_DEBUG` (if provided) wins over it.
     this.debug = {
@@ -267,7 +311,7 @@ export class ServerGameLoop {
     const player = this.state.players[playerId];
     if (!player) return;
     player.connected = connected;
-    if (connected) this.lastInputAtByPlayerId.set(playerId, Date.now());
+    if (connected) this.lastInputAtByPlayerId.set(playerId, this.now());
     this.resolveResetVotesAfterRosterChange();
   }
 
@@ -300,6 +344,7 @@ export class ServerGameLoop {
     this.ballHistoryById.clear();
     this.catchAttemptByKey.clear();
     this.lastCatchAttemptIdByKey.clear();
+    this.recentHitByBallId.clear();
     this.resetVotesByPlayerId.clear();
   }
 
@@ -327,7 +372,7 @@ export class ServerGameLoop {
     const fallback = this.lastInputByPlayerId.get(playerId);
     const input = normalizeInput({ ...rawInput, sequence }, fallback);
     this.lastInputByPlayerId.set(playerId, input);
-    this.lastInputAtByPlayerId.set(playerId, Date.now());
+    this.lastInputAtByPlayerId.set(playerId, this.now());
 
     const queue = this.inputQueueByPlayerId.get(playerId) ?? [];
     queue.push({ seq: sequence || lastSeq, input });
@@ -447,7 +492,11 @@ export class ServerGameLoop {
     });
     if (!result.ok) return result;
 
-    this.state.players[playerId] = { ...player, hands: result.hands };
+    const dash = isBackflipThrow && backflipTier === GAME_CONSTANTS.backflip.qte.tierCount
+      ? grantDashCharge(player.dash)
+      : player.dash;
+
+    this.state.players[playerId] = { ...player, hands: result.hands, dash };
     this.state.balls[ball.id] = result.ball;
 
     // Emit an authoritative throw event so the client can start deterministic visual prediction
@@ -459,7 +508,7 @@ export class ServerGameLoop {
       ownerId: playerId,
       hand: request.hand,
       serverTick: this.state.tick,
-      serverTimeMs: Date.now(),
+      serverTimeMs: this.now(),
       origin: cloneVec3(origin),
       velocity: cloneVec3(velocity),
       curveAccel: cloneVec3(curveAccel),
@@ -496,8 +545,8 @@ export class ServerGameLoop {
   handleReset(playerId: string): ActionResult {
     if (!this.state.players[playerId]) return { ok: false, reason: 'unknown-player' };
 
-    this.pruneResetVotes(Date.now());
-    this.resetVotesByPlayerId.set(playerId, Date.now() + RESET_VOTE_TTL_MS);
+    this.pruneResetVotes(this.now());
+    this.resetVotesByPlayerId.set(playerId, this.now() + RESET_VOTE_TTL_MS);
     this.syncResetVoteState();
 
     const vote = this.state.resetVote;
@@ -515,7 +564,7 @@ export class ServerGameLoop {
     this.state.tick += 1;
     // One wall-clock read per step, reused for all history timestamps + attempt windows so every
     // sample/attempt in this tick shares a consistent "now".
-    this.stepNowMs = Date.now();
+    this.stepNowMs = this.now();
     this.pruneResetVotes(this.stepNowMs);
 
     // Advance the pre-round countdown. While counting down, players are frozen (look only) and no
@@ -551,6 +600,12 @@ export class ServerGameLoop {
     this.updateBalls(fixedDt, active);
 
     if (active) {
+      // Lag-compensated catch reclaim: a high-ping defender's well-timed click may only arrive after
+      // the server already applied a hit/let the ball pass. Re-evaluate open catch attempts against
+      // BALL HISTORY rewound to what the defender saw; a legitimate catch claims the ball and reverts
+      // a hit it just superseded. Runs after updateBalls so this tick's swept history is recorded.
+      this.resolveCatchReclaim(this.stepNowMs);
+      this.pruneRecentHits(this.stepNowMs);
       this.updateRules(fixedDt);
     }
 
@@ -601,6 +656,22 @@ export class ServerGameLoop {
     this.previousInputByPlayerId.set(player.id, input);
   }
 
+  /**
+   * Read + reset the combat counters for the throttled server [perf] report. Returns a compact
+   * snapshot (one window's worth of catches/parries/hits) so the room can verify the lag-comp catch
+   * fix in production without per-tick logging. Resets so each report covers one window.
+   */
+  drainCombatMetrics(): { catchAttemptsOpened: number; catches: number; reclaimCatches: number; parries: number; hits: number; hitReverts: number } {
+    const m = { ...this.combatMetrics };
+    this.combatMetrics.catchAttemptsOpened = 0;
+    this.combatMetrics.catches = 0;
+    this.combatMetrics.reclaimCatches = 0;
+    this.combatMetrics.parries = 0;
+    this.combatMetrics.hits = 0;
+    this.combatMetrics.hitReverts = 0;
+    return m;
+  }
+
   /** Drain authoritative throw events accepted since the last drain (room broadcasts them). */
   drainThrowEvents(): ThrowEvent[] {
     if (this.pendingThrowEvents.length === 0) return [];
@@ -615,7 +686,7 @@ export class ServerGameLoop {
     return {
       type: 'snapshot',
       tick: this.state.tick,
-      serverTimeMs: Date.now(),
+      serverTimeMs: this.now(),
       room: this.state
     };
   }
@@ -703,7 +774,7 @@ export class ServerGameLoop {
     postMovement: PlayerState['movement']
   ): void {
     if (!this.debug.NET_DEBUG) return;
-    const now = Date.now();
+    const now = this.now();
     const previous = this.lastInputDebugAtByPlayerId.get(playerId) ?? 0;
 
     // Always log when an edge-triggered action fires so they are never hidden by throttle.
@@ -814,9 +885,26 @@ export class ServerGameLoop {
       const scorer = this.state.players[ownerId];
       const previousScore = scorer ? this.state.match.scoreByTeamId[scorer.teamId] ?? 0 : 0;
       const previousWinner = this.state.match.winnerTeamId;
+      // Capture the thrower's pre-hit dash so a lag-comp catch that supersedes this hit can restore
+      // it (registerPlayerHit grants the scorer a dash charge).
+      const throwerDashBefore = scorer ? { ...scorer.dash } : null;
       const dead = markBallDead(ball);
       this.state = registerPlayerHit(this.state, ownerId);
+      this.combatMetrics.hits += 1;
       const nextScore = scorer ? this.state.match.scoreByTeamId[scorer.teamId] ?? 0 : previousScore;
+      // Remember this hit briefly: a high-ping defender's well-timed catch may arrive after this and
+      // legitimately claim the ball (resolveCatchReclaim), reverting the score it superseded.
+      if (scorer && throwerDashBefore) {
+        this.recentHitByBallId.set(ball.id, {
+          ballId: ball.id,
+          defenderId: target.id,
+          throwerId: ownerId,
+          throwerTeamId: scorer.teamId,
+          value: 1,
+          atMs: this.stepNowMs,
+          throwerDashBefore
+        });
+      }
       if (this.debug.NET_DEBUG) {
         this.logger(`hit confirmed scorer=${ownerId} target=${target.id} ball=${ball.id}`);
         if (nextScore !== previousScore) this.logger(`score changed team=${scorer?.teamId ?? 'unknown'} score=${nextScore}`);
@@ -923,8 +1011,10 @@ export class ServerGameLoop {
   /** Record an interaction-relevant ball's position so a rewound click can reconstruct its swept
    * path. Covers live/deflected balls AND freshly-bounced (catchable) dead balls. */
   private recordBallSample(ball: BallState): void {
-    if (!isBallCatchableInFlight(ball)) {
-      // Non-interaction phases don't need history; drop any stale ring so memory stays bounded.
+    // Keep history while the ball is catchable in flight OR a hit on it is still inside the catch-undo
+    // grace — a lag-comp catch reclaim needs the ball's PRE-hit (live) samples even after the present
+    // ball has died/bounced past the defender. Once neither holds, drop the ring (bounded memory).
+    if (!isBallCatchableInFlight(ball) && !this.recentHitByBallId.has(ball.id)) {
       this.ballHistoryById.delete(ball.id);
       return;
     }
@@ -933,7 +1023,15 @@ export class ServerGameLoop {
       ring = new TimeRing<BallSample>(GAME_CONSTANTS.combat.defenseHistoryMs);
       this.ballHistoryById.set(ball.id, ring);
     }
-    ring.push({ serverTimeMs: this.stepNowMs, tick: this.state.tick, position: cloneVec3(ball.position) });
+    ring.push({
+      serverTimeMs: this.stepNowMs,
+      tick: this.state.tick,
+      position: cloneVec3(ball.position),
+      velocity: cloneVec3(ball.velocity),
+      phase: ball.phase,
+      ownerId: ball.ownerId,
+      bounceCount: ball.bounceCount
+    });
   }
 
   /**
@@ -969,33 +1067,25 @@ export class ServerGameLoop {
     // Anchor the rewind to when the client actually clicked. Prefer the input's client timestamp
     // mapped to server time via our ping estimate; fall back to "now" if unavailable. Clamp the
     // rewind so we never look further back than the configured max.
-    const clickTimeMs = this.estimateClickServerTime(player.id, input, now);
+    // Lag-comp rewind for this attempt: judge the catch against the world the defender SAW, which
+    // trails the server by ~(interp + their ping) plus the click's transit. A fixed value (clamped)
+    // keeps it server-only with no per-client RTT plumbing; the active window scans a span of recent
+    // history so a click a touch early/late around the in-cone moment still lands.
+    const rewindMs = clamp(GAME_CONSTANTS.combat.catchRewindMs, GAME_CONSTANTS.combat.defenseInputGraceMs, GAME_CONSTANTS.combat.defenseMaxRewindMs);
     this.catchAttemptByKey.set(key, {
       hand,
       attemptId,
       openedAtMs: now,
       activeUntilMs: now + GAME_CONSTANTS.combat.catchStartupMs + GAME_CONSTANTS.combat.catchActiveMs,
       cooldownUntilMs: now + GAME_CONSTANTS.combat.catchCooldownMs,
-      clickTimeMs,
+      clickTimeMs: now - rewindMs,
+      rewindMs,
       resolved: false
     });
+    this.combatMetrics.catchAttemptsOpened += 1;
     if (this.debug.CATCH_DEBUG) {
-      this.logger(`catch attempt OPEN player=${player.id} hand=${hand} id=${attemptId} clickAgeMs=${Math.round(now - clickTimeMs)}`);
+      this.logger(`catch attempt OPEN player=${player.id} hand=${hand} id=${attemptId} rewindMs=${rewindMs}`);
     }
-  }
-
-  /**
-   * Estimate the SERVER time at which a client click happened, for lag-comp rewind. We don't have a
-   * synced clock, so approximate: now − (one input-transit ≈ half the player's measured RTT). The
-   * result is clamped to [now − maxRewind, now]. With no RTT estimate it returns `now` (no rewind),
-   * which degrades gracefully to "evaluate against present state".
-   */
-  private estimateClickServerTime(_playerId: string, _input: PlayerInput, now: number): number {
-    // Half-RTT is not tracked server-side here; the active window (catchActiveMs) already gives the
-    // attempt time to overlap the ball crossing. Anchor at the window's recent past bounded by max
-    // rewind + input grace so the swept-history sampling has slack on both sides of the click.
-    const rewind = Math.min(GAME_CONSTANTS.combat.defenseMaxRewindMs, GAME_CONSTANTS.combat.defenseInputGraceMs);
-    return now - rewind;
   }
 
   /**
@@ -1022,6 +1112,7 @@ export class ServerGameLoop {
       this.throwCounter += 1;
       this.state.balls[ball.id] = deflectBall(ball, defenderId, aim, GAME_CONSTANTS, this.throwCounter);
       this.parryCooldownByPlayerId.set(defenderId, GAME_CONSTANTS.parry.cooldownSeconds);
+      this.combatMetrics.parries += 1;
       if (ball.isSuper) this.dropOneHeldBall(defender); // super-parry drops a defender ball
       if (this.debug.PARRY_DEBUG || this.debug.NET_DEBUG) {
         this.logger(`parry SUCCESS defender=${defenderId} ball=${ball.id} super=${ball.isSuper} throwId=${this.throwCounter}`);
@@ -1074,7 +1165,10 @@ export class ServerGameLoop {
         // Expire windows that have fully elapsed.
         if (now > attempt.activeUntilMs) continue;
 
-        const sample = this.sampleDefenseAt(defenderId, attempt.clickTimeMs);
+        // Defender's OWN state (aim/eye/dash/hand) is authoritative at the CLICK frame (client-
+        // predicted, not delayed) — sample at openedAtMs, not the rewound ball time. Only the BALL is
+        // rewound (present segment here; lag-comp history in resolveCatchReclaim).
+        const sample = this.sampleDefenseAt(defenderId, attempt.openedAtMs);
         const fail = this.catchFailReason(defender, hand, sample, ball, segPrev, segCurr, attempt, now);
         if (fail) {
           if (this.debug.CATCH_DEBUG) this.logCatch(defenderId, hand, ball, sample, segPrev, segCurr, attempt, fail);
@@ -1082,19 +1176,8 @@ export class ServerGameLoop {
         }
 
         // Success — consume the attempt and give the ball to this hand.
-        attempt.resolved = true;
-        this.catchAttemptByKey.set(key, attempt);
-        const caught = catchBall(ball, defenderId, hand);
-        this.state.balls[ball.id] = caught;
-        // Assign the hand + small forward catch boost (mirrors the old behavior).
         const facing = sample ? sample.forward : defender.movement.facing;
-        const boostDir = normalize(vec3(facing.x, 0, facing.z), vec3(0, 0, 1));
-        this.state.players[defenderId] = {
-          ...defender,
-          hands: assignCaughtHand(defender.hands, hand, ball.id),
-          movement: { ...defender.movement, velocity: add(defender.movement.velocity, scale(boostDir, GAME_CONSTANTS.catch.catchBoostSpeed)) },
-          movementInternal: { ...defender.movementInternal, catchBoostTimer: GAME_CONSTANTS.catch.catchBoostDuration }
-        };
+        const caught = this.applyCatch(defenderId, hand, ball.id, facing, attempt, now);
         if (this.debug.CATCH_DEBUG || this.debug.NET_DEBUG) {
           this.logger(`catch SUCCESS defender=${defenderId} hand=${hand} ball=${ball.id} id=${attempt.attemptId}`);
         }
@@ -1102,6 +1185,130 @@ export class ServerGameLoop {
       }
     }
     return null;
+  }
+
+  /**
+   * Lag-compensated catch RECLAIM. The present-time tryCatchAttempts only catches a ball that is
+   * still live/in-range right now — which fails for a high-ping defender whose well-timed click only
+   * reaches the server after the ball already hit them or flew past. This pass re-evaluates every
+   * OPEN, unresolved attempt against the ball's HISTORY rewound to what the defender saw (now −
+   * attempt.rewindMs). A legitimate catch (same cone/range/empty-hand gates, just rewound) claims the
+   * ball and reverts a hit it superseded. Cheap: only runs while an attempt window is open.
+   */
+  private resolveCatchReclaim(nowMs: number): void {
+    const minTime = nowMs - GAME_CONSTANTS.combat.defenseMaxRewindMs - GAME_CONSTANTS.combat.defenseInputGraceMs;
+    for (const defenderId in this.state.players) {
+      const defender = this.state.players[defenderId];
+      for (const hand of ['left', 'right'] as const) {
+        const attempt = this.catchAttemptByKey.get(`${defenderId}:${hand}`);
+        if (!attempt || attempt.resolved) continue;
+        if (nowMs < attempt.openedAtMs + GAME_CONSTANTS.combat.catchStartupMs) continue; // startup
+        if (nowMs > attempt.activeUntilMs) continue;                                      // expired
+
+        // Ball is rewound to what the defender SAW (now − rewind, scanning forward as the window
+        // stays open). The defender's OWN state is sampled at the click frame (openedAtMs), since
+        // they see themselves in real time — only the world (ball) is delayed.
+        const evalTime = clamp(nowMs - attempt.rewindMs, minTime, nowMs);
+        const sample = this.sampleDefenseAt(defenderId, attempt.openedAtMs);
+        // The hand must be empty at the click moment to even consider a reclaim (skip the scan if not).
+        const handEmpty = sample ? (hand === 'left' ? sample.leftHandEmpty : sample.rightHandEmpty) : !defender.hands[hand].heldBallId;
+        if (!handEmpty) continue;
+
+        for (const ballId in this.state.balls) {
+          // A ball already in someone's hand can't be reclaimed.
+          if (this.state.balls[ballId].phase === 'held') continue;
+          const ring = this.ballHistoryById.get(ballId);
+          if (!ring) continue;
+          const bracket = ring.bracket(evalTime);
+          if (!bracket) continue;
+          const at = ring.nearest(evalTime);
+          if (!at) continue;
+          // Reconstruct the ball as the defender saw it at evalTime (phase/velocity/owner/bounce from
+          // history) and test the swept segment that straddles that moment.
+          const fail = sweptCatchFailReason({
+            handEmpty: true,
+            dashing: sample ? sample.dashing : defender.movement.dashingThisFrame,
+            defenderPlayerId: defenderId,
+            ball: { phase: at.phase, velocity: at.velocity, bounceCount: at.bounceCount, ownerId: at.ownerId },
+            origin: sample ? sample.eye : add(defender.movement.position, vec3(0, GAME_CONSTANTS.player.eyeHeight, 0)),
+            forward: sample ? sample.forward : defender.movement.facing,
+            segmentStart: bracket[0].position,
+            segmentEnd: bracket[1].position
+            // No `timing` block: the server-time window is already gated above; the rewound history
+            // sample carries its own (past) time.
+          });
+          if (fail) continue;
+
+          const facing = sample ? sample.forward : defender.movement.facing;
+          this.applyCatch(defenderId, hand, ballId, facing, attempt, nowMs);
+          this.combatMetrics.reclaimCatches += 1;
+          if (this.debug.CATCH_DEBUG || this.debug.NET_DEBUG) {
+            this.logger(`catch RECLAIM defender=${defenderId} hand=${hand} ball=${ballId} id=${attempt.attemptId} rewindMs=${attempt.rewindMs}`);
+          }
+          break; // one ball per attempt
+        }
+      }
+    }
+  }
+
+  /**
+   * Commit a successful catch: ball → held in this hand, catch boost + dash charge, attempt consumed,
+   * any hit this catch superseded reverted, and the ball's swept history dropped. Shared by the
+   * present-time path (tryCatchAttempts) and the lag-comp reclaim (resolveCatchReclaim).
+   */
+  private applyCatch(defenderId: string, hand: HandSide, ballId: string, facing: Vec3, attempt: CatchAttempt, nowMs: number): BallState {
+    attempt.resolved = true;
+    this.catchAttemptByKey.set(`${defenderId}:${hand}`, attempt);
+    const defender = this.state.players[defenderId];
+    const present = this.state.balls[ballId];
+    const caught = catchBall(present, defenderId, hand);
+    this.state.balls[ballId] = caught;
+    const boostDir = normalize(vec3(facing.x, 0, facing.z), vec3(0, 0, 1));
+    this.state.players[defenderId] = {
+      ...defender,
+      dash: grantDashCharge(defender.dash),
+      hands: assignCaughtHand(defender.hands, hand, ballId),
+      movement: { ...defender.movement, velocity: add(defender.movement.velocity, scale(boostDir, GAME_CONSTANTS.catch.catchBoostSpeed)) },
+      movementInternal: { ...defender.movementInternal, catchBoostTimer: GAME_CONSTANTS.catch.catchBoostDuration }
+    };
+    this.undoRecentHitIfClaimed(ballId, defenderId, nowMs);
+    this.ballHistoryById.delete(ballId);
+    this.combatMetrics.catches += 1;
+    return caught;
+  }
+
+  /**
+   * If a hit was applied on `defenderId` for `ballId` within the grace window, revert it — a
+   * lag-compensated catch from that defender legitimately claimed the ball that scored on them.
+   */
+  private undoRecentHitIfClaimed(ballId: string, defenderId: string, nowMs: number): void {
+    const hit = this.recentHitByBallId.get(ballId);
+    if (!hit) return;
+    if (hit.defenderId !== defenderId) return; // a catch only cancels a hit that landed on this defender
+    if (nowMs - hit.atMs > GAME_CONSTANTS.combat.catchHitGraceMs) return;
+    this.revertHit(hit);
+    this.recentHitByBallId.delete(ballId);
+  }
+
+  /** Revert a scored hit: decrement the thrower team's score, restore their dash, recompute outcome. */
+  private revertHit(hit: RecentHit): void {
+    const current = this.state.match.scoreByTeamId[hit.throwerTeamId] ?? 0;
+    const scoreByTeamId = { ...this.state.match.scoreByTeamId, [hit.throwerTeamId]: Math.max(0, current - hit.value) };
+    this.state.match = recomputeMatchOutcome({ ...this.state.match, scoreByTeamId });
+    const thrower = this.state.players[hit.throwerId];
+    if (thrower) this.state.players[hit.throwerId] = { ...thrower, dash: hit.throwerDashBefore };
+    this.combatMetrics.hitReverts += 1;
+    this.syncPlayerScores();
+    if (this.debug.CATCH_DEBUG || this.debug.NET_DEBUG) {
+      this.logger(`hit reverted (lag-comp catch) thrower=${hit.throwerId} defender=${hit.defenderId} ball=${hit.ballId}`);
+    }
+  }
+
+  /** Drop recorded hits older than the catch-undo grace so the map stays bounded. */
+  private pruneRecentHits(nowMs: number): void {
+    for (const [ballId, hit] of this.recentHitByBallId) {
+      if (nowMs - hit.atMs > GAME_CONSTANTS.combat.catchHitGraceMs) this.recentHitByBallId.delete(ballId);
+    }
   }
 
   /** Returns a catch fail reason, or null if this defender+hand would catch the ball this tick. */
@@ -1238,7 +1445,7 @@ export class ServerGameLoop {
   }
 
   private resolveResetVotesAfterRosterChange(): void {
-    this.pruneResetVotes(Date.now());
+    this.pruneResetVotes(this.now());
     this.syncResetVoteState();
     const vote = this.state.resetVote;
     if (vote.requiredVotes > 0 && vote.voteCount >= vote.requiredVotes && vote.voteCount > 0) {
@@ -1352,7 +1559,7 @@ export class ServerGameLoop {
     const lastInput = this.lastInputByPlayerId.get(player.id) ?? defaultInput(player.movement.yawRadians);
 
     // Stale (backgrounded tab / dropped connection): freeze movement but keep look angles (#14).
-    if (player.connected === false || Date.now() - lastAt > STALE_INPUT_MS) {
+    if (player.connected === false || this.now() - lastAt > STALE_INPUT_MS) {
       return { seq, input: neutralInput(lastInput) };
     }
     return { seq, input: lastInput };
@@ -1386,7 +1593,7 @@ export class ServerGameLoop {
     this.inputQueueByPlayerId.set(playerId, []);
     this.lastInputByPlayerId.set(playerId, defaultInput(yawRadians));
     this.previousInputByPlayerId.set(playerId, defaultInput(yawRadians));
-    this.lastInputAtByPlayerId.set(playerId, Date.now());
+    this.lastInputAtByPlayerId.set(playerId, this.now());
     this.lastEnqueuedSeqByPlayerId.set(playerId, 0);
     this.parryCooldownByPlayerId.set(playerId, 0);
     // CRITICAL: the client restarts its input sequence at 0 on a reset (resetPrediction). The player
@@ -1415,6 +1622,7 @@ export class ServerGameLoop {
     // open catch attempts, and undelivered throw events so lag-comp never rewinds across the reset.
     this.ballHistoryById.clear();
     this.catchAttemptByKey.clear();
+    this.recentHitByBallId.clear();
     this.pendingThrowEvents = [];
     const room = createRoomState({
       id: this.roomId,
@@ -1569,6 +1777,25 @@ function resolveBallStaticBoxes(ball: BallState, boxes: AABB[], logger?: (messag
     );
   }
   return resolved;
+}
+
+/**
+ * Recompute winner/status from the current scores (used after a lag-comp catch reverts a hit). A
+ * team at/over the score limit wins → 'complete'; if a revert dropped the leader back below the
+ * limit, an already-'complete' match returns to 'playing'. Other statuses are untouched.
+ */
+function recomputeMatchOutcome(match: MatchState): MatchState {
+  let winnerTeamId: string | null = null;
+  for (const teamId of match.teamIds) {
+    if ((match.scoreByTeamId[teamId] ?? 0) >= match.scoreLimit) {
+      winnerTeamId = teamId;
+      break;
+    }
+  }
+  let status = match.status;
+  if (winnerTeamId) status = 'complete';
+  else if (match.status === 'complete') status = 'playing';
+  return { ...match, winnerTeamId, status };
 }
 
 function canScorePlayerHit(ball: BallState): boolean {

@@ -185,7 +185,7 @@ describe('ServerGameLoop', () => {
   it('keeps players under the solid ceiling', () => {
     const loop = new ServerGameLoop('room');
     loop.addPlayer('a', 'A');
-    const maxY = GAME_CONSTANTS.map.wallHeight - GAME_CONSTANTS.player.height;
+    const maxY = GAME_CONSTANTS.map.wallHeight - GAME_CONSTANTS.player.height - GAME_CONSTANTS.player.ceilingClearance;
     loop.state.players.a.movement.position = vec3(0, maxY + 0.2, 0);
     loop.state.players.a.movement.velocity = vec3(0, 10, 0);
     loop.state.players.a.movement.grounded = false;
@@ -727,6 +727,7 @@ describe('ServerGameLoop', () => {
     it('a timed catch attempt with an empty hand, aimed at a slow live ball, catches it', () => {
       const loop = defenderFacingIncoming();
       placeIncomingBall(loop);
+      loop.state.players.b.dash.charges = GAME_CONSTANTS.dash.maxCharges - 1;
 
       // 'b' clicks to attempt a catch on the left hand: a fresh latched attempt id in the input.
       loop.handleInput('b', { lookYawRadians: Math.PI, leftCatchAttemptId: 1, sequence: 2 }, 2);
@@ -736,6 +737,7 @@ describe('ServerGameLoop', () => {
       expect(ball.phase).toBe('held');
       expect(ball.heldByPlayerId).toBe('b');
       expect(loop.state.players.b.hands.left.heldBallId).toBe('ball_0');
+      expect(loop.state.players.b.dash.charges).toBe(GAME_CONSTANTS.dash.maxCharges);
       // No score: a caught ball never counts as a hit.
       expect(loop.state.match.scoreByTeamId.blue).toBe(0);
     });
@@ -853,6 +855,92 @@ describe('ServerGameLoop', () => {
       expect(loop.state.balls.ball_0.heldByPlayerId).not.toBe('b');
     });
 
+    // --- Lag-compensated catch (online timing): a high-ping defender's click reaches the server
+    // only after the ball already hit/passed them, so the catch is judged against BALL HISTORY
+    // rewound to what the defender saw, and a legit catch reverts the hit it superseded. These tests
+    // drive a VIRTUAL clock at the true tick spacing so the wall-clock windows behave like online. ---
+    const STEP_MS = 1000 / 90;
+
+    // Run a fast straight throw into a -Z-facing defender at the origin, stepping a virtual clock at
+    // 90Hz, WITHOUT a catch — returns the loop right after 'b' is hit (score blue == 1). The ball's
+    // pre-hit swept history is retained so a late catch can rewind to it.
+    function hitThenReadyForLateCatch(aimYaw = Math.PI): { loop: ServerGameLoop; clock: { ms: number }; seq: number } {
+      const clock = { ms: 100000 };
+      const loop = new ServerGameLoop('room', { now: () => clock.ms });
+      loop.addPlayer('a', 'A');
+      loop.addPlayer('b', 'B');
+      loop.state.match = { ...loop.state.match, status: 'playing', countdownSeconds: 0 };
+      loop.state.players.b.movement.position = vec3(0, 0, 0);
+      let seq = 1;
+      // Warm up defense history (b aiming) before the ball exists.
+      for (let i = 0; i < 6; i += 1) {
+        clock.ms += STEP_MS;
+        loop.handleInput('b', { lookYawRadians: aimYaw, lookPitchRadians: 0, sequence: seq }, seq);
+        seq += 1;
+        loop.step();
+      }
+      // Fast live ball 6m in front of b, straight at the face.
+      loop.state.balls.ball_0 = {
+        ...loop.state.balls.ball_0,
+        phase: 'live', ownerKind: 'player', ownerId: 'a', heldByPlayerId: null, heldHand: null,
+        position: vec3(0, eye, -6), velocity: vec3(0, 0, 30), bounceCount: 0, throwId: 1
+      };
+      // Step until the hit lands (no catch yet — the click is still "in flight").
+      for (let i = 0; i < 30 && loop.state.match.scoreByTeamId.blue === 0; i += 1) {
+        clock.ms += STEP_MS;
+        loop.handleInput('b', { lookYawRadians: aimYaw, sequence: seq }, seq);
+        seq += 1;
+        loop.step();
+      }
+      return { loop, clock, seq };
+    }
+
+    it('lag-comp reclaim: a late catch claims a ball that already hit the defender and reverts the score', () => {
+      const { loop, clock, seq } = hitThenReadyForLateCatch();
+      expect(loop.state.match.scoreByTeamId.blue).toBe(1); // the hit landed first (high-ping defender)
+
+      // The late catch click arrives and the defender holds it (latched) across the active window —
+      // the rewound evaluation scans recent ball history until it finds the in-cone/in-range moment.
+      let s = seq;
+      for (let i = 0; i < 8 && loop.state.balls.ball_0.heldByPlayerId !== 'b'; i += 1) {
+        clock.ms += STEP_MS;
+        loop.handleInput('b', { lookYawRadians: Math.PI, leftCatchAttemptId: 1, sequence: s }, s);
+        s += 1;
+        loop.step();
+      }
+
+      expect(loop.state.balls.ball_0.heldByPlayerId).toBe('b'); // reclaimed from history
+      expect(loop.state.match.scoreByTeamId.blue).toBe(0);      // superseded hit reverted
+    });
+
+    it('lag-comp reclaim respects the cone: a defender who never aimed at the ball stays hit', () => {
+      // b looks +X the whole time, never at the -Z ball. The hit must stand even with a catch click.
+      const { loop, clock, seq } = hitThenReadyForLateCatch(Math.PI / 2);
+      expect(loop.state.match.scoreByTeamId.blue).toBe(1);
+
+      let s = seq;
+      for (let i = 0; i < 8; i += 1) {
+        clock.ms += STEP_MS;
+        loop.handleInput('b', { lookYawRadians: Math.PI / 2, leftCatchAttemptId: 1, sequence: s }, s);
+        s += 1;
+        loop.step();
+      }
+
+      expect(loop.state.balls.ball_0.heldByPlayerId).not.toBe('b'); // cone gate denies the reclaim
+      expect(loop.state.match.scoreByTeamId.blue).toBe(1);          // hit stands
+    });
+
+    it('lag-comp reclaim does not fire after the undo grace fully elapses (too late)', () => {
+      const { loop, clock, seq } = hitThenReadyForLateCatch();
+      expect(loop.state.match.scoreByTeamId.blue).toBe(1);
+      // Let well over the grace pass with no catch — the recent-hit record is pruned.
+      for (let i = 0; i < 40; i += 1) { clock.ms += STEP_MS; loop.step(); }
+      clock.ms += STEP_MS;
+      loop.handleInput('b', { lookYawRadians: Math.PI, leftCatchAttemptId: 1, sequence: seq }, seq);
+      loop.step();
+      expect(loop.state.match.scoreByTeamId.blue).toBe(1); // far too late — no revival
+    });
+
     it('auto-parries an incoming live ball when the defender holds two balls and aims at it', () => {
       const loop = defenderFacingIncoming();
       // Give 'b' two held balls so they are in the parry stance.
@@ -932,12 +1020,14 @@ describe('ServerGameLoop', () => {
       // Simulate "just landed a backflip": grounded with a fresh backflip cooldown.
       loop.state.players.a.movement.grounded = true;
       loop.state.players.a.movementInternal.backflipCooldown = GAME_CONSTANTS.backflip.cooldownSeconds;
+      loop.state.players.a.dash.charges = GAME_CONSTANTS.dash.maxCharges - 1;
 
       expect(loop.handleThrow('a', { hand: 'left', backflipTier: 5 }).ok).toBe(true);
       const live = Object.values(loop.state.balls).find((b) => b.phase === 'live');
       expect(live!.isSuper).toBe(true);
       // Top tier = quick × 2.2 (10% above the legacy super); movement velocity is ~0 here.
       expect(length(live!.velocity)).toBeCloseTo(backflipQteSpeed(5), 1);
+      expect(loop.state.players.a.dash.charges).toBe(GAME_CONSTANTS.dash.maxCharges);
     });
 
     it('ignores a spoofed backflip tier when no recent backflip (normal throw, not super)', () => {

@@ -116,6 +116,7 @@ export interface MovementInternalState {
   wallRunTimer: number;
   wallReattachCooldown: number;
   dashActiveTimer: number;
+  doubleJumpAvailable: boolean;
   catchBoostTimer: number;
   groundHeight: number;
   lastWallNormalX: number;

@@ -75,6 +75,7 @@ export function createMovementInternalState(overrides: Partial<MovementInternalS
     wallRunTimer: 0,
     wallReattachCooldown: 0,
     dashActiveTimer: 0,
+    doubleJumpAvailable: true,
     catchBoostTimer: 0,
     groundHeight: 0,
     lastWallNormalX: 0,
@@ -172,5 +173,22 @@ export function tryDash(
     ok: true,
     dash: nextDash,
     velocity: calculateDashVelocity(currentVelocity, dashDirection, constants)
+  };
+}
+
+export function tryUpwardDash(
+  dash: DashState,
+  currentVelocity: Vec3,
+  constants: GameConstants = GAME_CONSTANTS
+): { ok: true; dash: DashState; velocity: Vec3 } | { ok: false } {
+  const nextDash = spendDashCharge(dash, constants);
+  if (!nextDash) return { ok: false };
+  return {
+    ok: true,
+    dash: nextDash,
+    velocity: {
+      ...currentVelocity,
+      y: Math.max(currentVelocity.y, constants.dash.upwardImpulse)
+    }
   };
 }

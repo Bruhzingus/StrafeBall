@@ -11,9 +11,11 @@ import {
 } from '../shared/simulation/HandSim';
 import { createRoomState, registerPlayerHit } from '../shared/simulation/MatchSim';
 import { createPlayerState } from '../shared/simulation/PlayerSim';
+import { stepMovement } from '../shared/simulation/MovementSim';
 import { advanceNoBoundariesTimer, applyHalfCourtRule, applyScore, createMatchState } from '../shared/simulation/RuleSim';
 import { vec3 } from '../shared/simulation/CollisionMath';
 import { backflipQteTier, backflipQteSpeed } from '../shared/simulation/ThrowMath';
+import type { PlayerInput } from '../shared/types';
 
 function ok<T extends { ok: boolean }>(result: T): Extract<T, { ok: true }> {
   if (!result.ok) throw new Error((result as unknown as { ok: false; reason: string }).reason);
@@ -25,6 +27,40 @@ function pickUpTwoBalls(): { hands: PlayerHandsState } {
   const first = ok(tryPickupBall(player, player.hands, createBallState('b1', vec3())));
   const second = ok(tryPickupBall(player, first.hands, createBallState('b2', vec3(0.1, 0, 0))));
   return { hands: second.hands };
+}
+
+function neutralInput(): PlayerInput {
+  return {
+    sequence: 0,
+    clientTimeMs: 0,
+    moveX: 0,
+    moveZ: 0,
+    dashDirection: vec3(),
+    lookYawRadians: 0,
+    lookPitchRadians: 0,
+    jumpPressed: false,
+    jumpHeld: false,
+    dashPressed: false,
+    crouchPressed: false,
+    crouchHeld: false,
+    slidePressed: false,
+    slideHeld: false,
+    backflipPressed: false,
+    pickupPressed: false,
+    dropPressed: false,
+    fakeThrowPressed: false,
+    fakeThrowHeld: false,
+    leftHandPressed: false,
+    leftHandHeld: false,
+    rightHandPressed: false,
+    rightHandHeld: false,
+    leftHandReleased: false,
+    rightHandReleased: false,
+    leftCatchAttemptId: 0,
+    rightCatchAttemptId: 0,
+    backflipThrowTier: 0,
+    resetSerial: 0
+  };
 }
 
 describe('shared hand and pickup simulation', () => {
@@ -57,6 +93,64 @@ describe('shared hand and pickup simulation', () => {
 
     expect(result.ok).toBe(false);
     if (!result.ok) expect(result.reason).toBe('hands-full');
+  });
+});
+
+describe('shared movement simulation', () => {
+  it('conserves airborne momentum when only W is held', () => {
+    const player = createPlayerState('p1', 'blue');
+    player.movement.position = vec3(0, 1, 0);
+    player.movement.velocity = vec3(0, 0, 10);
+    player.movement.grounded = false;
+
+    const input = { ...neutralInput(), moveZ: 1 };
+    const next = stepMovement(player.movement, player.movementInternal, player.dash, input, neutralInput(), 1 / 72, [], false);
+
+    expect(next.movement.velocity.x).toBeCloseTo(0, 6);
+    expect(next.movement.velocity.z).toBeCloseTo(10, 6);
+  });
+
+  it('uses A/D for airborne strafe acceleration', () => {
+    const player = createPlayerState('p1', 'blue');
+    player.movement.position = vec3(0, 1, 0);
+    player.movement.velocity = vec3(0, 0, 10);
+    player.movement.grounded = false;
+
+    const input = { ...neutralInput(), moveX: 1 };
+    const next = stepMovement(player.movement, player.movementInternal, player.dash, input, neutralInput(), 1 / 72, [], false);
+
+    expect(next.movement.velocity.x).toBeGreaterThan(0);
+    expect(next.movement.velocity.z).toBeCloseTo(10, 6);
+  });
+
+  it('does not bleed high horizontal speed while airborne', () => {
+    const player = createPlayerState('p1', 'blue');
+    player.movement.position = vec3(0, 1, 0);
+    player.movement.velocity = vec3(GAME_CONSTANTS.player.softSpeedLimit + 4, 0, 0);
+    player.movement.grounded = false;
+
+    const next = stepMovement(player.movement, player.movementInternal, player.dash, neutralInput(), neutralInput(), 1 / 72, [], false);
+
+    expect(next.movement.velocity.x).toBeCloseTo(GAME_CONSTANTS.player.softSpeedLimit + 4, 6);
+  });
+
+  it('allows one dash-powered double jump before landing', () => {
+    const player = createPlayerState('p1', 'blue');
+    player.movement.position = vec3(0, 1, 0);
+    player.movement.velocity = vec3(0, -2, 0);
+    player.movement.grounded = false;
+
+    const jump = { ...neutralInput(), jumpPressed: true };
+    const first = stepMovement(player.movement, player.movementInternal, player.dash, jump, neutralInput(), 1 / 72, [], false);
+
+    expect(first.dash.charges).toBe(GAME_CONSTANTS.dash.maxCharges - 1);
+    expect(first.movement.velocity.y).toBeGreaterThan(0);
+    expect(first.internal.doubleJumpAvailable).toBe(false);
+    expect(first.movement.dashingThisFrame).toBe(true);
+
+    const second = stepMovement(first.movement, first.internal, first.dash, jump, neutralInput(), 1 / 72, [], false);
+    expect(second.dash.charges).toBe(first.dash.charges);
+    expect(second.internal.doubleJumpAvailable).toBe(false);
   });
 });
 
@@ -105,8 +199,7 @@ describe('shared ball state transitions', () => {
       player.hands,
       'left',
       live,
-      vec3(0, 0, 1),
-      GAME_CONSTANTS.catch.trackingSeconds
+      vec3(0, 0, 1)
     ));
 
     expect(caught.ball.phase).toBe('held');

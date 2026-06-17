@@ -3,7 +3,7 @@ import type { DashState, MovementInternalState, PlayerInput, PlayerMovementState
 import type { AABB } from './MapGeometry';
 import { DEG2RAD, clamp } from './CollisionMath';
 import { clampLookPitch, facingFromAngles } from './AimMath';
-import { advanceDashState, tryDash } from './PlayerSim';
+import { advanceDashState, tryDash, tryUpwardDash } from './PlayerSim';
 
 export { facingFromAngles } from './AimMath';
 
@@ -59,6 +59,7 @@ export function stepMovement(
   let wallRunTimer = internalIn.wallRunTimer;
   let wallReattachCooldown = internalIn.wallReattachCooldown;
   let dashActiveTimer = internalIn.dashActiveTimer;
+  let doubleJumpAvailable = internalIn.doubleJumpAvailable;
   let catchBoostTimer = internalIn.catchBoostTimer;
   let groundHeight = internalIn.groundHeight;
   let lastWallNormalX = internalIn.lastWallNormalX;
@@ -88,6 +89,9 @@ export function stepMovement(
     wishX = 0;
     wishZ = 0;
   }
+  const airWishX = moveX > EPS ? rightX : moveX < -EPS ? -rightX : 0;
+  const airWishZ = moveX > EPS ? rightZ : moveX < -EPS ? -rightZ : 0;
+  const hasAirWish = Math.abs(moveX) > EPS;
 
   // --- ground state (uses groundHeight resolved last tick) ---
   if (py <= groundHeight + 1e-3) {
@@ -95,6 +99,7 @@ export function stepMovement(
     py = groundHeight;
     vy = Math.max(0, vy);
     grounded = true;
+    doubleJumpAvailable = true;
     wallRunning = false;
   } else {
     grounded = false;
@@ -172,10 +177,22 @@ export function stepMovement(
       vz *= bhopBonus;
       vy = c.player.jumpSpeed;
       grounded = false;
+      doubleJumpAvailable = true;
       jumpGraceTimer = 0;
       if (hasWish) {
         vx += wishX * 0.45;
         vz += wishZ * 0.45;
+      }
+    } else if (doubleJumpAvailable) {
+      const result = tryUpwardDash(dash, { x: vx, y: vy, z: vz }, c);
+      if (result.ok) {
+        dash = result.dash;
+        vx = result.velocity.x;
+        vy = result.velocity.y;
+        vz = result.velocity.z;
+        doubleJumpAvailable = false;
+        dashingThisFrame = true;
+        dashActiveTimer = c.dash.activeSeconds;
       }
     }
   }
@@ -257,7 +274,9 @@ export function stepMovement(
     vx = accelerated.vx;
     vz = accelerated.vz;
   } else {
-    const accelerated = accelerate(vx, vz, wishX, wishZ, hasWish, c.player.airStrafeMaxSpeed, c.player.airAcceleration, dt);
+    // CS-style air-strafe: A/D are the air-control keys. W/S conserves momentum in air but does
+    // not add forward/back acceleration, so speed comes from side input plus mouse steering.
+    const accelerated = accelerate(vx, vz, airWishX, airWishZ, hasAirWish, c.player.airStrafeMaxSpeed, c.player.airAcceleration, dt);
     vx = accelerated.vx;
     vz = accelerated.vz;
   }
@@ -272,14 +291,16 @@ export function stepMovement(
 
   // --- soft speed limit ---
   {
-    const speedSq = vx * vx + vz * vz;
-    const limit = c.player.softSpeedLimit;
-    if (speedSq > limit * limit) {
-      const speed = Math.sqrt(speedSq);
-      const bleed = (speed - limit) * Math.min(1, c.player.softLimitBleedRate * dt);
-      const k = (speed - bleed) / speed;
-      vx *= k;
-      vz *= k;
+    if (grounded || wallRunning) {
+      const speedSq = vx * vx + vz * vz;
+      const limit = c.player.softSpeedLimit;
+      if (speedSq > limit * limit) {
+        const speed = Math.sqrt(speedSq);
+        const bleed = (speed - limit) * Math.min(1, c.player.softLimitBleedRate * dt);
+        const k = (speed - bleed) / speed;
+        vx *= k;
+        vz *= k;
+      }
     }
   }
 
@@ -290,7 +311,7 @@ export function stepMovement(
   px = clamp(px, -c.map.halfWidth + c.player.radius, c.map.halfWidth - c.player.radius);
   pz = clamp(pz, -c.map.halfLength + c.player.radius, c.map.halfLength - c.player.radius);
   const bodyHeight = crouching || sliding ? c.player.height * c.player.crouchHeightMultiplier : c.player.height;
-  const maxPlayerY = Math.max(0, c.map.wallHeight - bodyHeight);
+  const maxPlayerY = Math.max(0, c.map.wallHeight - bodyHeight - c.player.ceilingClearance);
   if (py > maxPlayerY) {
     py = maxPlayerY;
     if (vy > 0) vy = 0;
@@ -350,6 +371,7 @@ export function stepMovement(
       wallRunTimer,
       wallReattachCooldown,
       dashActiveTimer,
+      doubleJumpAvailable,
       catchBoostTimer,
       groundHeight,
       lastWallNormalX,

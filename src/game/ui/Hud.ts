@@ -124,6 +124,7 @@ export class Hud {
       player.dash.charges >= TUNING.dash.maxCharges
         ? 'full'
         : `+1 in ${Math.max(0, TUNING.dash.rechargeSeconds - player.dash.rechargeTimer).toFixed(1)}s`;
+    const staminaHtml = this.staminaBar(player.dash.charges, TUNING.dash.maxCharges, dashRecharge);
 
     // Bhop: grace window visible while it's active so you can time re-jumps.
     const bhopHtml = movement.bhopGraceTimer > 0
@@ -145,7 +146,7 @@ export class Hud {
         <div>State: ${this.movementState(player)}</div>
         <div>${movement.grounded ? 'GROUNDED' : 'AIRBORNE'} · fric: ${movement.frictionMode}</div>
         <div>bhop: ${bhopHtml} · wall: ${wallHtml}</div>
-        <div>Dash: <span class="hud-good">${player.dash.charges}/${TUNING.dash.maxCharges}</span> (${dashRecharge})</div>
+        <div>Stamina: ${staminaHtml}</div>
         <div>Backflip CD: ${player.backflip.cooldown.toFixed(1)}s</div>
         <div>Last: ${hands.lastAction}</div>
       `);
@@ -178,7 +179,8 @@ export class Hud {
       <div>${this.chargeBar(hands.left)}</div>
       <div>M2 R [${rightBallId}]: ${this.handText(hands.right)}</div>
       <div>${this.chargeBar(hands.right)}</div>
-      <div>Catch track: ${player.catching.getDebugTrackingTime().toFixed(2)}s / ${TUNING.catch.trackingSeconds.toFixed(2)}s</div>
+      <div>Stamina: ${staminaHtml}</div>
+      <div>Catch: face ball inside cone</div>
       <div>Auto-parry: ${parryReady ? '<span class="hud-good">ready</span>' : hands.hasTwoBalls() ? `CD ${player.catching.getParryCooldown().toFixed(2)}s` : 'need 2 balls'}</div>
       <div>Balls — ${this.ballTally(ballManager)}</div>
     `);
@@ -253,16 +255,15 @@ export class Hud {
 
     const left = local?.hands.left;
     const right = local?.hands.right;
-    const leftTrack = left ? this.bestTrackingTime(left.catchTrackingSecondsByBallId) : 0;
-    const rightTrack = right ? this.bestTrackingTime(right.catchTrackingSecondsByBallId) : 0;
-    const trackRequired = TUNING.catch.trackingSeconds;
-    const leftTrackHtml = left?.heldBallId ? '—' : `<span class="${leftTrack >= trackRequired ? 'hud-good' : ''}">${leftTrack.toFixed(2)}s/${trackRequired.toFixed(2)}s</span>`;
-    const rightTrackHtml = right?.heldBallId ? '—' : `<span class="${rightTrack >= trackRequired ? 'hud-good' : ''}">${rightTrack.toFixed(2)}s/${trackRequired.toFixed(2)}s</span>`;
+    const staminaHtml = local
+      ? this.staminaBar(local.dash.charges, TUNING.dash.maxCharges, local.dash.charges >= TUNING.dash.maxCharges ? 'full' : `+1 in ${Math.max(0, TUNING.dash.rechargeSeconds - local.dash.rechargeTimerSeconds).toFixed(1)}s`)
+      : this.staminaBar(0, TUNING.dash.maxCharges, '-');
     this.setHtml(this.bottomLeft, `
       <div class="hud-title">Server State</div>
-      <div>M1 L [${escapeHtml(left?.heldBallId ?? '-')}]: ${escapeHtml(left?.mode ?? 'empty')} · track ${leftTrackHtml}</div>
-      <div>M2 R [${escapeHtml(right?.heldBallId ?? '-')}]: ${escapeHtml(right?.mode ?? 'empty')} · track ${rightTrackHtml}</div>
-      <div>Dash: <span class="hud-good">${local?.dash.charges ?? '-'}/${TUNING.dash.maxCharges}</span></div>
+      <div>M1 L [${escapeHtml(left?.heldBallId ?? '-')}]: ${escapeHtml(left?.mode ?? 'empty')}</div>
+      <div>M2 R [${escapeHtml(right?.heldBallId ?? '-')}]: ${escapeHtml(right?.mode ?? 'empty')}</div>
+      <div>Stamina: ${staminaHtml}</div>
+      <div>Catch: face ball inside cone</div>
       <div>Balls - ${this.networkBallTally(snapshot)}</div>
       <div style="max-width:320px;white-space:normal">${this.networkBallList(snapshot)}</div>
     `);
@@ -360,15 +361,6 @@ export class Hud {
       .join(' · ');
   }
 
-  private bestTrackingTime(trackingByBallId: Record<string, number> | undefined): number {
-    if (!trackingByBallId) return 0;
-    let best = 0;
-    for (const t of Object.values(trackingByBallId)) {
-      if (t > best) best = t;
-    }
-    return best;
-  }
-
   dispose(): void {
     if (this.scoreEventTimer !== null) {
       window.clearTimeout(this.scoreEventTimer);
@@ -403,6 +395,12 @@ export class Hud {
 
   private charge01(hand: { chargeSeconds: number }): number {
     return Math.min(1, hand.chargeSeconds / TUNING.ball.maxChargeSeconds);
+  }
+
+  private staminaBar(charges: number, maxCharges: number, rechargeText: string): string {
+    const full = Math.max(0, Math.min(maxCharges, Math.floor(charges)));
+    const pips = Array.from({ length: maxCharges }, (_, i) => `<span class="stamina-pip ${i < full ? 'stamina-pip--full' : ''}"></span>`).join('');
+    return `<span class="stamina-meter">${pips}</span> <span class="${full > 0 ? 'hud-good' : 'hud-bad'}">${full}/${maxCharges}</span> <span class="stamina-recharge">(${escapeHtml(rechargeText)})</span>`;
   }
 }
 

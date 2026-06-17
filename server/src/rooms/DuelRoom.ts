@@ -337,12 +337,16 @@ export class DuelRoom extends Room {
       ? Math.round(this.snapshotPayloadBytesTotal / this.snapshotPayloadSamples)
       : 0;
 
+    // Combat counters for this window (verify the lag-comp catch fix in production).
+    const c = this.game.drainCombatMetrics();
+
     this.log(
       `[perf] simTicks=${(this.simTicksThisWindow / elapsedSeconds).toFixed(1)}/s ` +
       `snapshots=${(this.snapshotsThisWindow / elapsedSeconds).toFixed(1)}/s ` +
       `simTickMs avg=${avgSimTickMs.toFixed(2)} max=${this.simTickMsMax.toFixed(2)} ` +
       `players=${players} balls=${balls.length} liveBalls=${liveBalls} ` +
       `inputPackets={${inputRates || 'none'}} ` +
+      `combat={catchTry=${c.catchAttemptsOpened} catch=${c.catches} reclaim=${c.reclaimCatches} parry=${c.parries} hit=${c.hits} revert=${c.hitReverts}} ` +
       `stepCapHits=${this.stepCapHitsThisWindow} ` +
       `snapshotBytes avg=${avgPayload} max=${this.snapshotPayloadBytesMax} ` +
       `mem heapUsed=${mb(mem.heapUsed)}MB heapTotal=${mb(mem.heapTotal)}MB rss=${mb(mem.rss)}MB`

@@ -5,7 +5,7 @@ import { closestPointOnSegment, distance, cloneVec3, isWithinCone, normalize, sw
 
 export type PickupValidationReason = 'hands-full' | 'ball-not-pickup-eligible';
 export type ThrowHandValidationReason = 'empty-hand' | 'hand-ball-mismatch' | 'ball-not-held' | 'wrong-player' | 'wrong-hand';
-export type CatchValidationReason = 'hand-full' | 'catch-cooldown' | 'not-live' | 'outside-catch-cone' | 'not-tracked';
+export type CatchValidationReason = 'hand-full' | 'catch-cooldown' | 'not-live' | 'outside-catch-cone';
 export type ParryValidationReason = 'hands-not-full' | 'parry-cooldown' | 'not-live' | 'outside-parry-cone';
 export type SweptCatchFailReason =
   | 'no-empty-hand'
@@ -227,7 +227,6 @@ export function catchBallInHand(
   side: HandSide,
   ball: BallState,
   aimForward: Vec3,
-  trackedSeconds: number,
   // Cone origin — pass the eye position so a chest-height ball aimed at horizontally is in-cone
   // (defaults to the feet position for backward compatibility).
   origin: Vec3 = player.movement.position,
@@ -237,7 +236,6 @@ export function catchBallInHand(
   if (hand.heldBallId) return { ok: false, reason: 'hand-full' };
   if (hand.cooldownSeconds > 0) return { ok: false, reason: 'catch-cooldown' };
   if (ball.phase !== 'live') return { ok: false, reason: 'not-live' };
-  if (trackedSeconds < constants.catch.trackingSeconds) return { ok: false, reason: 'not-tracked' };
   if (!isInCatchCone(origin, aimForward, ball, constants)) return { ok: false, reason: 'outside-catch-cone' };
 
   return {

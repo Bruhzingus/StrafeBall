@@ -18,3 +18,8 @@ export function movementWishDirection(yawRadians: number, x: number, z: number):
   const right = yawRight(yawRadians);
   return safeNormalize(forward.scale(z).add(right.scale(x)));
 }
+
+export function airStrafeWishDirection(yawRadians: number, x: number): Vector3 {
+  if (Math.abs(x) <= 0.001) return Vector3.Zero();
+  return yawRight(yawRadians).scale(x > 0 ? 1 : -1);
+}

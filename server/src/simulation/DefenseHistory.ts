@@ -1,4 +1,4 @@
-import type { HandSide, Vec3 } from '../../../shared/types';
+import type { BallState, HandSide, Vec3 } from '../../../shared/types';
 
 /**
  * One sampled snapshot of a player's DEFENSIVE state at a server tick. The catch/parry validator
@@ -24,13 +24,19 @@ export interface DefenseSample {
 }
 
 /**
- * One sampled ball position at a server tick. Lets the catch validator reconstruct the ball's
- * swept segment around the click time even when the click is rewound a few ticks into the past.
+ * One sampled ball state at a server tick. Lets the catch validator reconstruct the ball's swept
+ * segment AND its catchability/ownership around the rewound click time, even after the present ball
+ * has died (e.g. it already hit the defender) — lag compensation judges the catch by what the
+ * defender SAW, so it must read the ball's past phase/velocity/owner, not the current ones.
  */
 export interface BallSample {
   serverTimeMs: number;
   tick: number;
   position: Vec3;
+  velocity: Vec3;
+  phase: BallState['phase'];
+  ownerId: string | null;
+  bounceCount: number;
 }
 
 /**
@@ -70,6 +76,26 @@ export class TimeRing<T extends { serverTimeMs: number }> {
       }
     }
     return best;
+  }
+
+  /**
+   * The two samples straddling `serverTimeMs` — [before, after] — for reconstructing a swept
+   * segment at a rewound time. If the time is outside the buffer (or only one sample exists) both
+   * entries are the nearest single sample (a degenerate zero-length segment, still valid). Samples
+   * are stored in increasing time order.
+   */
+  bracket(serverTimeMs: number): [T, T] | null {
+    if (this.samples.length === 0) return null;
+    if (this.samples.length === 1) return [this.samples[0], this.samples[0]];
+    for (let i = 0; i < this.samples.length - 1; i += 1) {
+      if (this.samples[i].serverTimeMs <= serverTimeMs && serverTimeMs <= this.samples[i + 1].serverTimeMs) {
+        return [this.samples[i], this.samples[i + 1]];
+      }
+    }
+    // Outside the range: clamp to the closest end pair.
+    if (serverTimeMs < this.samples[0].serverTimeMs) return [this.samples[0], this.samples[0]];
+    const last = this.samples[this.samples.length - 1];
+    return [last, last];
   }
 
   /** Most recent sample, or null. */

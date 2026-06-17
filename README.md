@@ -1,77 +1,63 @@
-# Strafeball Architecture Scaffold
+# StrafeBall
 
-This is a Vite + TypeScript + Babylon.js greybox scaffold for **Strafeball**, a first-person movement dodgeball game.
+StrafeBall is a first-person movement dodgeball prototype set in a school gym. It mixes arena movement, two-hand throwing, catching, parrying, wall-runs, wall-jumps, double-jumps, and private online 1v1 duels.
 
-It is intentionally built as a modular prototype frame, not a polished finished game. The goal is to save Claude Code tokens by giving it a strong structure, locked design rules, and working gameplay architecture to continue from.
+The project is still a prototype, but it is playable locally and has a shared client/server simulation path for the mechanics that affect prediction.
 
-## What is included
+## Features
 
-- Vite + TypeScript project setup
-- Babylon.js bootstrapping
-- Fixed-timestep style update loop
-- Pointer lock input manager
-- First-person player controller frame
-- Movement controller with placeholders/initial logic for:
-  - WASD
-  - jump
-  - bhop timing frame
+- Babylon.js first-person gym arena with court lines, bleachers, mats, dummies, solid ceiling, and gym-style scoreboards
+- Local practice lobby with practice controls, bots, guide panels, and target dummies
+- Private Colyseus 1v1 rooms with server-authoritative movement, hands, ball state, scoring, countdowns, resets, and buzzer feedback
+- Shared movement and ball simulation for online prediction/reconciliation
+- Movement:
+  - WASD movement
+  - bunnyhop timing
+  - dash stamina charges
+  - dash-powered double-jump
   - slide
-  - dash charges
-  - wall-run/wall-jump frame
-  - backflip frame
-- Two-hand control system:
-  - M1 = left hand
-  - M2 = right hand
-  - empty hand catch stance
-  - held ball quick/charged throw
-- Ball state machine:
-  - live
-  - held
-  - dead
-  - loose
-- Ball manager and throwing calculations
-- Catching/parry system frame
-- Greybox school gym with:
-  - symmetrical court
-  - center line
-  - bleachers
-  - mats
-  - dummies
-  - 6 center-line balls
+  - crouch
+  - wall-run and wall-jump
+  - backflip with landing QTE
+- Combat:
+  - left/right hand controls
+  - pickup/drop
+  - quick, charged, fake, crouch-curve, and backflip-QTE throws
+  - timed catch attempts based on facing/cone
+  - auto-parry with two held balls
+  - stamina regain on successful catch and perfect backflip throw
 - HUD:
   - crosshair
-  - speed
+  - debug stats and tick/snapshot rates
+  - stamina bar
   - hand states
-  - dash charges
-  - score
-  - boundary timer
-  - debug controls
-- Design docs and Claude handoff prompt
+  - match scoreboard
+  - backflip QTE bar
 
-## Run locally
+## Requirements
+
+- Node.js 20+ recommended
+- npm
+
+## Run Locally
+
+Install client dependencies:
 
 ```bash
 npm install
+```
+
+Start the Vite client:
+
+```bash
 npm run dev
 ```
 
-Then open the Vite local URL.
+Open the local URL printed by Vite, usually `http://localhost:5173`.
 
-For multiplayer client testing, point Vite at the local Colyseus server:
+## Run Multiplayer Locally
 
-```bash
-VITE_SERVER_URL=ws://localhost:2567 npm run dev
-```
-
-On Windows PowerShell:
-
-```powershell
-$env:VITE_SERVER_URL='ws://localhost:2567'; npm run dev
-```
-
-## Run the local multiplayer server
-
-The first Colyseus server lives in `server/` and runs private 1v1 duel rooms locally.
+In one terminal, start the Colyseus server:
 
 ```bash
 cd server
@@ -79,31 +65,96 @@ npm install
 npm run dev
 ```
 
-The server listens on `ws://localhost:2567` by default. Override the port with `PORT=3001 npm run dev` or `COLYSEUS_PORT=3001 npm run dev`.
+The server listens on `ws://localhost:2567` by default.
 
-Clients create a private room with `client.create("duel", { name })`, then share the returned `roomId`. The second player joins with `client.joinById(roomId, { name })`. `DuelRoom` allows 2 players max and is not public matchmaking.
+In another terminal, start the client pointed at the local server:
 
-In the browser prototype, use the Private Duel panel on the left: enter a name, click Create, copy the room code, and join from a second tab/window with that code. Use Leave to return to local single-player/dev mode.
+```bash
+VITE_SERVER_URL=ws://localhost:2567 npm run dev
+```
 
-## Important note
+PowerShell:
 
-This scaffold prioritizes architecture and decision preservation. Claude Code should still tune, debug, and improve the actual gameplay feel. Movement-heavy games need hands-on iteration in-browser.
+```powershell
+$env:VITE_SERVER_URL='ws://localhost:2567'; npm run dev
+```
 
-## Debug controls
+In the browser, use the Private Duel panel:
+
+1. Enter a name and click Create.
+2. Share the room code.
+3. Join from a second tab/window with that code.
+
+## Scripts
+
+Client:
+
+```bash
+npm run dev
+npm run typecheck
+npm test
+npm run build
+npm run preview
+```
+
+Server:
+
+```bash
+cd server
+npm run dev
+npm run typecheck
+npm test
+npm run build
+npm start
+```
+
+## Controls
 
 - Click canvas: pointer lock
 - WASD: move
-- Space: jump
+- Mouse: look / aim
+- Space: jump / wall-jump / double-jump
 - Shift: dash
 - Ctrl: crouch
 - C: slide
 - Q: backflip
 - E: pick up ball
 - R: drop ball
-- F: fake/cancel charge
+- F: fake / cancel throw
 - M1: left hand
 - M2: right hand
-- K: reset player position
-- J: reset balls to center line
-- U: reset match (score, timer, dummies)
-- L: launch test ball toward player
+- K: reset / vote reset
+- J: reset balls
+- U: reset match
+- L: launch test ball
+- Tab: toggle debug HUD
+
+## Architecture Notes
+
+Prediction-sensitive gameplay should stay in shared code whenever possible:
+
+- `shared/constants.ts`
+- `shared/simulation/MovementSim.ts`
+- `shared/simulation/BallSim.ts`
+- `shared/simulation/HandSim.ts`
+- `shared/simulation/ThrowMath.ts`
+- `shared/simulation/CollisionMath.ts`
+- `shared/types.ts`
+
+The client uses shared movement simulation for prediction and replay. The server uses the same movement code as the authoritative source of truth. Keep gameplay constants shared so practice mode, prediction, and 1v1 behavior do not drift.
+
+## Project Layout
+
+```text
+src/                 Vite/Babylon client
+src/game/            Client gameplay, rendering, HUD, input, effects
+shared/              Shared constants, types, and simulation logic
+server/              Colyseus server and authoritative game loop
+tests/               Client/shared Vitest coverage
+server/tests/        Server Vitest coverage
+docs/                Design and planning notes
+```
+
+## Status
+
+This is an active gameplay prototype. The code favors fast iteration while keeping online-critical movement, ball, throw, catch, and scoring behavior deterministic enough for client prediction and server reconciliation.

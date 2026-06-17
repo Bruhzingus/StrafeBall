@@ -27,6 +27,7 @@ export class PlayerController {
 
   private pitch = 0;
   private yaw = 0;
+  private wallLean = 0;
 
   constructor(scene: Scene, private readonly input: InputManager, ballManager: BallManager, collision: CollisionWorld, effects: Effects) {
     this.root = new TransformNode('playerRoot', scene);
@@ -42,7 +43,7 @@ export class PlayerController {
 
     this.movement = new MovementController(this.root, this.camera, this.dash, this.backflip, collision);
     this.hands = new HandController(this.camera, ballManager, effects);
-    this.catching = new CatchController(this.camera, ballManager, this.hands, this.movement, effects);
+    this.catching = new CatchController(this.camera, ballManager, this.hands, this.movement, this.dash, effects);
     this.viewmodel = new Viewmodel(this.camera);
     // Seed a valid snapshot so the HUD never reads `undefined` on a frame before the first
     // sim step has run.
@@ -55,6 +56,7 @@ export class PlayerController {
 
     const catchStanceActive = this.hands.left.catchStance || this.hands.right.catchStance;
     this.lastMovementSnapshot = this.movement.update(dt, this.input, catchStanceActive);
+    this.applyWallRunLean(dt, this.lastMovementSnapshot.wallRunning, this.lastMovementSnapshot.wallNormal.x, this.lastMovementSnapshot.wallNormal.z);
 
     // Force the camera world/view matrix fresh after the body moved this frame so hands/catch
     // (and held-ball visuals) read an up-to-date eye position and aim with no extra latency.
@@ -85,6 +87,20 @@ export class PlayerController {
   resetPosition(): void {
     this.root.position.set(0, 0, -12);
     this.movement.velocity.setAll(0);
+    this.wallLean = 0;
+    this.root.rotation.z = 0;
+  }
+
+  applyWallRunLean(dt: number, wallRunning: boolean, wallNormalX = 0, wallNormalZ = 0): void {
+    const target = this.wallLeanTarget(wallRunning, wallNormalX, wallNormalZ);
+    const alpha = 1 - Math.exp(-TUNING.wall.leanSmoothing * Math.max(0, dt));
+    this.wallLean += (target - this.wallLean) * alpha;
+    if (Math.abs(this.wallLean) < 0.0005) this.wallLean = 0;
+
+    // Roll the root so the camera, arms, and held balls share the same body tilt. The gameplay
+    // aim angles stay unchanged, making this a visual wall-run animation only.
+    this.root.rotation.z = this.wallLean;
+    this.camera.rotation.z = 0;
   }
 
   // Mouse look runs once per render frame so aiming stays smooth and low-latency regardless of
@@ -101,5 +117,17 @@ export class PlayerController {
     this.camera.rotation.x = this.pitch + backflipPitchOffset(this.backflip.active, this.backflip.timer);
     this.camera.rotation.y = 0;
     this.camera.rotation.z = 0;
+  }
+
+  private wallLeanTarget(wallRunning: boolean, wallNormalX: number, wallNormalZ: number): number {
+    if (!wallRunning) return 0;
+    const len = Math.hypot(wallNormalX, wallNormalZ);
+    if (len < 0.001) return 0;
+
+    const rightX = Math.cos(this.root.rotation.y);
+    const rightZ = -Math.sin(this.root.rotation.y);
+    const side = (wallNormalX * rightX + wallNormalZ * rightZ) / len;
+    if (Math.abs(side) < 0.05) return 0;
+    return -Math.sign(side) * TUNING.wall.leanAngleRadians;
   }
 }

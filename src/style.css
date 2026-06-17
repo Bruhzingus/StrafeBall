@@ -118,6 +118,31 @@ html, body {
 .hud-good { color: #1ba85a; font-weight: 900; }
 .hud-bad  { color: #e02418; font-weight: 900; }
 
+.stamina-meter {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  vertical-align: -2px;
+}
+
+.stamina-pip {
+  width: 18px;
+  height: 8px;
+  display: inline-block;
+  border: 2px solid var(--ink);
+  border-radius: 4px;
+  background: rgba(21, 33, 59, 0.12);
+  box-shadow: 1px 1px 0 var(--ink);
+}
+
+.stamina-pip--full {
+  background: linear-gradient(180deg, #75f7a5 0%, var(--school-green) 100%);
+}
+
+.stamina-recharge {
+  opacity: 0.72;
+}
+
 .hit-flash {
   position: fixed;
   inset: 0;

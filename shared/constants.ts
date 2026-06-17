@@ -24,7 +24,8 @@ export const GAME_CONSTANTS = {
     bhopSpeedBonus: 1.035,
     crouchHeightMultiplier: 0.62,
     catchStanceSpeedMultiplier: 0.72,
-    stepHeight: 0.45
+    stepHeight: 0.45,
+    ceilingClearance: 0.12
   },
 
   slide: {
@@ -52,7 +53,7 @@ export const GAME_CONSTANTS = {
   },
 
   backflip: {
-    cooldownSeconds: 2.6,
+    cooldownSeconds: 5.6,
     durationSeconds: 0.72,
     verticalImpulse: 10.5,
     backwardImpulse: 4.8,
@@ -159,11 +160,24 @@ export const GAME_CONSTANTS = {
    */
   combat: {
     catchStartupMs: 0,       // 0–30ms: earliest the attempt can catch (0 = lands on the click tick)
-    catchActiveMs: 150,      // ~120–180ms active window the swept ball must cross the cone within
+    catchActiveMs: 220,      // active window the swept ball must cross the cone within (covers
+                             // anticipation + the rewind scan; not a "free block" — cone/range gated)
     catchCooldownMs: 320,    // ~250–400ms recovery before another attempt is allowed
-    defenseMaxRewindMs: 150, // never rewind history further than this from "now"
-    defenseInputGraceMs: 60, // slack around the click moment when sampling history
-    defenseHistoryMs: 320    // how much recent defensive/ball history the server retains
+    // LAG COMPENSATION. A catch click is judged against the world the defender SAW, not the present
+    // server state. The defender's view trails the server by ~(interpolation delay + their ping),
+    // and the click takes another ~ping to arrive — so by the time a fast straight throw's catch
+    // click reaches the server the ball has usually already hit/passed. We rewind the catch
+    // evaluation by `catchRewindMs` and check the ball's swept path from HISTORY at that rewound
+    // time, each tick the window is open (the window scans a span of recent history). Fixed value
+    // (no per-client RTT plumbing): sized to cover ~75ms interp + ~2×(typical 0–75ms ping).
+    catchRewindMs: 150,
+    // A hit's score is REVERTED if a lag-compensated catch legitimately claims the same ball within
+    // this window (a high-ping defender whose well-timed catch arrived after the server applied the
+    // hit). Must exceed catchRewindMs so a catch rewound that far can still cancel the hit.
+    catchHitGraceMs: 220,
+    defenseMaxRewindMs: 200, // hard cap on how far catch evaluation may rewind from "now"
+    defenseInputGraceMs: 60, // slack around the rewound moment when sampling history
+    defenseHistoryMs: 520    // recent defensive/ball history retained (must exceed maxRewind+active)
   },
 
   dash: {
@@ -180,7 +194,9 @@ export const GAME_CONSTANTS = {
     oppositeDirectionMomentumPenalty: 0.65,
     // New: the dash impulse itself is weakened when fired opposite to current momentum,
     // further limiting instant direction reversals.
-    oppositeDirectionImpulseScale: 0.7
+    oppositeDirectionImpulseScale: 0.7,
+    // Double-jump uses a dash charge and behaves like an upward dash.
+    upwardImpulse: 7.15
   },
 
   match: {

@@ -36,6 +36,7 @@ export const TUNING = {
     bhopSpeedBonus: GAME_CONSTANTS.player.bhopSpeedBonus,
     crouchHeightMultiplier: GAME_CONSTANTS.player.crouchHeightMultiplier,
     catchStanceSpeedMultiplier: GAME_CONSTANTS.player.catchStanceSpeedMultiplier,
+    ceilingClearance: GAME_CONSTANTS.player.ceilingClearance,
     // Max height a surface (bleacher tier) can be above the feet to still count as
     // standable ground this tick. Bigger steps must be jumped onto.
     stepHeight: GAME_CONSTANTS.player.stepHeight
@@ -60,7 +61,8 @@ export const TUNING = {
     activeSeconds: GAME_CONSTANTS.dash.activeSeconds,
     similarDirectionDot: GAME_CONSTANTS.dash.similarDirectionDot,
     oppositeDirectionMomentumPenalty: GAME_CONSTANTS.dash.oppositeDirectionMomentumPenalty,
-    oppositeDirectionImpulseScale: GAME_CONSTANTS.dash.oppositeDirectionImpulseScale
+    oppositeDirectionImpulseScale: GAME_CONSTANTS.dash.oppositeDirectionImpulseScale,
+    upwardImpulse: GAME_CONSTANTS.dash.upwardImpulse
   },
 
   wall: {
@@ -75,7 +77,9 @@ export const TUNING = {
     minEntrySpeed: GAME_CONSTANTS.wall.minEntrySpeed,
     jumpAwaySpeed: GAME_CONSTANTS.wall.jumpAwaySpeed,
     jumpUpSpeed: GAME_CONSTANTS.wall.jumpUpSpeed,
-    reattachCooldownSeconds: GAME_CONSTANTS.wall.reattachCooldownSeconds
+    reattachCooldownSeconds: GAME_CONSTANTS.wall.reattachCooldownSeconds,
+    leanAngleRadians: 25 * Math.PI / 180,
+    leanSmoothing: 11
   },
 
   backflip: {

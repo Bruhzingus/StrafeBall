@@ -12,6 +12,7 @@ import { InputManager } from '../input/InputManager';
 import { MOUSE_BUTTON } from '../config/controls';
 import { HandController } from './HandController';
 import { MovementController, MovementSnapshot } from './MovementController';
+import { DashController } from './DashController';
 import { Effects } from '../effects/Effects';
 
 interface CatchAttempt {
@@ -32,6 +33,7 @@ export class CatchController {
     private readonly ballManager: BallManager,
     private readonly hands: HandController,
     private readonly movement: MovementController,
+    private readonly dash: DashController,
     private readonly effects: Effects
   ) {}
 
@@ -110,6 +112,7 @@ export class CatchController {
 
       this.hands.forceCatchBall(side, candidate);
       this.movement.addCatchBoost();
+      this.dash.addChargeFromHit();
       this.trackingTimeByBall.delete(candidate.id);
       this.catchAttempts.delete(side);
       this.effects.onCatch();

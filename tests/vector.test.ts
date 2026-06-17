@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { yawForward, yawRight, movementWishDirection } from '../src/game/utils/vector';
+import { airStrafeWishDirection, yawForward, yawRight, movementWishDirection } from '../src/game/utils/vector';
 
 describe('yawForward', () => {
   it('points +Z at yaw 0 and +X at yaw 90deg', () => {
@@ -51,5 +51,21 @@ describe('movementWishDirection', () => {
   it('returns a zero vector for no input (safe fallback)', () => {
     const none = movementWishDirection(0, 0, 0);
     expect(none.length()).toBe(0);
+  });
+});
+
+describe('airStrafeWishDirection', () => {
+  it('uses only A/D side input for air acceleration', () => {
+    const right = airStrafeWishDirection(0, 1);
+    expect(right.x).toBeCloseTo(1, 6);
+    expect(right.z).toBeCloseTo(0, 6);
+
+    const left = airStrafeWishDirection(0, -1);
+    expect(left.x).toBeCloseTo(-1, 6);
+    expect(left.z).toBeCloseTo(0, 6);
+  });
+
+  it('returns zero with no A/D input', () => {
+    expect(airStrafeWishDirection(0, 0).length()).toBe(0);
   });
 });

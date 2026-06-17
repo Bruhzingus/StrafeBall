@@ -23,6 +23,7 @@ export class GuideWall {
         ['Q', 'Backflip'],
         ['', ''],
         ['Wall-run: sprint parallel to wall', false],
+        ['  Press jump to wall-jump', false],
       ]
     );
 
@@ -47,7 +48,7 @@ export class GuideWall {
       sidePanelW, 3.2, Math.PI, [
         ['CATCH & PARRY', true],
         ['Click empty hand', 'at incoming ball to catch'],
-        ['  Needs 0.15s tracking', false],
+        ['  Face ball inside cone', false],
         ['  Range 8m, no dash', false],
         ['  Can catch 1 bounce', false],
         ['', ''],

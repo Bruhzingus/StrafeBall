@@ -1043,6 +1043,7 @@ function createScratchPlayer(movement: PlayerState['movement']): PlayerState {
       wallRunTimer: 0,
       wallReattachCooldown: 0,
       dashActiveTimer: 0,
+      doubleJumpAvailable: true,
       catchBoostTimer: 0,
       groundHeight: 0,
       lastWallNormalX: 0,

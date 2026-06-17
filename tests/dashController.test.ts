@@ -71,4 +71,14 @@ describe('DashController', () => {
     dash.addChargeFromHit(); // already full
     expect(dash.charges).toBe(TUNING.dash.maxCharges);
   });
+
+  it('upward dash spends a charge and boosts vertical speed', () => {
+    const dash = new DashController();
+    const result = dash.tryUpwardDash(new Vector3(2, -4, 1));
+    expect(result).not.toBeNull();
+    expect(result!.x).toBe(2);
+    expect(result!.y).toBeCloseTo(TUNING.dash.upwardImpulse, 4);
+    expect(result!.z).toBe(1);
+    expect(dash.charges).toBe(TUNING.dash.maxCharges - 1);
+  });
 });

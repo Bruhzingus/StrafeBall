@@ -3,7 +3,7 @@ import { CONTROL_KEYS } from '../config/controls';
 import { TUNING } from '../config/tuning';
 import { InputManager } from '../input/InputManager';
 import { safeNormalize, DEG2RAD } from '../utils/math';
-import { movementWishDirection, yawForward } from '../utils/vector';
+import { airStrafeWishDirection, movementWishDirection, yawForward } from '../utils/vector';
 import { DashController } from './DashController';
 import { BackflipController } from './BackflipController';
 import { CollisionWorld } from '../map/Collider';
@@ -17,6 +17,7 @@ export interface MovementSnapshot {
   sliding: boolean;
   crouching: boolean;
   wallRunning: boolean;
+  wallNormal: Vector3;
   dashingThisFrame: boolean;
   speed: number;
   bhopGraceTimer: number;
@@ -36,6 +37,7 @@ export class MovementController {
   private jumpGraceTimer = 0;
   private wallRunTimer = 0;
   private wallReattachCooldown = 0;
+  private doubleJumpAvailable = true;
   private catchBoostTimer = 0;
   // Counts down after a dash; while > 0 ground friction is suppressed so the burst carries.
   private dashActiveTimer = 0;
@@ -60,6 +62,7 @@ export class MovementController {
     const moveX = (input.isKeyDown(CONTROL_KEYS.right) ? 1 : 0) - (input.isKeyDown(CONTROL_KEYS.left) ? 1 : 0);
     const moveZ = (input.isKeyDown(CONTROL_KEYS.forward) ? 1 : 0) - (input.isKeyDown(CONTROL_KEYS.backward) ? 1 : 0);
     const wishDir = movementWishDirection(this.root.rotation.y, moveX, moveZ);
+    const airWishDir = airStrafeWishDirection(this.root.rotation.y, moveX);
 
     this.updateGroundState();
     this.updateTimers(dt);
@@ -81,8 +84,9 @@ export class MovementController {
       // from bhop/slide isn't removed by accelerate — friction (above) bleeds it on non-jump frames.
       this.accelerate(wishDir, TUNING.player.maxGroundSpeed * speedMultiplier, TUNING.player.groundAcceleration, dt);
     } else {
-      // Air: capped wish speed enables air-strafing (see airStrafeMaxSpeed note).
-      this.accelerate(wishDir, TUNING.player.airStrafeMaxSpeed, TUNING.player.airAcceleration, dt);
+      // CS-style air-strafe: A/D are the air-control keys. W/S preserves momentum but does not add
+      // forward/back air acceleration, so speed comes from mouse-turning with side input.
+      this.accelerate(airWishDir, TUNING.player.airStrafeMaxSpeed, TUNING.player.airAcceleration, dt);
     }
 
     this.applyGravity(dt);
@@ -158,7 +162,16 @@ export class MovementController {
       return;
     }
 
-    if (!this.grounded && this.jumpGraceTimer <= 0) return;
+    if (!this.grounded && this.jumpGraceTimer <= 0) {
+      if (!this.doubleJumpAvailable) return;
+      const result = this.dash.tryUpwardDash(this.velocity);
+      if (!result) return;
+      this.velocity = result;
+      this.doubleJumpAvailable = false;
+      this.dashingThisFrame = true;
+      this.dashActiveTimer = TUNING.dash.activeSeconds;
+      return;
+    }
 
     if (this.sliding) {
       this.velocity.x *= TUNING.slide.jumpBonus;
@@ -171,6 +184,7 @@ export class MovementController {
     this.velocity.z *= bhopBonus;
     this.velocity.y = TUNING.player.jumpSpeed;
     this.grounded = false;
+    this.doubleJumpAvailable = true;
     this.jumpGraceTimer = 0;
 
     if (wishDir.lengthSquared() > 0.001) {
@@ -310,6 +324,7 @@ export class MovementController {
     // Allocation-free: operate on scalar components instead of a temp Vector3.
     const vx = this.velocity.x;
     const vz = this.velocity.z;
+    if (!this.grounded && !this.wallRunning) return;
     const speedSq = vx * vx + vz * vz;
     const limit = TUNING.player.softSpeedLimit;
     if (speedSq <= limit * limit) return;
@@ -331,6 +346,7 @@ export class MovementController {
       this.root.position.y = this.groundHeight;
       this.velocity.y = Math.max(0, this.velocity.y);
       this.grounded = true;
+      this.doubleJumpAvailable = true;
       this.wallRunning = false;
       return;
     }
@@ -398,7 +414,7 @@ export class MovementController {
   private clampToGymBounds(): void {
     this.root.position.x = Math.max(-TUNING.map.halfWidth + TUNING.player.radius, Math.min(TUNING.map.halfWidth - TUNING.player.radius, this.root.position.x));
     this.root.position.z = Math.max(-TUNING.map.halfLength + TUNING.player.radius, Math.min(TUNING.map.halfLength - TUNING.player.radius, this.root.position.z));
-    const maxY = Math.max(0, TUNING.map.wallHeight - this.currentBodyHeight());
+    const maxY = Math.max(0, TUNING.map.wallHeight - this.currentBodyHeight() - TUNING.player.ceilingClearance);
     if (this.root.position.y > maxY) {
       this.root.position.y = maxY;
       if (this.velocity.y > 0) this.velocity.y = 0;
@@ -437,6 +453,7 @@ export class MovementController {
     sliding: false,
     crouching: false,
     wallRunning: false,
+    wallNormal: Vector3.Zero(),
     dashingThisFrame: false,
     speed: 0,
     bhopGraceTimer: 0,
@@ -452,6 +469,7 @@ export class MovementController {
     s.sliding = this.sliding;
     s.crouching = this.crouching;
     s.wallRunning = this.wallRunning;
+    s.wallNormal.copyFrom(this.wallRunning ? this.lastWallNormal : Vector3.Zero());
     s.dashingThisFrame = this.dashingThisFrame;
     s.speed = this.horizontalSpeed();
     s.bhopGraceTimer = this.jumpGraceTimer;
