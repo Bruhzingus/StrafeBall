@@ -34,6 +34,8 @@ const COLYSEUS_PATCH_RATE_MS: number | null = null;
 const RECONNECT_SECONDS = 20;
 // Hard cap on concurrent duel rooms per process (#19 — cheap DoS guard).
 const MAX_ROOMS = 200;
+// A late timer wake may need more than one due snapshot, but never let a bad pause dump a burst.
+const MAX_SNAPSHOT_SENDS_PER_WAKE = 3;
 
 let activeRoomCount = 0;
 
@@ -68,16 +70,20 @@ export class DuelRoom extends Room {
   private simTickMsTotal = 0;
   private simTickMsMax = 0;
   private stepCapHitsThisWindow = 0;
+  private snapshotBuildMsTotal = 0;
+  private snapshotBuildMsMax = 0;
+  private snapshotBroadcastMsTotal = 0;
+  private snapshotBroadcastMsMax = 0;
+  private snapshotLateMsTotal = 0;
+  private snapshotLateMsMax = 0;
+  private snapshotDeadlineSkipsThisWindow = 0;
   // Approximate snapshot payload size, sampled cheaply (only when PERF_DEBUG is on) once per window.
   private snapshotPayloadBytesTotal = 0;
   private snapshotPayloadBytesMax = 0;
   private snapshotPayloadSamples = 0;
-  // Two independent accumulators: one drains fixed sim steps, the other gates snapshot broadcasts
-  // so snapshots run at SNAPSHOT_RATE decoupled from the sim tick (mode B = 60 sim / 30 snapshots).
   private simulationAccumulatorMs = 0;
-  private snapshotAccumulatorMs = 0;
   private lastLoopWakeAtMs = 0;
-  private latestSnapshot: ServerSnapshot | null = null;
+  private nextSnapshotDueAtMs = 0;
   // When sim and snapshot rates are equal (mode A/C) we broadcast one snapshot per sim step, which
   // is exactly the old coupled behavior — no accumulator drift, lowest latency.
   private readonly snapshotCoupledToTick = SNAPSHOT_RATE === SERVER_TICK_RATE;
@@ -167,41 +173,41 @@ export class DuelRoom extends Room {
       const now = performance.now();
       if (this.clients.length === 0) {
         this.simulationAccumulatorMs = 0;
-        this.snapshotAccumulatorMs = 0;
         this.lastLoopWakeAtMs = now;
-        this.latestSnapshot = null;
+        this.nextSnapshotDueAtMs = 0;
         return;
       }
 
       if (this.lastLoopWakeAtMs === 0) this.lastLoopWakeAtMs = now;
+      if (this.nextSnapshotDueAtMs === 0) this.nextSnapshotDueAtMs = now + SNAPSHOT_INTERVAL_MS;
       // Monotonic clock; clamp the elapsed slice so an alt-tab/GC pause can't dump a huge backlog.
       const elapsedMs = Math.min(MAX_ACCUMULATOR_CLAMP_MS, now - this.lastLoopWakeAtMs);
       this.lastLoopWakeAtMs = now;
       this.simulationAccumulatorMs += elapsedMs;
-      // The snapshot accumulator is only used in the decoupled path; leave it at zero when coupled
-      // so it can't drift/grow while unused.
-      if (!this.snapshotCoupledToTick) this.snapshotAccumulatorMs += elapsedMs;
 
       // Drain fixed sim steps, capped to avoid a spiral-of-death after a long pause.
       let steps = 0;
+      let snapshotSendsThisWake = 0;
       while (this.simulationAccumulatorMs + 0.001 >= SERVER_STEP_MS && steps < MAX_ACCUMULATOR_STEPS) {
         this.simulationAccumulatorMs -= SERVER_STEP_MS;
         steps += 1;
 
         const startedAt = performance.now();
-        this.latestSnapshot = this.game.step();
-        this.recordSimulationTick(performance.now() - startedAt);
+        this.game.advance();
+        this.recordSimulationTick(performance.now() - startedAt, performance.now());
 
         // Broadcast any authoritative throw events accepted this step BEFORE the snapshot, so the
         // client can seed deterministic live-ball prediction the instant a throw lands.
-        const throwEvents = this.game.drainThrowEvents();
-        for (const event of throwEvents) this.broadcast('throw-event', event);
+        this.broadcastStepEvents();
 
         // Coupled fast path (mode A/C, snapshots == sim): broadcast every step, exactly the old
         // behavior — lowest latency, no snapshot accumulator drift.
         if (this.snapshotCoupledToTick) {
-          this.broadcast('snapshot', this.latestSnapshot);
-          this.recordSnapshot(this.latestSnapshot);
+          const snapshotAt = performance.now();
+          this.broadcastSnapshot(snapshotAt, snapshotAt);
+          snapshotSendsThisWake += 1;
+        } else {
+          snapshotSendsThisWake = this.broadcastDueSnapshot(performance.now(), snapshotSendsThisWake);
         }
       }
 
@@ -210,18 +216,6 @@ export class DuelRoom extends Room {
       if (steps >= MAX_ACCUMULATOR_STEPS && this.simulationAccumulatorMs >= SERVER_STEP_MS) {
         this.stepCapHitsThisWindow += 1;
         this.simulationAccumulatorMs = SERVER_STEP_MS;
-      }
-
-      // Decoupled snapshot broadcast (mode B, snapshots < sim): emit the latest simulated state on
-      // the snapshot cadence, independent of how many sim steps ran this wake. Catch up at most one
-      // interval per wake to avoid bursts; clamp the accumulator so it can't grow unbounded.
-      if (!this.snapshotCoupledToTick && this.latestSnapshot) {
-        if (this.snapshotAccumulatorMs + 0.001 >= SNAPSHOT_INTERVAL_MS) {
-          this.snapshotAccumulatorMs -= SNAPSHOT_INTERVAL_MS;
-          if (this.snapshotAccumulatorMs > SNAPSHOT_INTERVAL_MS) this.snapshotAccumulatorMs = SNAPSHOT_INTERVAL_MS;
-          this.broadcast('snapshot', this.latestSnapshot);
-          this.recordSnapshot(this.latestSnapshot);
-        }
       }
     }, ROOM_LOOP_WAKE_INTERVAL_MS);
   }
@@ -293,8 +287,7 @@ export class DuelRoom extends Room {
   /** Record one fixed sim step for the periodic [rates] summary. Counts ticks separately from
    * snapshots since the two cadences can differ (mode B). Emits the summary at most once/second,
    * and ONLY when PERF_DEBUG is enabled. */
-  private recordSimulationTick(simTickMs: number): void {
-    const now = Date.now();
+  private recordSimulationTick(simTickMs: number, now: number): void {
     if (this.rateWindowStartedAtMs === 0) this.rateWindowStartedAtMs = now;
     this.simTicksThisWindow += 1;
     this.simTickMsTotal += simTickMs;
@@ -311,6 +304,13 @@ export class DuelRoom extends Room {
     this.simTickMsTotal = 0;
     this.simTickMsMax = 0;
     this.stepCapHitsThisWindow = 0;
+    this.snapshotBuildMsTotal = 0;
+    this.snapshotBuildMsMax = 0;
+    this.snapshotBroadcastMsTotal = 0;
+    this.snapshotBroadcastMsMax = 0;
+    this.snapshotLateMsTotal = 0;
+    this.snapshotLateMsMax = 0;
+    this.snapshotDeadlineSkipsThisWindow = 0;
     this.snapshotPayloadBytesTotal = 0;
     this.snapshotPayloadBytesMax = 0;
     this.snapshotPayloadSamples = 0;
@@ -336,6 +336,9 @@ export class DuelRoom extends Room {
     const avgPayload = this.snapshotPayloadSamples > 0
       ? Math.round(this.snapshotPayloadBytesTotal / this.snapshotPayloadSamples)
       : 0;
+    const avgSnapshotBuildMs = this.snapshotsThisWindow > 0 ? this.snapshotBuildMsTotal / this.snapshotsThisWindow : 0;
+    const avgSnapshotBroadcastMs = this.snapshotsThisWindow > 0 ? this.snapshotBroadcastMsTotal / this.snapshotsThisWindow : 0;
+    const avgSnapshotLateMs = this.snapshotsThisWindow > 0 ? this.snapshotLateMsTotal / this.snapshotsThisWindow : 0;
 
     // Combat counters for this window (verify the lag-comp catch fix in production).
     const c = this.game.drainCombatMetrics();
@@ -344,6 +347,9 @@ export class DuelRoom extends Room {
       `[perf] simTicks=${(this.simTicksThisWindow / elapsedSeconds).toFixed(1)}/s ` +
       `snapshots=${(this.snapshotsThisWindow / elapsedSeconds).toFixed(1)}/s ` +
       `simTickMs avg=${avgSimTickMs.toFixed(2)} max=${this.simTickMsMax.toFixed(2)} ` +
+      `snapshotBuildMs avg=${avgSnapshotBuildMs.toFixed(3)} max=${this.snapshotBuildMsMax.toFixed(3)} ` +
+      `snapshotBroadcastMs avg=${avgSnapshotBroadcastMs.toFixed(3)} max=${this.snapshotBroadcastMsMax.toFixed(3)} ` +
+      `snapshotLateMs avg=${avgSnapshotLateMs.toFixed(2)} max=${this.snapshotLateMsMax.toFixed(2)} skips=${this.snapshotDeadlineSkipsThisWindow} ` +
       `players=${players} balls=${balls.length} liveBalls=${liveBalls} ` +
       `inputPackets={${inputRates || 'none'}} ` +
       `combat={catchTry=${c.catchAttemptsOpened} catch=${c.catches} reclaim=${c.reclaimCatches} parry=${c.parries} hit=${c.hits} revert=${c.hitReverts}} ` +
@@ -358,14 +364,53 @@ export class DuelRoom extends Room {
    * The payload-size sample uses JSON.stringify, which is expensive — so it runs at most ONCE per
    * report window, and only when PERF_DEBUG is on. Real playtests with PERF_DEBUG off pay nothing.
    */
-  private recordSnapshot(snapshot: ServerSnapshot): void {
+  private recordSnapshot(snapshot: ServerSnapshot, buildMs: number, broadcastMs: number, lateMs: number): void {
     this.snapshotsThisWindow += 1;
+    this.snapshotBuildMsTotal += buildMs;
+    this.snapshotBuildMsMax = Math.max(this.snapshotBuildMsMax, buildMs);
+    this.snapshotBroadcastMsTotal += broadcastMs;
+    this.snapshotBroadcastMsMax = Math.max(this.snapshotBroadcastMsMax, broadcastMs);
+    this.snapshotLateMsTotal += lateMs;
+    this.snapshotLateMsMax = Math.max(this.snapshotLateMsMax, lateMs);
     if (this.debug.PERF_DEBUG && this.snapshotPayloadSamples === 0) {
       const bytes = JSON.stringify(snapshot).length;
       this.snapshotPayloadBytesTotal += bytes;
       this.snapshotPayloadBytesMax = Math.max(this.snapshotPayloadBytesMax, bytes);
       this.snapshotPayloadSamples += 1;
     }
+  }
+
+  private broadcastStepEvents(): void {
+    const throwEvents = this.game.drainThrowEvents();
+    for (const event of throwEvents) this.broadcast('throw-event', event);
+
+    const combatEvents = this.game.drainCombatEvents();
+    for (const event of combatEvents) this.broadcast(event.type, event);
+  }
+
+  private broadcastDueSnapshot(actualNowMs: number, sendsThisWake: number): number {
+    if (actualNowMs + 0.001 < this.nextSnapshotDueAtMs) return sendsThisWake;
+
+    if (sendsThisWake >= MAX_SNAPSHOT_SENDS_PER_WAKE) {
+      const skipped = Math.max(1, Math.floor((actualNowMs - this.nextSnapshotDueAtMs) / SNAPSHOT_INTERVAL_MS) + 1);
+      this.snapshotDeadlineSkipsThisWindow += skipped;
+      this.nextSnapshotDueAtMs = actualNowMs + SNAPSHOT_INTERVAL_MS;
+      return sendsThisWake;
+    }
+
+    const dueAtMs = this.nextSnapshotDueAtMs;
+    this.broadcastSnapshot(dueAtMs, actualNowMs);
+    this.nextSnapshotDueAtMs += SNAPSHOT_INTERVAL_MS;
+    return sendsThisWake + 1;
+  }
+
+  private broadcastSnapshot(dueAtMs: number, actualNowMs: number): void {
+    const snapshot = this.game.snapshot();
+    const buildMs = this.game.getLastSnapshotBuildMs();
+    const broadcastStartedAt = performance.now();
+    this.broadcast('snapshot', snapshot);
+    const broadcastMs = performance.now() - broadcastStartedAt;
+    this.recordSnapshot(snapshot, buildMs, broadcastMs, Math.max(0, actualNowMs - dueAtMs));
   }
 
   /** Token-bucket rate limit per client per message type (#11). Returns false if over limit. */

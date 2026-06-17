@@ -10,14 +10,14 @@
  *
  * To switch test configs, change ACTIVE_NET_MODE below (or set VITE_NET_MODE / NET_MODE env).
  * The supported modes:
- *   A. 90 sim / 90 input / 60 snapshots  (target — sharpest input with 60Hz snapshots)
+ *   A. 180 sim / 180 input / 128 snapshots  (target — sharpest input with 128Hz snapshots)
  *   B. 72 sim / 72 input / 60 snapshots  (sharper input with 60Hz snapshots)
  *   C. 60 sim / 60 input / 60 snapshots  (legacy full-rate fallback)
  *   D. 60 sim / 60 input / 30 snapshots  (bandwidth fallback)
  *   E. 30 sim / 30 input / 30 snapshots  (baseline — safest for a 1 vCPU box)
  */
 
-export type NetMode = 'A_144_144_100' | 'A_144_144_128' | 'A_128_128_90' | 'A_90_90_60' | 'A_72_72_60' | 'A_60_60_60' | 'B_60_60_30' | 'C_30_30_30';
+export type NetMode = 'A_180_180_128' | 'A_144_144_100' | 'A_144_144_128' | 'A_128_128_90' | 'A_90_90_60' | 'A_72_72_60' | 'A_60_60_60' | 'B_60_60_30' | 'C_30_30_30';
 
 export interface NetModeConfig {
   /** Server fixed simulation steps per second. */
@@ -35,6 +35,8 @@ export interface NetModeConfig {
 }
 
 const MODES: Record<NetMode, NetModeConfig> = {
+  // 180Hz sim/input with 128Hz snapshots. Snapshot interval ~7.8ms; 40ms interp covers ~5 snapshots.
+  A_180_180_128: { serverTickRate: 180, clientInputRate: 180, snapshotRate: 128, interpolationDelayMs: 40 },
   // Ultra-high rate for high-refresh monitors. Snapshot interval ~7.8ms.
   // 40ms interp delay covers ~5 snapshots of jitter headroom.
   A_144_144_128: { serverTickRate: 144, clientInputRate: 144, snapshotRate: 128, interpolationDelayMs: 40 },
@@ -84,8 +86,8 @@ function resolveProcessMode(): NetMode {
   return DEFAULT_NET_MODE;
 }
 
-/** Compiled default mode. StrafeBall 1.3: 128 sim / 128 input / 90 snapshots. */
-export const DEFAULT_NET_MODE: NetMode = 'A_144_144_100';
+/** Compiled default mode. StrafeBall 1.3: 180 sim / 180 input / 128 snapshots. */
+export const DEFAULT_NET_MODE: NetMode = 'A_180_180_128';
 
 /**
  * Active mode resolved at module load from process.env (server) or the compiled default (client).

@@ -217,7 +217,8 @@ export class ArenaScene {
           frameMs,
           this.multiplayer.pingMs,
           {
-            snapshotRateHz: this.snapshotRateHz,
+            snapshotRateHz: this.multiplayer.snapshotDebug.receivedPerSecond,
+            renderSnapshotRateHz: this.snapshotRateHz,
             inputSeq: this.inputSeq,
             lastAckedSeq: this.multiplayer.latestSnapshot.room.players[this.multiplayer.localPlayerId]?.lastProcessedInputSeq ?? 0,
             pendingInputs: this.pendingInputs.length,
@@ -878,7 +879,10 @@ export class ArenaScene {
       console.log(
         `[perf] fps=${fps.toFixed(1)} avgFrameMs=${avgFrameMs.toFixed(2)}` +
         ` snapshots=${snap.receivedPerSecond.toFixed(1)}/s` +
+        ` uniqueSnapshots=${snap.uniqueTicksPerSecond.toFixed(1)}/s` +
+        ` renderSnapshots=${this.snapshotRateHz.toFixed(1)}/s` +
         ` snapMs avg=${snap.averageMsBetweenSnapshots.toFixed(1)} max=${snap.maxMsBetweenSnapshots.toFixed(1)}` +
+        ` dupSnapshots=${snap.duplicateOrOutOfOrder}` +
         ` inputPackets=${(this.perfReportInputCount / elapsed).toFixed(1)}/s` +
         ` pendingInputs=${this.pendingInputs.length}` +
         ` residualAfterReplay=${this.residualAfterReplayM.toFixed(3)}m` +
@@ -1079,8 +1083,11 @@ export class ArenaScene {
       const snapshotRate = snapshotDebug.receivedPerSecond;
       console.log(
         `[net/rates] snapshots=${snapshotRate.toFixed(1)}/s` +
+        ` unique=${snapshotDebug.uniqueTicksPerSecond.toFixed(1)}/s` +
+        ` renderSeen=${this.snapshotRateHz.toFixed(1)}/s` +
         ` avgMs=${snapshotDebug.averageMsBetweenSnapshots.toFixed(1)}` +
         ` maxMs=${snapshotDebug.maxMsBetweenSnapshots.toFixed(1)}` +
+        ` dup=${snapshotDebug.duplicateOrOutOfOrder}` +
         ` inputPackets=${(this.onlineRateLogInputCount / elapsed).toFixed(1)}/s` +
         ` renderFps=${(this.onlineRateLogFrameCount / elapsed).toFixed(1)}` +
         ` remoteBuffer=${renderStats.remoteInterpolationBufferSize}` +

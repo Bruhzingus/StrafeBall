@@ -11,6 +11,7 @@ import type {
   ThrowRequest
 } from '../../../shared/protocol';
 import type { HandSide, PlayerInput, Vec3 } from '../../../shared/types';
+import { PERF_REPORT_INTERVAL_MS } from '../../../shared/netConfig';
 
 export type ConnectionStatus = 'offline' | 'connecting' | 'connected' | 'error';
 
@@ -30,8 +31,10 @@ export class MultiplayerClient {
   private throwEventQueue: ThrowEvent[] = [];
   public snapshotDebug = {
     receivedPerSecond: 0,
+    uniqueTicksPerSecond: 0,
     averageMsBetweenSnapshots: 0,
-    maxMsBetweenSnapshots: 0
+    maxMsBetweenSnapshots: 0,
+    duplicateOrOutOfOrder: 0
   };
 
   private readonly client: Client;
@@ -40,7 +43,10 @@ export class MultiplayerClient {
   private lastPingClientTime = 0;
   private snapshotWindowStartedAtMs = 0;
   private snapshotWindowCount = 0;
+  private snapshotWindowUniqueCount = 0;
+  private snapshotWindowDuplicateCount = 0;
   private lastSnapshotReceivedAtMs = 0;
+  private lastSnapshotTick = -1;
   private snapshotIntervalTotalMs = 0;
   private snapshotIntervalCount = 0;
   private snapshotIntervalMaxMs = 0;
@@ -171,7 +177,7 @@ export class MultiplayerClient {
   private bindRoom(room: Room): void {
     room.onMessage('snapshot', (message: ServerSnapshot) => {
       if (this.room !== room) return;
-      this.recordSnapshotReceived();
+      this.recordSnapshotReceived(message);
       this.latestSnapshot = message;
     });
 
@@ -222,9 +228,16 @@ export class MultiplayerClient {
     });
   }
 
-  private recordSnapshotReceived(): void {
-    const now = Date.now();
+  private recordSnapshotReceived(message: ServerSnapshot): void {
+    const now = performance.now();
     if (this.snapshotWindowStartedAtMs === 0) this.snapshotWindowStartedAtMs = now;
+
+    if (message.tick > this.lastSnapshotTick) {
+      this.snapshotWindowUniqueCount += 1;
+      this.lastSnapshotTick = message.tick;
+    } else {
+      this.snapshotWindowDuplicateCount += 1;
+    }
 
     if (this.lastSnapshotReceivedAtMs > 0) {
       const interval = now - this.lastSnapshotReceivedAtMs;
@@ -237,16 +250,20 @@ export class MultiplayerClient {
     this.snapshotWindowCount += 1;
 
     const elapsed = now - this.snapshotWindowStartedAtMs;
-    if (elapsed < 1000) return;
+    if (elapsed < PERF_REPORT_INTERVAL_MS) return;
 
     this.snapshotDebug = {
       receivedPerSecond: this.snapshotWindowCount / (elapsed / 1000),
+      uniqueTicksPerSecond: this.snapshotWindowUniqueCount / (elapsed / 1000),
       averageMsBetweenSnapshots: this.snapshotIntervalCount > 0 ? this.snapshotIntervalTotalMs / this.snapshotIntervalCount : 0,
-      maxMsBetweenSnapshots: this.snapshotIntervalMaxMs
+      maxMsBetweenSnapshots: this.snapshotIntervalMaxMs,
+      duplicateOrOutOfOrder: this.snapshotWindowDuplicateCount
     };
 
     this.snapshotWindowStartedAtMs = now;
     this.snapshotWindowCount = 0;
+    this.snapshotWindowUniqueCount = 0;
+    this.snapshotWindowDuplicateCount = 0;
     this.snapshotIntervalTotalMs = 0;
     this.snapshotIntervalCount = 0;
     this.snapshotIntervalMaxMs = 0;
@@ -255,12 +272,17 @@ export class MultiplayerClient {
   private resetSnapshotDebug(): void {
     this.snapshotDebug = {
       receivedPerSecond: 0,
+      uniqueTicksPerSecond: 0,
       averageMsBetweenSnapshots: 0,
-      maxMsBetweenSnapshots: 0
+      maxMsBetweenSnapshots: 0,
+      duplicateOrOutOfOrder: 0
     };
     this.snapshotWindowStartedAtMs = 0;
     this.snapshotWindowCount = 0;
+    this.snapshotWindowUniqueCount = 0;
+    this.snapshotWindowDuplicateCount = 0;
     this.lastSnapshotReceivedAtMs = 0;
+    this.lastSnapshotTick = -1;
     this.snapshotIntervalTotalMs = 0;
     this.snapshotIntervalCount = 0;
     this.snapshotIntervalMaxMs = 0;

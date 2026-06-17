@@ -1,4 +1,5 @@
 import { GAME_CONSTANTS } from '../../../shared/constants';
+import { performance } from 'node:perf_hooks';
 import { DEBUG_DEFAULTS, LIVE_BALL_COMBAT_SUBSTEPS, SERVER_INPUT_QUEUE_LIMIT, SERVER_STEP_MS, SERVER_TICK_RATE, type DebugFlags } from '../../../shared/netConfig';
 import type {
   BallState,
@@ -237,6 +238,7 @@ export class ServerGameLoop {
   private pendingCombatEvents: Array<CatchEvent | ParryEvent | HitEvent | HitRevertEvent> = [];
   // Wall-clock time of the current step, captured once at the top of step() for history timestamps.
   private stepNowMs = 0;
+  private lastSnapshotBuildMs = 0;
 
   constructor(roomId: string, options: ServerGameLoopOptions = {}) {
     this.roomId = roomId;
@@ -567,6 +569,11 @@ export class ServerGameLoop {
   }
 
   step(): ServerSnapshot {
+    this.advance();
+    return this.snapshot();
+  }
+
+  advance(): void {
     const fixedDt = this.tickSeconds;
     this.state.tick += 1;
     // One wall-clock read per step, reused for all history timestamps + attempt windows so every
@@ -617,7 +624,6 @@ export class ServerGameLoop {
     }
 
     this.syncPlayerScores();
-    return this.snapshot();
   }
 
   /** Tick the pre-round countdown timer; flip to 'playing' once it reaches 0. */
@@ -687,15 +693,30 @@ export class ServerGameLoop {
     return events;
   }
 
+  /** Drain immediate combat events accepted since the last drain (room broadcasts them). */
+  drainCombatEvents(): Array<CatchEvent | ParryEvent | HitEvent | HitRevertEvent> {
+    if (this.pendingCombatEvents.length === 0) return [];
+    const events = this.pendingCombatEvents;
+    this.pendingCombatEvents = [];
+    return events;
+  }
+
+  getLastSnapshotBuildMs(): number {
+    return this.lastSnapshotBuildMs;
+  }
+
   snapshot(): ServerSnapshot {
+    const startedAt = performance.now();
     // No deep clone (#17): Colyseus serializes the message when broadcasting, so each client
     // already gets its own copy over the wire — cloning here just burned GC every tick.
-    return {
+    const snapshot: ServerSnapshot = {
       type: 'snapshot',
       tick: this.state.tick,
       serverTimeMs: this.now(),
       room: this.state
     };
+    this.lastSnapshotBuildMs = performance.now() - startedAt;
+    return snapshot;
   }
 
   private updatePlayer(player: PlayerState, dt: number, input: PlayerInput, seq: number): void {
