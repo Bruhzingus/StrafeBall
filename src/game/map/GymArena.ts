@@ -38,6 +38,17 @@ export class GymArena {
     positiveHalfActive: false,
     suddenDeath: false
   };
+  private readonly halfCourtCones: Array<{
+    mesh: Mesh;
+    basePosition: Vector3;
+    drift: Vector3;
+    spin: Vector3;
+    baseRotationY: number;
+    phase: number;
+    releaseDelay: number;
+  }> = [];
+  private coneReleaseSeconds = 0;
+  private conesReleased = false;
 
   constructor(private readonly scene: Scene, private readonly loader: ModelLoader) {}
 
@@ -47,7 +58,7 @@ export class GymArena {
     this.createWalls();
     this.createWallPads();
     this.createCourtLines();
-    this.createBallSpawnMarkers();
+    this.createHalfCourtCones();
     this.createBleachers();
     this.createMats();
     this.createTargetDummies();
@@ -79,6 +90,7 @@ export class GymArena {
       }
     }
     for (const mat of this.mats) dynamic.add(mat.mesh);
+    for (const cone of this.halfCourtCones) dynamic.add(cone.mesh);
     // Scoreboards shake on a buzz (their parented meshes move with the root), so never freeze them.
     for (const board of this.scoreboards) {
       for (const mesh of board.meshes) dynamic.add(mesh);
@@ -293,26 +305,50 @@ export class GymArena {
   }
 
   /**
-   * Small flat disc markers at each ball spawn position so players can quickly orient to
-   * where balls will reset. Spawn positions mirror BallManager.spawnCenterLineBalls().
+   * Two rows of small gym cones straddling the half line so players can read the crossing limit at
+   * a glance. They are visual-only and float away when no-boundaries begins.
    */
-  private createBallSpawnMarkers(): void {
-    const count = TUNING.map.ballCount;
-    const spacing = 2.0;
-    const start = -((count - 1) * spacing) / 2;
+  private createHalfCourtCones(): void {
+    const coneBlue = new StandardMaterial('half_court_cone_blue_mat', this.scene);
+    coneBlue.diffuseColor = new Color3(0.22, 0.56, 0.92);
+    coneBlue.emissiveColor = new Color3(0.03, 0.07, 0.12);
+    coneBlue.specularColor = new Color3(0.12, 0.14, 0.16);
 
-    const mat = new StandardMaterial('spawn_marker_mat', this.scene);
-    mat.diffuseColor = new Color3(0.95, 0.92, 0.75);
+    const coneRed = new StandardMaterial('half_court_cone_red_mat', this.scene);
+    coneRed.diffuseColor = new Color3(0.96, 0.44, 0.28);
+    coneRed.emissiveColor = new Color3(0.12, 0.04, 0.02);
+    coneRed.specularColor = new Color3(0.16, 0.12, 0.1);
 
-    for (let i = 0; i < count; i++) {
-      const disc = MeshBuilder.CreateCylinder(`spawn_marker_${i}`, {
-        diameter: 0.58,
-        height: 0.008,
-        tessellation: 20
-      }, this.scene);
-      disc.position.set(start + i * spacing, 0.020, 0);
-      disc.material = mat;
-      disc.isPickable = false;
+    const coneXs = [-11.2, -8.4, -5.6, -2.8, 0, 2.8, 5.6, 8.4, 11.2];
+    const rowZ = 0.62;
+    const baseY = 0.14;
+
+    for (const side of [-1, 1] as const) {
+      for (let i = 0; i < coneXs.length; i += 1) {
+        const x = coneXs[i];
+        const mesh = MeshBuilder.CreateCylinder(`half_court_cone_${side}_${i}`, {
+          height: 0.24,
+          diameterTop: 0.11,
+          diameterBottom: 0.4,
+          tessellation: 20
+        }, this.scene);
+        const basePosition = new Vector3(x, baseY, side * rowZ);
+        const baseRotationY = side < 0 ? Math.PI * 0.08 : -Math.PI * 0.08;
+        mesh.position.copyFrom(basePosition);
+        mesh.rotation.y = baseRotationY;
+        mesh.material = side < 0 ? coneBlue : coneRed;
+        mesh.isPickable = false;
+
+        this.halfCourtCones.push({
+          mesh,
+          basePosition,
+          drift: new Vector3(x * 0.04, 1.4 + Math.abs(x) * 0.018, side * (1.3 + Math.abs(x) * 0.035)),
+          spin: new Vector3(1.4 + Math.abs(x) * 0.05, 2.2 + Math.abs(x) * 0.04, side * 1.1),
+          baseRotationY,
+          phase: i * 0.55 + (side < 0 ? 0.2 : 0.85),
+          releaseDelay: i * 0.03
+        });
+      }
     }
   }
 

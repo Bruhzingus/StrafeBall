@@ -67,6 +67,14 @@ export class SoundManager {
     this.tone('square', 900, 720, 0.05, 0.12);
   }
 
+  /** Short analog clock tick used for the final half-court countdown. */
+  clockTick(remainingSeconds: number): void {
+    const urgency = 1 + Math.max(0, (10 - remainingSeconds) * 0.035);
+    this.tone('square', 1160 * urgency, 880 * urgency, 0.05, 0.048);
+    this.tone('triangle', 460 * urgency, 360 * urgency, 0.085, 0.032);
+    this.noiseBurst(0.022, 0.012, 1700 * urgency);
+  }
+
   /**
    * Bright rising three-note arpeggio for a perfect backflip-QTE throw — a celebratory "ta-da".
    * `strength` (0..1) scales pitch + volume so near-perfect tiers get a subtler version.

@@ -16,7 +16,9 @@ export class Hud {
   private readonly scoreEvent: HTMLDivElement;
   private readonly qteEvent: HTMLDivElement;
   private readonly countdown: HTMLDivElement;
+  private readonly boundaryClock: HTMLDivElement;
   private lastCountdownLabel = '';
+  private lastBoundaryClockLabel = '';
   private readonly crosshair: Crosshair;
   // Last rendered markup per panel — we only touch the DOM when the text actually changes,
   // so the HUD doesn't thrash innerHTML 60+ times a second while values are static.
@@ -52,6 +54,9 @@ export class Hud {
     this.countdown = document.createElement('div');
     this.countdown.className = 'countdown';
     this.root.appendChild(this.countdown);
+    this.boundaryClock = document.createElement('div');
+    this.boundaryClock.className = 'boundary-clock';
+    this.root.appendChild(this.boundaryClock);
 
     // Center stamina segments — one block + inner fill per charge, pre-built, no per-frame allocations.
     this.staminaWidget = document.createElement('div');
@@ -135,6 +140,7 @@ export class Hud {
   update(player: PlayerController, rules: MatchRules, ballManager: BallManager, fps: number, frameMs: number): void {
     // No countdown in offline practice.
     this.updateCountdown('playing', 0);
+    this.updateBoundaryClock(rules.boundary.elapsed, rules.boundary.noBoundaries);
     const movement = player.lastMovementSnapshot;
     const hands = player.hands;
     const v = movement.velocity;
@@ -228,6 +234,7 @@ export class Hud {
   ): void {
     const room = snapshot.room;
     this.updateCountdown(room.match.status, room.match.countdownSeconds);
+    this.updateBoundaryClock(room.match.boundary.elapsedSeconds, room.match.boundary.noBoundaries);
     const local = room.players[localPlayerId];
     const opponent = Object.values(room.players).find((player) => player.id !== localPlayerId);
     const localScore = local ? room.match.scoreByTeamId[local.teamId] ?? 0 : 0;
@@ -331,6 +338,32 @@ export class Hud {
         }
       }, 700);
     }
+  }
+
+  private updateBoundaryClock(elapsedSeconds: number, noBoundaries: boolean): void {
+    const remainingSeconds = Math.max(0, TUNING.match.noBoundariesSeconds - elapsedSeconds);
+    const active =
+      !noBoundaries &&
+      remainingSeconds > 0 &&
+      remainingSeconds <= TUNING.match.halfCourtCountdownSeconds;
+    const label = active ? String(Math.max(1, Math.ceil(remainingSeconds))) : '';
+
+    if (label === this.lastBoundaryClockLabel) return;
+
+    if (label === '') {
+      this.boundaryClock.classList.remove('boundary-clock--visible');
+      this.lastBoundaryClockLabel = '';
+      return;
+    }
+
+    this.boundaryClock.innerHTML = `
+      <div class="boundary-clock-label">Cross Opens</div>
+      <div class="boundary-clock-value">${label}</div>
+    `;
+    this.boundaryClock.classList.remove('boundary-clock--visible');
+    void this.boundaryClock.offsetWidth;
+    this.boundaryClock.classList.add('boundary-clock--visible');
+    this.lastBoundaryClockLabel = label;
   }
 
   /** Writes markup to a panel only if it changed since last frame (avoids per-frame DOM churn). */

@@ -212,6 +212,7 @@ export const GAME_CONSTANTS = {
   match: {
     scoreLimit: 5,
     noBoundariesSeconds: 120,
+    halfCourtCountdownSeconds: 10,
     resetVoteSeconds: 20,
     illegalCrossWarningsBeforePenalty: 1,
     penaltyHitValue: 1,
