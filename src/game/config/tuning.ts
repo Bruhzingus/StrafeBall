@@ -85,7 +85,8 @@ export const TUNING = {
     backwardImpulse: 4.8,
     superWindowStart: 0.25,
     superWindowEnd: 0.52,
-    superThrowMultiplier: 2.0
+    superThrowMultiplier: 2.0,
+    qte: GAME_CONSTANTS.backflip.qte
   },
 
   ball: {

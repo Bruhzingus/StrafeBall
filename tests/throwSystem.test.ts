@@ -2,6 +2,7 @@ import { describe, it, expect } from 'vitest';
 import { Vector3 } from '@babylonjs/core';
 import { ThrowSystem, ThrowRequest } from '../src/game/ball/ThrowSystem';
 import { TUNING } from '../src/game/config/tuning';
+import { backflipQteSpeed } from '../shared/simulation/ThrowMath';
 
 const system = new ThrowSystem();
 
@@ -15,7 +16,7 @@ function baseRequest(overrides: Partial<ThrowRequest> = {}): ThrowRequest {
     isSliding: false,
     isWallRunning: false,
     isDashing: false,
-    isBackflipSuper: false,
+    backflipTier: 0,
     fastDoubleThrowPenalty: false,
     ...overrides
   };
@@ -41,9 +42,16 @@ describe('ThrowSystem.calculateThrow', () => {
     expect(r.velocity.length()).toBeCloseTo(TUNING.ball.quickThrowSpeed, 4);
   });
 
-  it('backflip super multiplies speed and marks the throw super', () => {
-    const r = system.calculateThrow(baseRequest({ charge01: 1, isBackflipSuper: true }));
-    expect(r.velocity.length()).toBeCloseTo(TUNING.ball.chargedThrowSpeed * TUNING.backflip.superThrowMultiplier, 3);
+  it('backflip QTE top tier uses the tiered speed, marks the throw super, and ignores charge', () => {
+    const r = system.calculateThrow(baseRequest({ charge01: 1, backflipTier: 5 }));
+    // Tier speed comes purely from the tier, NOT the charge — so charge01:1 is irrelevant here.
+    expect(r.velocity.length()).toBeCloseTo(backflipQteSpeed(5), 3);
+    expect(r.isSuper).toBe(true);
+  });
+
+  it('backflip QTE slowest tier equals a regular quick throw', () => {
+    const r = system.calculateThrow(baseRequest({ charge01: 0, backflipTier: 1 }));
+    expect(r.velocity.length()).toBeCloseTo(TUNING.ball.quickThrowSpeed, 3);
     expect(r.isSuper).toBe(true);
   });
 

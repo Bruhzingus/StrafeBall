@@ -33,7 +33,7 @@ export function aabbFromCenter(
 }
 
 // Mirrors MAT_DIMENSIONS in the client MatObstacle so server and client agree on mat collision.
-export const MAT_DIMENSIONS = { width: 2.1, height: 1.35, depth: 0.18 };
+export const MAT_DIMENSIONS = { width: 2.6, height: 1.75, depth: 0.18 };
 
 /**
  * Canonical mat layout — the single source of truth for both the server's authoritative mat state
@@ -227,9 +227,15 @@ export function createPlayerCollisionBoxes(knockedOverMatIds?: ReadonlySet<strin
 }
 
 /**
- * Collision boxes balls bounce off: bleachers ONLY. Mats are immune to balls (a thrown ball passes
- * straight through a mat) — they are cover that affects players, not a ball obstacle.
+ * Collision boxes balls bounce off: bleachers + STANDING mats. A standing mat is solid cover that
+ * blocks dodgeballs (they bounce back off it); a knocked-over mat lies flat and is skipped so balls
+ * pass over it. Mirrors createPlayerCollisionBoxes so player and ball worlds agree on mat state.
  */
-export function createBallCollisionBoxes(): AABB[] {
-  return createBleacherCollisionBoxes();
+export function createBallCollisionBoxes(knockedOverMatIds?: ReadonlySet<string>): AABB[] {
+  const boxes: AABB[] = createBleacherCollisionBoxes();
+  for (const spec of MAT_SPECS) {
+    if (knockedOverMatIds?.has(spec.id)) continue;
+    boxes.push(matCollisionBox(spec));
+  }
+  return boxes;
 }

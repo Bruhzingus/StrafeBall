@@ -2,7 +2,7 @@ import { Mesh, Vector3 } from '@babylonjs/core';
 import { AABB, aabbFromCenter } from './Collider';
 
 /** Physical dimensions of a dodgeball mat. Source of truth for both visual size and proxy AABB. */
-export const MAT_DIMENSIONS = { width: 2.1, height: 1.35, depth: 0.18 };
+export const MAT_DIMENSIONS = { width: 2.6, height: 1.75, depth: 0.18 };
 
 /**
  * Gameplay representation of a dodgeball mat. Owns a collision proxy (an AABB derived from

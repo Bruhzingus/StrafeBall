@@ -13,6 +13,7 @@ import { createRoomState, registerPlayerHit } from '../shared/simulation/MatchSi
 import { createPlayerState } from '../shared/simulation/PlayerSim';
 import { advanceNoBoundariesTimer, applyHalfCourtRule, applyScore, createMatchState } from '../shared/simulation/RuleSim';
 import { vec3 } from '../shared/simulation/CollisionMath';
+import { backflipQteTier, backflipQteSpeed } from '../shared/simulation/ThrowMath';
 
 function ok<T extends { ok: boolean }>(result: T): Extract<T, { ok: true }> {
   if (!result.ok) throw new Error((result as unknown as { ok: false; reason: string }).reason);
@@ -207,5 +208,42 @@ describe('shared half-court rules', () => {
     expect(match.boundary.noBoundaries).toBe(true);
     expect(match.boundary.illegalCrossByPlayerId.p1.illegalCrossCount).toBe(0);
     expect(match.scoreByTeamId.red).toBe(0);
+  });
+});
+
+describe('backflip QTE tiers', () => {
+  const { hitHalfWidth, tierCount } = GAME_CONSTANTS.backflip.qte;
+
+  it('dead-center is the top tier and equals the fastest speed', () => {
+    expect(backflipQteTier(0)).toBe(tierCount);
+    // Top tier = 10% above the legacy backflip super (quick × 2.0) → quick × 2.2.
+    expect(backflipQteSpeed(tierCount)).toBeCloseTo(GAME_CONSTANTS.ball.quickThrowSpeed * 2.2, 5);
+  });
+
+  it('the edge of the hit zone is the slowest tier (a regular quick throw)', () => {
+    const edge = backflipQteTier(hitHalfWidth - 1e-6);
+    expect(edge).toBe(1);
+    expect(backflipQteSpeed(1)).toBeCloseTo(GAME_CONSTANTS.ball.quickThrowSpeed, 5);
+  });
+
+  it('clicks outside the hit half-width are a miss (tier 0)', () => {
+    expect(backflipQteTier(hitHalfWidth + 0.05)).toBe(0);
+    expect(backflipQteTier(-1)).toBe(0);
+    expect(backflipQteTier(1)).toBe(0);
+  });
+
+  it('tiers decrease monotonically as the click moves away from center', () => {
+    const tiers = [0, 0.2, 0.4, 0.55].map((o) => backflipQteTier(o * hitHalfWidth));
+    for (let i = 1; i < tiers.length; i++) {
+      expect(tiers[i]).toBeLessThanOrEqual(tiers[i - 1]);
+    }
+    expect(tiers[0]).toBe(tierCount); // center band is the best
+  });
+
+  it('the center (top) band is narrower than an outer band', () => {
+    const edges = GAME_CONSTANTS.backflip.qte.tierBandEdges;
+    const centerWidth = edges[0];                 // top-tier band: [0, edge0]
+    const outerWidth = edges[edges.length - 1] - edges[edges.length - 2]; // slowest band
+    expect(centerWidth).toBeLessThan(outerWidth);
   });
 });

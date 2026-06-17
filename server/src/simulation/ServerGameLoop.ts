@@ -54,10 +54,10 @@ import {
   matCollisionBox,
   type AABB
 } from '../../../shared/simulation/MapGeometry';
-import { facingFromAngles, isSuperThrowWindow, stepMovement } from '../../../shared/simulation/MovementSim';
+import { facingFromAngles, stepMovement } from '../../../shared/simulation/MovementSim';
 import { clampLookPitch } from '../../../shared/simulation/AimMath';
 import { computePlayerHandAnchor } from '../../../shared/simulation/HandAnchors';
-import { curveAccelForThrow, isCurveThrow } from '../../../shared/simulation/ThrowMath';
+import { curveAccelForThrow, isCurveThrow, backflipQteSpeed } from '../../../shared/simulation/ThrowMath';
 import { playerBallHitRadius, playerHitCapsule } from '../../../shared/simulation/PlayerHitbox';
 
 export interface ServerGameLoopOptions {
@@ -76,6 +76,9 @@ export interface ThrowRequestPayload {
   hand?: HandSide;
   direction?: Vec3;
   charge01?: number;
+  // Backflip QTE success tier (1..tierCount) carried from the client's landing event; 0/undefined
+  // for a normal throw. Validated server-side before it affects speed.
+  backflipTier?: number;
 }
 
 export interface CatchParryPayload {
@@ -169,10 +172,10 @@ export class ServerGameLoop {
   private readonly tickSeconds: number;
   private readonly logger: (message: string) => void;
   private readonly debug: DebugFlags;
-  // Players collide with bleachers + STANDING mats; rebuilt whenever a mat is knocked over so a
-  // downed mat becomes walkable. Balls collide with bleachers ONLY (mats are immune to balls).
+  // Players AND balls collide with bleachers + STANDING mats; both sets are rebuilt whenever a mat
+  // is knocked over so a downed mat becomes walkable AND lets balls pass over it.
   private playerCollisionBoxes = createPlayerCollisionBoxes();
-  private readonly ballCollisionBoxes = createBallCollisionBoxes();
+  private ballCollisionBoxes = createBallCollisionBoxes();
   private readonly knockedOverMatIds = new Set<string>();
 
   private readonly inputQueueByPlayerId = new Map<string, QueuedInput[]>();
@@ -413,11 +416,21 @@ export class ServerGameLoop {
     // Direction is the SERVER's known facing (derived from validated look angles), so a client
     // can't throw anywhere but where it is actually aiming (#7 — anti-aimbot).
     const forward = normalize(player.movement.facing, facingFromAngles(player.movement.yawRadians, player.movement.pitchRadians));
-    const isSuper = isSuperThrowWindow(player.movementInternal);
+
+    // Backflip landing throw: the client reports the QTE success tier (1..5). The server only honors
+    // it when the throw genuinely follows a backflip — the player must be grounded AND have flipped
+    // recently (cooldown still high). This bounds abuse: a client can't claim a backflip throw it
+    // didn't earn. A valid tier sets the speed (tier 1 = quick, top tier = fastest) and marks super.
+    const backflipTier = clamp(Math.trunc(request.backflipTier ?? 0), 0, GAME_CONSTANTS.backflip.qte.tierCount);
+    const backflipRecent = player.movementInternal.backflipCooldown >
+      GAME_CONSTANTS.backflip.cooldownSeconds - (GAME_CONSTANTS.backflip.durationSeconds + GAME_CONSTANTS.backflip.qte.durationSeconds + 0.3);
+    const isBackflipThrow = backflipTier >= 1 && player.movement.grounded && backflipRecent;
+    const isSuper = isBackflipThrow;
+
     const baseSpeed = charge01 <= 0.05
       ? GAME_CONSTANTS.ball.quickThrowSpeed
       : lerp(GAME_CONSTANTS.ball.quickThrowSpeed, GAME_CONSTANTS.ball.chargedThrowSpeed, charge01);
-    const speed = isSuper ? baseSpeed * GAME_CONSTANTS.backflip.superThrowMultiplier : baseSpeed;
+    const speed = isBackflipThrow ? backflipQteSpeed(backflipTier) : baseSpeed;
     const velocity = add(scale(forward, speed), scale(player.movement.velocity, GAME_CONSTANTS.ball.movementThrowScale));
     const origin = add(computePlayerHandAnchor(player, request.hand), scale(forward, 0.16));
     // Deterministic crouch-curve (Phase 6): curves perpendicular to AIM (not world axes), opposite
@@ -668,15 +681,20 @@ export class ServerGameLoop {
 
   private handleInputThrows(playerId: string, input: PlayerInput): void {
     if (input.fakeThrowPressed || input.fakeThrowHeld) return;
-    if (input.leftHandReleased) this.handleInputThrow(playerId, 'left');
-    if (input.rightHandReleased) this.handleInputThrow(playerId, 'right');
+    const tier = input.backflipThrowTier;
+    if (input.leftHandReleased) this.handleInputThrow(playerId, 'left', tier);
+    if (input.rightHandReleased) this.handleInputThrow(playerId, 'right', tier);
   }
 
-  private handleInputThrow(playerId: string, hand: HandSide): void {
+  private handleInputThrow(playerId: string, hand: HandSide, backflipTier = 0): void {
     const player = this.state.players[playerId];
-    if (!player || player.hands[hand].mode !== 'charging') return;
+    // A normal throw requires a charging hand. A backflip QTE throw is released by the landing event
+    // (not a charge), so it fires from a holding hand too — handleThrow re-validates the backflip.
+    if (!player) return;
+    const mode = player.hands[hand].mode;
+    if (mode !== 'charging' && !(backflipTier >= 1 && mode === 'holding')) return;
 
-    const result = this.handleThrow(playerId, { hand });
+    const result = this.handleThrow(playerId, { hand, backflipTier });
     if (!result.ok && this.debug.THROW_DEBUG) {
       this.logger(`throw rejected player=${playerId} hand=${hand} reason=${result.reason}`);
     }
@@ -856,9 +874,11 @@ export class ServerGameLoop {
       if (this.debug.COLLISION_DEBUG) this.logger(`mat knocked over id=${spec.id} by player=${player.id}`);
     }
 
-    // Rebuild the player collision set once if anything changed, so downed mats become walkable.
+    // Rebuild both collision sets once if anything changed, so a downed mat becomes walkable AND
+    // stops blocking balls.
     if (knockedAny) {
       this.playerCollisionBoxes = createPlayerCollisionBoxes(this.knockedOverMatIds);
+      this.ballCollisionBoxes = createBallCollisionBoxes(this.knockedOverMatIds);
     }
   }
 
@@ -1365,9 +1385,10 @@ export class ServerGameLoop {
   }
 
   private createFreshRoomState(players: PlayerState[] = [], startTick = 0): RoomState {
-    // All mats stand again on a fresh state / reset; rebuild the player collision set to include them.
+    // All mats stand again on a fresh state / reset; rebuild both collision sets to include them.
     this.knockedOverMatIds.clear();
     this.playerCollisionBoxes = createPlayerCollisionBoxes();
+    this.ballCollisionBoxes = createBallCollisionBoxes();
     // Combat history is timeline-specific: a reset is a discontinuity, so drop ball history, any
     // open catch attempts, and undelivered throw events so lag-comp never rewinds across the reset.
     this.ballHistoryById.clear();
@@ -1564,7 +1585,8 @@ function defaultInput(yawRadians = 0): PlayerInput {
     leftHandReleased: false,
     rightHandReleased: false,
     leftCatchAttemptId: 0,
-    rightCatchAttemptId: 0
+    rightCatchAttemptId: 0,
+    backflipThrowTier: 0
   };
 }
 
@@ -1613,7 +1635,9 @@ function normalizeInput(input: Partial<PlayerInput>, fallback: PlayerInput = def
     // Catch-attempt ids are latched values (not one-frame edges): carry the freshest non-negative
     // integer, falling back to the previous input's value so a re-send keeps the same attempt id.
     leftCatchAttemptId: Math.max(0, Math.trunc(finiteNumber(input.leftCatchAttemptId, fallback.leftCatchAttemptId))),
-    rightCatchAttemptId: Math.max(0, Math.trunc(finiteNumber(input.rightCatchAttemptId, fallback.rightCatchAttemptId)))
+    rightCatchAttemptId: Math.max(0, Math.trunc(finiteNumber(input.rightCatchAttemptId, fallback.rightCatchAttemptId))),
+    // Backflip QTE tier is a one-shot value carried on the release packet; clamp to [0, tierCount].
+    backflipThrowTier: clamp(Math.trunc(finiteNumber(input.backflipThrowTier, 0)), 0, GAME_CONSTANTS.backflip.qte.tierCount)
   };
 }
 

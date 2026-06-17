@@ -31,9 +31,9 @@ export class CatchController {
     const forward = cameraForward(this.camera);
     const threats = this.ballManager.getLiveThreatsToward(this.camera.globalPosition);
     this.updateTracking(dt, movement, forward, threats);
-    this.tryAutoParry(movement, forward, threats);
-    this.tryManualCatch(input, movement, 'left', MOUSE_BUTTON.leftHand);
-    this.tryManualCatch(input, movement, 'right', MOUSE_BUTTON.rightHand);
+    this.tryAutoParry(dt, movement, forward, threats);
+    this.tryManualCatch(dt, input, movement, 'left', MOUSE_BUTTON.leftHand);
+    this.tryManualCatch(dt, input, movement, 'right', MOUSE_BUTTON.rightHand);
   }
 
   getDebugTrackingTime(): number {
@@ -68,7 +68,7 @@ export class CatchController {
     }
   }
 
-  private tryManualCatch(input: InputManager, movement: MovementSnapshot, side: HandSide, button: number): void {
+  private tryManualCatch(dt: number, input: InputManager, movement: MovementSnapshot, side: HandSide, button: number): void {
     if (!input.pointerLocked) return;
     const hand = this.hands.getHand(side);
     if (hand.ball || hand.cooldown > 0 || movement.dashingThisFrame) return;
@@ -77,7 +77,7 @@ export class CatchController {
     // and stamping a spurious catch cooldown on whiffs. A catch is a deliberate click.
     if (!input.wasMousePressed(button)) return;
 
-    const candidate = this.findCatchCandidate(false);
+    const candidate = this.findCatchCandidate(dt, false);
     if (!candidate) {
       this.hands.setCooldown(side, TUNING.catch.cooldownSeconds);
       return;
@@ -89,11 +89,23 @@ export class CatchController {
     this.effects.onCatch();
   }
 
-  private tryAutoParry(movement: MovementSnapshot, forward: Vector3, threats: Ball[]): void {
+  private tryAutoParry(dt: number, movement: MovementSnapshot, forward: Vector3, threats: Ball[]): void {
     if (!this.hands.hasTwoBalls() || this.parryCooldown > 0) return;
 
+    const origin = this.camera.globalPosition;
     for (const ball of threats) {
-      const toBall = ball.mesh.position.subtract(this.camera.globalPosition);
+      // Test the ball's swept path this frame, not just its current point. A fast throw can cross the
+      // parry cone between two frames without ever landing inside it on a frame boundary; reconstruct
+      // the previous position (curr − velocity·dt) and check the closest approach of that segment.
+      // This mirrors the server's swept parry and is what makes parries land consistently.
+      const curr = ball.mesh.position;
+      const prev = new Vector3(
+        curr.x - ball.velocity.x * dt,
+        curr.y - ball.velocity.y * dt,
+        curr.z - ball.velocity.z * dt
+      );
+      const closest = closestApproach(prev, curr, origin);
+      const toBall = closest.subtract(origin);
       const distance = toBall.length();
       if (distance > TUNING.parry.rangeMeters) continue;
 
@@ -116,10 +128,11 @@ export class CatchController {
     }
   }
 
-  private findCatchCandidate(allowDead: boolean): Ball | null {
+  private findCatchCandidate(dt: number, allowDead: boolean): Ball | null {
     let best: Ball | null = null;
     let bestDistance = Number.POSITIVE_INFINITY;
     const forward = cameraForward(this.camera);
+    const origin = this.camera.globalPosition;
 
     for (const ball of this.ballManager.balls) {
       // Catchable = a Live ball, OR a freshly-bounced (Dead, ≤1 bounce, still fast) ball you can
@@ -128,7 +141,18 @@ export class CatchController {
       if (!catchable && !(allowDead && ball.state === BallState.Dead)) continue;
       const tracked = this.trackingTimeByBall.get(ball.id) ?? 0;
       if (tracked < TUNING.catch.trackingSeconds) continue;
-      const toBall = ball.mesh.position.subtract(this.camera.globalPosition);
+      // Test the ball's swept path this frame, not just its current point — a fast throw can cross
+      // your catch cone between two frames without ever sitting inside it on a frame boundary, which
+      // made fast-ball catches whiff. Evaluate the closest approach of (prev → curr), same as parry
+      // and the server's swept catch check.
+      const curr = ball.mesh.position;
+      const prev = new Vector3(
+        curr.x - ball.velocity.x * dt,
+        curr.y - ball.velocity.y * dt,
+        curr.z - ball.velocity.z * dt
+      );
+      const closest = closestApproach(prev, curr, origin);
+      const toBall = closest.subtract(origin);
       const distance = toBall.length();
       if (distance > TUNING.catch.rangeMeters || distance > bestDistance) continue;
       // Must actually be looking at it (cone gate — same skill requirement as a live catch).
@@ -148,4 +172,19 @@ export class CatchController {
       ball.velocity.length() >= TUNING.catch.bouncedCatchMinSpeed
     );
   }
+}
+
+/**
+ * Closest point on the segment [a, b] to point p — the ball's nearest approach to the eye along its
+ * path this frame. Used so a fast ball that crosses the parry cone between frames is still evaluated
+ * at the instant it was closest, instead of only at its current (possibly already-past) position.
+ */
+function closestApproach(a: Vector3, b: Vector3, p: Vector3): Vector3 {
+  const abx = b.x - a.x, aby = b.y - a.y, abz = b.z - a.z;
+  const abLenSq = abx * abx + aby * aby + abz * abz;
+  if (abLenSq <= 1e-10) return a.clone();
+  const t = Math.max(0, Math.min(1,
+    ((p.x - a.x) * abx + (p.y - a.y) * aby + (p.z - a.z) * abz) / abLenSq
+  ));
+  return new Vector3(a.x + abx * t, a.y + aby * t, a.z + abz * t);
 }

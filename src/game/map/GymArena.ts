@@ -341,8 +341,9 @@ export class GymArena {
 
   private createMats(): void {
     // Built from the shared MAT_SPECS so the offline scene matches the server's mat layout AND
-    // orientation (yaw 0 = broad face down-court; was incorrectly quarter-turned before). Mats are
-    // added to the PLAYER collision world only — balls pass through them (ballCollision excludes mats).
+    // orientation (yaw 0 = broad face down-court; was incorrectly quarter-turned before). A standing
+    // mat is solid cover for BOTH players and balls: its AABB goes into the player world AND the ball
+    // world, so thrown dodgeballs bounce off it. A knocked-over mat is removed from both worlds.
     for (const spec of MAT_SPECS) {
       const visual = this.loader.createVisual('mat', {
         size: { width: MAT_DIMENSIONS.width, height: MAT_DIMENSIONS.height, depth: MAT_DIMENSIONS.depth }
@@ -350,29 +351,47 @@ export class GymArena {
       const mat = new MatObstacle(spec.id, visual, new Vector3(spec.x, spec.y, spec.z), spec.yawRadians);
       this.mats.push(mat);
       this.collision.add(mat.getAABB());
+      this.ballCollision.add(mat.getAABB());
     }
   }
 
   /**
-   * Remove a knocked-over mat's collision box from the PLAYER world so it becomes walkable. Matched
-   * by footprint (mats sit at fixed, distinct positions). Balls are unaffected (separate world).
+   * Remove a knocked-over mat's collision box from BOTH worlds so it becomes walkable and balls pass
+   * over it. Matched by footprint (mats sit at fixed, distinct positions).
    */
   removeMatCollision(mat: MatObstacle): void {
     const box = mat.getAABB();
-    const idx = this.collision.boxes.findIndex((b) =>
-      b.minX === box.minX && b.maxX === box.maxX && b.minZ === box.minZ && b.maxZ === box.maxZ
-    );
-    if (idx >= 0) this.collision.boxes.splice(idx, 1);
+    const matches = (b: AABB) =>
+      b.minX === box.minX && b.maxX === box.maxX && b.minZ === box.minZ && b.maxZ === box.maxZ;
+    for (const world of [this.collision, this.ballCollision]) {
+      const idx = world.boxes.findIndex(matches);
+      if (idx >= 0) world.boxes.splice(idx, 1);
+    }
   }
 
-  /** Reset every mat to upright AND restore the player collision world (leave online / reset practice). */
+  /**
+   * Re-add a (now standing) mat's footprint to both collision worlds. Idempotent: skips a world that
+   * already contains a matching box, so it is safe to call when only one world is missing the mat.
+   */
+  addMatCollision(mat: MatObstacle): void {
+    const box = mat.getAABB();
+    const matches = (b: AABB) =>
+      b.minX === box.minX && b.maxX === box.maxX && b.minZ === box.minZ && b.maxZ === box.maxZ;
+    for (const world of [this.collision, this.ballCollision]) {
+      if (!world.boxes.some(matches)) world.add(mat.getAABB());
+    }
+  }
+
+  /** Reset every mat to upright AND restore both collision worlds (leave online / reset practice). */
   resetMats(): void {
     for (const mat of this.mats) mat.reset();
-    // Rebuild player collision: keep all non-mat boxes, then re-add every (now standing) mat box.
-    const nonMat = this.collision.boxes.filter((b) => !this.isMatBox(b));
-    this.collision.boxes.length = 0;
-    for (const b of nonMat) this.collision.boxes.push(b);
-    for (const mat of this.mats) this.collision.add(mat.getAABB());
+    // Rebuild both worlds: keep all non-mat boxes, then re-add every (now standing) mat box.
+    for (const world of [this.collision, this.ballCollision]) {
+      const nonMat = world.boxes.filter((b) => !this.isMatBox(b));
+      world.boxes.length = 0;
+      for (const b of nonMat) world.boxes.push(b);
+      for (const mat of this.mats) world.add(mat.getAABB());
+    }
   }
 
   private isMatBox(box: AABB): boolean {

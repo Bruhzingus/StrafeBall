@@ -1,127 +1,147 @@
 import { Color3, Mesh, MeshBuilder, PBRMaterial, Scene, TransformNode, Vector3 } from '@babylonjs/core';
-import { TUNING } from '../config/tuning';
 import { BallManager } from '../ball/BallManager';
-import { ModelLoader } from '../assets/ModelLoader';
 import { Ball } from '../ball/Ball';
 import { BallState } from '../ball/BallState';
 import { safeNormalize, lerp, saturate } from '../utils/math';
+import type { BotDifficulty } from '../practice/PracticeState';
+import { BOT_DIFFICULTY_CONFIG } from '../practice/PracticeState';
+
+export type BotThrowMode = 'quick' | 'charge';
+
+const QUICK_BOT_POS = new Vector3(-3.5, 0, 11);
+const CHARGE_BOT_POS = new Vector3(3.5, 0, 11);
+const BOT_EYE_HEIGHT = 1.4;
 
 /**
- * An always-on practice partner. On a fixed interval it grabs the nearest ball already lying on
- * the map (loose or dead), holds it briefly while its throwing arm winds up, then lobs it at the
- * player so you can drill catching, parrying and blocking. It never spawns balls: if none are
- * free it simply waits, conserving the ball count. The ball is only "held" during the short
- * wind-up, so it isn't removed from play for long.
+ * Practice partner. Two instances: quick-throw and charge-throw bot.
+ * Only throws when enabled. Uses player-style model (same construction as target dummies).
  */
 export class PracticeBot {
   public readonly mesh: Mesh;
-  private readonly position: Vector3;
-
-  private readonly throwArm: TransformNode; // animated shoulder pivot (right arm)
-  private readonly restArm: TransformNode; // static left arm
-  private readonly handAnchor: TransformNode; // grip point at the end of the throwing arm
-  private readonly bodyMaterial: PBRMaterial;
-  private readonly armMaterial: PBRMaterial;
-  private readonly armorMaterial: PBRMaterial;
-  private readonly trimMaterial: PBRMaterial;
+  private readonly throwArm: TransformNode;
+  private readonly restArm: TransformNode;
+  private readonly handAnchor: TransformNode;
+  private readonly bodyMat: PBRMaterial;
+  private readonly trimMat: PBRMaterial;
 
   private held: Ball | null = null;
   private throwTimer: number;
   private swingTimer = 0;
   private animTime = 0;
+  private enabled = false;
 
-  constructor(loader: ModelLoader, private readonly ballManager: BallManager) {
-    this.position = new Vector3(TUNING.bot.position.x, TUNING.bot.position.y, TUNING.bot.position.z);
-    // Face the player (local +Z toward -world Z) so the throwing arm swings toward them.
-    this.mesh = loader.createVisual('dummy', { name: 'practice_bot', position: this.position, rotationY: Math.PI });
+  private readonly basePosition: Vector3;
 
-    const scene = this.mesh.getScene();
-    this.bodyMaterial = makePbrMaterial(scene, 'practice_bot_body_mat', new Color3(0.18, 0.52, 0.92), {
-      roughness: 0.34,
-      emissive: new Color3(0.01, 0.06, 0.12)
-    });
-    this.armMaterial = makePbrMaterial(scene, 'practice_bot_arm_mat', new Color3(0.15, 0.44, 0.78), {
-      roughness: 0.38,
-      emissive: new Color3(0.01, 0.04, 0.08)
-    });
-    this.armorMaterial = makePbrMaterial(scene, 'practice_bot_armor_mat', new Color3(0.04, 0.08, 0.14), {
-      metallic: 0.18,
-      roughness: 0.32,
-      emissive: new Color3(0.004, 0.01, 0.02)
-    });
-    this.trimMaterial = makePbrMaterial(scene, 'practice_bot_trim_mat', new Color3(0.96, 0.78, 0.18), {
-      metallic: 0.2,
-      roughness: 0.28,
-      emissive: new Color3(0.08, 0.05, 0.005)
-    });
+  constructor(
+    private readonly scene: Scene,
+    private readonly ballManager: BallManager,
+    public readonly mode: BotThrowMode
+  ) {
+    this.basePosition = mode === 'quick' ? QUICK_BOT_POS.clone() : CHARGE_BOT_POS.clone();
 
-    this.mesh.material = this.bodyMaterial;
-    this.mesh.metadata = { practiceBot: true };
-    this.buildBodyDetails();
+    // Teal = quick bot, orange = charge bot (distinct, same palette as moving dummy)
+    const bodyColor = mode === 'quick'
+      ? new Color3(0.0, 0.72, 0.65)
+      : new Color3(0.88, 0.44, 0.1);
+    const trimColor = mode === 'quick'
+      ? new Color3(0.02, 0.14, 0.16)
+      : new Color3(0.24, 0.1, 0.02);
+
+    this.bodyMat = makePbr(scene, `bot_body_${mode}`, bodyColor, { roughness: 0.34, emissive: bodyColor.scale(0.1) });
+    this.trimMat = makePbr(scene, `bot_trim_${mode}`, trimColor, { metallic: 0.1, roughness: 0.32 });
+
+    this.mesh = MeshBuilder.CreateCapsule(`bot_body_mesh_${mode}`, {
+      height: 1.8, radius: 0.3, tessellation: 14
+    }, scene);
+    this.mesh.position.copyFrom(this.basePosition);
+    this.mesh.position.y = 0.9;
+    this.mesh.rotation.y = Math.PI; // face toward -Z (player side)
+    this.mesh.material = this.bodyMat;
+    this.mesh.isPickable = false;
+    this.mesh.metadata = { practiceBot: true, mode };
+
+    this.buildDetails();
 
     this.throwArm = this.buildArm(1);
     this.restArm = this.buildArm(-1);
-    this.restArm.rotation.x = TUNING.bot.restArmAngle;
+    this.restArm.rotation.x = 0.18;
 
-    this.handAnchor = new TransformNode('practice_bot_hand', this.mesh.getScene());
+    this.handAnchor = new TransformNode(`bot_hand_${mode}`, scene);
     this.handAnchor.parent = this.throwArm;
-    this.handAnchor.position.set(0, -TUNING.bot.armLength, 0);
+    this.handAnchor.position.set(0, -0.62, 0);
 
-    this.throwTimer = TUNING.bot.throwIntervalSeconds;
+    this.throwTimer = this.getConfig().intervalSeconds;
+    this.setEnabled(false);
   }
 
-  /**
-   * Advance the wind-up/throw cycle, lobbing a map ball at `targetPosition` on release. Returns
-   * true on the frame a throw fires so the caller can play the throw FX.
-   */
+  private getConfig() {
+    return BOT_DIFFICULTY_CONFIG[this._difficulty];
+  }
+
+  private _difficulty: BotDifficulty = 'normal';
+
+  setDifficulty(d: BotDifficulty): void {
+    this._difficulty = d;
+    // Reset timer to new interval
+    this.throwTimer = Math.min(this.throwTimer, this.getConfig().intervalSeconds);
+  }
+
+  /** Advance bot logic. Returns true on the frame a throw fires. */
   update(dt: number, targetPosition: Vector3): boolean {
+    if (!this.enabled) return false;
+
     this.throwTimer -= dt;
     this.animTime += dt;
     if (this.swingTimer > 0) this.swingTimer = Math.max(0, this.swingTimer - dt);
 
-    // Enter the wind-up: reserve the nearest free ball into the throwing hand.
-    if (!this.held && this.swingTimer <= 0 && this.throwTimer <= TUNING.bot.windupSeconds) {
-      const ball = this.ballManager.findNearestFreeBall(this.position);
+    const cfg = this.getConfig();
+
+    if (!this.held && this.swingTimer <= 0 && this.throwTimer <= cfg.windupSeconds) {
+      const ball = this.ballManager.findNearestFreeBall(this.mesh.position);
       if (ball) this.grab(ball);
     }
 
-    this.animateArm();
+    this.animateArm(cfg.windupSeconds);
     if (this.held) this.positionHeldInHand();
 
     if (this.throwTimer <= 0) {
       if (!this.held) {
-        this.throwTimer = 0; // no ball available — wait here (never spawn one)
+        this.throwTimer = 0;
         return false;
       }
-      this.release(targetPosition);
+      this.release(targetPosition, cfg);
       return true;
     }
     return false;
   }
 
-  /** Drop any reserved ball (used when balls are reset out from under the bot). */
   reset(): void {
     this.held = null;
-    this.throwTimer = TUNING.bot.throwIntervalSeconds;
+    this.throwTimer = this.getConfig().intervalSeconds;
     this.swingTimer = 0;
   }
 
   setEnabled(enabled: boolean): void {
+    this.enabled = enabled;
     this.mesh.setEnabled(enabled);
     this.throwArm.setEnabled(enabled);
     this.restArm.setEnabled(enabled);
     this.handAnchor.setEnabled(enabled);
-    for (const child of this.mesh.getChildMeshes(false)) {
-      child.setEnabled(enabled);
+    for (const child of this.mesh.getChildMeshes(false)) child.setEnabled(enabled);
+    if (!enabled && this.held) {
+      // Drop the ball back to loose
+      this.held.state = BallState.Loose;
+      this.held = null;
+    }
+    if (enabled) {
+      this.throwTimer = this.getConfig().intervalSeconds;
     }
   }
 
   dispose(): void {
-    this.bodyMaterial.dispose();
-    this.armMaterial.dispose();
-    this.armorMaterial.dispose();
-    this.trimMaterial.dispose();
-    this.mesh.dispose(); // disposes child arm/hand nodes too
+    this.bodyMat.dispose();
+    this.trimMat.dispose();
+    this.mesh.dispose();
   }
 
   private grab(ball: Ball): void {
@@ -134,32 +154,49 @@ export class PracticeBot {
     this.held = ball;
   }
 
-  private release(targetPosition: Vector3): void {
+  private release(targetPosition: Vector3, cfg: typeof BOT_DIFFICULTY_CONFIG[BotDifficulty]): void {
     const ball = this.held;
     this.held = null;
-    this.swingTimer = TUNING.bot.armSwingSeconds;
-    this.throwTimer = TUNING.bot.throwIntervalSeconds;
+    this.swingTimer = 0.2;
+    this.throwTimer = cfg.intervalSeconds;
     if (!ball) return;
 
+    // Aim at the player's center mass, not the camera eye. targetPosition is the eye position, which
+    // sits ~0.45 m above the chest; aiming there (plus the upward arc bias below) sent throws sailing
+    // over the player's head. Drop to chest height so the ball arrives at the body.
+    const aimPoint = targetPosition.clone();
+    aimPoint.y -= 0.5;
+
     const origin = this.handWorldPosition();
-    const direction = safeNormalize(targetPosition.subtract(origin));
-    direction.y += TUNING.bot.arc; // gentle lob; throwBall renormalizes
-    this.ballManager.throwBall(ball, origin, direction, TUNING.bot.throwSpeed, 'bot', false);
+    const dir = safeNormalize(aimPoint.subtract(origin));
+
+    // Add aim spread
+    if (cfg.aimSpread > 0) {
+      dir.x += (Math.random() - 0.5) * cfg.aimSpread;
+      dir.y += (Math.random() - 0.5) * cfg.aimSpread;
+    }
+
+    const isCharged = this.mode === 'charge';
+    // The charge bot throws a flat, fast, gravity-free ball — adding the lob arc on top of a chest
+    // aim makes it rise over the head. Only the quick (arcing) bot gets the upward arc bias.
+    if (!isCharged) dir.y += cfg.arc;
+
+    const speed = isCharged ? cfg.chargeThrowSpeed : cfg.throwSpeed;
+    const dropScale = isCharged ? 0 : 1;
+
+    this.ballManager.throwBall(ball, origin, dir, speed, 'bot', isCharged, dropScale);
   }
 
-  private animateArm(): void {
+  private animateArm(windupSeconds: number): void {
     let angle: number;
     if (this.swingTimer > 0) {
-      // Follow-through: swing from the extended throw angle back to rest.
-      const s = this.swingTimer / TUNING.bot.armSwingSeconds; // 1 -> 0
-      angle = lerp(TUNING.bot.restArmAngle, TUNING.bot.throwArmAngle, s);
+      const s = this.swingTimer / 0.2;
+      angle = lerp(0.18, -1.25, s);
     } else if (this.held) {
-      // Wind-up: ease the arm from rest back to the cocked angle as release nears.
-      const p = saturate(1 - this.throwTimer / TUNING.bot.windupSeconds);
-      angle = lerp(TUNING.bot.restArmAngle, TUNING.bot.cockArmAngle, p * p);
+      const p = saturate(1 - this.throwTimer / windupSeconds);
+      angle = lerp(0.18, 1.2, p * p);
     } else {
-      // Idle sway.
-      angle = TUNING.bot.restArmAngle + Math.sin(this.animTime * 1.5) * 0.05;
+      angle = 0.18 + Math.sin(this.animTime * 1.5) * 0.05;
     }
     this.throwArm.rotation.x = angle;
   }
@@ -174,119 +211,107 @@ export class PracticeBot {
     return this.handAnchor.getAbsolutePosition();
   }
 
-  private buildBodyDetails(): void {
-    const scene = this.mesh.getScene();
+  private buildDetails(): void {
+    const scene = this.scene;
+    const root = this.mesh;
 
-    const helmet = MeshBuilder.CreateSphere('practice_bot_helmet', { diameter: 0.54, segments: 18 }, scene);
-    helmet.parent = this.mesh;
-    helmet.position.set(0, 1.0, -0.02);
-    helmet.scaling.set(1.08, 0.78, 0.98);
-    helmet.material = this.armorMaterial;
-    helmet.isPickable = false;
+    // Head
+    const head = MeshBuilder.CreateSphere(`bot_head_${this.mode}`, { diameter: 0.44, segments: 14 }, scene);
+    head.parent = root;
+    head.position.set(0, 1.08, 0);
+    head.scaling.set(1.0, 0.86, 0.95);
+    head.material = this.bodyMat;
+    head.isPickable = false;
 
-    const visor = MeshBuilder.CreateBox('practice_bot_visor', { width: 0.42, height: 0.1, depth: 0.04 }, scene);
-    visor.parent = this.mesh;
-    visor.position.set(0, 1.02, -0.28);
-    visor.material = this.trimMaterial;
-    visor.isPickable = false;
+    // Torso plate
+    const torso = MeshBuilder.CreateBox(`bot_torso_${this.mode}`, { width: 0.58, height: 0.62, depth: 0.18 }, scene);
+    torso.parent = root;
+    torso.position.set(0, 0.2, -0.27);
+    torso.material = this.trimMat;
+    torso.isPickable = false;
 
-    const chest = MeshBuilder.CreateBox('practice_bot_chest_plate', { width: 0.54, height: 0.58, depth: 0.08 }, scene);
-    chest.parent = this.mesh;
-    chest.position.set(0, 0.22, -0.29);
-    chest.material = this.armorMaterial;
-    chest.isPickable = false;
-
-    const hip = MeshBuilder.CreateBox('practice_bot_hips', { width: 0.5, height: 0.18, depth: 0.32 }, scene);
-    hip.parent = this.mesh;
-    hip.position.set(0, -0.48, 0);
-    hip.material = this.armorMaterial;
-    hip.isPickable = false;
+    // Hips
+    const hips = MeshBuilder.CreateBox(`bot_hips_${this.mode}`, { width: 0.5, height: 0.18, depth: 0.34 }, scene);
+    hips.parent = root;
+    hips.position.set(0, -0.48, 0);
+    hips.material = this.trimMat;
+    hips.isPickable = false;
 
     for (const sign of [-1, 1]) {
-      const shoulder = MeshBuilder.CreateBox(
-        `practice_bot_shoulder_pad_${sign}`,
-        { width: 0.36, height: 0.16, depth: 0.42 },
-        scene
-      );
-      shoulder.parent = this.mesh;
-      shoulder.position.set(sign * 0.46, 0.48, -0.02);
-      shoulder.rotation.z = -sign * 0.18;
-      shoulder.material = this.armorMaterial;
+      // Shoulder pad
+      const shoulder = MeshBuilder.CreateBox(`bot_shoulder_${this.mode}_${sign}`, {
+        width: 0.34, height: 0.14, depth: 0.34
+      }, scene);
+      shoulder.parent = root;
+      shoulder.position.set(sign * 0.44, 0.48, -0.02);
+      shoulder.rotation.z = -sign * 0.16;
+      shoulder.material = this.trimMat;
       shoulder.isPickable = false;
 
-      const leg = MeshBuilder.CreateCapsule(
-        `practice_bot_leg_${sign}`,
-        { height: 0.72, radius: 0.095, tessellation: 12 },
-        scene
-      );
-      leg.parent = this.mesh;
-      leg.position.set(sign * 0.16, -0.78, 0);
-      leg.material = this.bodyMaterial;
+      // Leg
+      const leg = MeshBuilder.CreateCapsule(`bot_leg_${this.mode}_${sign}`, {
+        height: 0.68, radius: 0.085, tessellation: 12
+      }, scene);
+      leg.parent = root;
+      leg.position.set(sign * 0.16, -0.8, 0);
+      leg.material = this.bodyMat;
       leg.isPickable = false;
 
-      const shinPad = MeshBuilder.CreateBox(
-        `practice_bot_shin_pad_${sign}`,
-        { width: 0.14, height: 0.34, depth: 0.055 },
-        scene
-      );
-      shinPad.parent = this.mesh;
-      shinPad.position.set(sign * 0.16, -0.83, -0.1);
-      shinPad.material = this.trimMaterial;
-      shinPad.isPickable = false;
-
-      const shoe = MeshBuilder.CreateBox(
-        `practice_bot_shoe_${sign}`,
-        { width: 0.24, height: 0.1, depth: 0.42 },
-        scene
-      );
-      shoe.parent = this.mesh;
-      shoe.position.set(sign * 0.16, -1.18, -0.08);
-      shoe.material = this.armorMaterial;
-      shoe.isPickable = false;
+      // Foot
+      const foot = MeshBuilder.CreateBox(`bot_foot_${this.mode}_${sign}`, {
+        width: 0.24, height: 0.09, depth: 0.36
+      }, scene);
+      foot.parent = root;
+      foot.position.set(sign * 0.16, -1.16, -0.08);
+      foot.material = this.trimMat;
+      foot.isPickable = false;
     }
+
+    // Mode label visor
+    const visorLabel = MeshBuilder.CreateBox(`bot_visor_${this.mode}`, {
+      width: 0.38, height: 0.09, depth: 0.04
+    }, scene);
+    visorLabel.parent = root;
+    visorLabel.position.set(0, 1.04, -0.28);
+    visorLabel.material = this.trimMat;
+    visorLabel.isPickable = false;
   }
 
   private buildArm(sign: number): TransformNode {
-    const scene = this.mesh.getScene();
-    const pivot = new TransformNode(`practice_bot_shoulder_${sign}`, scene);
+    const pivot = new TransformNode(`bot_shoulder_pivot_${this.mode}_${sign}`, this.scene);
     pivot.parent = this.mesh;
-    pivot.position.set(sign * TUNING.bot.shoulderSide, TUNING.bot.shoulderHeight, 0);
+    pivot.position.set(sign * 0.34, BOT_EYE_HEIGHT - 0.04, 0);
 
-    const forearm = MeshBuilder.CreateCapsule(
-      `practice_bot_arm_${sign}`,
-      { height: TUNING.bot.armLength, radius: TUNING.bot.armRadius },
-      scene
-    );
+    const forearm = MeshBuilder.CreateCapsule(`bot_arm_${this.mode}_${sign}`, {
+      height: 0.62, radius: 0.07, tessellation: 10
+    }, this.scene);
     forearm.parent = pivot;
-    forearm.material = this.armMaterial;
+    forearm.position.set(0, -0.31, 0);
+    forearm.material = this.bodyMat;
     forearm.isPickable = false;
-    forearm.position.set(0, -TUNING.bot.armLength / 2, 0); // hang down from the shoulder
 
-    const glove = MeshBuilder.CreateSphere(
-      `practice_bot_glove_${sign}`,
-      { diameter: TUNING.bot.armRadius * 2.7, segments: 12 },
-      scene
-    );
+    const glove = MeshBuilder.CreateSphere(`bot_glove_${this.mode}_${sign}`, {
+      diameter: 0.19, segments: 10
+    }, this.scene);
     glove.parent = pivot;
-    glove.position.set(0, -TUNING.bot.armLength, 0);
-    glove.scaling.set(1.08, 0.82, 1.18);
-    glove.material = this.armorMaterial;
+    glove.position.set(0, -0.62, 0);
+    glove.material = this.trimMat;
     glove.isPickable = false;
 
     return pivot;
   }
 }
 
-function makePbrMaterial(
+function makePbr(
   scene: Scene,
   name: string,
   albedo: Color3,
-  options: { metallic?: number; roughness?: number; emissive?: Color3 } = {}
+  opts: { metallic?: number; roughness?: number; emissive?: Color3 } = {}
 ): PBRMaterial {
-  const material = new PBRMaterial(name, scene);
-  material.albedoColor = albedo;
-  material.metallic = options.metallic ?? 0;
-  material.roughness = options.roughness ?? 0.45;
-  if (options.emissive) material.emissiveColor = options.emissive;
-  return material;
+  const m = new PBRMaterial(name, scene);
+  m.albedoColor = albedo;
+  m.metallic = opts.metallic ?? 0;
+  m.roughness = opts.roughness ?? 0.45;
+  if (opts.emissive) m.emissiveColor = opts.emissive;
+  return m;
 }

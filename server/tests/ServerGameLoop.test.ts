@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import { GAME_CONSTANTS } from '../../shared/constants';
-import { vec3 } from '../../shared/simulation/CollisionMath';
+import { length, vec3 } from '../../shared/simulation/CollisionMath';
+import { backflipQteSpeed } from '../../shared/simulation/ThrowMath';
 import { ServerGameLoop } from '../src/simulation/ServerGameLoop';
 
 /**
@@ -196,20 +197,54 @@ describe('ServerGameLoop', () => {
     expect(loop.state.players.a.movement.velocity.y).toBeLessThanOrEqual(0);
   });
 
-  describe('mats — immune to balls, knocked over by players', () => {
+  describe('mats — block balls, knocked over by players', () => {
     // Pick a mat from the authoritative state to aim at.
     function firstMat(loop: ServerGameLoop) {
       const id = Object.keys(loop.state.mats)[0];
       return loop.state.mats[id];
     }
 
-    it('lets a live ball pass straight through a mat (mats are immune to balls)', () => {
+    it('bounces a live ball back off a standing mat (mats block balls)', () => {
       const loop = new ServerGameLoop('room');
       loop.addPlayer('a', 'A');
       const mat = firstMat(loop);
 
-      // A flat, fast ball fired straight through the mat center along +X. If mats blocked balls it
-      // would bounce/die at the mat; instead it should sail past with x beyond the mat.
+      // A ball fired at moderate speed straight at the standing mat center along +X. The mat is solid
+      // cover for balls now, so the ball should bounce off it (bounceCount increments) rather than
+      // sail through. Moderate speed avoids tunneling so the bounce resolves cleanly on the near face.
+      loop.state.balls.ball_0 = {
+        ...loop.state.balls.ball_0,
+        phase: 'live',
+        ownerKind: 'player',
+        ownerId: 'a',
+        position: vec3(mat.position.x - 1.5, mat.position.y, mat.position.z),
+        velocity: vec3(12, 0, 0),
+        bounceCount: 0
+      };
+
+      const steps = Math.ceil(loop.tickRate * 0.25);
+      for (let i = 0; i < steps; i += 1) loop.step();
+      const b = loop.state.balls.ball_0;
+      expect(b.bounceCount).toBeGreaterThan(0);
+      // After bouncing off the near (-X) face, the ball is travelling back toward -X, so it never
+      // reaches the far side of the mat.
+      expect(b.position.x).toBeLessThan(mat.position.x);
+    });
+
+    it('lets a ball pass over a knocked-over mat', () => {
+      const loop = new ServerGameLoop('room');
+      loop.addPlayer('a', 'A');
+      loop.addPlayer('b', 'B');
+      playNow(loop);
+      const mat = firstMat(loop);
+
+      // Knock the mat down first by walking the player into it.
+      loop.state.players.a.movement.position = vec3(mat.position.x, 0, mat.position.z - 0.6);
+      loop.state.players.a.movement.velocity = vec3(0, 0, 4);
+      loop.step();
+      expect(loop.state.mats[mat.id].knockedOver).toBe(true);
+
+      // Now a ball fired through the mat's old footprint should pass straight through, untouched.
       loop.state.balls.ball_0 = {
         ...loop.state.balls.ball_0,
         phase: 'live',
@@ -219,9 +254,6 @@ describe('ServerGameLoop', () => {
         velocity: vec3(50, 0, 0),
         bounceCount: 0
       };
-
-      // Step long enough to cross the 0.18 m-thick mat at the active tick rate without any bounce
-      // being counted (a mat bounce would have incremented bounceCount).
       const steps = Math.ceil(loop.tickRate * 0.04);
       for (let i = 0; i < steps; i += 1) loop.step();
       const b = loop.state.balls.ball_0;
@@ -856,6 +888,41 @@ describe('ServerGameLoop', () => {
       const live = Object.values(loop.state.balls).find((b) => b.phase === 'live');
       expect(live!.curveAccel.x).toBeGreaterThan(1);
       expect(Math.abs(live!.curveAccel.z)).toBeLessThan(0.01); // perpendicular to +Z aim
+    });
+
+    it('honors a backflip QTE tier (recent backflip + grounded) with tiered speed + super', () => {
+      const loop = new ServerGameLoop('room');
+      loop.addPlayer('a', 'A');
+      loop.state.players.a.movement.position = vec3(0, 0, 0);
+      loop.handleInput('a', { lookYawRadians: 0, lookPitchRadians: 0, sequence: 1 }, 1);
+      loop.step();
+      expect(loop.handlePickup('a').ok).toBe(true);
+      // Simulate "just landed a backflip": grounded with a fresh backflip cooldown.
+      loop.state.players.a.movement.grounded = true;
+      loop.state.players.a.movementInternal.backflipCooldown = GAME_CONSTANTS.backflip.cooldownSeconds;
+
+      expect(loop.handleThrow('a', { hand: 'left', backflipTier: 5 }).ok).toBe(true);
+      const live = Object.values(loop.state.balls).find((b) => b.phase === 'live');
+      expect(live!.isSuper).toBe(true);
+      // Top tier = quick × 2.2 (10% above the legacy super); movement velocity is ~0 here.
+      expect(length(live!.velocity)).toBeCloseTo(backflipQteSpeed(5), 1);
+    });
+
+    it('ignores a spoofed backflip tier when no recent backflip (normal throw, not super)', () => {
+      const loop = new ServerGameLoop('room');
+      loop.addPlayer('a', 'A');
+      loop.state.players.a.movement.position = vec3(0, 0, 0);
+      loop.handleInput('a', { lookYawRadians: 0, lookPitchRadians: 0, sequence: 1 }, 1);
+      loop.step();
+      expect(loop.handlePickup('a').ok).toBe(true);
+      // Grounded but NO recent backflip (cooldown 0) → the tier must be rejected.
+      loop.state.players.a.movement.grounded = true;
+      loop.state.players.a.movementInternal.backflipCooldown = 0;
+
+      expect(loop.handleThrow('a', { hand: 'left', backflipTier: 5 }).ok).toBe(true);
+      const live = Object.values(loop.state.balls).find((b) => b.phase === 'live');
+      expect(live!.isSuper).toBe(false);
+      expect(length(live!.velocity)).toBeCloseTo(GAME_CONSTANTS.ball.quickThrowSpeed, 1);
     });
 
     it('input-stream release while crouching creates the same curve throw online', () => {

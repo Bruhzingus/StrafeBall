@@ -42,6 +42,75 @@ export class SoundManager {
     this.tone('square', 900, 720, 0.05, 0.12);
   }
 
+  /**
+   * Bright rising three-note arpeggio for a perfect backflip-QTE throw — a celebratory "ta-da".
+   * `strength` (0..1) scales pitch + volume so near-perfect tiers get a subtler version.
+   */
+  perfectThrow(strength = 1): void {
+    const ctx = this.ensureContext();
+    if (!ctx || !this.master) return;
+    const now = ctx.currentTime;
+    // C–E–G major triad, shifted up a touch as strength rises.
+    const base = 660 + 120 * strength;
+    const notes = [base, base * 1.26, base * 1.5];
+    const peak = 0.12 + 0.08 * strength;
+    notes.forEach((freq, i) => {
+      const start = now + i * 0.07;
+      const dur = 0.18;
+      const osc = ctx.createOscillator();
+      const gain = ctx.createGain();
+      osc.type = 'triangle';
+      osc.frequency.setValueAtTime(freq, start);
+      gain.gain.setValueAtTime(0.0001, start);
+      gain.gain.exponentialRampToValueAtTime(peak, start + 0.01);
+      gain.gain.exponentialRampToValueAtTime(0.0001, start + dur);
+      osc.connect(gain).connect(this.master!);
+      osc.start(start);
+      osc.stop(start + dur + 0.02);
+    });
+  }
+
+  /** High-school gym / basketball game-ending buzzer. */
+  gameEndBuzzer(): void {
+    const ctx = this.ensureContext();
+    if (!ctx || !this.master) return;
+
+    const now = ctx.currentTime;
+    const duration = 1.55;
+
+    const oscA = ctx.createOscillator();
+    const oscB = ctx.createOscillator();
+    const toneGain = ctx.createGain();
+    const filter = ctx.createBiquadFilter();
+
+    oscA.type = 'square';
+    oscB.type = 'sawtooth';
+    oscA.frequency.setValueAtTime(760, now);
+    oscB.frequency.setValueAtTime(782, now);
+    oscA.detune.setValueAtTime(4, now);
+    oscB.detune.setValueAtTime(-6, now);
+
+    filter.type = 'bandpass';
+    filter.frequency.setValueAtTime(1350, now);
+    filter.Q.value = 0.9;
+
+    toneGain.gain.setValueAtTime(0.0001, now);
+    toneGain.gain.linearRampToValueAtTime(0.28, now + 0.02);
+    toneGain.gain.linearRampToValueAtTime(0.24, now + duration - 0.16);
+    toneGain.gain.exponentialRampToValueAtTime(0.0001, now + duration);
+
+    oscA.connect(toneGain);
+    oscB.connect(toneGain);
+    toneGain.connect(filter).connect(this.master);
+
+    oscA.start(now);
+    oscB.start(now);
+    oscA.stop(now + duration + 0.03);
+    oscB.stop(now + duration + 0.03);
+
+    this.noiseBurst(0.09, 0.02, 2200);
+  }
+
   private installUnlock(): void {
     if (this.unlockBound) return;
     this.unlockBound = true;

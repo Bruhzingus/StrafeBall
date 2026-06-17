@@ -65,6 +65,17 @@ export class Effects {
     this.triggerFlash(0.2, 0.26, '120, 180, 255');
   }
 
+  /**
+   * A successful backflip-QTE throw landed. `tier`/`maxTier` scale the celebratory chime + gold
+   * flash so the dead-center (top tier) throw feels the most rewarding.
+   */
+  onBackflipThrow(tier: number, maxTier: number): void {
+    const strength = maxTier > 1 ? Math.max(0, Math.min(1, (tier - 1) / (maxTier - 1))) : 1;
+    this.sound.whoosh(1.1);
+    this.sound.perfectThrow(strength);
+    this.triggerFlash(0.18, 0.1 + 0.12 * strength, '255, 207, 46'); // school-gold
+  }
+
   onSlide(): void {
     this.sound.whoosh(0.4);
     this.triggerFlash(0.1, 0.09, '80, 160, 255');
@@ -91,6 +102,11 @@ export class Effects {
   onDummyHit(): void {
     this.sound.thud(0.7);
     this.triggerFlash(0.16, 0.18, '255, 180, 50');
+  }
+
+  onMatchWin(): void {
+    this.sound.gameEndBuzzer();
+    this.triggerFlash(0.4, 0.12, '255, 180, 70');
   }
 
   // --- Per-frame fade -----------------------------------------------------------------------

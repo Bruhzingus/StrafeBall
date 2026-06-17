@@ -56,9 +56,34 @@ export const GAME_CONSTANTS = {
     durationSeconds: 0.72,
     verticalImpulse: 10.5,
     backwardImpulse: 4.8,
+    // Legacy "super window" timing — superseded by the landing quick-time event (see qte below).
+    // Kept so any remaining isSuperThrowWindow callers compile; the value no longer gates throws.
     superWindowStart: 0.25,
     superWindowEnd: 0.52,
-    superThrowMultiplier: 2.0
+    superThrowMultiplier: 2.0,
+    // Landing quick-time event: after a backflip, the moment you land while holding a ball a timing
+    // bar sweeps for `qteDurationSeconds`. Clicking maps the cursor's offset-from-center to one of
+    // `qteTierCount` success tiers; tier 1 (edges of the hit zone) throws at quickThrowSpeed, tier 5
+    // (dead center) throws at the fastest backflip speed. A click outside the hit zone (|offset| >
+    // qteHitHalfWidth) — or letting the bar lapse — throws nothing and keeps the ball.
+    qte: {
+      durationSeconds: 0.7,
+      // Delay (s) after landing before the bar appears + starts sweeping, so it isn't jarringly
+      // instant on touchdown.
+      armDelaySeconds: 0.15,
+      // Half-width (as a 0..1 fraction of the bar half-length) of the region that counts as a hit.
+      // Clicks with |offset| beyond this are a miss (no throw).
+      hitHalfWidth: 0.62,
+      tierCount: 5,
+      // Per-tier band edges as fractions of hitHalfWidth, from center outward. The top tier (fastest)
+      // covers [0, edge0]; tier 4 covers [edge0, edge1]; … tier 1 covers [edge3, edge4=1]. Non-uniform
+      // on purpose: a SMALL center band (hard to land the top tier) and progressively WIDER outer
+      // bands (the slower tiers are easier / span more of the sweep time).
+      tierBandEdges: [0.13, 0.33, 0.57, 0.80, 1.0] as number[],
+      // Tier speed multipliers applied to quickThrowSpeed, slowest (tier 1) → fastest (tier 5).
+      // Tier 5 = 10% faster than the old backflip super (quick×2.0): quick×2.2. Tier 1 = quick×1.0.
+      tierSpeedMultipliers: [1.0, 1.3, 1.6, 1.9, 2.2] as number[]
+    }
   },
 
   ball: {
@@ -108,10 +133,15 @@ export const GAME_CONSTANTS = {
   },
 
   parry: {
-    // Auto-parry stays automatic while aiming within this cone of an incoming live ball. Tightened
-    // 30 → 20° so it's still skillful (you must actually look at the ball) but reliable online.
-    coneDegrees: 20,
-    rangeMeters: 0.925,
+    // Auto-parry stays automatic while aiming within this cone of an incoming live ball. 30° gives
+    // enough tolerance that a shot to the head/feet or slightly off-center still parries as long as
+    // you're looking in its direction — the old 20° felt broken on anything but a dead-center shot.
+    coneDegrees: 30,
+    // The ball must come within this distance of your eye to parry. The old 0.925 m meant the ball
+    // had to be almost touching your face: a fast throw was only inside that shell for ~1 frame, so
+    // parries fired inconsistently or not at all. Matched closer to the catch reach so you can knock
+    // an approaching ball away instead of only one already on top of you.
+    rangeMeters: 2.6,
     cooldownSeconds: 1,
     deflectSpeedMultiplier: 0.75,
     deflectUpVelocity: 1.5

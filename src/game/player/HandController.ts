@@ -8,7 +8,6 @@ import { HandSide } from '../ball/BallState';
 import { ThrowSystem } from '../ball/ThrowSystem';
 import { cameraForward } from '../utils/vector';
 import { MovementSnapshot } from './MovementController';
-import { BackflipController } from './BackflipController';
 import { Effects } from '../effects/Effects';
 
 export interface HandState {
@@ -55,16 +54,20 @@ export class HandController {
   constructor(
     private readonly camera: FreeCamera,
     private readonly ballManager: BallManager,
-    private readonly backflip: BackflipController,
     private readonly effects: Effects
   ) {}
 
-  update(dt: number, input: InputManager, movement: MovementSnapshot): void {
+  /**
+   * @param throwsSuppressed when true, normal charge/throw is disabled (used while a backflip is in
+   *   the air and while the landing QTE is pending — the backflip throw is released by the QTE, not
+   *   by a normal click). Pickup/drop and catch stance still work.
+   */
+  update(dt: number, input: InputManager, movement: MovementSnapshot, throwsSuppressed = false): void {
     this.elapsed += dt;
     this.tickCooldowns(dt);
     this.handlePickupDrop(input, movement);
-    this.handleHand(input, movement, 'left', MOUSE_BUTTON.leftHand);
-    this.handleHand(input, movement, 'right', MOUSE_BUTTON.rightHand);
+    this.handleHand(input, movement, 'left', MOUSE_BUTTON.leftHand, throwsSuppressed);
+    this.handleHand(input, movement, 'right', MOUSE_BUTTON.rightHand, throwsSuppressed);
   }
 
   hasTwoBalls(): boolean {
@@ -229,8 +232,17 @@ export class HandController {
    *     throw; holding = charged throw. F cancels a charge. No throw cooldown.
    * The second of a rapid double throw is flagged "rushed" so it comes out slightly slower.
    */
-  private handleHand(input: InputManager, movement: MovementSnapshot, side: HandSide, button: number): void {
+  private handleHand(input: InputManager, movement: MovementSnapshot, side: HandSide, button: number, throwsSuppressed: boolean): void {
     const hand = this.getHand(side);
+
+    // While a backflip is airborne or the landing QTE is pending, the normal throw is disabled — the
+    // backflip throw is released by the QTE click instead. Keep the hand idle (no charge build-up).
+    if (throwsSuppressed && hand.ball) {
+      hand.catchStance = false;
+      hand.charging = false;
+      hand.chargeSeconds = 0;
+      return;
+    }
 
     // Ignore mouse hand actions until the cursor is locked, so the click that engages pointer
     // lock doesn't accidentally start a throw/catch.
@@ -274,12 +286,37 @@ export class HandController {
     }
   }
 
+  /**
+   * Backflip landing throw: fire the given hand at a QTE success tier (1..5), bypassing the normal
+   * charge model. The tier sets the speed and marks the ball golden (super). Returns true if a ball
+   * was thrown. Called by the QTE flow on a successful click; a miss never calls this.
+   */
+  throwBackflipQte(side: HandSide, movement: MovementSnapshot, tier: number): boolean {
+    const hand = this.getHand(side);
+    if (!hand.ball) return false;
+    this.fireThrow(side, movement, 0, tier);
+    return true;
+  }
+
+  /** Pick the hand to use for a backflip throw (prefer left/dominant, else right). Null if empty. */
+  backflipThrowHand(): HandSide | null {
+    if (this.left.ball) return 'left';
+    if (this.right.ball) return 'right';
+    return null;
+  }
+
   private throwFromHand(side: HandSide, movement: MovementSnapshot): void {
     const hand = this.getHand(side);
     if (!hand.ball) return;
-
     // Dashing allows quick throws only.
     const charge01 = movement.dashingThisFrame ? 0 : Math.min(1, hand.chargeSeconds / TUNING.ball.maxChargeSeconds);
+    this.fireThrow(side, movement, charge01, 0);
+  }
+
+  private fireThrow(side: HandSide, movement: MovementSnapshot, charge01: number, backflipTier: number): void {
+    const hand = this.getHand(side);
+    if (!hand.ball) return;
+
     const rushed = this.lastThrowTime > -900 && this.elapsed - this.lastThrowTime < TUNING.ball.secondThrowDelaySeconds;
 
     const forward = cameraForward(this.camera);
@@ -292,14 +329,16 @@ export class HandController {
       isSliding: movement.sliding,
       isWallRunning: movement.wallRunning,
       isDashing: movement.dashingThisFrame,
-      isBackflipSuper: this.backflip.isSuperThrowWindow(),
+      backflipTier,
       fastDoubleThrowPenalty: rushed
     });
 
     const origin = this.camera.globalPosition.add(forward.scale(0.8));
     this.ballManager.throwBall(hand.ball, origin, throwResult.velocity, throwResult.velocity.length(), 'player', throwResult.isSuper, throwResult.dropScale, throwResult.curveAccel);
 
-    const throwLabel = charge01 >= 0.25 ? `charged ${Math.round(charge01 * 100)}%` : 'quick';
+    const throwLabel = backflipTier >= 1
+      ? `backflip T${backflipTier}`
+      : charge01 >= 0.25 ? `charged ${Math.round(charge01 * 100)}%` : 'quick';
     this.lastAction = `${throwLabel} throw #${hand.ball.id} (${side})`;
     hand.ball = null;
     hand.visualHolding = false;

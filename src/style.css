@@ -380,6 +380,59 @@ html, body {
   }
 }
 
+/* === Backflip-QTE result callout — comic pop, placed right-of-center (distinct from score-event) === */
+.qte-event {
+  position: absolute;
+  left: 68%;
+  top: 40%;
+  z-index: 10;
+  min-width: 150px;
+  padding: 10px 16px;
+  transform: translate(-50%, -50%) scale(0.9) rotate(3deg);
+  opacity: 0;
+  pointer-events: none;
+  text-align: center;
+  background: var(--paper);
+  border: 4px solid var(--ink);
+  border-radius: 16px;
+  box-shadow: 6px 6px 0 var(--ink);
+}
+
+.qte-event--visible {
+  animation: qte-event-pop 1.1s cubic-bezier(0.18, 0.86, 0.24, 1) both;
+}
+
+.qte-event-title {
+  font-size: 30px;
+  line-height: 1;
+  font-weight: 900;
+  letter-spacing: 0;
+  text-transform: uppercase;
+  -webkit-text-stroke: 2px var(--ink);
+}
+
+.qte-event-subtitle {
+  margin-top: 5px;
+  font-size: 11px;
+  font-weight: 900;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  color: var(--ink);
+}
+
+/* Tier tint: ok = blue, good = gold, perfect = bright gold with a pop. */
+.qte-event--ok      { background: #dfeaff; color: var(--school-blue); }
+.qte-event--good    { background: #fff2c9; color: #c98800; }
+.qte-event--perfect { background: #fff0bf; color: #b8860b; }
+
+@keyframes qte-event-pop {
+  0%   { opacity: 0; transform: translate(-50%, -44%) scale(0.7) rotate(8deg); }
+  12%  { opacity: 1; transform: translate(-50%, -50%) scale(1.14) rotate(-3deg); }
+  26%  { transform: translate(-50%, -50%) scale(0.97) rotate(3deg); }
+  72%  { opacity: 1; transform: translate(-50%, -50%) scale(1) rotate(3deg); }
+  100% { opacity: 0; transform: translate(-50%, -60%) scale(0.95) rotate(3deg); }
+}
+
 /* === Big pre-round countdown === */
 .countdown {
   position: absolute;
@@ -413,6 +466,125 @@ html, body {
   20%  { opacity: 1; transform: translate(-50%, -50%) scale(1.18) rotate(4deg); }
   35%  { transform: translate(-50%, -50%) scale(0.96) rotate(-2deg); }
   100% { opacity: 0.92; transform: translate(-50%, -50%) scale(1) rotate(0deg); }
+}
+
+/* === Backflip landing quick-time event — timing bar below the crosshair === */
+.qte {
+  position: absolute;
+  left: 50%;
+  /* Sits just BELOW the center crosshair so it never overlaps the reticle or the aim point. */
+  top: 57%;
+  z-index: 12;
+  transform: translate(-50%, 0);
+  opacity: 0;
+  pointer-events: none; /* never intercepts the throw click */
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 5px;
+}
+
+.qte--visible {
+  animation: qte-pop 0.18s cubic-bezier(0.2, 0.9, 0.2, 1) forwards;
+}
+
+@keyframes qte-pop {
+  0%   { opacity: 0; transform: translate(-50%, 6px) scale(0.7); }
+  100% { opacity: 1; transform: translate(-50%, 0) scale(1); }
+}
+
+.qte-bar {
+  position: relative;
+  width: 244px;
+  height: 22px;
+  border: 3px solid var(--ink);
+  border-radius: 7px;
+  box-shadow: 3px 3px 0 var(--ink);
+  /* Sticker-style discrete tier bands matching the scoring edges (small GOLD center = fastest,
+     wider blue then red toward the edges = slower), on a cream base outside the hit zone.
+     Hard color stops give the chunky comic look. Stops are full-bar %: center 50%, hit zone ±31%,
+     band edges from tierBandEdges×hitHalfWidth → ±4 / ±10.2 / ±17.7 / ±24.8 / ±31%. */
+  background: linear-gradient(
+    to right,
+    var(--paper) 0%, var(--paper) 19%,
+    var(--school-red) 19%, var(--school-red) 25.2%,
+    var(--school-blue) 25.2%, var(--school-blue) 32.3%,
+    var(--school-gold) 32.3%, var(--school-gold) 39.8%,
+    #ffe07a 39.8%, #ffe07a 46%,
+    var(--school-gold) 46%, var(--school-gold) 54%,
+    #ffe07a 54%, #ffe07a 60.2%,
+    var(--school-gold) 60.2%, var(--school-gold) 67.7%,
+    var(--school-blue) 67.7%, var(--school-blue) 74.8%,
+    var(--school-red) 74.8%, var(--school-red) 81%,
+    var(--paper) 81%, var(--paper) 100%
+  );
+  overflow: hidden;
+}
+
+/* Hit-zone borders (where a click stops being a miss). */
+.qte-hit {
+  position: absolute;
+  top: 0;
+  left: 50%;
+  height: 100%;
+  width: 62%; /* = hitHalfWidth × 2 × 50% bar */
+  transform: translateX(-50%);
+  background: transparent;
+  border-left: 2px solid var(--ink);
+  border-right: 2px solid var(--ink);
+}
+
+/* Center sweet-spot line. */
+.qte-center {
+  position: absolute;
+  top: -3px;
+  left: 50%;
+  width: 3px;
+  height: calc(100% + 6px);
+  transform: translateX(-50%);
+  background: var(--ink);
+  box-shadow: 0 0 0 1.5px var(--paper);
+}
+
+/* Sweeping pointer (bold navy triangle with a paper outline — sticker look). */
+.qte-pointer {
+  position: absolute;
+  top: -2px;
+  left: 0;
+  width: 0;
+  height: 0;
+  transform: translateX(-50%);
+  border-left: 8px solid transparent;
+  border-right: 8px solid transparent;
+  border-top: 15px solid var(--ink);
+  filter: drop-shadow(0 1.5px 0 var(--paper)) drop-shadow(0 0 1px var(--paper));
+}
+
+.qte-flash {
+  position: absolute;
+  inset: 0;
+  opacity: 0;
+  background: var(--qte-flash-color, var(--school-gold));
+}
+
+.qte-flash--show {
+  animation: qte-flash 0.32s ease-out both;
+}
+
+@keyframes qte-flash {
+  0%   { opacity: 0.75; }
+  100% { opacity: 0; }
+}
+
+.qte-label {
+  font-family: 'Arial Black', 'Trebuchet MS', sans-serif;
+  font-weight: 900;
+  font-size: 10px;
+  letter-spacing: 0.08em;
+  color: var(--paper);
+  -webkit-text-stroke: 0.5px var(--ink);
+  text-shadow: 1.5px 1.5px 0 var(--ink);
+  opacity: 0.9;
 }
 
 @media (max-width: 640px) {

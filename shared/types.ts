@@ -47,6 +47,13 @@ export interface PlayerInput {
    */
   leftCatchAttemptId: number;
   rightCatchAttemptId: number;
+  /**
+   * Backflip landing quick-time-event result, latched onto the throw-release packet. 0 = a normal
+   * throw; 1..5 = the QTE success tier the client resolved on landing from a backflip. The server
+   * validates legitimacy (player must have backflipped recently and be grounded) before honoring it:
+   * a valid tier sets the throw's speed (tier 1 = quick, top tier = fastest) and marks it golden.
+   */
+  backflipThrowTier: number;
 }
 
 export type PlayerHandMode = 'empty' | 'holding' | 'charging' | 'catching';

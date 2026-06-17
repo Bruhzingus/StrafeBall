@@ -5,6 +5,7 @@ import { BallManager } from '../ball/BallManager';
 import { BallState } from '../ball/BallState';
 import { Crosshair } from './Crosshair';
 import type { ServerSnapshot } from '../../../shared/protocol';
+import { SERVER_TICK_RATE, SNAPSHOT_RATE } from '../../../shared/netConfig';
 
 export class Hud {
   private readonly root: HTMLDivElement;
@@ -13,6 +14,7 @@ export class Hud {
   private readonly bottomLeft: HTMLDivElement;
   private readonly bottomRight: HTMLDivElement;
   private readonly scoreEvent: HTMLDivElement;
+  private readonly qteEvent: HTMLDivElement;
   private readonly countdown: HTMLDivElement;
   private lastCountdownLabel = '';
   private readonly crosshair: Crosshair;
@@ -20,6 +22,7 @@ export class Hud {
   // so the HUD doesn't thrash innerHTML 60+ times a second while values are static.
   private readonly lastHtml = new Map<HTMLDivElement, string>();
   private scoreEventTimer: number | null = null;
+  private qteEventTimer: number | null = null;
   private debugVisible = true;
 
   constructor(parent: HTMLElement) {
@@ -36,6 +39,12 @@ export class Hud {
     this.scoreEvent.className = 'score-event';
     this.root.appendChild(this.scoreEvent);
 
+    // Backflip-QTE result callout — its own popup, placed off to the right of center so it doesn't
+    // collide with the top-center hit callout.
+    this.qteEvent = document.createElement('div');
+    this.qteEvent.className = 'qte-event';
+    this.root.appendChild(this.qteEvent);
+
     this.countdown = document.createElement('div');
     this.countdown.className = 'countdown';
     this.root.appendChild(this.countdown);
@@ -48,6 +57,7 @@ export class Hud {
       <div>Shift dash | C/Ctrl slide | Q backflip</div>
       <div>K reset/vote | J reset balls | U reset match</div>
       <div>L launch test ball | Tab debug</div>
+      <div>Hold E by a fallen mat to stand it up</div>
     `;
   }
 
@@ -77,6 +87,31 @@ export class Hud {
     }, 1150);
   }
 
+  /**
+   * Backflip-QTE result callout: a comic pop with the tier rank. `strength` (0..1) tints it from a
+   * modest blue (slow tier) up to bright gold (perfect/top tier).
+   */
+  showQteEvent(title: string, subtitle: string, strength: number): void {
+    if (this.qteEventTimer !== null) {
+      window.clearTimeout(this.qteEventTimer);
+      this.qteEventTimer = null;
+    }
+
+    const variant = strength >= 0.999 ? 'perfect' : strength >= 0.5 ? 'good' : 'ok';
+    this.qteEvent.className = `qte-event qte-event--${variant}`;
+    this.qteEvent.innerHTML = `
+      <div class="qte-event-title">${escapeHtml(title)}</div>
+      <div class="qte-event-subtitle">${escapeHtml(subtitle)}</div>
+    `;
+
+    void this.qteEvent.offsetWidth; // restart the keyframe on back-to-back throws
+    this.qteEvent.classList.add('qte-event--visible');
+    this.qteEventTimer = window.setTimeout(() => {
+      this.qteEvent.classList.remove('qte-event--visible');
+      this.qteEventTimer = null;
+    }, 1100);
+  }
+
   update(player: PlayerController, rules: MatchRules, ballManager: BallManager, fps: number, frameMs: number): void {
     // No countdown in offline practice.
     this.updateCountdown('playing', 0);
@@ -104,6 +139,7 @@ export class Hud {
       this.setHtml(this.topLeft, `
         <div class="hud-title">Debug <span style="font-weight:400;opacity:0.45;font-size:10px">[Tab]</span></div>
         <div>FPS <span class="hud-good">${Math.round(fps)}</span> · ${frameMs.toFixed(1)} ms</div>
+        <div>Tick rate: <span class="hud-good">${SERVER_TICK_RATE} Hz</span> &middot; Snap ${SNAPSHOT_RATE} Hz</div>
         <div>Speed: <span class="hud-good">${movement.speed.toFixed(1)}</span> m/s</div>
         <div>Vel: ${v.x.toFixed(1)}, ${v.y.toFixed(1)}, ${v.z.toFixed(1)}</div>
         <div>State: ${this.movementState(player)}</div>
@@ -115,7 +151,8 @@ export class Hud {
       `);
     }
 
-    const superReady = player.backflip.isSuperThrowWindow();
+    // The old "★ SUPER THROW ★" timed-window indicator is gone — the backflip throw is now the
+    // landing quick-time event (its own on-screen timing bar), so no HUD prompt is needed here.
     this.setHtml(this.topCenter, `
       <div class="scoreboard-title">StrafeBall</div>
       <div class="scoreboard-digits">
@@ -130,7 +167,6 @@ export class Hud {
         ${rules.boundary.noBoundaries ? 'NO BOUNDARIES' : `Half-court: ${noBoundariesTime.toFixed(0)}s`}
       </div>
       ${rules.boundary.lastMessage ? `<div class="scoreboard-msg">${rules.boundary.lastMessage}</div>` : ''}
-      ${superReady ? '<div class="hud-bad" style="text-align:center;margin-top:2px">★ SUPER THROW ★</div>' : ''}
     `);
 
     const parryReady = hands.hasTwoBalls() && player.catching.getParryCooldown() <= 0;
@@ -185,6 +221,7 @@ export class Hud {
         <div>Room: <span class="hud-good">${escapeHtml(room.id)}</span> · Players: ${Object.keys(room.players).length}/2</div>
         <div>Ping: <span class="hud-good">${pingMs === null ? '-' : `${pingMs} ms`}</span> · Tick: ${snapshot.tick}</div>
         <div>Snap rate: <span class="hud-good">${netDebug.snapshotRateHz.toFixed(1)} Hz</span> | Ack age: ${netDebug.ackAgeMs === null ? '-' : `${netDebug.ackAgeMs} ms`}</div>
+        <div>Tick rate: <span class="hud-good">${SERVER_TICK_RATE} Hz</span> &middot; Snap ${SNAPSHOT_RATE} Hz</div>
         <div>Raw lead: ${netDebug.predictionErrorM.toFixed(3)} m / ~${netDebug.expectedLeadM.toFixed(3)} m</div>
         <div>Input seq: ${netDebug.inputSeq} · Acked: ${netDebug.lastAckedSeq} · Pending: ${netDebug.pendingInputs}</div>
         <div>Residual: <span class="${residualColor}">${netDebug.residualAfterReplayM.toFixed(3)} m</span> · Active: ${netDebug.predictionActive ? '<span class="hud-good">yes</span>' : '<span class="hud-bad">no</span>'}</div>

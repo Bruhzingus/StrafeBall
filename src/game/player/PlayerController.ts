@@ -41,7 +41,7 @@ export class PlayerController {
     scene.activeCamera = this.camera;
 
     this.movement = new MovementController(this.root, this.camera, this.dash, this.backflip, collision);
-    this.hands = new HandController(this.camera, ballManager, this.backflip, effects);
+    this.hands = new HandController(this.camera, ballManager, effects);
     this.catching = new CatchController(this.camera, ballManager, this.hands, this.movement, effects);
     this.viewmodel = new Viewmodel(this.camera);
     // Seed a valid snapshot so the HUD never reads `undefined` on a frame before the first
@@ -49,7 +49,7 @@ export class PlayerController {
     this.lastMovementSnapshot = this.movement.snapshot();
   }
 
-  update(dt: number): void {
+  update(dt: number, throwsSuppressed = false): void {
     // Look first (drains this frame's mouse delta), then physics, then hands/catch.
     this.updateLook();
 
@@ -60,7 +60,7 @@ export class PlayerController {
     // (and held-ball visuals) read an up-to-date eye position and aim with no extra latency.
     this.camera.getViewMatrix(true);
 
-    this.hands.update(dt, this.input, this.lastMovementSnapshot);
+    this.hands.update(dt, this.input, this.lastMovementSnapshot, throwsSuppressed);
     this.catching.update(dt, this.input, this.lastMovementSnapshot);
     // Arms follow the hand state and snap the held balls into the animated hands.
     this.viewmodel.update(dt, this.hands);

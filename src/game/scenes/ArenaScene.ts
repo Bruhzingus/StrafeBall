@@ -6,6 +6,9 @@ import { ModelLoader } from '../assets/ModelLoader';
 import { BallManager } from '../ball/BallManager';
 import { BallState } from '../ball/BallState';
 import { Hud } from '../ui/Hud';
+import { BackflipQteController } from '../player/BackflipQteController';
+import { BackflipQteHud } from '../ui/BackflipQteHud';
+import { backflipQteSpeed } from '../../../shared/simulation/ThrowMath';
 import { SettingsPanel } from '../ui/SettingsPanel';
 import { MatchRules } from '../rules/MatchRules';
 import { TUNING } from '../config/tuning';
@@ -13,6 +16,10 @@ import { CONTROL_KEYS, MOUSE_BUTTON } from '../config/controls';
 import { SoundManager } from '../audio/SoundManager';
 import { Effects } from '../effects/Effects';
 import { PracticeBot } from '../bot/PracticeBot';
+import { PracticeControlWall } from '../practice/PracticeControlWall';
+import { GuideWall } from '../practice/GuideWall';
+import { createPracticeState } from '../practice/PracticeState';
+import type { PracticeState } from '../practice/PracticeState';
 import { settings } from '../config/Settings';
 import { MultiplayerClient } from '../network/MultiplayerClient';
 import { MultiplayerOverlay } from '../network/MultiplayerOverlay';
@@ -37,12 +44,28 @@ export class ArenaScene {
   private readonly targetDummies: Mesh[] = [];
   private readonly sound: SoundManager;
   private readonly effects: Effects;
-  private readonly bot: PracticeBot;
+  private readonly quickBot: PracticeBot;
+  private readonly chargeBot: PracticeBot;
+  private readonly practiceWall: PracticeControlWall;
+  private readonly guideWall: GuideWall;
+  private readonly practiceState: PracticeState = createPracticeState();
   private readonly settingsPanel: SettingsPanel;
   private readonly gym: GymArena;
   private readonly multiplayer = new MultiplayerClient();
   private readonly multiplayerOverlay: MultiplayerOverlay;
   private readonly networkRenderer: NetworkRenderer;
+  // Backflip landing quick-time event: armed when the local player lands from a backflip holding a
+  // ball; resolving it throws (tiered speed). Owned here so it works in both offline and online.
+  private readonly backflipQte = new BackflipQteController();
+  private readonly backflipQteHud: BackflipQteHud;
+  // Latched while a backflip jump is in the air: set when a backflip STARTS, cleared when the player
+  // next touches the ground (the landing that arms the QTE). The backflip "active" flag clears after
+  // ~0.72s — well before you land — so we can't edge-detect on it directly; this latch survives until
+  // the real landing.
+  private backflipJumpPending = false;
+  private prevBackflipActiveForQte = false;
+  // Online only: a resolved QTE tier waiting to ride the next throw-release input packet (0 = none).
+  private pendingBackflipTier = 0;
 
   // Accumulated scene time (seconds) — drives moving dummy oscillation.
   private elapsed = 0;
@@ -63,6 +86,7 @@ export class ArenaScene {
   // only (movement/combat zeroed) and the HUD shows the countdown. Driven by the snapshot.
   private countdownActive = false;
   private lastOnlineScoreByTeamId: Record<string, number> = {};
+  private lastOnlineWinnerTeamId: string | null = null;
   private lastResetSerial = -1;
   private lastResetVoteKey = '';
 
@@ -75,6 +99,10 @@ export class ArenaScene {
   private netCollisionBoxes: AABB[] = createPlayerCollisionBoxes();
   // Set of mat ids currently reflected in netCollisionBoxes — avoids rebuilding every frame.
   private readonly knockedNetMatIds = new Set<string>();
+  // Offline practice: hold-E progress (seconds) toward standing the nearest knocked-over mat back
+  // up. Resets whenever E is released or the player leaves the mat's reach.
+  private matRestoreHold = 0;
+  private static readonly MAT_RESTORE_HOLD_SECONDS = 0.6;
   // Fixed timestep for input send + prediction + reconciliation replay. Driven entirely by the
   // shared net config (must equal the server's fixed dt for reconciliation residual ≈ 0). At the
   // active A_72_72_60 mode this is 1/72; the fixed-step loop below then sends at 72Hz.
@@ -150,11 +178,15 @@ export class ArenaScene {
     this.effects = new Effects(this.scene, this.sound);
 
     this.player = new PlayerController(this.scene, this.input, this.ballManager, this.gym.collision, this.effects);
-    this.bot = new PracticeBot(loader, this.ballManager);
+    this.quickBot = new PracticeBot(this.scene, this.ballManager, 'quick');
+    this.chargeBot = new PracticeBot(this.scene, this.ballManager, 'charge');
+    this.practiceWall = new PracticeControlWall(this.scene, this.practiceState, this.ballManager, (id) => this.handleButtonPress(id));
+    this.guideWall = new GuideWall(this.scene);
 
     const hudRoot = document.getElementById('hud-root');
     if (!hudRoot) throw new Error('Missing HUD root.');
     this.hud = new Hud(hudRoot);
+    this.backflipQteHud = new BackflipQteHud(hudRoot);
     this.settingsPanel = new SettingsPanel();
     this.multiplayerOverlay = new MultiplayerOverlay(this.multiplayer);
     this.networkRenderer = new NetworkRenderer(this.scene);
@@ -208,7 +240,10 @@ export class ArenaScene {
     this.multiplayer.dispose();
     this.networkRenderer.dispose();
     this.settingsPanel.dispose();
-    this.bot.dispose();
+    this.quickBot.dispose();
+    this.chargeBot.dispose();
+    this.practiceWall.dispose();
+    this.guideWall.dispose();
     this.effects.dispose();
     this.gym.dispose();
     this.sound.dispose();
@@ -239,7 +274,7 @@ export class ArenaScene {
     const radius = playerBallHitRadius();
 
     for (const ball of this.ballManager.balls) {
-      if (ball.state !== BallState.Live || ball.owner !== 'bot') continue;
+      if (ball.state !== BallState.Live || (ball.owner !== 'bot' && ball.owner !== 'launcher')) continue;
       const b = ball.mesh.position;
       // Swept capsule (ball path this tick vs the player's body axis) so fast lobs that cross the
       // body between frames still register, and high throws count as head hits.
@@ -252,11 +287,167 @@ export class ArenaScene {
   }
 
   /**
-   * Offline: knock a standing mat flat when the local player walks into it (mirrors the server's
-   * contact-based rule). A downed mat's collision box is spliced out of the PLAYER collision world
-   * so it becomes walkable; balls already ignore mats (separate ballCollision world).
+   * Offline backflip QTE: arm on landing from a backflip while holding a ball, advance the timing
+   * bar, and on the throw-button click resolve a success tier (→ tiered backflip throw) or a miss
+   * (→ no throw, keep the ball). Drives the QTE bar HUD.
    */
-  private updateOfflineMats(): void {
+  private updateBackflipQteOffline(dt: number, grounded: boolean): void {
+    const active = this.player.backflip.active;
+    // Latch the jump on the backflip's rising edge; it stays pending through the whole flight even
+    // after `active` clears (~0.72s), until we actually land.
+    if (active && !this.prevBackflipActiveForQte) this.backflipJumpPending = true;
+    this.prevBackflipActiveForQte = active;
+
+    // Landing: a pending backflip jump just touched the ground → arm the QTE if holding a ball.
+    if (this.backflipJumpPending && grounded && !active) {
+      this.backflipJumpPending = false;
+      if (this.player.hands.backflipThrowHand() && !this.backflipQte.isActive()) {
+        this.backflipQte.arm();
+      }
+    }
+
+    // A backflip whose ball was lost (dropped/knocked) before landing can't be thrown — cancel.
+    if (this.backflipQte.isActive() && !this.player.hands.backflipThrowHand()) {
+      this.backflipQte.cancel();
+    }
+
+    if (!this.backflipQte.isActive()) {
+      if (!this.backflipQteHud.isFlashing()) this.backflipQteHud.hide();
+      return;
+    }
+
+    // Still in the post-landing pre-roll delay: tick it down, keep the bar hidden, ignore clicks.
+    if (!this.backflipQte.isSweeping()) {
+      this.backflipQte.update(dt);
+      if (!this.backflipQteHud.isFlashing()) this.backflipQteHud.hide();
+      return;
+    }
+
+    // Resolve a click before advancing the timer so the offset reflects the frame the player clicked.
+    if (this.input.wasMousePressed(MOUSE_BUTTON.leftHand) || this.input.wasMousePressed(MOUSE_BUTTON.rightHand)) {
+      const result = this.backflipQte.resolveClick();
+      if (result.kind === 'hit') {
+        const side = this.player.hands.backflipThrowHand();
+        if (side) this.player.hands.throwBackflipQte(side, this.player.lastMovementSnapshot, result.tier);
+        this.onBackflipQteHit(result.tier);
+      } else {
+        this.backflipQteHud.flashResult(false);
+      }
+      return;
+    }
+
+    const lapse = this.backflipQte.update(dt);
+    if (lapse) {
+      this.backflipQteHud.flashResult(false); // timed out → no throw, keep ball
+      return;
+    }
+
+    this.backflipQteHud.show();
+    this.backflipQteHud.setPointer(this.backflipQte.currentOffset());
+  }
+
+  /** Shared success feedback for a backflip-QTE hit (offline + online): sound, gold flash, popup. */
+  private onBackflipQteHit(tier: number): void {
+    const maxTier = TUNING.backflip.qte.tierCount;
+    const strength = maxTier > 1 ? (tier - 1) / (maxTier - 1) : 1;
+    this.effects.onBackflipThrow(tier, maxTier);
+    this.backflipQteHud.flashResult(true);
+    const labels = ['SLOW', 'OK', 'NICE', 'GREAT', 'PERFECT!'];
+    const label = labels[Math.max(0, Math.min(labels.length - 1, tier - 1))];
+    this.hud.showQteEvent(label, 'BACKFLIP THROW', strength);
+  }
+
+  /** Clear all backflip-QTE state + hide the bar (used on mode transitions and resets). */
+  private resetBackflipQte(): void {
+    this.backflipQte.cancel();
+    this.backflipQteHud.hide();
+    this.backflipJumpPending = false;
+    this.prevBackflipActiveForQte = false;
+    this.pendingBackflipTier = 0;
+  }
+
+  /**
+   * Online backflip QTE: same timing/HUD as offline, but the throw is released through the input
+   * stream. On a hit we latch a hand-release + the QTE tier onto the next packet; the server
+   * re-validates the backflip and applies the tiered speed. Returns true while the QTE is active so
+   * the caller suppresses the normal hand action (the click must not start a charge). The local
+   * held-ball state is read from the authoritative snapshot (`local.hands`).
+   */
+  private updateBackflipQteOnline(dt: number, local: PlayerState | null): boolean {
+    const internal = this.predictedInternal;
+    const movement = this.predictedMovement;
+    if (!internal || !movement || !local) {
+      this.backflipQte.cancel();
+      this.backflipJumpPending = false;
+      this.prevBackflipActiveForQte = false;
+      if (!this.backflipQteHud.isFlashing()) this.backflipQteHud.hide();
+      return false;
+    }
+
+    const heldHand: 'left' | 'right' | null =
+      local.hands.left.heldBallId ? 'left' : local.hands.right.heldBallId ? 'right' : null;
+    const active = internal.backflipActive;
+
+    // Latch on the backflip's rising edge; arm on the landing that follows (active clears mid-air).
+    if (active && !this.prevBackflipActiveForQte) this.backflipJumpPending = true;
+    this.prevBackflipActiveForQte = active;
+
+    if (this.backflipJumpPending && movement.grounded && !active) {
+      this.backflipJumpPending = false;
+      if (heldHand && !this.backflipQte.isActive()) this.backflipQte.arm();
+    }
+
+    if (this.backflipQte.isActive() && !heldHand) this.backflipQte.cancel();
+
+    if (!this.backflipQte.isActive()) {
+      if (!this.backflipQteHud.isFlashing()) this.backflipQteHud.hide();
+      return false;
+    }
+
+    // While the QTE owns the click, never let it leak into the normal charge/throw latches.
+    this.latchLeftHandPressed = false;
+    this.latchRightHandPressed = false;
+
+    // Still in the post-landing pre-roll delay: tick it down, keep the bar hidden, ignore clicks.
+    if (!this.backflipQte.isSweeping()) {
+      this.backflipQte.update(dt);
+      if (!this.backflipQteHud.isFlashing()) this.backflipQteHud.hide();
+      return true;
+    }
+
+    if (this.input.wasMousePressed(MOUSE_BUTTON.leftHand) || this.input.wasMousePressed(MOUSE_BUTTON.rightHand)) {
+      const result = this.backflipQte.resolveClick();
+      if (result.kind === 'hit' && heldHand) {
+        // Latch the release for the holding hand + the tier; the input packet carries both this tick.
+        // The server allows a backflip-tier release straight from a holding hand (no charge needed).
+        if (heldHand === 'left') this.latchLeftHandReleased = true;
+        else this.latchRightHandReleased = true;
+        this.pendingBackflipTier = result.tier;
+        this.player.hands.playThrowAnimation(heldHand);
+        this.onBackflipQteHit(result.tier);
+      } else {
+        this.backflipQteHud.flashResult(false);
+      }
+      return true;
+    }
+
+    const lapse = this.backflipQte.update(dt);
+    if (lapse) {
+      this.backflipQteHud.flashResult(false);
+      return false;
+    }
+
+    this.backflipQteHud.show();
+    this.backflipQteHud.setPointer(this.backflipQte.currentOffset());
+    return true;
+  }
+
+  /**
+   * Offline: knock a standing mat flat when the local player walks into it (mirrors the server's
+   * contact-based rule). A downed mat's collision box is spliced out of BOTH worlds so it becomes
+   * walkable and balls pass over it. Holding E next to a downed mat stands it back up.
+   */
+  private updateOfflineMats(dt: number): void {
     const p = this.player.root.position;
     const v = this.player.movement.velocity;
     const r = TUNING.player.radius;
@@ -277,9 +468,49 @@ export class ArenaScene {
 
       const dir = new Vector3(v.x, 0, v.z);
       // Remove the box BEFORE laying the mat flat (getAABB returns the standing footprint, which is
-      // what was added to the collision world). Then it no longer blocks movement.
+      // what was added to the collision worlds). Then it no longer blocks movement or balls.
       this.gym.removeMatCollision(mat);
       mat.knockOver(dir.lengthSquared() > 1e-4 ? dir : new Vector3(toMatX, 0, toMatZ));
+    }
+
+    this.updateMatRestore(dt);
+  }
+
+  /**
+   * Offline: hold E next to a knocked-over mat to stand it back up. We pick the nearest downed mat
+   * within an arm's-reach radius (measured from its original standing footprint) and accumulate a
+   * hold timer; releasing E or stepping away cancels it. On completion the mat re-enters both
+   * collision worlds so it blocks players and balls again.
+   */
+  private updateMatRestore(dt: number): void {
+    if (!this.input.isKeyDown(CONTROL_KEYS.interact)) {
+      this.matRestoreHold = 0;
+      return;
+    }
+
+    const p = this.player.root.position;
+    const restoreReach = TUNING.player.radius + 1.0; // generous: a flattened mat sits on the floor
+    let nearest: typeof this.gym.mats[number] | null = null;
+    let nearestDist = Infinity;
+    for (const mat of this.gym.mats) {
+      if (!mat.knockedOver) continue;
+      const box = mat.getAABB(); // standing footprint center is a stable proximity anchor
+      const mx = (box.minX + box.maxX) * 0.5;
+      const mz = (box.minZ + box.maxZ) * 0.5;
+      const d = (p.x - mx) * (p.x - mx) + (p.z - mz) * (p.z - mz);
+      if (d < nearestDist) { nearestDist = d; nearest = mat; }
+    }
+
+    if (!nearest || nearestDist > restoreReach * restoreReach) {
+      this.matRestoreHold = 0;
+      return;
+    }
+
+    this.matRestoreHold += dt;
+    if (this.matRestoreHold >= ArenaScene.MAT_RESTORE_HOLD_SECONDS) {
+      this.matRestoreHold = 0;
+      nearest.reset();
+      this.gym.addMatCollision(nearest);
     }
   }
 
@@ -296,12 +527,17 @@ export class ArenaScene {
       const state = mats[mat.id];
       if (!state) continue;
       if (state.knockedOver && !mat.knockedOver) {
+        // Drop the mat's ball-collision box BEFORE tipping it (getAABB returns the standing
+        // footprint that was registered), so balls pass over the downed mat.
+        this.gym.removeMatCollision(mat);
         mat.knockOver(new Vector3(state.knockDirection.x, 0, state.knockDirection.z));
         this.knockedNetMatIds.add(mat.id);
         knockedChanged = true;
       } else if (!state.knockedOver && mat.knockedOver) {
-        // Server reset the mat (e.g. room reset): stand it back up.
+        // Server reset the mat (e.g. room reset): stand it back up and restore its ball-collision
+        // box so dodgeballs bounce off it again.
         mat.reset();
+        this.gym.addMatCollision(mat);
         this.knockedNetMatIds.delete(mat.id);
         knockedChanged = true;
       }
@@ -320,7 +556,13 @@ export class ArenaScene {
     const wasSliding = this.prevSliding;
     const wasBackflipActive = this.prevBackflipActive;
 
-    this.player.update(dt);
+    // Suppress normal throws while a backflip is airborne or the landing QTE is pending — the
+    // backflip throw is released only by the QTE click.
+    // Suppress normal throws for the whole backflip arc: from launch (active), through the fall
+    // (jump pending after `active` clears mid-air), until the landing QTE resolves. The backflip
+    // throw is released only by the QTE click.
+    const throwsSuppressed = this.player.backflip.active || this.backflipJumpPending || this.backflipQte.isActive();
+    this.player.update(dt, throwsSuppressed);
 
     const snap = this.player.lastMovementSnapshot;
 
@@ -332,14 +574,17 @@ export class ArenaScene {
     this.prevSliding = snap.sliding;
     this.prevBackflipActive = this.player.backflip.active;
 
-    // Practice bot lobs a map ball at the player's head each interval (for catch/block drills).
-    if (this.bot.update(dt, this.player.camera.globalPosition)) {
-      this.effects.botThrow();
-    }
+    this.updateBackflipQteOffline(dt, snap.grounded);
+
+    // Practice bots — only active when enabled via control wall
+    const playerPos = this.player.camera.globalPosition;
+    if (this.quickBot.update(dt, playerPos)) this.effects.botThrow();
+    if (this.chargeBot.update(dt, playerPos)) this.effects.botThrow();
+    this.practiceWall.update(dt);
 
     this.ballManager.update(dt);
     this.checkBotHitsPlayer(dt);
-    this.updateOfflineMats();
+    this.updateOfflineMats(dt);
 
     // Each landed hit grants the thrower one dash charge (locked rule).
     const hits = this.rules.scoring.updateAgainstDummies(this.ballManager.balls, this.targetDummies, dt);
@@ -407,9 +652,13 @@ export class ArenaScene {
     // frozen to look-only (built in buildNetworkInput) so the player can't move/throw until GO.
     this.countdownActive = snapshot?.room.match.status === 'countdown';
 
+    // Backflip landing QTE (online): runs client-side; on a hit it latches a release + tier onto the
+    // input stream (handled below) and suppresses the normal hand action so the click doesn't charge.
+    const qteActive = this.updateBackflipQteOnline(dt, local);
+
     // Hand edges are folded into the fixed input stream. Process them before building packets so
     // catch ids and throw releases ride the same ordered tick as crouch/look/charge state.
-    if (local && !this.countdownActive) this.sendOnlineHandActions(dt, local);
+    if (local && !this.countdownActive && !qteActive) this.sendOnlineHandActions(dt, local);
     this.syncOnlineViewmodelHands(local);
 
     // Mouse look + viewmodel only — physics and hand sim are server-authoritative.
@@ -496,6 +745,8 @@ export class ArenaScene {
       this.latchRightHandPressed = false;
       this.latchLeftHandReleased = false;
       this.latchRightHandReleased = false;
+      // The QTE tier is one-shot: it rode this packet's release, so clear it now.
+      this.pendingBackflipTier = 0;
 
       // Per-packet debug log (throttled to ~1 s, and off unless strafeball.debug.net === '1').
       // The timer resets on every threshold crossing regardless of the flag so it can't grow
@@ -574,6 +825,7 @@ export class ArenaScene {
       this.networkRenderer.update(snapshot, this.multiplayer.localPlayerId, dt, this.predictedMovement);
       this.applyOnlineMats(snapshot);
       this.handleOnlineScoreEvents(snapshot);
+      this.handleOnlineWinnerEvent(snapshot);
       this.updateOnlineScoreboards(snapshot);
     }
 
@@ -833,6 +1085,7 @@ export class ArenaScene {
   private enterOnlineMode(): void {
     if (this.onlineModeActive) return;
     this.onlineModeActive = true;
+    this.resetBackflipQte();
     this.networkYaw = this.player.root.rotation.y;
     this.networkPitch = this.player.camera.rotation.x;
     this.onlineCharging.left = false;
@@ -841,7 +1094,8 @@ export class ArenaScene {
     this.onlineChargeSeconds.right = 0;
     this.resetPrediction('enter-online');
     this.player.hands.clearHands();
-    this.bot.reset();
+    this.quickBot.reset();
+    this.chargeBot.reset();
     this.setPracticePropsEnabled(false);
     this.ballManager.clear();
     // Mats start upright online; server mat state then drives them via applyOnlineMats.
@@ -849,6 +1103,7 @@ export class ArenaScene {
     this.knockedNetMatIds.clear();
     this.netCollisionBoxes = createPlayerCollisionBoxes();
     this.lastOnlineScoreByTeamId = {};
+    this.lastOnlineWinnerTeamId = null;
     this.lastResetSerial = -1;
     this.lastResetVoteKey = '';
   }
@@ -856,6 +1111,7 @@ export class ArenaScene {
   private exitOnlineMode(): void {
     if (!this.onlineModeActive) return;
     this.onlineModeActive = false;
+    this.resetBackflipQte();
     this.networkRenderer.clear();
     this.onlineCharging.left = false;
     this.onlineCharging.right = false;
@@ -863,11 +1119,13 @@ export class ArenaScene {
     this.onlineChargeSeconds.right = 0;
     this.resetPrediction('exit-online');
     this.lastOnlineScoreByTeamId = {};
+    this.lastOnlineWinnerTeamId = null;
     this.lastResetSerial = -1;
     this.lastResetVoteKey = '';
     this.player.hands.clearHands();
     this.player.resetPosition();
-    this.bot.reset();
+    this.quickBot.reset();
+    this.chargeBot.reset();
     this.setPracticePropsEnabled(true);
     this.ballManager.spawnCenterLineBalls();
     // Restore upright mats + their player collision when returning to practice.
@@ -954,6 +1212,14 @@ export class ArenaScene {
     this.lastOnlineScoreByTeamId = { ...scores };
   }
 
+  private handleOnlineWinnerEvent(snapshot: ServerSnapshot): void {
+    const winnerTeamId = snapshot.room.match.winnerTeamId;
+    if (winnerTeamId && winnerTeamId !== this.lastOnlineWinnerTeamId) {
+      this.effects.onMatchWin();
+    }
+    this.lastOnlineWinnerTeamId = winnerTeamId;
+  }
+
   /**
    * Reset detection — runs at the TOP of the frame, before reconcile/prediction. Keyed on
    * resetSerial so a room reset is caught exactly once regardless of tick values. On a fresh
@@ -978,6 +1244,7 @@ export class ArenaScene {
     this.onlineChargeSeconds.right = 0;
     this.player.hands.clearHands();
     this.lastOnlineScoreByTeamId = {};
+    this.lastOnlineWinnerTeamId = null;
     this.hud.showScoreEvent('RESET', 'Room reset', 'neutral');
   }
 
@@ -1018,7 +1285,20 @@ export class ArenaScene {
   }
 
   private setPracticePropsEnabled(enabled: boolean): void {
-    this.bot.setEnabled(enabled);
+    // Practice-only wall props, bots, and target dummies should disappear in the connected
+    // lobby/duel arena, leaving only the live scoreboards on the end walls.
+    this.practiceWall.setEnabled(enabled);
+    this.guideWall.setEnabled(enabled);
+
+    // Bots are individually gated by their own enabled flag (practice state), not the online/offline toggle.
+    // When going online, force both off. When returning to practice, restore from practiceState.
+    if (!enabled) {
+      this.quickBot.setEnabled(false);
+      this.chargeBot.setEnabled(false);
+    } else {
+      this.quickBot.setEnabled(this.practiceState.quickThrowBotEnabled);
+      this.chargeBot.setEnabled(this.practiceState.chargeThrowBotEnabled);
+    }
     for (const dummy of this.targetDummies) {
       dummy.setEnabled(enabled);
       for (const child of dummy.getChildMeshes(false)) {
@@ -1076,7 +1356,9 @@ export class ArenaScene {
       rightHandReleased: this.latchRightHandReleased,
       // Latched catch-attempt ids (0 = none pending). Re-sent every packet until the server acks.
       leftCatchAttemptId: this.pendingCatchAttemptId.left,
-      rightCatchAttemptId: this.pendingCatchAttemptId.right
+      rightCatchAttemptId: this.pendingCatchAttemptId.right,
+      // One-shot backflip QTE tier; the server reads it on the throw-release tick (0 = normal throw).
+      backflipThrowTier: this.pendingBackflipTier
     };
   }
 
@@ -1160,10 +1442,11 @@ export class ArenaScene {
   }
 
   private resetBalls(): void {
-    // Detach hands and the bot first so neither references the about-to-be-disposed ball meshes.
     this.player.hands.clearHands();
-    this.bot.reset();
+    this.quickBot.reset();
+    this.chargeBot.reset();
     this.ballManager.spawnCenterLineBalls();
+    this.practiceState.spawnedExtraBalls = 0;
   }
 
   private resetMatch(): void {
@@ -1171,6 +1454,111 @@ export class ArenaScene {
     for (const dummy of this.targetDummies) {
       if (dummy.metadata) dummy.metadata.hitCount = 0;
     }
+  }
+
+  private handleButtonPress(id: import('../practice/PracticeControlWall').ButtonId): void {
+    const s = this.practiceState;
+    switch (id) {
+      case 'addBall':
+        if (this.ballManager.balls.length < s.maxPracticeBalls) {
+          this.practiceWall.spawnPracticeBall();
+          s.spawnedExtraBalls++;
+        }
+        break;
+      case 'removeBall':
+        if (this.practiceWall.removeOneBall()) {
+          s.spawnedExtraBalls = Math.max(0, s.spawnedExtraBalls - 1);
+        }
+        break;
+      case 'clearExtra': {
+        const extra = s.spawnedExtraBalls;
+        this.practiceWall.clearExtraBalls(extra);
+        s.spawnedExtraBalls = 0;
+        break;
+      }
+      case 'giveTwoBalls':
+        this.giveTwoBalls();
+        break;
+      case 'resetScore':
+        this.practiceState.practiceScore = 0;
+        this.rules.reset();
+        for (const dummy of this.targetDummies) {
+          if (dummy.metadata) dummy.metadata.hitCount = 0;
+        }
+        this.hud.showScoreEvent('RESET SCORE', 'Practice score cleared', 'neutral');
+        break;
+      case 'resetMap':
+        this.practiceReset();
+        break;
+      case 'toggleQuickBot':
+        s.quickThrowBotEnabled = !s.quickThrowBotEnabled;
+        this.quickBot.setEnabled(s.quickThrowBotEnabled);
+        this.hud.showScoreEvent(
+          s.quickThrowBotEnabled ? 'QUICK BOT ON' : 'QUICK BOT OFF', '', 'neutral'
+        );
+        break;
+      case 'toggleChargeBot':
+        s.chargeThrowBotEnabled = !s.chargeThrowBotEnabled;
+        this.chargeBot.setEnabled(s.chargeThrowBotEnabled);
+        this.hud.showScoreEvent(
+          s.chargeThrowBotEnabled ? 'CHARGE BOT ON' : 'CHARGE BOT OFF', '', 'neutral'
+        );
+        break;
+      case 'stopBots':
+        s.quickThrowBotEnabled = false;
+        s.chargeThrowBotEnabled = false;
+        this.quickBot.setEnabled(false);
+        this.chargeBot.setEnabled(false);
+        this.hud.showScoreEvent('BOTS STOPPED', '', 'neutral');
+        break;
+      case 'difficulty': {
+        const order = ['easy', 'normal', 'hard'] as const;
+        const next = order[(order.indexOf(s.botDifficulty) + 1) % order.length];
+        s.botDifficulty = next;
+        this.quickBot.setDifficulty(next);
+        this.chargeBot.setDifficulty(next);
+        this.hud.showScoreEvent(`DIFFICULTY: ${next.toUpperCase()}`, '', 'neutral');
+        break;
+      }
+    }
+  }
+
+  /** Attempt to give the player two balls (one per hand). Spawns if needed. */
+  private giveTwoBalls(): void {
+    const hands = this.player.hands;
+    for (const side of ['left', 'right'] as const) {
+      if (hands.getHand(side).ball) continue; // already holding
+      let ball = this.ballManager.findNearestFreeBall(this.player.root.position);
+      // Practice-admin button: if every settled ball is already busy/in motion, reclaim any
+      // other non-held ball before giving up. This keeps repeated presses reliable even after
+      // extra balls have been spawned or scattered around the gym.
+      if (!ball) ball = this.ballManager.findFreeBall();
+      if (!ball && this.ballManager.balls.length < this.practiceState.maxPracticeBalls) {
+        ball = this.practiceWall.spawnPracticeBall();
+        if (ball) this.practiceState.spawnedExtraBalls++;
+      }
+      if (!ball) continue;
+      const holdPos = this.player.root.position.add(new Vector3(side === 'left' ? -0.4 : 0.4, 1.2, 0.3));
+      this.ballManager.attachHeldBall(ball, side, holdPos);
+      hands.forceCatchBall(side, ball);
+    }
+  }
+
+  /** Full practice room reset: balls, bots, score, prediction buffers. Guide/control wall stays. */
+  private practiceReset(): void {
+    this.player.hands.clearHands();
+    this.quickBot.reset();
+    this.chargeBot.reset();
+    // Clear ALL balls (including extra) and respawn default set
+    this.ballManager.spawnCenterLineBalls();
+    this.practiceState.spawnedExtraBalls = 0;
+    this.practiceState.practiceScore = 0;
+    this.rules.reset();
+    for (const dummy of this.targetDummies) {
+      if (dummy.metadata) dummy.metadata.hitCount = 0;
+    }
+    this.gym.resetMats();
+    this.hud.showScoreEvent('MAP RESET', 'Practice reset', 'neutral');
   }
 
   private createLighting(): void {
@@ -1264,6 +1652,7 @@ function neutralNetInput(yawRadians: number, pitchRadians = 0): PlayerInput {
     leftHandReleased: false,
     rightHandReleased: false,
     leftCatchAttemptId: 0,
-    rightCatchAttemptId: 0
+    rightCatchAttemptId: 0,
+    backflipThrowTier: 0
   };
 }
