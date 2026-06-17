@@ -19,6 +19,8 @@ import { SoundManager } from '../audio/SoundManager';
 import { Effects } from '../effects/Effects';
 import { PracticeBot } from '../bot/PracticeBot';
 import { PracticeControlWall } from '../practice/PracticeControlWall';
+import { LobbyModePortals } from '../practice/LobbyModePortals';
+import type { LobbyMode } from '../practice/LobbyModePortals';
 import { GuideWall } from '../practice/GuideWall';
 import { createPracticeState } from '../practice/PracticeState';
 import type { PracticeState } from '../practice/PracticeState';
@@ -66,6 +68,7 @@ export class ArenaScene {
   private readonly quickBot: PracticeBot;
   private readonly chargeBot: PracticeBot;
   private readonly practiceWall: PracticeControlWall;
+  private readonly lobbyModePortals: LobbyModePortals;
   private readonly guideWall: GuideWall;
   private readonly practiceState: PracticeState = createPracticeState();
   private readonly settingsPanel: SettingsPanel;
@@ -217,6 +220,7 @@ export class ArenaScene {
     this.quickBot = new PracticeBot(this.scene, this.ballManager, 'quick');
     this.chargeBot = new PracticeBot(this.scene, this.ballManager, 'charge');
     this.practiceWall = new PracticeControlWall(this.scene, this.practiceState, this.ballManager, (id) => this.handleButtonPress(id));
+    this.lobbyModePortals = new LobbyModePortals(this.scene);
     this.guideWall = new GuideWall(this.scene);
 
     const hudRoot = document.getElementById('hud-root');
@@ -282,6 +286,7 @@ export class ArenaScene {
     this.quickBot.dispose();
     this.chargeBot.dispose();
     this.practiceWall.dispose();
+    this.lobbyModePortals.dispose();
     this.guideWall.dispose();
     this.effects.dispose();
     this.gym.dispose();
@@ -632,6 +637,7 @@ export class ArenaScene {
     if (this.quickBot.update(dt, playerPos)) this.effects.botThrow();
     if (this.chargeBot.update(dt, playerPos)) this.effects.botThrow();
     this.practiceWall.update(dt);
+    this.lobbyModePortals.update(dt, this.player.root.position, this.input.isKeyDown(CONTROL_KEYS.interact), (mode) => this.openLobbyMode(mode));
 
     this.ballManager.setPickupHighlight(
       this.ballManager.findPickupLookCandidate(this.player.camera.globalPosition, cameraForward(this.player.camera))
@@ -1426,6 +1432,10 @@ export class ArenaScene {
     this.sound.pingAt(speed, position, this.player.camera.globalPosition, forward, AUDIO_UP, gain);
   }
 
+  private openLobbyMode(mode: LobbyMode): void {
+    this.multiplayerOverlay.openMode(mode);
+  }
+
   /**
    * Reset detection — runs at the TOP of the frame, before reconcile/prediction. Keyed on
    * resetSerial so a room reset is caught exactly once regardless of tick values. On a fresh
@@ -1497,6 +1507,7 @@ export class ArenaScene {
     // Practice-only wall props, bots, and target dummies should disappear in the connected
     // lobby/duel arena, leaving only the live scoreboards on the end walls.
     this.practiceWall.setEnabled(enabled);
+    this.lobbyModePortals.setEnabled(enabled);
     this.guideWall.setEnabled(enabled);
 
     // Bots are individually gated by their own enabled flag (practice state), not the online/offline toggle.

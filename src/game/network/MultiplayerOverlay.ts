@@ -1,7 +1,18 @@
+import { GAME_CONSTANTS } from '../../../shared/constants';
+import type { LobbyMode } from '../practice/LobbyModePortals';
 import { MultiplayerClient } from './MultiplayerClient';
+
+type PendingAction = (() => Promise<void>) | null;
+const LOCK_OVERLAY_SUPPRESSED_ATTR = 'data-suppress-lock-overlay';
+
+const MODE_LABEL: Record<LobbyMode, string> = {
+  '1v1': '1v1 Private Duel',
+  '2v2': '2v2 Team Room'
+};
 
 export class MultiplayerOverlay {
   private readonly root: HTMLDivElement;
+  private readonly panel: HTMLDivElement;
   private readonly nameInput: HTMLInputElement;
   private readonly joinInput: HTMLInputElement;
   private readonly statusValue: HTMLSpanElement;
@@ -12,42 +23,96 @@ export class MultiplayerOverlay {
   private readonly joinButton: HTMLButtonElement;
   private readonly leaveButton: HTMLButtonElement;
   private readonly copyButton: HTMLButtonElement;
+  private readonly closeButton: HTMLButtonElement;
+  private readonly modeButtons: NodeListOf<HTMLButtonElement>;
+  private readonly modeTitle: HTMLDivElement;
+  private readonly modeSubtitle: HTMLDivElement;
+  private readonly modeNotice: HTMLDivElement;
+  private readonly fullscreenPrompt: HTMLDivElement;
+  private readonly fullscreenContinue: HTMLButtonElement;
+  private readonly fullscreenRequest: HTMLButtonElement;
+  private readonly fullscreenCancel: HTMLButtonElement;
+  private selectedMode: LobbyMode = '1v1';
+  private modalOpen = false;
+  private pendingAction: PendingAction = null;
+  private awaitingInteractReleaseFocus = false;
+  private lastRendered = {
+    connected: false,
+    busy: false,
+    status: '',
+    roomId: '',
+    pingMs: undefined as number | null | undefined,
+    errorMessage: '',
+    selectedMode: null as LobbyMode | null,
+    modalOpen: false
+  };
 
   constructor(private readonly client: MultiplayerClient) {
     this.root = document.createElement('div');
-    this.root.className = 'multiplayer-panel';
+    this.root.className = 'multiplayer-modal multiplayer-modal--hidden';
     this.root.setAttribute('data-no-lock', 'true');
     this.root.innerHTML = `
-      <div class="multiplayer-kicker">StrafeBall</div>
-      <div class="multiplayer-title">Private Duel</div>
-      <div class="multiplayer-subtitle">Warm up instantly, then share a code for 1v1.</div>
-      <label class="multiplayer-field">
-        <span>Player</span>
-        <input class="multiplayer-name" maxlength="24" value="Player" />
-      </label>
-      <div class="multiplayer-actions">
-        <button class="multiplayer-create">Create Room</button>
-      </div>
-      <label class="multiplayer-field">
-        <span>Room Code</span>
-        <input class="multiplayer-join-code" placeholder="Paste code" />
-      </label>
-      <div class="multiplayer-actions">
-        <button class="multiplayer-join">Join</button>
-        <button class="multiplayer-leave">Leave</button>
-      </div>
-      <div class="multiplayer-room-card">
-        <div>
-          <div class="multiplayer-card-label">Current Room</div>
-          <div class="multiplayer-room">Practice</div>
+      <div class="multiplayer-modal__shade"></div>
+      <div class="multiplayer-panel multiplayer-panel--lobby">
+        <button class="multiplayer-close" type="button" aria-label="Close match menu">x</button>
+        <div class="multiplayer-kicker">StrafeBall Lobby</div>
+        <div class="multiplayer-title">Choose Match</div>
+        <div class="multiplayer-subtitle">Use the practice court portals, then create a room or paste a code.</div>
+
+        <div class="multiplayer-mode-tabs">
+          <button class="multiplayer-mode-tab" data-mode="1v1" type="button">1v1</button>
+          <button class="multiplayer-mode-tab" data-mode="2v2" type="button">2v2</button>
         </div>
-        <button class="multiplayer-copy" type="button">Copy</button>
+
+        <div class="multiplayer-mode-card">
+          <div class="multiplayer-mode-title"></div>
+          <div class="multiplayer-mode-subtitle"></div>
+          <div class="multiplayer-mode-notice"></div>
+        </div>
+
+        <label class="multiplayer-field">
+          <span>Player</span>
+          <input class="multiplayer-name" maxlength="24" value="Player" />
+        </label>
+        <div class="multiplayer-actions">
+          <button class="multiplayer-create">Create Room</button>
+        </div>
+        <label class="multiplayer-field">
+          <span>Room Code</span>
+          <input class="multiplayer-join-code" placeholder="Paste code" />
+        </label>
+        <div class="multiplayer-actions">
+          <button class="multiplayer-join">Join</button>
+          <button class="multiplayer-leave">Leave</button>
+        </div>
+        <div class="multiplayer-room-card">
+          <div>
+            <div class="multiplayer-card-label">Current Room</div>
+            <div class="multiplayer-room">Practice</div>
+          </div>
+          <button class="multiplayer-copy" type="button">Copy</button>
+        </div>
+        <div class="multiplayer-line">Status <span class="multiplayer-status">practice</span></div>
+        <div class="multiplayer-line">Ping <span class="multiplayer-ping">-</span></div>
+        <div class="multiplayer-error"></div>
       </div>
-      <div class="multiplayer-line">Status <span class="multiplayer-status">practice</span></div>
-      <div class="multiplayer-line">Ping <span class="multiplayer-ping">-</span></div>
-      <div class="multiplayer-error"></div>
+
+      <div class="fullscreen-prompt fullscreen-prompt--hidden">
+        <div class="fullscreen-prompt__card">
+          <div class="fullscreen-prompt__title">Fullscreen Check</div>
+          <div class="fullscreen-prompt__body">
+            StrafeBall plays best in browser fullscreen. Press <span class="key">F11</span> before joining so your aim and mouse focus feel right.
+          </div>
+          <div class="fullscreen-prompt__actions">
+            <button class="fullscreen-request" type="button">Try Fullscreen</button>
+            <button class="fullscreen-continue" type="button">Continue</button>
+            <button class="fullscreen-cancel" type="button">Cancel</button>
+          </div>
+        </div>
+      </div>
     `;
 
+    this.panel = this.mustQuery<HTMLDivElement>('.multiplayer-panel');
     this.nameInput = this.mustQuery<HTMLInputElement>('.multiplayer-name');
     this.joinInput = this.mustQuery<HTMLInputElement>('.multiplayer-join-code');
     this.statusValue = this.mustQuery<HTMLSpanElement>('.multiplayer-status');
@@ -58,12 +123,27 @@ export class MultiplayerOverlay {
     this.joinButton = this.mustQuery<HTMLButtonElement>('.multiplayer-join');
     this.leaveButton = this.mustQuery<HTMLButtonElement>('.multiplayer-leave');
     this.copyButton = this.mustQuery<HTMLButtonElement>('.multiplayer-copy');
+    this.closeButton = this.mustQuery<HTMLButtonElement>('.multiplayer-close');
+    this.modeButtons = this.root.querySelectorAll<HTMLButtonElement>('.multiplayer-mode-tab');
+    this.modeTitle = this.mustQuery<HTMLDivElement>('.multiplayer-mode-title');
+    this.modeSubtitle = this.mustQuery<HTMLDivElement>('.multiplayer-mode-subtitle');
+    this.modeNotice = this.mustQuery<HTMLDivElement>('.multiplayer-mode-notice');
+    this.fullscreenPrompt = this.mustQuery<HTMLDivElement>('.fullscreen-prompt');
+    this.fullscreenContinue = this.mustQuery<HTMLButtonElement>('.fullscreen-continue');
+    this.fullscreenRequest = this.mustQuery<HTMLButtonElement>('.fullscreen-request');
+    this.fullscreenCancel = this.mustQuery<HTMLButtonElement>('.fullscreen-cancel');
 
     this.createButton.addEventListener('click', this.createRoom);
     this.joinButton.addEventListener('click', this.joinRoom);
     this.leaveButton.addEventListener('click', this.leaveRoom);
     this.copyButton.addEventListener('click', this.copyRoomCode);
+    this.closeButton.addEventListener('click', this.close);
     this.joinInput.addEventListener('keydown', this.onJoinKeyDown);
+    this.fullscreenContinue.addEventListener('click', this.continueAfterFullscreenWarning);
+    this.fullscreenRequest.addEventListener('click', this.requestFullscreen);
+    this.fullscreenCancel.addEventListener('click', this.cancelFullscreenWarning);
+    for (const button of this.modeButtons) button.addEventListener('click', this.onModeClick);
+    window.addEventListener('keyup', this.onPortalFocusKeyUp);
     document.body.appendChild(this.root);
     this.update();
   }
@@ -73,13 +153,52 @@ export class MultiplayerOverlay {
     this.joinButton.removeEventListener('click', this.joinRoom);
     this.leaveButton.removeEventListener('click', this.leaveRoom);
     this.copyButton.removeEventListener('click', this.copyRoomCode);
+    this.closeButton.removeEventListener('click', this.close);
     this.joinInput.removeEventListener('keydown', this.onJoinKeyDown);
+    this.fullscreenContinue.removeEventListener('click', this.continueAfterFullscreenWarning);
+    this.fullscreenRequest.removeEventListener('click', this.requestFullscreen);
+    this.fullscreenCancel.removeEventListener('click', this.cancelFullscreenWarning);
+    for (const button of this.modeButtons) button.removeEventListener('click', this.onModeClick);
+    window.removeEventListener('keyup', this.onPortalFocusKeyUp);
     this.root.remove();
+  }
+
+  openMode(mode: LobbyMode): void {
+    this.selectedMode = mode;
+    this.modalOpen = true;
+    this.awaitingInteractReleaseFocus = true;
+    this.syncLockOverlaySuppression();
+    document.exitPointerLock?.();
+    this.root.classList.remove('multiplayer-modal--hidden');
+    this.update();
   }
 
   update(): void {
     const connected = this.client.connected;
     const busy = this.client.status === 'connecting';
+    if (
+      this.lastRendered.connected === connected &&
+      this.lastRendered.busy === busy &&
+      this.lastRendered.status === this.client.status &&
+      this.lastRendered.roomId === this.client.roomId &&
+      this.lastRendered.pingMs === this.client.pingMs &&
+      this.lastRendered.errorMessage === this.client.errorMessage &&
+      this.lastRendered.selectedMode === this.selectedMode &&
+      this.lastRendered.modalOpen === this.modalOpen
+    ) {
+      return;
+    }
+    this.lastRendered = {
+      connected,
+      busy,
+      status: this.client.status,
+      roomId: this.client.roomId,
+      pingMs: this.client.pingMs,
+      errorMessage: this.client.errorMessage,
+      selectedMode: this.selectedMode,
+      modalOpen: this.modalOpen
+    };
+
     const statusLabel = busy
       ? 'connecting...'
       : connected ? 'connected' : this.client.status === 'error' ? 'needs attention' : 'practice';
@@ -88,24 +207,55 @@ export class MultiplayerOverlay {
     this.roomValue.textContent = this.client.roomId || 'Practice';
     this.pingValue.textContent = this.client.pingMs === null ? '-' : `${this.client.pingMs} ms`;
     this.errorValue.textContent = friendlyError(this.client.errorMessage);
-    this.createButton.disabled = connected || busy;
-    this.joinButton.disabled = connected || busy;
+
+    const supported = this.modeSupported(this.selectedMode);
+    this.modeTitle.textContent = MODE_LABEL[this.selectedMode];
+    this.modeSubtitle.textContent = this.selectedMode === '1v1'
+      ? 'Classic private duel. Create a code or join a friend.'
+      : 'The lobby UI is ready; server-side 2v2 gets enabled in the next 2v2 phase.';
+    this.modeNotice.textContent = supported
+      ? 'Tip: use F11 fullscreen before the match starts.'
+      : '2v2 is staged here, but the server is still configured for 1v1 rooms.';
+    this.panel.dataset.mode = this.selectedMode;
+    for (const button of this.modeButtons) {
+      button.classList.toggle('multiplayer-mode-tab--active', button.dataset.mode === this.selectedMode);
+    }
+
+    this.createButton.disabled = connected || busy || !supported;
+    this.joinButton.disabled = connected || busy || !supported;
     this.leaveButton.disabled = !connected && !busy;
     this.copyButton.disabled = !connected || !this.client.roomId;
-    this.createButton.textContent = busy ? 'Creating...' : 'Create Room';
-    this.joinButton.textContent = busy ? 'Joining...' : 'Join';
+    this.createButton.textContent = busy ? 'Creating...' : supported ? `Create ${this.selectedMode}` : '2v2 Soon';
+    this.joinButton.textContent = busy ? 'Joining...' : supported ? `Join ${this.selectedMode}` : '2v2 Soon';
+
+    const compact = connected && !this.modalOpen && !busy && this.client.status !== 'error';
+    this.root.classList.toggle('multiplayer-modal--compact', compact);
+    const shouldShow = this.modalOpen || connected || busy || this.client.status === 'error';
+    this.root.classList.toggle('multiplayer-modal--hidden', !shouldShow);
+    this.syncLockOverlaySuppression();
   }
 
   private createRoom = (): void => {
-    void this.client.createRoom(this.nameInput.value).finally(() => this.update());
+    if (!this.modeSupported(this.selectedMode)) return;
+    this.runWithFullscreenCheck(() => this.client.createRoom(this.nameInput.value));
   };
 
   private joinRoom = (): void => {
-    void this.client.joinRoom(this.joinInput.value, this.nameInput.value).finally(() => this.update());
+    if (!this.modeSupported(this.selectedMode)) return;
+    this.runWithFullscreenCheck(() => this.client.joinRoom(this.joinInput.value, this.nameInput.value));
   };
 
   private leaveRoom = (): void => {
     this.client.leave();
+    this.modalOpen = true;
+    this.update();
+  };
+
+  private close = (): void => {
+    if (this.client.status === 'connecting') return;
+    this.modalOpen = false;
+    this.awaitingInteractReleaseFocus = false;
+    this.hideFullscreenPrompt();
     this.update();
   };
 
@@ -127,6 +277,80 @@ export class MultiplayerOverlay {
     this.joinRoom();
   };
 
+  private onModeClick = (event: Event): void => {
+    const target = event.currentTarget as HTMLButtonElement;
+    const mode = target.dataset.mode;
+    if (mode !== '1v1' && mode !== '2v2') return;
+    this.selectedMode = mode;
+    this.update();
+  };
+
+  private onPortalFocusKeyUp = (event: KeyboardEvent): void => {
+    if (!this.awaitingInteractReleaseFocus || !this.modalOpen) return;
+    if (event.code !== 'KeyE') return;
+    this.awaitingInteractReleaseFocus = false;
+    this.joinInput.focus();
+    this.joinInput.select();
+  };
+
+  private runWithFullscreenCheck(action: () => Promise<void>): void {
+    if (isLikelyFullscreen()) {
+      void action().finally(() => {
+        if (this.client.connected) this.modalOpen = false;
+        this.update();
+      });
+      return;
+    }
+    this.pendingAction = action;
+    this.fullscreenPrompt.classList.remove('fullscreen-prompt--hidden');
+  }
+
+  private continueAfterFullscreenWarning = (): void => {
+    const action = this.pendingAction;
+    this.hideFullscreenPrompt();
+    if (!action) return;
+    void action().finally(() => {
+      if (this.client.connected) this.modalOpen = false;
+      this.update();
+    });
+  };
+
+  private requestFullscreen = (): void => {
+    const result = document.documentElement.requestFullscreen?.();
+    if (result && typeof result.then === 'function') {
+      result.catch(() => undefined);
+    }
+  };
+
+  private cancelFullscreenWarning = (): void => {
+    this.hideFullscreenPrompt();
+    this.update();
+  };
+
+  private hideFullscreenPrompt(): void {
+    this.pendingAction = null;
+    this.fullscreenPrompt.classList.add('fullscreen-prompt--hidden');
+    this.syncLockOverlaySuppression();
+  }
+
+  private modeSupported(mode: LobbyMode): boolean {
+    return mode === '1v1' || GAME_CONSTANTS.match.playersPerTeam >= 2;
+  }
+
+  private syncLockOverlaySuppression(): void {
+    const suppress = this.modalOpen || !this.fullscreenPrompt.classList.contains('fullscreen-prompt--hidden');
+    document.body.setAttribute(LOCK_OVERLAY_SUPPRESSED_ATTR, suppress ? '1' : '0');
+    const lockOverlay = document.getElementById('lock-overlay');
+    if (!lockOverlay) return;
+    if (suppress) {
+      lockOverlay.classList.add('hidden');
+      return;
+    }
+    if (!document.pointerLockElement) {
+      lockOverlay.classList.remove('hidden');
+    }
+  }
+
   private flashCopied(): void {
     this.copyButton.textContent = 'Copied';
     window.setTimeout(() => {
@@ -147,4 +371,11 @@ function friendlyError(message: string): string {
   if (/timeout|closed|abnormal|network|websocket/i.test(message)) return 'Connection hiccup. Try again or create a new room.';
   if (/full|seat/i.test(message)) return 'That room is full. Create a fresh duel.';
   return message;
+}
+
+function isLikelyFullscreen(): boolean {
+  if (document.fullscreenElement) return true;
+  const widthDelta = Math.abs(window.innerWidth - screen.availWidth);
+  const heightDelta = Math.abs(window.innerHeight - screen.availHeight);
+  return widthDelta <= 8 && heightDelta <= 8;
 }

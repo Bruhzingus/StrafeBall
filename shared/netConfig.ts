@@ -90,14 +90,14 @@ function resolveProcessMode(): NetMode {
   return DEFAULT_NET_MODE;
 }
 
-/** Compiled default mode. StrafeBall 1.3: 144 sim / 144 input / 128 snapshots. */
-export const DEFAULT_NET_MODE: NetMode = 'A_144_144_128';
+/** Compiled default mode. StrafeBall 1.3: 144 sim / 144 input / 96 snapshots. */
+export const DEFAULT_NET_MODE: NetMode = 'A_144_144_96';
 
 /**
  * Active mode resolved at module load from process.env (server) or the compiled default (client).
  * The client may narrow this further at startup via applyClientNetMode(); since rates are read
  * eagerly below, a client override should be applied before the first room connection. In practice
- * the compiled default A_144_144_128 is what ships, so no client override is required for the playtest.
+ * the compiled default A_144_144_96 is what ships, so no client override is required for the playtest.
  */
 export const ACTIVE_NET_MODE: NetMode = resolveProcessMode();
 

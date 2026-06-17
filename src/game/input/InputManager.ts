@@ -1,5 +1,7 @@
 export type MouseButton = 0 | 1 | 2;
 
+const LOCK_OVERLAY_SUPPRESSED_ATTR = 'data-suppress-lock-overlay';
+
 // While the cursor is locked (i.e. you're playing) we swallow the browser's default action for
 // every key EXCEPT these, so combos like Ctrl(crouch)+D no longer fire a bookmark, Ctrl+S a
 // save dialog, Space a page scroll, etc. Escape must stay free so the player can release the
@@ -142,6 +144,7 @@ export class InputManager {
   private onPointerLockChange = (): void => {
     this.pointerLocked = document.pointerLockElement === this.canvas;
     // Show the "click to play" prompt whenever the cursor isn't locked (start, or after Esc).
-    document.getElementById('lock-overlay')?.classList.toggle('hidden', this.pointerLocked);
+    const suppressOverlay = document.body.getAttribute(LOCK_OVERLAY_SUPPRESSED_ATTR) === '1';
+    document.getElementById('lock-overlay')?.classList.toggle('hidden', this.pointerLocked || suppressOverlay);
   };
 }
