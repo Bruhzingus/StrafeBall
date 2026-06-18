@@ -31,11 +31,14 @@ export class InputManager {
     window.removeEventListener('keydown', this.onKeyDown);
     window.removeEventListener('keyup', this.onKeyUp);
     window.removeEventListener('mousemove', this.onMouseMove);
+    window.removeEventListener('pointermove', this.onPointerMove);
     window.removeEventListener('mousedown', this.onMouseDown);
     window.removeEventListener('mouseup', this.onMouseUp);
     window.removeEventListener('pointerdown', this.onPointerDown);
     window.removeEventListener('pointerup', this.onPointerUp);
     window.removeEventListener('contextmenu', this.onContextMenu);
+    document.removeEventListener('mousemove', this.onMouseMove);
+    document.removeEventListener('pointermove', this.onPointerMove);
     document.removeEventListener('pointerdown', this.onPointerDown);
     document.removeEventListener('pointerup', this.onPointerUp);
     document.removeEventListener('mousedown', this.onMouseDown);
@@ -104,11 +107,14 @@ export class InputManager {
     window.addEventListener('keydown', this.onKeyDown);
     window.addEventListener('keyup', this.onKeyUp);
     window.addEventListener('mousemove', this.onMouseMove);
+    window.addEventListener('pointermove', this.onPointerMove);
     window.addEventListener('pointerdown', this.onPointerDown);
     window.addEventListener('pointerup', this.onPointerUp);
     window.addEventListener('mousedown', this.onMouseDown);
     window.addEventListener('mouseup', this.onMouseUp);
     window.addEventListener('contextmenu', this.onContextMenu);
+    document.addEventListener('mousemove', this.onMouseMove);
+    document.addEventListener('pointermove', this.onPointerMove);
     document.addEventListener('pointerdown', this.onPointerDown);
     document.addEventListener('pointerup', this.onPointerUp);
     document.addEventListener('mousedown', this.onMouseDown);
@@ -136,6 +142,13 @@ export class InputManager {
 
   private onMouseMove = (event: MouseEvent): void => {
     if (!this.pointerLocked) return;
+    if ('PointerEvent' in window) return;
+    this.mouseDeltaX += event.movementX;
+    this.mouseDeltaY += event.movementY;
+  };
+
+  private onPointerMove = (event: PointerEvent): void => {
+    if (event.pointerType !== 'mouse' || !this.pointerLocked) return;
     this.mouseDeltaX += event.movementX;
     this.mouseDeltaY += event.movementY;
   };
@@ -143,6 +156,7 @@ export class InputManager {
   private onPointerDown = (event: PointerEvent): void => {
     if (event.pointerType !== 'mouse') return;
     if (this.shouldIgnoreUiPointer(event.target)) return;
+    event.preventDefault();
     if (!this.pointerLocked) this.requestPointerLock();
     this.recordMouseDown(event.button);
   };
@@ -154,6 +168,7 @@ export class InputManager {
 
   private onMouseDown = (event: MouseEvent): void => {
     if (this.shouldIgnoreUiPointer(event.target)) return;
+    event.preventDefault();
     if (!this.pointerLocked) this.requestPointerLock();
     this.recordMouseDown(event.button);
   };
