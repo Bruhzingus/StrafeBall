@@ -1,4 +1,5 @@
 import { Color3, DynamicTexture, Mesh, MeshBuilder, Scene, StandardMaterial } from '@babylonjs/core';
+import type { ICanvasRenderingContext } from '@babylonjs/core/Engines/ICanvas';
 import { TUNING } from '../config/tuning';
 import { BLEACHER_LAYOUT } from '../../../shared/simulation/MapGeometry';
 
@@ -20,6 +21,12 @@ interface GuidePanelSpec {
   sections: GuideSection[];
   footer: string;
 }
+
+type GuideCanvasContext = ICanvasRenderingContext;
+type GuideCanvasContext2D = GuideCanvasContext & Pick<
+  CanvasRenderingContext2D,
+  'textAlign' | 'textBaseline' | 'arcTo'
+>;
 
 const PANEL_COUNT = 3;
 const EDGE_PADDING = 1.05;
@@ -132,7 +139,7 @@ export class GuideWall {
     const tex = new DynamicTexture(`${spec.name}_tex`, { width: texWidth, height: texHeight }, scene, false);
     tex.hasAlpha = false;
 
-    const ctx = tex.getContext();
+    const ctx = tex.getContext() as GuideCanvasContext2D;
     drawPanelTexture(ctx, texWidth, texHeight, spec);
     tex.update(true);
 
@@ -183,7 +190,7 @@ export class GuideWall {
 }
 
 function drawPanelTexture(
-  ctx: CanvasRenderingContext2D,
+  ctx: GuideCanvasContext2D,
   width: number,
   height: number,
   spec: GuidePanelSpec
@@ -264,7 +271,7 @@ function drawPanelTexture(
 }
 
 function drawGuideItem(
-  ctx: CanvasRenderingContext2D,
+  ctx: GuideCanvasContext2D,
   labelX: number,
   y: number,
   labelWidth: number,
@@ -313,7 +320,7 @@ function drawGuideItem(
 }
 
 function wrapText(
-  ctx: CanvasRenderingContext2D,
+  ctx: GuideCanvasContext2D,
   text: string,
   maxWidth: number,
   font: string
@@ -338,7 +345,7 @@ function wrapText(
 }
 
 function drawWrappedText(
-  ctx: CanvasRenderingContext2D,
+  ctx: GuideCanvasContext2D,
   text: string,
   x: number,
   y: number,
@@ -351,7 +358,7 @@ function drawWrappedText(
 }
 
 function drawTextLines(
-  ctx: CanvasRenderingContext2D,
+  ctx: GuideCanvasContext2D,
   lines: readonly string[],
   x: number,
   y: number,
@@ -363,7 +370,7 @@ function drawTextLines(
 }
 
 function drawRoundedRect(
-  ctx: CanvasRenderingContext2D,
+  ctx: GuideCanvasContext2D,
   x: number,
   y: number,
   width: number,
