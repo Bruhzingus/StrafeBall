@@ -977,9 +977,13 @@ export class ArenaScene {
         ` desyncPeak=${this.desyncPeakM.toFixed(3)}m` +
         ` corrections=${this.perfReportCorrectionCount} snaps=${this.perfReportSnapCount}` +
         ` oldestSnapshotAge=${render.oldestSnapshotAgeMs.toFixed(1)}ms` +
+        ` renderDelay=${render.renderDelayMs.toFixed(1)}ms` +
         ` wsBuffered=${snap.socketBufferedAmount}B` +
         ` remoteUnderruns=${render.bufferUnderrunsPerSec.toFixed(1)}/s` +
         ` remoteOverruns=${render.bufferOverrunsPerSec.toFixed(1)}/s` +
+        ` remoteSnaps=${render.remoteSnapCount}` +
+        ` ballSnaps=${render.ballSnapCount}` +
+        ` lastSnapReason=${render.lastCorrectionReason || 'none'}` +
         ` remoteBuffer=${render.remoteInterpolationBufferSize}` +
         ` ballBuffer=${render.ballInterpolationBufferSize}` +
         ` ballPredictions=${render.ballPredictionCount}` +

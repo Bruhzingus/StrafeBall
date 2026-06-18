@@ -1,4 +1,5 @@
 import type { HandSide, PlayerInput, RoomState, Vec3 } from './types';
+import type { CompactServerSnapshot, PlayerRoster } from './snapshotCodec';
 
 export interface InputCommand {
   type: 'input';
@@ -141,12 +142,14 @@ export type ClientMessage =
 
 export type ServerMessage =
   | ServerSnapshot
+  | CompactServerSnapshot
   | ThrowEvent
   | CatchEvent
   | ParryEvent
   | HitEvent
   | HitRevertEvent
   | { type: 'joined-room'; room: RoomState; playerId: string }
+  | { type: 'roster-update'; roster: PlayerRoster }
   | { type: 'player-joined'; playerId: string }
   | { type: 'player-left'; playerId: string }
   | { type: 'input-rejected'; sequence: number; reason: string }

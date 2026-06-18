@@ -24,6 +24,7 @@ import {
   resolveServerDebugFlags,
   type DebugFlags
 } from '../../../shared/netConfig';
+import { makeCompactSnapshot, rosterFromRoom, type CompactServerSnapshot } from '../../../shared/snapshotCodec';
 import { ServerGameLoop } from '../simulation/ServerGameLoop';
 import { advanceSnapshotDeadline } from './snapshotScheduler';
 
@@ -38,6 +39,7 @@ export interface DuelRoomOptions {
 const COLYSEUS_PATCH_RATE_MS: number | null = null;
 // How long a dropped player has to reconnect before their team may forfeit (#12).
 const RECONNECT_SECONDS = GAME_CONSTANTS.match.disconnectForfeitSeconds;
+const SNAPSHOT_BACKPRESSURE_BYTES = 256 * 1024;
 // Hard cap on concurrent duel rooms per process (#19 — cheap DoS guard).
 const MAX_ROOMS = 200;
 let activeRoomCount = 0;
@@ -84,6 +86,8 @@ export class DuelRoom extends Room {
   private snapshotLateMsMax = 0;
   private snapshotDeadlineSkipsThisWindow = 0;
   private snapshotNoNewTickSkipsThisWindow = 0;
+  private snapshotBackpressureSkipsThisWindow = 0;
+  private snapshotAllBackpressureSkipsThisWindow = 0;
   // Approximate snapshot payload size, sampled cheaply (only when PERF_DEBUG is on) once per window.
   private snapshotPayloadBytesTotal = 0;
   private snapshotPayloadBytesMax = 0;
@@ -277,6 +281,7 @@ export class DuelRoom extends Room {
     } satisfies ServerMessage);
 
     this.broadcast('player-joined', { type: 'player-joined', playerId: player.id } satisfies ServerMessage, { except: client });
+    this.broadcastRosterUpdate();
   }
 
   // Unconsented disconnect: pause the player and give them a window to reconnect with their
@@ -294,6 +299,7 @@ export class DuelRoom extends Room {
   onReconnect(client: Client): void {
     this.game.setConnected(client.sessionId, true, null);
     this.log(`player reconnected id=${client.sessionId}`);
+    this.broadcastRosterUpdate();
   }
 
   // Terminal departure (consented leave, or reconnection window expired) → the remaining player
@@ -303,6 +309,7 @@ export class DuelRoom extends Room {
     this.game.abandon(client.sessionId);
     this.log(`player left id=${client.sessionId}`);
     this.broadcast('player-left', { type: 'player-left', playerId: client.sessionId } satisfies ServerMessage);
+    this.broadcastRosterUpdate();
   }
 
   onDispose(): void {
@@ -344,6 +351,8 @@ export class DuelRoom extends Room {
     this.snapshotLateMsMax = 0;
     this.snapshotDeadlineSkipsThisWindow = 0;
     this.snapshotNoNewTickSkipsThisWindow = 0;
+    this.snapshotBackpressureSkipsThisWindow = 0;
+    this.snapshotAllBackpressureSkipsThisWindow = 0;
     this.snapshotPayloadBytesTotal = 0;
     this.snapshotPayloadBytesMax = 0;
     this.snapshotPayloadSamples = 0;
@@ -409,7 +418,7 @@ export class DuelRoom extends Room {
       `simTickMs avg=${avgSimTickMs.toFixed(2)} max=${this.simTickMsMax.toFixed(2)} ` +
       `snapshotBuildMs avg=${avgSnapshotBuildMs.toFixed(3)} max=${this.snapshotBuildMsMax.toFixed(3)} ` +
       `snapshotBroadcastMs avg=${avgSnapshotBroadcastMs.toFixed(3)} max=${this.snapshotBroadcastMsMax.toFixed(3)} ` +
-      `snapshotLateMs avg=${avgSnapshotLateMs.toFixed(2)} max=${this.snapshotLateMsMax.toFixed(2)} skippedSnapshots=${this.snapshotDeadlineSkipsThisWindow} noNewTickSkips=${this.snapshotNoNewTickSkipsThisWindow} ` +
+      `snapshotLateMs avg=${avgSnapshotLateMs.toFixed(2)} max=${this.snapshotLateMsMax.toFixed(2)} skippedSnapshots=${this.snapshotDeadlineSkipsThisWindow} noNewTickSkips=${this.snapshotNoNewTickSkipsThisWindow} backpressureSkips=${this.snapshotBackpressureSkipsThisWindow} allBackpressureSkips=${this.snapshotAllBackpressureSkipsThisWindow} ` +
       `players total=${playerStates.length} active=${activePlayers} alive=${alivePlayers} eliminated=${eliminatedPlayers} disconnected=${disconnectedPlayers} ` +
       `balls total=${balls.length} active=${activeBalls} live=${liveBalls} ` +
       `inputsProcessed={${inputRates || 'none'}} ` +
@@ -441,7 +450,7 @@ export class DuelRoom extends Room {
    * The payload-size sample uses JSON.stringify, which is expensive — so it runs at most ONCE per
    * report window, and only when PERF_DEBUG is on. Real playtests with PERF_DEBUG off pay nothing.
    */
-  private recordSnapshot(snapshot: ServerSnapshot, buildMs: number, broadcastMs: number, lateMs: number): void {
+  private recordSnapshot(snapshot: ServerSnapshot | CompactServerSnapshot, buildMs: number, broadcastMs: number, lateMs: number): void {
     this.snapshotsThisWindow += 1;
     this.snapshotBuildMsTotal += buildMs;
     this.snapshotBuildMsMax = Math.max(this.snapshotBuildMsMax, buildMs);
@@ -484,13 +493,30 @@ export class DuelRoom extends Room {
   }
 
   private broadcastSnapshot(dueAtMs: number, actualNowMs: number): void {
-    const snapshot = this.game.snapshot();
+    const snapshot = makeCompactSnapshot(this.game.snapshot());
     const buildMs = this.game.getLastSnapshotBuildMs();
     const broadcastStartedAt = performance.now();
-    this.broadcast('snapshot', snapshot);
+    let sentClients = 0;
+    for (const client of this.clients) {
+      const buffered = readClientBufferedAmount(client) ?? 0;
+      if (buffered > SNAPSHOT_BACKPRESSURE_BYTES) {
+        this.snapshotBackpressureSkipsThisWindow += 1;
+        continue;
+      }
+      client.send('snapshot', snapshot);
+      sentClients += 1;
+    }
+    if (sentClients === 0 && this.clients.length > 0) this.snapshotAllBackpressureSkipsThisWindow += 1;
     const broadcastMs = performance.now() - broadcastStartedAt;
     this.lastSnapshotTickSent = snapshot.tick;
-    this.recordSnapshot(snapshot, buildMs, broadcastMs, Math.max(0, actualNowMs - dueAtMs));
+    if (sentClients > 0) this.recordSnapshot(snapshot, buildMs, broadcastMs, Math.max(0, actualNowMs - dueAtMs));
+  }
+
+  private broadcastRosterUpdate(): void {
+    this.broadcast('roster-update', {
+      type: 'roster-update',
+      roster: rosterFromRoom(this.game.state)
+    } satisfies ServerMessage);
   }
 
   private socketBufferStats(): { avgBytes: number; maxBytes: number } {

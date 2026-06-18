@@ -114,6 +114,9 @@ export interface NetworkRendererDebugStats {
   bufferOverrunsPerSec: number;
   avgSnapshotIntervalMs: number;
   maxSnapshotIntervalMs: number;
+  remoteSnapCount: number;
+  ballSnapCount: number;
+  lastCorrectionReason: string;
   ballPredictionCount: number;
   ballPredictionCorrections: number;
   ballPredictionMaxCorrections: number;
@@ -152,6 +155,7 @@ export class NetworkRenderer {
   // displaying; it advances by real dt every frame and is gently nudged toward
   // (latestServerTime - INTERPOLATION_DELAY_MS). Decoupling it from packet arrival is the core fix.
   private renderServerTime = 0;
+  private interpolationDelayMs = INTERPOLATION_DELAY_MS;
   private renderClockInitialized = false;
   // Reconstruct a server timeline from tick deltas when serverTimeMs looks unusable.
   private serverTimeBaseMs = 0;
@@ -165,6 +169,8 @@ export class NetworkRenderer {
   private metricIntervalTotalMs = 0;
   private metricIntervalCount = 0;
   private metricIntervalMaxMs = 0;
+  private metricRemoteSnaps = 0;
+  private metricBallSnaps = 0;
   private debugStats: NetworkRendererDebugStats = emptyDebugStats();
 
   // Reusable "render player" view, mutated in place each frame in posePlayerVisual instead of
@@ -246,7 +252,7 @@ export class NetworkRenderer {
     // Keep the live buffer size / age fields fresh; rate-style metrics come from the rolling window.
     this.debugStats.remoteInterpolationBufferSize = this.snapshotBuffer.length;
     this.debugStats.ballInterpolationBufferSize = this.snapshotBuffer.length;
-    this.debugStats.renderDelayMs = NetworkRenderer.INTERPOLATION_DELAY_MS;
+    this.debugStats.renderDelayMs = this.interpolationDelayMs;
     const now = Date.now();
     const oldest = this.snapshotBuffer[0];
     const newest = this.snapshotBuffer[this.snapshotBuffer.length - 1];
@@ -389,7 +395,7 @@ export class NetworkRenderer {
     if (this.snapshotBuffer.length === 0) return null;
 
     const newest = this.snapshotBuffer[this.snapshotBuffer.length - 1];
-    const target = newest.serverTimeMs - NetworkRenderer.INTERPOLATION_DELAY_MS;
+    const target = newest.serverTimeMs - this.interpolationDelayMs;
 
     if (!this.renderClockInitialized) {
       this.renderServerTime = target;
@@ -460,6 +466,8 @@ export class NetworkRenderer {
     this.metricIntervalTotalMs = 0;
     this.metricIntervalCount = 0;
     this.metricIntervalMaxMs = 0;
+    this.metricRemoteSnaps = 0;
+    this.metricBallSnaps = 0;
   }
 
   /** Roll the debug-metric window roughly once per second, computing per-second rates. */
@@ -475,6 +483,9 @@ export class NetworkRenderer {
     this.debugStats.avgSnapshotIntervalMs =
       this.metricIntervalCount > 0 ? this.metricIntervalTotalMs / this.metricIntervalCount : 0;
     this.debugStats.maxSnapshotIntervalMs = this.metricIntervalMaxMs;
+    this.debugStats.remoteSnapCount = this.metricRemoteSnaps;
+    this.debugStats.ballSnapCount = this.metricBallSnaps;
+    this.updateAdaptiveInterpolationDelay();
 
     this.metricWindowStartMs = now;
     this.metricUnderruns = 0;
@@ -482,6 +493,23 @@ export class NetworkRenderer {
     this.metricIntervalTotalMs = 0;
     this.metricIntervalCount = 0;
     this.metricIntervalMaxMs = 0;
+    this.metricRemoteSnaps = 0;
+    this.metricBallSnaps = 0;
+  }
+
+  private updateAdaptiveInterpolationDelay(): void {
+    const interval = this.debugStats.avgSnapshotIntervalMs > 0
+      ? this.debugStats.avgSnapshotIntervalMs
+      : SNAPSHOT_INTERVAL_MS;
+    const minDelay = Math.max(35, interval * 3);
+    const maxDelay = Math.max(120, interval * 8);
+    const jitterPressure = this.debugStats.bufferUnderrunsPerSec > 0 ||
+      this.debugStats.maxSnapshotIntervalMs > this.interpolationDelayMs * 0.8;
+    const target = jitterPressure
+      ? Math.min(maxDelay, Math.max(INTERPOLATION_DELAY_MS, this.debugStats.maxSnapshotIntervalMs * 1.5))
+      : minDelay;
+    const blend = jitterPressure ? 0.35 : 0.08;
+    this.interpolationDelayMs += (target - this.interpolationDelayMs) * blend;
   }
 
   private updatePlayers(players: PlayerState[], localPlayerId: string, dt: number): void {
@@ -499,13 +527,14 @@ export class NetworkRenderer {
       const recoilDistance = recoil ? recoil.baseDistance * (recoil.remaining / recoil.duration) : 0;
       const recoilX = recoil ? recoil.dirX * recoilDistance : 0;
       const recoilZ = recoil ? recoil.dirZ * recoilDistance : 0;
-      if (isNetworkRenderDebugEnabled()) {
-        const error = distanceVec3(
-          { x: visual.root.position.x, y: visual.root.position.y, z: visual.root.position.z },
-          { x: target.x + recoilX, y: target.y, z: target.z + recoilZ }
-        );
-        if (error > NetworkRenderer.HUGE_ERROR_SNAP_METERS) {
-          console.log(`[remote/${player.id.slice(-4)}] snap largeError=${error.toFixed(2)}m`);
+      const remoteError = distanceVec3(
+        { x: visual.root.position.x, y: visual.root.position.y, z: visual.root.position.z },
+        { x: target.x + recoilX, y: target.y, z: target.z + recoilZ }
+      );
+      if (remoteError > NetworkRenderer.HUGE_ERROR_SNAP_METERS) {
+        this.recordCorrection('remote-large-error');
+        if (isNetworkRenderDebugEnabled()) {
+          console.log(`[remote/${player.id.slice(-4)}] snap largeError=${remoteError.toFixed(2)}m delay=${this.interpolationDelayMs.toFixed(1)}ms`);
         }
       }
       visual.root.position.set(target.x + recoilX, target.y, target.z + recoilZ);
@@ -686,12 +715,13 @@ export class NetworkRenderer {
 
       const previous = this.ballRenderContinuity.get(ball.id);
       const changed = previous !== undefined && !continuityMatchesBall(previous, ball);
-      if (isNetworkRenderDebugEnabled()) {
-        const mp = visual.mesh.position;
-        const error = distanceVec3({ x: mp.x, y: mp.y, z: mp.z }, target);
-        if (changed || error > NetworkRenderer.HUGE_ERROR_SNAP_METERS) {
+      const mp = visual.mesh.position;
+      const ballError = distanceVec3({ x: mp.x, y: mp.y, z: mp.z }, target);
+      if (changed || ballError > NetworkRenderer.HUGE_ERROR_SNAP_METERS) {
+        this.recordCorrection(changed ? 'ball-continuity-change' : 'ball-large-error');
+        if (isNetworkRenderDebugEnabled()) {
           console.log(
-            `[net/ball] snap id=${ball.id} phase=${ball.phase} changed=${Number(changed)} error=${error.toFixed(2)}m`
+            `[net/ball] snap id=${ball.id} phase=${ball.phase} changed=${Number(changed)} error=${ballError.toFixed(2)}m`
           );
         }
       }
@@ -1142,6 +1172,15 @@ export class NetworkRenderer {
     this.materials.set(key, material);
     return material;
   }
+
+  private recordCorrection(reason: string): void {
+    if (reason.startsWith('remote')) {
+      this.metricRemoteSnaps += 1;
+    } else {
+      this.metricBallSnaps += 1;
+    }
+    this.debugStats.lastCorrectionReason = reason;
+  }
 }
 
 /** Scratch movement whose `position` aliases the supplied ref; other fields are overwritten/aliased
@@ -1214,6 +1253,9 @@ function emptyDebugStats(): NetworkRendererDebugStats {
     bufferOverrunsPerSec: 0,
     avgSnapshotIntervalMs: 0,
     maxSnapshotIntervalMs: 0,
+    remoteSnapCount: 0,
+    ballSnapCount: 0,
+    lastCorrectionReason: '',
     ballPredictionCount: 0,
     ballPredictionCorrections: 0,
     ballPredictionMaxCorrections: 0

@@ -18,6 +18,14 @@ import type {
 } from '../../../shared/protocol';
 import type { HandSide, MatchMode, PlayerInput, Vec3 } from '../../../shared/types';
 import { PERF_REPORT_INTERVAL_MS } from '../../../shared/netConfig';
+import {
+  hydrateSnapshotRoster,
+  inflateCompactSnapshot,
+  isCompactSnapshot,
+  rosterFromRoom,
+  type CompactServerSnapshot,
+  type PlayerRoster
+} from '../../../shared/snapshotCodec';
 
 export type ConnectionStatus = 'offline' | 'connecting' | 'connected' | 'error';
 
@@ -43,6 +51,7 @@ export class MultiplayerClient {
   private parryEventQueue: ParryEvent[] = [];
   private hitEventQueue: HitEvent[] = [];
   private hitRevertEventQueue: HitRevertEvent[] = [];
+  private readonly roster: PlayerRoster = {};
   public snapshotDebug = {
     receivedPerSecond: 0,
     uniqueTicksPerSecond: 0,
@@ -108,6 +117,7 @@ export class MultiplayerClient {
     this.parryEventQueue = [];
     this.hitEventQueue = [];
     this.hitRevertEventQueue = [];
+    clearRoster(this.roster);
     this.resetSnapshotDebug();
   }
 
@@ -237,14 +247,16 @@ export class MultiplayerClient {
   }
 
   private bindRoom(room: Room): void {
-    room.onMessage('snapshot', (message: ServerSnapshot) => {
+    room.onMessage('snapshot', (message: ServerSnapshot | CompactServerSnapshot) => {
       if (this.room !== room) return;
-      this.recordSnapshotReceived(message);
-      if (this.latestSnapshot && message.tick <= this.latestSnapshot.tick) {
+      const unpacked = isCompactSnapshot(message) ? inflateCompactSnapshot(message) : message;
+      this.recordSnapshotReceived(unpacked);
+      const snapshot = hydrateSnapshotRoster(unpacked, this.roster);
+      if (this.latestSnapshot && snapshot.tick <= this.latestSnapshot.tick) {
         this.snapshotWindowStaleDropped += 1;
         return;
       }
-      this.latestSnapshot = message;
+      this.latestSnapshot = snapshot;
     });
 
     room.onMessage('throw-event', (message: ThrowEvent) => {
@@ -281,12 +293,19 @@ export class MultiplayerClient {
     room.onMessage('joined-room', (message: Extract<ServerMessage, { type: 'joined-room' }>) => {
       if (this.room !== room) return;
       this.localPlayerId = message.playerId;
+      replaceRoster(this.roster, rosterFromRoom(message.room));
       this.latestSnapshot = {
         type: 'snapshot',
         tick: message.room.tick,
         serverTimeMs: Date.now(),
         room: message.room
       };
+    });
+
+    room.onMessage('roster-update', (message: Extract<ServerMessage, { type: 'roster-update' }>) => {
+      if (this.room !== room) return;
+      replaceRoster(this.roster, message.roster);
+      if (this.latestSnapshot) this.latestSnapshot = hydrateSnapshotRoster(this.latestSnapshot, this.roster);
     });
 
     room.onMessage('request-rejected', (message: Extract<ServerMessage, { type: 'request-rejected' }>) => {
@@ -318,6 +337,7 @@ export class MultiplayerClient {
       this.parryEventQueue = [];
       this.hitEventQueue = [];
       this.hitRevertEventQueue = [];
+      clearRoster(this.roster);
       this.resetSnapshotDebug();
     });
   }
@@ -422,4 +442,13 @@ export class MultiplayerClient {
 function cleanName(name: string): string {
   const trimmed = name.trim();
   return trimmed ? trimmed.slice(0, 24) : 'Player';
+}
+
+function replaceRoster(target: PlayerRoster, next: PlayerRoster): void {
+  clearRoster(target);
+  for (const playerId in next) target[playerId] = next[playerId];
+}
+
+function clearRoster(target: PlayerRoster): void {
+  for (const playerId in target) delete target[playerId];
 }
