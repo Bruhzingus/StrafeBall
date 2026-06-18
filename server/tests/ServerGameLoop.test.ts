@@ -676,19 +676,53 @@ describe('ServerGameLoop', () => {
       expect(loop.state.match.winnerTeamId).toBe('blue');
     });
 
-    it('eliminates and forfeits a duel player who ignores the half-court countdown', () => {
+    it('awards one duel penalty hit per second after the half-court warning is spent', () => {
       const loop = new ServerGameLoop('room');
       loop.addPlayer('a', 'A');
       loop.addPlayer('b', 'B');
       playNow(loop);
 
-      loop.state.players.a.movement.position = vec3(0, 0, GAME_CONSTANTS.match.halfCourtLineZ + 1);
-      const steps = Math.ceil(GAME_CONSTANTS.match.illegalCrossDeathCountdownSeconds * loop.tickRate) + 2;
+      loop.state.players.a.movement.position = loop.state.players.a.legalHalf === 'negativeZ'
+        ? vec3(0, 0, GAME_CONSTANTS.match.halfCourtLineZ + 1)
+        : vec3(0, 0, -GAME_CONSTANTS.match.halfCourtLineZ - 1);
+      loop.step();
+      loop.state.players.a.movement.position = loop.state.players.a.legalHalf === 'negativeZ'
+        ? vec3(0, 0, -GAME_CONSTANTS.match.halfCourtLineZ - 1)
+        : vec3(0, 0, GAME_CONSTANTS.match.halfCourtLineZ + 1);
+      loop.step();
+      loop.state.players.a.movement.position = loop.state.players.a.legalHalf === 'negativeZ'
+        ? vec3(0, 0, GAME_CONSTANTS.match.halfCourtLineZ + 1)
+        : vec3(0, 0, -GAME_CONSTANTS.match.halfCourtLineZ - 1);
+      const steps = Math.ceil(GAME_CONSTANTS.match.scoreLimit * GAME_CONSTANTS.match.illegalCrossPenaltyIntervalSeconds * loop.tickRate) + 2;
       for (let i = 0; i < steps; i += 1) loop.step();
 
-      expect(loop.state.players.a.combatState).toBe('eliminated');
+      expect(loop.state.players.a.combatState).toBe('alive');
       expect(loop.state.match.status).toBe('complete');
       expect(loop.state.match.winnerTeamId).toBe(loop.state.players.b.teamId);
+      expect(loop.state.match.scoreByTeamId[loop.state.players.b.teamId]).toBe(GAME_CONSTANTS.match.scoreLimit);
+    });
+
+    it('removes 2v2 lives once per second after the half-court warning is spent', () => {
+      const loop = create2v2Loop();
+      const offender = loop.state.players.a;
+      offender.movement.position = offender.legalHalf === 'negativeZ'
+        ? vec3(0, 0, GAME_CONSTANTS.match.halfCourtLineZ + 1)
+        : vec3(0, 0, -GAME_CONSTANTS.match.halfCourtLineZ - 1);
+      loop.step();
+      offender.movement.position = offender.legalHalf === 'negativeZ'
+        ? vec3(0, 0, -GAME_CONSTANTS.match.halfCourtLineZ - 1)
+        : vec3(0, 0, GAME_CONSTANTS.match.halfCourtLineZ + 1);
+      loop.step();
+      offender.movement.position = offender.legalHalf === 'negativeZ'
+        ? vec3(0, 0, GAME_CONSTANTS.match.halfCourtLineZ + 1)
+        : vec3(0, 0, -GAME_CONSTANTS.match.halfCourtLineZ - 1);
+
+      const steps = Math.ceil(GAME_CONSTANTS.match.illegalCrossPenaltyIntervalSeconds * loop.tickRate) + 2;
+      for (let i = 0; i < steps; i += 1) loop.step();
+
+      expect(loop.state.players.a.lives).toBe(GAME_CONSTANTS.match.playerLives - 1);
+      expect(loop.state.players.a.combatState).toBe('alive');
+      expect(loop.state.players.a.matchStats.hitsTaken).toBe(1);
     });
 
     it('eliminated players become cover that blocks balls but cannot take more damage', () => {
@@ -1039,6 +1073,60 @@ describe('ServerGameLoop', () => {
       ownerKind: 'player',
       ownerId: 'a',
       position: { ...hitLoop.state.players.b.movement.position, y: crouchHeight + combinedRadius - 0.05 },
+      velocity: vec3(0, 0, 24)
+    };
+
+    hitLoop.step();
+
+    expect(hitLoop.state.match.scoreByTeamId.blue).toBe(1);
+  });
+
+  it('uses the 80 percent slide hitbox for player hits', () => {
+    const missLoop = new ServerGameLoop('room');
+    missLoop.addPlayer('a', 'A');
+    missLoop.addPlayer('b', 'B');
+    playNow(missLoop);
+    missLoop.state.players.b.movement = {
+      ...missLoop.state.players.b.movement,
+      crouching: false,
+      sliding: true
+    };
+
+    const slideHeight = GAME_CONSTANTS.player.height * GAME_CONSTANTS.slide.heightScale;
+    const crouchHeight = GAME_CONSTANTS.player.height * GAME_CONSTANTS.player.crouchHeightMultiplier;
+    const combinedRadius = GAME_CONSTANTS.player.radius + GAME_CONSTANTS.ball.radius;
+    const overSlidingHeadY = slideHeight + combinedRadius + 0.08;
+    expect(slideHeight).toBeGreaterThan(crouchHeight);
+    expect(overSlidingHeadY).toBeLessThan(GAME_CONSTANTS.player.height + combinedRadius);
+
+    missLoop.state.balls.ball_0 = {
+      ...missLoop.state.balls.ball_0,
+      phase: 'live',
+      ownerKind: 'player',
+      ownerId: 'a',
+      position: { ...missLoop.state.players.b.movement.position, y: overSlidingHeadY },
+      velocity: vec3(0, 0, 24)
+    };
+
+    missLoop.step();
+
+    expect(missLoop.state.match.scoreByTeamId.blue).toBe(0);
+
+    const hitLoop = new ServerGameLoop('room');
+    hitLoop.addPlayer('a', 'A');
+    hitLoop.addPlayer('b', 'B');
+    playNow(hitLoop);
+    hitLoop.state.players.b.movement = {
+      ...hitLoop.state.players.b.movement,
+      crouching: false,
+      sliding: true
+    };
+    hitLoop.state.balls.ball_0 = {
+      ...hitLoop.state.balls.ball_0,
+      phase: 'live',
+      ownerKind: 'player',
+      ownerId: 'a',
+      position: { ...hitLoop.state.players.b.movement.position, y: slideHeight + combinedRadius - 0.05 },
       velocity: vec3(0, 0, 24)
     };
 

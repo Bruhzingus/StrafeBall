@@ -110,6 +110,7 @@ function packPlayer(player: PlayerState): unknown[] {
     player.movement.speed,
     [
       player.movementInternal.slideTimer,
+      player.movementInternal.slideBufferTimer,
       player.movementInternal.jumpGraceTimer,
       player.movementInternal.wallRunTimer,
       player.movementInternal.wallReattachCooldown,
@@ -170,18 +171,19 @@ function unpackPlayer(packed: unknown[]): PlayerState {
     },
     movementInternal: {
       slideTimer: movementInternal[0] as number,
-      jumpGraceTimer: movementInternal[1] as number,
-      wallRunTimer: movementInternal[2] as number,
-      wallReattachCooldown: movementInternal[3] as number,
-      dashActiveTimer: movementInternal[4] as number,
-      doubleJumpAvailable: Boolean(movementInternal[5]),
-      catchBoostTimer: movementInternal[6] as number,
-      groundHeight: movementInternal[7] as number,
-      lastWallNormalX: movementInternal[8] as number,
-      lastWallNormalZ: movementInternal[9] as number,
-      backflipActive: Boolean(movementInternal[10]),
-      backflipTimer: movementInternal[11] as number,
-      backflipCooldown: movementInternal[12] as number
+      slideBufferTimer: movementInternal.length > 13 ? movementInternal[1] as number : 0,
+      jumpGraceTimer: movementInternal[movementInternal.length > 13 ? 2 : 1] as number,
+      wallRunTimer: movementInternal[movementInternal.length > 13 ? 3 : 2] as number,
+      wallReattachCooldown: movementInternal[movementInternal.length > 13 ? 4 : 3] as number,
+      dashActiveTimer: movementInternal[movementInternal.length > 13 ? 5 : 4] as number,
+      doubleJumpAvailable: Boolean(movementInternal[movementInternal.length > 13 ? 6 : 5]),
+      catchBoostTimer: movementInternal[movementInternal.length > 13 ? 7 : 6] as number,
+      groundHeight: movementInternal[movementInternal.length > 13 ? 8 : 7] as number,
+      lastWallNormalX: movementInternal[movementInternal.length > 13 ? 9 : 8] as number,
+      lastWallNormalZ: movementInternal[movementInternal.length > 13 ? 10 : 9] as number,
+      backflipActive: Boolean(movementInternal[movementInternal.length > 13 ? 11 : 10]),
+      backflipTimer: movementInternal[movementInternal.length > 13 ? 12 : 11] as number,
+      backflipCooldown: movementInternal[movementInternal.length > 13 ? 13 : 12] as number
     },
     hands: {
       left: unpackHand('left', hands[0]),
@@ -323,6 +325,7 @@ function leanPlayer(player: PlayerState): PlayerState {
     movementInternal: {
       ...player.movementInternal,
       slideTimer: q3(player.movementInternal.slideTimer),
+      slideBufferTimer: q3(player.movementInternal.slideBufferTimer),
       jumpGraceTimer: q3(player.movementInternal.jumpGraceTimer),
       wallRunTimer: q3(player.movementInternal.wallRunTimer),
       wallReattachCooldown: q3(player.movementInternal.wallReattachCooldown),

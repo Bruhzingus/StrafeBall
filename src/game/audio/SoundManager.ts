@@ -114,6 +114,24 @@ export class SoundManager {
     this.tone('triangle', 760 * grip, 560 * grip, 0.11, 0.024 * grip * gain);
   }
 
+  slideBrush(speed = 0, gain = 1): void {
+    const scrape = Math.max(0.42, Math.min(1.15, 0.48 + speed / 18));
+    this.filteredNoiseBurst({
+      duration: 0.34 + 0.1 * Math.min(1, speed / 12),
+      peak: 0.048 * scrape * gain,
+      highpassHz: 90,
+      lowpassHz: 1450,
+      attackSeconds: 0.055
+    });
+    this.filteredNoiseBurst({
+      duration: 0.28,
+      peak: 0.022 * scrape * gain,
+      highpassHz: 260,
+      lowpassHz: 2200,
+      attackSeconds: 0.075
+    });
+  }
+
   /** Legacy hook for impacts: now uses the rubber ping at standard speed. */
   thud(gain = 1): void {
     this.ping(24, gain);
@@ -294,6 +312,50 @@ export class SoundManager {
     gain.gain.setValueAtTime(Math.max(MIN_AUDIO_PARAM_VALUE, peak), now);
     gain.gain.exponentialRampToValueAtTime(MIN_AUDIO_PARAM_VALUE, now + duration);
     src.connect(filter).connect(gain).connect(output);
+    src.start(now);
+    src.stop(now + duration);
+  }
+
+  private filteredNoiseBurst(options: {
+    duration: number;
+    peak: number;
+    highpassHz: number;
+    lowpassHz: number;
+    attackSeconds?: number;
+    destination?: AudioNode;
+  }): void {
+    const ctx = this.ensureContext();
+    const output = options.destination ?? this.master;
+    if (!ctx || !output || !Number.isFinite(options.peak) || options.peak <= MIN_AUDIBLE_PEAK) return;
+
+    const now = ctx.currentTime;
+    const duration = Math.max(0.01, options.duration);
+    const frames = Math.max(1, Math.floor(ctx.sampleRate * duration));
+    const buffer = ctx.createBuffer(1, frames, ctx.sampleRate);
+    const data = buffer.getChannelData(0);
+    let previous = 0;
+    for (let i = 0; i < frames; i += 1) {
+      const white = Math.random() * 2 - 1;
+      previous = previous * 0.58 + white * 0.42;
+      data[i] = previous;
+    }
+
+    const src = ctx.createBufferSource();
+    src.buffer = buffer;
+    const highpass = ctx.createBiquadFilter();
+    highpass.type = 'highpass';
+    highpass.frequency.value = options.highpassHz;
+    highpass.Q.value = 0.45;
+    const lowpass = ctx.createBiquadFilter();
+    lowpass.type = 'lowpass';
+    lowpass.frequency.value = options.lowpassHz;
+    lowpass.Q.value = 0.7;
+    const gain = ctx.createGain();
+    const attack = Math.min(duration * 0.4, options.attackSeconds ?? 0.008);
+    gain.gain.setValueAtTime(MIN_AUDIO_PARAM_VALUE, now);
+    gain.gain.linearRampToValueAtTime(Math.max(MIN_AUDIO_PARAM_VALUE, options.peak), now + attack);
+    gain.gain.exponentialRampToValueAtTime(MIN_AUDIO_PARAM_VALUE, now + duration);
+    src.connect(highpass).connect(lowpass).connect(gain).connect(output);
     src.start(now);
     src.stop(now + duration);
   }

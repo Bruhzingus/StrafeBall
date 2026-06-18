@@ -12,8 +12,9 @@ import { TUNING } from '../config/tuning';
 import { createBleacherTierSpecs } from '../../../shared/simulation/MapGeometry';
 
 type WallSide = 'north' | 'south' | 'east' | 'west';
-type BannerShape = 'rectangle' | 'notched' | 'pennant';
+type BannerShape = 'rectangle' | 'vertical' | 'pennant';
 type BannerIcon = 'ball' | 'trophy' | 'stars';
+type BannerTemplate = 'rect' | 'verticalTeam' | 'pennant';
 
 interface BannerPalette {
   background: string;
@@ -33,53 +34,72 @@ interface BannerSpec {
   height: number;
   title: string;
   subtitle?: string;
+  template: BannerTemplate;
   shape: BannerShape;
   palette: BannerPalette;
   icon?: BannerIcon;
+  textureUrl?: string;
+  alphaTexture?: boolean;
 }
 
 const WALL_DECAL_INSET = 0.048;
 const WALL_PAD_DECAL_INSET = 0.085;
 const DECOR_META = { decorative: true, noGameplay: true };
+const GYM_TEXTURES = {
+  floor: '/assets/textures/gym/floor/Wood-Floor.png',
+  wall: '/assets/textures/gym/walls/Wall_Stones.png',
+  wallPad: '/assets/textures/gym/walls/Wall_Mat.png',
+  coverMat: '/assets/textures/gym/Obstacles/Cover_Mat.png',
+  banners: {
+    championshipCourt: '/assets/textures/gym/banners/ChampionshipCourt.png',
+    homeOfChamps: '/assets/textures/gym/banners/HomeOfChamps.png',
+    mvp: '/assets/textures/gym/banners/MVP.png',
+    noBoundaries: '/assets/textures/gym/banners/NoBoundaries.png',
+    privateDuel: '/assets/textures/gym/banners/PrivateDuel.png',
+    sponsor1: '/assets/textures/gym/banners/SponsorBanner1.png',
+    sponsor2: '/assets/textures/gym/banners/SponsorBanner2.png',
+    strafeBallLeague: '/assets/textures/gym/banners/StrafeBallLeage.png'
+  }
+} as const;
 
 const PALETTES = {
   navy: {
-    background: '#142d5e',
-    background2: '#07162f',
-    border: '#ffd34f',
-    accent: '#ff8a32',
+    background: '#13294b',
+    background2: '#0a1830',
+    border: '#f2c94c',
+    accent: '#d97706',
     text: '#fff7dc',
     shadow: '#071225'
   },
   blue: {
-    background: '#174baf',
-    background2: '#0a225e',
-    border: '#f4f7ff',
-    accent: '#ffd24a',
+    background: '#2e5fa7',
+    background2: '#13294b',
+    border: '#f2c94c',
+    accent: '#fff4bf',
     text: '#f9fbff',
     shadow: '#06133a'
   },
   gold: {
-    background: '#ef9a2f',
+    background: '#d97706',
     background2: '#8d3d16',
     border: '#19325f',
-    accent: '#ffe27a',
+    accent: '#f2c94c',
     text: '#fff8e5',
     shadow: '#371205'
   },
   red: {
-    background: '#b82d2a',
+    background: '#b91c1c',
     background2: '#5b121c',
-    border: '#fff3d0',
-    accent: '#ffb145',
+    border: '#f2c94c',
+    accent: '#fff4bf',
     text: '#fff8e6',
     shadow: '#2f0610'
   },
   white: {
-    background: '#f4efe3',
+    background: '#eee9dd',
     background2: '#d7d1c5',
-    border: '#1c3f83',
-    accent: '#e9622f',
+    border: '#13294b',
+    accent: '#d97706',
     text: '#17315f',
     shadow: '#fff7e5'
   }
@@ -95,7 +115,6 @@ export function applyGymVisualRevamp(scene: Scene): void {
   createScoreboardHardware(scene);
   createUpperWallDetails(scene);
   createGymBanners(scene);
-  createBannerHardware(scene);
   createBleacherAccents(scene);
   createBleacherUnderframes(scene);
   createCourtLineShadows(scene);
@@ -109,14 +128,12 @@ export function applyGymVisualRevamp(scene: Scene): void {
 function enhanceExistingMaterials(scene: Scene): void {
   const floorMaterial = scene.getMaterialByName('floor_material');
   if (floorMaterial instanceof PBRMaterial) {
-    const floorTexture = createWoodTexture(scene, 'gym_floor_polished_maple_tex', 'natural');
-    floorTexture.uScale = 5;
-    floorTexture.vScale = 12;
+    const floorTexture = createImageTexture(scene, 'gym_floor_polished_maple_png', GYM_TEXTURES.floor, 3.2, 7.8);
     floorMaterial.albedoTexture = floorTexture;
     floorMaterial.albedoColor = new Color3(1, 1, 1);
     floorMaterial.metallic = 0;
     floorMaterial.roughness = 0.24;
-    floorMaterial.environmentIntensity = 0.78;
+    floorMaterial.environmentIntensity = 0.9;
   }
 
   setZoneMaterial(scene, 'zone_player_mat', 'blue');
@@ -124,19 +141,32 @@ function enhanceExistingMaterials(scene: Scene): void {
 
   const wallMaterial = scene.getMaterialByName('wall_material');
   if (wallMaterial instanceof PBRMaterial) {
-    const wallTexture = createCinderblockTexture(scene);
-    wallTexture.uScale = 5.2;
-    wallTexture.vScale = 2.2;
+    const wallTexture = createImageTexture(scene, 'gym_wall_cinderblock_png', GYM_TEXTURES.wall, 5.2, 2.2);
     wallMaterial.albedoTexture = wallTexture;
     wallMaterial.albedoColor = new Color3(0.98, 0.96, 0.9);
-    wallMaterial.roughness = 0.68;
+    wallMaterial.roughness = 0.62;
   }
 
   const wallPadMaterial = scene.getMaterialByName('wallPad_material');
   if (wallPadMaterial instanceof PBRMaterial) {
-    wallPadMaterial.albedoColor = new Color3(0.06, 0.22, 0.62);
+    const padTexture = createImageTexture(scene, 'gym_wall_pad_vinyl_png', GYM_TEXTURES.wallPad, 8, 1);
+    wallPadMaterial.albedoTexture = padTexture;
+    wallPadMaterial.albedoColor = new Color3(0.92, 0.96, 1);
     wallPadMaterial.emissiveColor = new Color3(0.006, 0.018, 0.055);
-    wallPadMaterial.roughness = 0.42;
+    wallPadMaterial.metallic = 0;
+    wallPadMaterial.roughness = 0.38;
+    wallPadMaterial.environmentIntensity = 0.5;
+  }
+
+  const coverMatMaterial = scene.getMaterialByName('mat_material');
+  if (coverMatMaterial instanceof PBRMaterial) {
+    const coverTexture = createImageTexture(scene, 'gym_cover_mat_png', GYM_TEXTURES.coverMat, 1, 1);
+    coverMatMaterial.albedoTexture = coverTexture;
+    coverMatMaterial.albedoColor = new Color3(1, 1, 1);
+    coverMatMaterial.emissiveColor = new Color3(0.004, 0.015, 0.05);
+    coverMatMaterial.metallic = 0;
+    coverMatMaterial.roughness = 0.4;
+    coverMatMaterial.environmentIntensity = 0.48;
   }
 
   const bleacherMaterial = scene.getMaterialByName('bleacher_material');
@@ -172,11 +202,11 @@ function setZoneMaterial(scene: Scene, name: string, tone: 'blue' | 'red'): void
   const material = scene.getMaterialByName(name);
   if (!(material instanceof StandardMaterial)) return;
 
-  const texture = createWoodTexture(scene, `${name}_polished_court_tex`, tone);
-  texture.uScale = 4;
-  texture.vScale = 8;
+  const texture = createImageTexture(scene, `${name}_polished_court_png`, GYM_TEXTURES.floor, 3.2, 4.2);
   material.diffuseTexture = texture;
-  material.diffuseColor = new Color3(1, 1, 1);
+  material.diffuseColor = tone === 'blue'
+    ? new Color3(0.72, 0.8, 1)
+    : new Color3(1, 0.78, 0.66);
   material.specularColor = tone === 'blue' ? new Color3(0.42, 0.5, 0.65) : new Color3(0.62, 0.4, 0.28);
   material.specularPower = 92;
 }
@@ -270,14 +300,18 @@ function createWallPaddingDetails(scene: Scene): void {
 }
 
 function createRaisedWallPadPanels(scene: Scene): void {
-  const cushionA = solidMaterial(scene, 'decor_wall_pad_cushion_deep_blue_mat', new Color3(0.045, 0.18, 0.54), {
-    emissive: new Color3(0.004, 0.014, 0.048),
-    specular: new Color3(0.08, 0.12, 0.18)
-  });
-  const cushionB = solidMaterial(scene, 'decor_wall_pad_cushion_royal_blue_mat', new Color3(0.06, 0.24, 0.68), {
-    emissive: new Color3(0.006, 0.018, 0.06),
-    specular: new Color3(0.1, 0.15, 0.22)
-  });
+  const cushionA = texturedStandardMaterial(
+    scene,
+    'decor_wall_pad_cushion_deep_blue_mat',
+    GYM_TEXTURES.wallPad,
+    { uScale: 1, vScale: 1, diffuse: new Color3(0.74, 0.84, 1), emissive: new Color3(0.004, 0.014, 0.048), specular: new Color3(0.08, 0.12, 0.18) }
+  );
+  const cushionB = texturedStandardMaterial(
+    scene,
+    'decor_wall_pad_cushion_royal_blue_mat',
+    GYM_TEXTURES.wallPad,
+    { uScale: 1, vScale: 1, diffuse: new Color3(0.88, 0.94, 1), emissive: new Color3(0.006, 0.018, 0.06), specular: new Color3(0.1, 0.15, 0.22) }
+  );
   const bevelMat = solidMaterial(scene, 'decor_wall_pad_bevel_highlight_mat', new Color3(0.18, 0.38, 0.95), {
     emissive: new Color3(0.012, 0.032, 0.1),
     specular: new Color3(0.12, 0.16, 0.22)
@@ -353,9 +387,8 @@ function createScoreboardHardware(scene: Scene): void {
     emissive: new Color3(0.045, 0.028, 0),
     specular: new Color3(0.22, 0.18, 0.08)
   });
-  const plaqueMat = createPlaqueMaterial(scene, 'decor_scoreboard_plaque_tex', 'SCHOOL GYM', 'DODGEBALL NIGHT');
-
   for (const side of ['north', 'south'] as WallSide[]) {
+    const plaqueMat = createPlaqueMaterial(scene, `decor_scoreboard_plaque_${side}_tex`, side, 'SCHOOL GYM', 'DODGEBALL NIGHT');
     for (const x of [-2.85, 2.85]) {
       createWallBox(scene, `decor_scoreboard_hanger_${side}_${x}`, side, 0.1, 0.76, 6.93, x, 0.05, bracketMat, WALL_DECAL_INSET + 0.026);
       createWallBolt(scene, `decor_scoreboard_top_bolt_${side}_${x}`, side, x, 7.28, 0.085, boltMat);
@@ -371,280 +404,148 @@ function createScoreboardHardware(scene: Scene): void {
 }
 
 function createUpperWallDetails(scene: Scene): void {
-  const acousticMat = createAcousticPanelMaterial(scene);
   const speakerMat = solidMaterial(scene, 'decor_wall_speaker_mat', new Color3(0.025, 0.03, 0.04), {
     emissive: new Color3(0.002, 0.002, 0.003),
     specular: new Color3(0.08, 0.08, 0.08)
   });
   const speakerGrilleMat = createSpeakerGrilleMaterial(scene);
-  const hornMat = solidMaterial(scene, 'decor_wall_horn_mat', new Color3(0.86, 0.86, 0.78), {
-    emissive: new Color3(0.018, 0.016, 0.012),
-    specular: new Color3(0.14, 0.13, 0.1)
-  });
+  const ventMat = createVentMaterial(scene);
   const clockMat = createClockMaterial(scene);
-  const exitMat = createExitSignMaterial(scene);
 
   for (const side of ['north', 'south'] as WallSide[]) {
-    for (const x of [-10.2, -5.1, 5.1, 10.2]) {
-      createWallPlane(scene, `decor_acoustic_panel_${side}_${x}`, side, 1.34, 0.48, 7.72, x, acousticMat, WALL_DECAL_INSET + 0.004);
-    }
-
-    for (const x of [-11.95, 11.95]) {
+    for (const x of [-11.85, 11.85]) {
       createWallBox(scene, `decor_wall_speaker_body_${side}_${x}`, side, 0.48, 0.64, 6.9, x, 0.18, speakerMat, WALL_DECAL_INSET + 0.09);
       createWallPlane(scene, `decor_wall_speaker_grille_${side}_${x}`, side, 0.36, 0.48, 6.9, x, speakerGrilleMat, WALL_DECAL_INSET + 0.19);
     }
 
-    createWallPlane(scene, `decor_wall_clock_${side}`, side, 0.72, 0.72, 6.92, side === 'north' ? -4.35 : 4.35, clockMat, WALL_DECAL_INSET + 0.012);
-    createWallBox(scene, `decor_wall_buzzer_horn_${side}`, side, 0.52, 0.28, 6.92, side === 'north' ? 4.36 : -4.36, 0.14, hornMat, WALL_DECAL_INSET + 0.08);
-    createWallPlane(scene, `decor_exit_sign_${side}`, side, 0.88, 0.34, 2.55, side === 'north' ? -11.95 : 11.95, exitMat, WALL_DECAL_INSET + 0.016);
+    createWallPlane(scene, `decor_wall_clock_${side}`, side, 0.68, 0.68, 6.94, side === 'north' ? -4.42 : 4.42, clockMat, WALL_DECAL_INSET + 0.012);
+    createWallPlane(scene, `decor_wall_vent_${side}`, side, 1.15, 0.38, 6.92, side === 'north' ? 4.5 : -4.5, ventMat, WALL_DECAL_INSET + 0.012);
+    createGymSign(scene, {
+      name: `decor_exit_sign_${side}`,
+      side,
+      offset: side === 'north' ? -11.95 : 11.95,
+      y: 2.55,
+      width: 0.88,
+      height: 0.34,
+      title: 'EXIT',
+      palette: PALETTES.navy
+    });
   }
 
-  for (const side of ['east', 'west'] as WallSide[]) {
-    for (const z of [-16.4, 16.4]) {
-      createWallPlane(scene, `decor_side_acoustic_panel_${side}_${z}_a`, side, 1.15, 0.42, 7.62, z, acousticMat, WALL_DECAL_INSET + 0.004);
-      createWallBox(scene, `decor_side_speaker_body_${side}_${z}`, side, 0.42, 0.54, 6.86, z, 0.16, speakerMat, WALL_DECAL_INSET + 0.09);
-      createWallPlane(scene, `decor_side_speaker_grille_${side}_${z}`, side, 0.3, 0.4, 6.86, z, speakerGrilleMat, WALL_DECAL_INSET + 0.19);
-    }
-  }
 }
 
 function createGymBanners(scene: Scene): void {
-  const banners: BannerSpec[] = [
-    {
-      name: 'decor_banner_strafeball_north',
-      side: 'north',
-      offset: 0,
-      y: 7.32,
-      width: 6.2,
-      height: 0.92,
-      title: 'STRAFEBALL',
-      subtitle: 'DODGEBALL LEAGUE',
-      shape: 'rectangle',
-      palette: PALETTES.navy,
-      icon: 'ball'
-    },
-    {
-      name: 'decor_banner_home_of_champs_north',
-      side: 'north',
-      offset: -7.1,
-      y: 5.76,
-      width: 4.45,
-      height: 1.18,
-      title: 'HOME OF THE',
-      subtitle: 'CHAMPS',
-      shape: 'notched',
-      palette: PALETTES.gold,
-      icon: 'trophy'
-    },
-    {
-      name: 'decor_banner_dodgeball_league_north',
-      side: 'north',
-      offset: 7.25,
-      y: 5.78,
-      width: 4.5,
-      height: 1.1,
-      title: 'DODGEBALL',
-      subtitle: 'LEAGUE',
-      shape: 'notched',
-      palette: PALETTES.blue,
-      icon: 'ball'
-    },
-    {
-      name: 'decor_banner_no_boundaries_south',
-      side: 'south',
-      offset: -7.2,
-      y: 5.8,
-      width: 4.4,
-      height: 1.08,
-      title: 'NO',
-      subtitle: 'BOUNDARIES',
-      shape: 'rectangle',
-      palette: PALETTES.red,
-      icon: 'stars'
-    },
-    {
-      name: 'decor_banner_private_duel_south',
-      side: 'south',
-      offset: 0,
-      y: 7.25,
-      width: 5.1,
-      height: 0.9,
-      title: 'PRIVATE DUEL',
-      subtitle: 'BLUE VS RED',
-      shape: 'rectangle',
-      palette: PALETTES.navy,
-      icon: 'stars'
-    },
-    {
-      name: 'decor_banner_championship_south',
-      side: 'south',
-      offset: 7.2,
-      y: 5.8,
-      width: 4.4,
-      height: 1.08,
-      title: 'CHAMPIONSHIP',
-      subtitle: 'COURT',
-      shape: 'notched',
-      palette: PALETTES.white,
-      icon: 'trophy'
-    },
-    {
-      name: 'decor_flag_blue_wins_north',
-      side: 'north',
-      offset: -11.25,
-      y: 5.72,
-      width: 1.24,
-      height: 1.84,
-      title: 'BLUE',
-      subtitle: 'WINS',
-      shape: 'notched',
-      palette: PALETTES.blue,
-      icon: 'stars'
-    },
-    {
-      name: 'decor_flag_red_wins_north',
-      side: 'north',
-      offset: 11.25,
-      y: 5.72,
-      width: 1.24,
-      height: 1.84,
-      title: 'RED',
-      subtitle: 'WINS',
-      shape: 'notched',
-      palette: PALETTES.red,
-      icon: 'stars'
-    },
-    {
-      name: 'decor_flag_blue_wins_south',
-      side: 'south',
-      offset: -11.25,
-      y: 5.72,
-      width: 1.24,
-      height: 1.84,
-      title: 'BLUE',
-      subtitle: 'WINS',
-      shape: 'notched',
-      palette: PALETTES.blue,
-      icon: 'stars'
-    },
-    {
-      name: 'decor_flag_red_wins_south',
-      side: 'south',
-      offset: 11.25,
-      y: 5.72,
-      width: 1.24,
-      height: 1.84,
-      title: 'RED',
-      subtitle: 'WINS',
-      shape: 'notched',
-      palette: PALETTES.red,
-      icon: 'stars'
-    },
-    {
-      name: 'decor_pennant_west_south_blue',
-      side: 'west',
-      offset: -15.7,
-      y: 6.05,
-      width: 1.06,
-      height: 1.65,
-      title: 'SB',
-      shape: 'pennant',
-      palette: PALETTES.blue,
-      icon: 'ball'
-    },
-    {
-      name: 'decor_pennant_west_south_gold',
-      side: 'west',
-      offset: -13.9,
-      y: 6.12,
-      width: 1.0,
-      height: 1.5,
-      title: '24',
-      shape: 'pennant',
-      palette: PALETTES.gold,
-      icon: 'stars'
-    },
-    {
-      name: 'decor_pennant_west_north_red',
-      side: 'west',
-      offset: 15.7,
-      y: 6.05,
-      width: 1.06,
-      height: 1.65,
-      title: 'SB',
-      shape: 'pennant',
-      palette: PALETTES.red,
-      icon: 'ball'
-    },
-    {
-      name: 'decor_pennant_west_north_white',
-      side: 'west',
-      offset: 13.9,
-      y: 6.12,
-      width: 1.0,
-      height: 1.5,
-      title: 'MVP',
-      shape: 'pennant',
-      palette: PALETTES.white,
-      icon: 'stars'
-    },
-    {
-      name: 'decor_pennant_east_south_blue',
-      side: 'east',
-      offset: -15.7,
-      y: 6.05,
-      width: 1.06,
-      height: 1.65,
-      title: 'SB',
-      shape: 'pennant',
-      palette: PALETTES.blue,
-      icon: 'ball'
-    },
-    {
-      name: 'decor_pennant_east_south_gold',
-      side: 'east',
-      offset: -13.9,
-      y: 6.12,
-      width: 1.0,
-      height: 1.5,
-      title: 'ACE',
-      shape: 'pennant',
-      palette: PALETTES.gold,
-      icon: 'stars'
-    },
-    {
-      name: 'decor_pennant_east_north_red',
-      side: 'east',
-      offset: 15.7,
-      y: 6.05,
-      width: 1.06,
-      height: 1.65,
-      title: 'SB',
-      shape: 'pennant',
-      palette: PALETTES.red,
-      icon: 'ball'
-    },
-    {
-      name: 'decor_pennant_east_north_white',
-      side: 'east',
-      offset: 13.9,
-      y: 6.12,
-      width: 1.0,
-      height: 1.5,
-      title: 'VARS',
-      shape: 'pennant',
-      palette: PALETTES.white,
-      icon: 'stars'
-    }
-  ];
+  createRectBanner(scene, {
+    name: 'decor_banner_strafeball_north',
+    side: 'north',
+    offset: 0,
+    y: 7.08,
+    width: 5.55,
+    height: 1.85,
+    title: 'STRAFEBALL',
+    subtitle: 'DODGEBALL LEAGUE',
+    palette: PALETTES.navy,
+    icon: 'ball',
+    textureUrl: GYM_TEXTURES.banners.strafeBallLeague,
+    alphaTexture: true
+  });
+  createRectBanner(scene, {
+    name: 'decor_banner_home_champs_north',
+    side: 'north',
+    offset: -7.1,
+    y: 5.78,
+    width: 3.45,
+    height: 1.15,
+    title: 'HOME OF THE',
+    subtitle: 'CHAMPS',
+    palette: PALETTES.navy,
+    icon: 'trophy',
+    textureUrl: GYM_TEXTURES.banners.homeOfChamps,
+    alphaTexture: true
+  });
+  createRectBanner(scene, {
+    name: 'decor_banner_championship_north',
+    side: 'north',
+    offset: 7.1,
+    y: 5.78,
+    width: 3.45,
+    height: 1.15,
+    title: 'CHAMPIONSHIP',
+    subtitle: 'COURT',
+    palette: PALETTES.blue,
+    icon: 'trophy',
+    textureUrl: GYM_TEXTURES.banners.championshipCourt,
+    alphaTexture: true
+  });
 
-  for (const banner of banners) {
-    const material = createBannerMaterial(scene, banner);
-    createWallPlane(scene, banner.name, banner.side, banner.width, banner.height, banner.y, banner.offset, material);
-  }
+  createRectBanner(scene, {
+    name: 'decor_banner_private_duel_south',
+    side: 'south',
+    offset: 0,
+    y: 7.25,
+    width: 4.95,
+    height: 1.65,
+    title: 'PRIVATE DUEL',
+    subtitle: 'BLUE VS RED',
+    palette: PALETTES.navy,
+    icon: 'stars',
+    textureUrl: GYM_TEXTURES.banners.privateDuel,
+    alphaTexture: true
+  });
+  createRectBanner(scene, {
+    name: 'decor_banner_sponsor_one_south',
+    side: 'south',
+    offset: -7.05,
+    y: 5.82,
+    width: 2.72,
+    height: 1.53,
+    title: 'SPONSORED BY',
+    subtitle: 'TOMADUSTIN',
+    palette: PALETTES.white,
+    icon: 'ball',
+    textureUrl: GYM_TEXTURES.banners.sponsor1,
+    alphaTexture: true
+  });
+  createRectBanner(scene, {
+    name: 'decor_banner_sponsor_two_south',
+    side: 'south',
+    offset: 7.05,
+    y: 5.82,
+    width: 2.72,
+    height: 1.53,
+    title: 'SPONSORED BY',
+    subtitle: 'JACYVAL',
+    palette: PALETTES.white,
+    icon: 'ball',
+    textureUrl: GYM_TEXTURES.banners.sponsor2,
+    alphaTexture: true
+  });
 }
 
-function createBannerHardware(scene: Scene): void {
+function createRectBanner(scene: Scene, spec: Omit<BannerSpec, 'template' | 'shape'>): void {
+  placeBanner(scene, { ...spec, template: 'rect', shape: 'rectangle' });
+}
+
+function createVerticalTeamBanner(scene: Scene, spec: Omit<BannerSpec, 'template' | 'shape'>): void {
+  placeBanner(scene, { ...spec, template: 'verticalTeam', shape: 'vertical' });
+}
+
+function createPennant(scene: Scene, spec: Omit<BannerSpec, 'template' | 'shape'>): void {
+  placeBanner(scene, { ...spec, template: 'pennant', shape: 'pennant' });
+}
+
+function placeBanner(scene: Scene, spec: BannerSpec): void {
+  const material = createBannerMaterial(scene, spec);
+  createWallPlane(scene, spec.name, spec.side, spec.width, spec.height, bannerVisualY(spec), spec.offset, material);
+  createBannerRod(scene, spec);
+}
+
+function bannerVisualY(spec: BannerSpec): number {
+  if (!spec.textureUrl) return spec.y;
+  return spec.y + Math.min(0.42, Math.max(0.24, spec.height * 0.24));
+}
+
+function createBannerRod(scene: Scene, spec: BannerSpec): void {
   const rodMat = solidMaterial(scene, 'decor_banner_rod_mat', new Color3(0.12, 0.14, 0.18), {
     emissive: new Color3(0.004, 0.004, 0.006),
     specular: new Color3(0.2, 0.18, 0.13)
@@ -654,24 +555,11 @@ function createBannerHardware(scene: Scene): void {
     specular: new Color3(0.24, 0.2, 0.08)
   });
 
-  const specs = [
-    { side: 'north', offset: 0, y: 7.86, width: 6.55 },
-    { side: 'north', offset: -7.1, y: 6.43, width: 4.75 },
-    { side: 'north', offset: 7.25, y: 6.38, width: 4.78 },
-    { side: 'south', offset: 0, y: 7.78, width: 5.45 },
-    { side: 'south', offset: -7.2, y: 6.38, width: 4.7 },
-    { side: 'south', offset: 7.2, y: 6.38, width: 4.7 },
-    { side: 'north', offset: -11.25, y: 6.72, width: 1.45 },
-    { side: 'north', offset: 11.25, y: 6.72, width: 1.45 },
-    { side: 'south', offset: -11.25, y: 6.72, width: 1.45 },
-    { side: 'south', offset: 11.25, y: 6.72, width: 1.45 }
-  ] satisfies Array<{ side: WallSide; offset: number; y: number; width: number }>;
-
-  for (const spec of specs) {
-    createWallBox(scene, `decor_banner_rod_${spec.side}_${spec.offset}_${spec.y}`, spec.side, spec.width, 0.045, spec.y, spec.offset, 0.035, rodMat, WALL_DECAL_INSET + 0.028);
-    createWallBolt(scene, `decor_banner_left_pin_${spec.side}_${spec.offset}_${spec.y}`, spec.side, spec.offset - spec.width * 0.47, spec.y, 0.052, pinMat);
-    createWallBolt(scene, `decor_banner_right_pin_${spec.side}_${spec.offset}_${spec.y}`, spec.side, spec.offset + spec.width * 0.47, spec.y, 0.052, pinMat);
-  }
+  const rodY = spec.y + spec.height * 0.5 + 0.055;
+  const rodWidth = spec.width + (spec.template === 'pennant' ? 0.16 : 0.28);
+  createWallBox(scene, `decor_banner_rod_${spec.name}`, spec.side, rodWidth, 0.042, rodY, spec.offset, 0.035, rodMat, WALL_DECAL_INSET + 0.028);
+  createWallBolt(scene, `decor_banner_left_pin_${spec.name}`, spec.side, spec.offset - rodWidth * 0.47, rodY, 0.052, pinMat);
+  createWallBolt(scene, `decor_banner_right_pin_${spec.name}`, spec.side, spec.offset + rodWidth * 0.47, rodY, 0.052, pinMat);
 }
 
 function createBleacherAccents(scene: Scene): void {
@@ -1009,6 +897,61 @@ function createCeilingConduits(scene: Scene): void {
   }
 }
 
+function createImageTexture(
+  scene: Scene,
+  name: string,
+  url: string,
+  uScale = 1,
+  vScale = 1,
+  clamp = false
+): Texture {
+  const texture = new Texture(url, scene);
+  texture.name = name;
+  texture.wrapU = clamp ? Texture.CLAMP_ADDRESSMODE : Texture.WRAP_ADDRESSMODE;
+  texture.wrapV = clamp ? Texture.CLAMP_ADDRESSMODE : Texture.WRAP_ADDRESSMODE;
+  texture.uScale = uScale;
+  texture.vScale = vScale;
+  texture.anisotropicFilteringLevel = 8;
+  texture.updateSamplingMode(Texture.TRILINEAR_SAMPLINGMODE);
+  return texture;
+}
+
+function texturedStandardMaterial(
+  scene: Scene,
+  name: string,
+  url: string,
+  options: {
+    uScale?: number;
+    vScale?: number;
+    alpha?: boolean;
+    diffuse?: Color3;
+    emissive?: Color3;
+    specular?: Color3;
+    specularPower?: number;
+    clamp?: boolean;
+  } = {}
+): StandardMaterial {
+  const existing = scene.getMaterialByName(name);
+  if (existing instanceof StandardMaterial) return existing;
+
+  const texture = createImageTexture(scene, `${name}_tex`, url, options.uScale ?? 1, options.vScale ?? 1, options.clamp ?? false);
+  texture.hasAlpha = options.alpha ?? false;
+
+  const material = new StandardMaterial(name, scene);
+  material.diffuseTexture = texture;
+  material.diffuseColor = options.diffuse ?? new Color3(1, 1, 1);
+  material.emissiveTexture = options.emissive ? texture : null;
+  material.emissiveColor = options.emissive ?? new Color3(0, 0, 0);
+  material.specularColor = options.specular ?? new Color3(0.06, 0.06, 0.055);
+  material.specularPower = options.specularPower ?? 42;
+  material.backFaceCulling = false;
+  if (options.alpha) {
+    material.opacityTexture = texture;
+    material.useAlphaFromDiffuseTexture = true;
+  }
+  return material;
+}
+
 function createWoodTexture(scene: Scene, name: string, tone: 'natural' | 'blue' | 'red'): DynamicTexture {
   const texture = new DynamicTexture(name, { width: 1024, height: 1024 }, scene, false);
   texture.hasAlpha = false;
@@ -1174,15 +1117,55 @@ function createCinderblockTexture(scene: Scene): DynamicTexture {
   return texture;
 }
 
+function createWallPadVinylTexture(scene: Scene): DynamicTexture {
+  const texture = new DynamicTexture('decor_wall_pad_vinyl_tex', { width: 512, height: 256 }, scene, false);
+  texture.hasAlpha = false;
+  texture.wrapU = Texture.WRAP_ADDRESSMODE;
+  texture.wrapV = Texture.WRAP_ADDRESSMODE;
+  texture.updateSamplingMode(Texture.TRILINEAR_SAMPLINGMODE);
+  texture.anisotropicFilteringLevel = 4;
+
+  const ctx = texture.getContext() as CanvasRenderingContext2D;
+  const gradient = ctx.createLinearGradient(0, 0, 0, 256);
+  gradient.addColorStop(0, '#173f91');
+  gradient.addColorStop(0.52, '#123474');
+  gradient.addColorStop(1, '#0d2454');
+  ctx.fillStyle = gradient;
+  ctx.fillRect(0, 0, 512, 256);
+
+  for (let x = 0; x <= 512; x += 128) {
+    ctx.fillStyle = 'rgba(255,255,255,0.09)';
+    ctx.fillRect(x + 6, 10, 2, 236);
+    ctx.fillStyle = 'rgba(0,0,0,0.18)';
+    ctx.fillRect(x + 124, 8, 3, 240);
+  }
+
+  ctx.fillStyle = 'rgba(255,255,255,0.055)';
+  for (let y = 28; y < 256; y += 54) {
+    ctx.fillRect(0, y, 512, 2);
+  }
+
+  ctx.fillStyle = 'rgba(2,12,34,0.13)';
+  for (let i = 0; i < 140; i += 1) {
+    const x = (i * 47 + 13) % 512;
+    const y = (i * 73 + 31) % 256;
+    ctx.fillRect(x, y, 1, 1);
+  }
+
+  texture.update(true);
+  return texture;
+}
+
 function createBannerMaterial(scene: Scene, spec: BannerSpec): StandardMaterial {
+  if (spec.textureUrl) {
+    return createMaskedBannerImageMaterial(scene, spec);
+  }
+
   const texture = new DynamicTexture(`${spec.name}_tex`, { width: 768, height: 384 }, scene, false);
   texture.hasAlpha = spec.shape !== 'rectangle';
   texture.anisotropicFilteringLevel = 8;
   texture.updateSamplingMode(Texture.TRILINEAR_SAMPLINGMODE);
-  if (spec.side === 'south') {
-    texture.uScale = -1;
-    texture.uOffset = 1;
-  }
+  applyWallTextTextureOrientation(texture, spec.side);
 
   const ctx = texture.getContext() as CanvasRenderingContext2D;
   drawBannerTexture(ctx, 768, 384, spec);
@@ -1200,6 +1183,138 @@ function createBannerMaterial(scene: Scene, spec: BannerSpec): StandardMaterial 
     material.useAlphaFromDiffuseTexture = true;
   }
   return material;
+}
+
+function createMaskedBannerImageMaterial(scene: Scene, spec: BannerSpec): StandardMaterial {
+  const aspect = Math.max(0.25, spec.width / Math.max(0.001, spec.height));
+  const textureWidth = aspect >= 1 ? 1024 : Math.max(256, Math.round(1024 * aspect));
+  const textureHeight = aspect >= 1 ? Math.max(256, Math.round(1024 / aspect)) : 1024;
+  const texture = new DynamicTexture(`${spec.name}_masked_tex`, { width: textureWidth, height: textureHeight }, scene, false);
+  texture.hasAlpha = true;
+  texture.anisotropicFilteringLevel = 8;
+  texture.updateSamplingMode(Texture.TRILINEAR_SAMPLINGMODE);
+  texture.wrapU = Texture.CLAMP_ADDRESSMODE;
+  texture.wrapV = Texture.CLAMP_ADDRESSMODE;
+
+  const ctx = texture.getContext() as CanvasRenderingContext2D;
+  ctx.clearRect(0, 0, textureWidth, textureHeight);
+  texture.update(true);
+
+  const material = new StandardMaterial(`${spec.name}_mat`, scene);
+  material.diffuseTexture = texture;
+  material.opacityTexture = texture;
+  material.emissiveTexture = texture;
+  material.diffuseColor = new Color3(1, 1, 1);
+  material.emissiveColor = new Color3(0.24, 0.24, 0.24);
+  material.specularColor = new Color3(0.08, 0.08, 0.075);
+  material.specularPower = 34;
+  material.backFaceCulling = false;
+  material.useAlphaFromDiffuseTexture = true;
+
+  const image = new Image();
+  image.onload = () => {
+    drawMaskedBannerImage(texture, image, textureWidth, textureHeight);
+  };
+  image.src = spec.textureUrl ?? '';
+
+  return material;
+}
+
+function drawMaskedBannerImage(texture: DynamicTexture, image: HTMLImageElement, textureWidth: number, textureHeight: number): void {
+  const source = document.createElement('canvas');
+  source.width = image.naturalWidth || image.width;
+  source.height = image.naturalHeight || image.height;
+  const sourceCtx = source.getContext('2d', { willReadFrequently: true });
+  if (!sourceCtx) return;
+  sourceCtx.drawImage(image, 0, 0, source.width, source.height);
+  const imageData = sourceCtx.getImageData(0, 0, source.width, source.height);
+  maskConnectedLightBackground(imageData, source.width, source.height);
+  sourceCtx.putImageData(imageData, 0, 0);
+
+  const bounds = findOpaqueBounds(imageData, source.width, source.height);
+  const ctx = texture.getContext() as CanvasRenderingContext2D;
+  ctx.clearRect(0, 0, textureWidth, textureHeight);
+  if (bounds) {
+    const srcW = bounds.maxX - bounds.minX + 1;
+    const srcH = bounds.maxY - bounds.minY + 1;
+    const pad = Math.max(6, Math.round(Math.min(textureWidth, textureHeight) * 0.012));
+    const scale = Math.min((textureWidth - pad * 2) / srcW, (textureHeight - pad * 2) / srcH);
+    const dstW = srcW * scale;
+    const dstH = srcH * scale;
+    const dstX = (textureWidth - dstW) * 0.5;
+    const dstY = (textureHeight - dstH) * 0.5;
+    ctx.imageSmoothingEnabled = true;
+    ctx.imageSmoothingQuality = 'high';
+    ctx.drawImage(source, bounds.minX, bounds.minY, srcW, srcH, dstX, dstY, dstW, dstH);
+  }
+  texture.update(true);
+}
+
+function maskConnectedLightBackground(imageData: ImageData, width: number, height: number): void {
+  const data = imageData.data;
+  const visited = new Uint8Array(width * height);
+  const queue = new Int32Array(width * height);
+  let head = 0;
+  let tail = 0;
+
+  const enqueue = (x: number, y: number): void => {
+    if (x < 0 || y < 0 || x >= width || y >= height) return;
+    const p = y * width + x;
+    if (visited[p]) return;
+    const i = p * 4;
+    if (!isLightBackgroundPixel(data[i], data[i + 1], data[i + 2], data[i + 3])) return;
+    visited[p] = 1;
+    queue[tail] = p;
+    tail += 1;
+  };
+
+  for (let x = 0; x < width; x += 1) {
+    enqueue(x, 0);
+    enqueue(x, height - 1);
+  }
+  for (let y = 1; y < height - 1; y += 1) {
+    enqueue(0, y);
+    enqueue(width - 1, y);
+  }
+
+  while (head < tail) {
+    const p = queue[head];
+    head += 1;
+    const i = p * 4;
+    data[i + 3] = 0;
+    const x = p % width;
+    const y = Math.floor(p / width);
+    enqueue(x + 1, y);
+    enqueue(x - 1, y);
+    enqueue(x, y + 1);
+    enqueue(x, y - 1);
+  }
+}
+
+function isLightBackgroundPixel(r: number, g: number, b: number, a: number): boolean {
+  if (a < 16) return true;
+  const max = Math.max(r, g, b);
+  const min = Math.min(r, g, b);
+  return r > 186 && g > 186 && b > 186 && max - min < 42;
+}
+
+function findOpaqueBounds(imageData: ImageData, width: number, height: number): { minX: number; minY: number; maxX: number; maxY: number } | null {
+  const data = imageData.data;
+  let minX = width;
+  let minY = height;
+  let maxX = -1;
+  let maxY = -1;
+  for (let y = 0; y < height; y += 1) {
+    for (let x = 0; x < width; x += 1) {
+      const alpha = data[(y * width + x) * 4 + 3];
+      if (alpha <= 16) continue;
+      if (x < minX) minX = x;
+      if (x > maxX) maxX = x;
+      if (y < minY) minY = y;
+      if (y > maxY) maxY = y;
+    }
+  }
+  return maxX >= minX && maxY >= minY ? { minX, minY, maxX, maxY } : null;
 }
 
 function drawBannerTexture(ctx: CanvasRenderingContext2D, width: number, height: number, spec: BannerSpec): void {
@@ -1239,15 +1354,23 @@ function drawBannerTexture(ctx: CanvasRenderingContext2D, width: number, height:
 
   ctx.textAlign = 'center';
   ctx.textBaseline = 'middle';
-  const titleY = spec.subtitle ? height * 0.46 : height * 0.54;
-  const subtitleY = height * 0.67;
-  const textCenter = spec.icon && spec.width > 1.8 ? width * 0.57 : width * 0.5;
-  const maxTitleWidth = spec.icon && spec.width > 1.8 ? width * 0.68 : width * 0.84;
-  const maxSubtitleWidth = spec.icon && spec.width > 1.8 ? width * 0.62 : width * 0.78;
+  const titleY = spec.template === 'verticalTeam' ? height * 0.45 : spec.subtitle ? height * 0.46 : height * 0.54;
+  const subtitleY = spec.template === 'verticalTeam' ? height * 0.66 : height * 0.67;
+  const iconRoom = spec.icon && spec.template === 'rect' && spec.width > 1.8;
+  const textCenter = iconRoom ? width * 0.58 : spec.shape === 'pennant' ? width * 0.36 : width * 0.5;
+  const maxTitleWidth = iconRoom ? width * 0.62 : spec.shape === 'pennant' ? width * 0.45 : width * 0.84;
+  const maxSubtitleWidth = iconRoom ? width * 0.56 : width * 0.78;
+  const titleSize = spec.template === 'verticalTeam'
+    ? height * 0.15
+    : spec.shape === 'pennant'
+      ? height * 0.18
+      : spec.subtitle
+        ? height * 0.19
+        : height * 0.26;
 
-  drawFittedText(ctx, spec.title, textCenter, titleY, maxTitleWidth, spec.subtitle ? height * 0.19 : height * 0.26, spec.palette.text, spec.palette.shadow);
+  drawFittedText(ctx, spec.title, textCenter, titleY, maxTitleWidth, titleSize, spec.palette.text, spec.palette.shadow);
   if (spec.subtitle) {
-    drawFittedText(ctx, spec.subtitle, textCenter, subtitleY, maxSubtitleWidth, height * 0.15, spec.palette.accent, spec.palette.shadow);
+    drawFittedText(ctx, spec.subtitle, textCenter, subtitleY, maxSubtitleWidth, spec.template === 'verticalTeam' ? height * 0.13 : height * 0.15, spec.palette.accent, spec.palette.shadow);
   }
 
   ctx.restore();
@@ -1266,7 +1389,7 @@ function drawBannerTexture(ctx: CanvasRenderingContext2D, width: number, height:
 function drawBannerPath(ctx: CanvasRenderingContext2D, width: number, height: number, shape: BannerShape): void {
   const notch = Math.min(width * 0.18, height * 0.22);
   ctx.beginPath();
-  if (shape === 'notched') {
+  if (shape === 'vertical') {
     ctx.moveTo(0, 0);
     ctx.lineTo(width, 0);
     ctx.lineTo(width, height - notch);
@@ -1292,9 +1415,9 @@ function drawBannerIcon(
   height: number,
   spec: BannerSpec
 ): void {
-  const cx = spec.shape === 'pennant' ? width * 0.28 : width * 0.17;
-  const cy = spec.shape === 'pennant' ? height * 0.5 : height * 0.5;
-  const size = Math.min(width, height) * (spec.shape === 'pennant' ? 0.22 : 0.24);
+  const cx = spec.shape === 'pennant' ? width * 0.2 : spec.template === 'verticalTeam' ? width * 0.5 : width * 0.17;
+  const cy = spec.shape === 'pennant' ? height * 0.5 : spec.template === 'verticalTeam' ? height * 0.22 : height * 0.5;
+  const size = Math.min(width, height) * (spec.shape === 'pennant' ? 0.18 : spec.template === 'verticalTeam' ? 0.18 : 0.24);
 
   if (icon === 'ball') {
     drawDodgeballIcon(ctx, cx, cy, size, spec.palette.accent, spec.palette.border);
@@ -1419,6 +1542,14 @@ function solidMaterial(
   material.specularPower = 42;
   if (options.alpha !== undefined) material.alpha = options.alpha;
   return material;
+}
+
+function applyWallTextTextureOrientation(texture: DynamicTexture, side: WallSide): void {
+  // Wall decals are created as front-facing planes and then rotated into place, so their texture
+  // coordinates already read left-to-right from the court on every wall. Keep this as an audit hook
+  // for text-bearing wall art; do not flip U here or the south/spawn wall reads backwards.
+  void texture;
+  void side;
 }
 
 function createWallPlane(
@@ -1568,11 +1699,16 @@ function createFloorLogoMaterial(scene: Scene, name: string, primary: string, ac
   ctx.ellipse(384, 160, 314, 102, 0, 0, Math.PI * 2);
   ctx.stroke();
 
-  drawDodgeballIcon(ctx, 214, 160, 52, '#f04a36', '#fff3d0');
-  ctx.textAlign = 'center';
-  ctx.textBaseline = 'middle';
-  drawFittedText(ctx, 'STRAFEBALL', 432, 132, 320, 58, '#fff8dc', '#071225');
-  drawFittedText(ctx, label, 432, 192, 260, 32, accent, '#071225');
+  drawDodgeballIcon(ctx, 306, 160, 64, '#f04a36', '#fff3d0');
+  drawStar(ctx, 452, 108, 24, accent, '#13294b');
+  drawStar(ctx, 470, 180, 17, '#fff8dc', '#13294b');
+  drawStar(ctx, 164, 184, 20, '#fff8dc', '#13294b');
+  ctx.fillStyle = label.includes('BLUE') ? 'rgba(46,95,167,0.42)' : 'rgba(185,28,28,0.38)';
+  ctx.fillRect(142, 122, 84, 18);
+  ctx.fillStyle = accent;
+  ctx.fillRect(142, 152, 120, 15);
+  ctx.fillStyle = 'rgba(255,248,220,0.86)';
+  ctx.fillRect(142, 180, 74, 12);
   texture.update(true);
 
   const material = new StandardMaterial(`${name}_mat`, scene);
@@ -1587,30 +1723,64 @@ function createFloorLogoMaterial(scene: Scene, name: string, primary: string, ac
   return material;
 }
 
-function createAcousticPanelMaterial(scene: Scene): StandardMaterial {
-  const texture = new DynamicTexture('decor_acoustic_panel_tex', { width: 512, height: 192 }, scene, false);
+function createGymSign(
+  scene: Scene,
+  spec: {
+    name: string;
+    side: WallSide;
+    offset: number;
+    y: number;
+    width: number;
+    height: number;
+    title: string;
+    subtitle?: string;
+    palette: BannerPalette;
+  }
+): void {
+  const material = createGymSignMaterial(scene, spec);
+  createWallPlane(scene, spec.name, spec.side, spec.width, spec.height, spec.y, spec.offset, material, WALL_DECAL_INSET + 0.016);
+}
+
+function createGymSignMaterial(
+  scene: Scene,
+  spec: {
+    name: string;
+    side: WallSide;
+    title: string;
+    subtitle?: string;
+    palette: BannerPalette;
+  }
+): StandardMaterial {
+  const texture = new DynamicTexture(`${spec.name}_tex`, { width: 512, height: 192 }, scene, false);
   texture.hasAlpha = false;
   texture.anisotropicFilteringLevel = 8;
+  applyWallTextTextureOrientation(texture, spec.side);
+
   const ctx = texture.getContext() as CanvasRenderingContext2D;
-  ctx.fillStyle = '#1b376f';
+  const gradient = ctx.createLinearGradient(0, 0, 512, 192);
+  gradient.addColorStop(0, spec.palette.background);
+  gradient.addColorStop(1, spec.palette.background2);
+  ctx.fillStyle = gradient;
   ctx.fillRect(0, 0, 512, 192);
-  ctx.fillStyle = 'rgba(255,255,255,0.08)';
-  for (let x = 18; x < 512; x += 22) {
-    ctx.fillRect(x, 16, 3, 160);
+  ctx.strokeStyle = spec.palette.border;
+  ctx.lineWidth = 14;
+  ctx.strokeRect(12, 12, 488, 168);
+  ctx.strokeStyle = 'rgba(255,255,255,0.2)';
+  ctx.lineWidth = 3;
+  ctx.strokeRect(30, 30, 452, 132);
+  ctx.textAlign = 'center';
+  ctx.textBaseline = 'middle';
+  drawFittedText(ctx, spec.title, 256, spec.subtitle ? 78 : 96, 390, spec.subtitle ? 58 : 86, spec.palette.text, spec.palette.shadow);
+  if (spec.subtitle) {
+    drawFittedText(ctx, spec.subtitle, 256, 130, 350, 34, spec.palette.accent, spec.palette.shadow);
   }
-  ctx.strokeStyle = '#ffd24a';
-  ctx.lineWidth = 8;
-  ctx.strokeRect(8, 8, 496, 176);
-  ctx.strokeStyle = 'rgba(255,255,255,0.18)';
-  ctx.lineWidth = 2;
-  ctx.strokeRect(24, 24, 464, 144);
   texture.update(true);
 
-  const material = new StandardMaterial('decor_acoustic_panel_mat', scene);
+  const material = new StandardMaterial(`${spec.name}_mat`, scene);
   material.diffuseTexture = texture;
   material.emissiveTexture = texture;
-  material.emissiveColor = new Color3(0.12, 0.14, 0.18);
-  material.specularColor = new Color3(0.04, 0.04, 0.04);
+  material.emissiveColor = new Color3(0.22, 0.22, 0.2);
+  material.specularColor = new Color3(0.05, 0.05, 0.045);
   material.backFaceCulling = false;
   return material;
 }
@@ -1639,6 +1809,44 @@ function createSpeakerGrilleMaterial(scene: Scene): StandardMaterial {
   material.emissiveTexture = texture;
   material.emissiveColor = new Color3(0.04, 0.04, 0.045);
   material.specularColor = new Color3(0.02, 0.02, 0.02);
+  material.backFaceCulling = false;
+  return material;
+}
+
+function createVentMaterial(scene: Scene): StandardMaterial {
+  const texture = new DynamicTexture('decor_wall_vent_tex', { width: 512, height: 180 }, scene, false);
+  texture.hasAlpha = false;
+  texture.anisotropicFilteringLevel = 4;
+  const ctx = texture.getContext() as CanvasRenderingContext2D;
+  ctx.fillStyle = '#d7d1c5';
+  ctx.fillRect(0, 0, 512, 180);
+  ctx.strokeStyle = '#13294b';
+  ctx.lineWidth = 12;
+  ctx.strokeRect(10, 10, 492, 160);
+
+  ctx.fillStyle = '#aeb3b7';
+  for (let y = 38; y <= 138; y += 20) {
+    ctx.fillRect(48, y, 416, 8);
+    ctx.fillStyle = 'rgba(255,255,255,0.36)';
+    ctx.fillRect(48, y, 416, 2);
+    ctx.fillStyle = '#aeb3b7';
+  }
+
+  ctx.strokeStyle = 'rgba(19,41,75,0.28)';
+  ctx.lineWidth = 3;
+  for (let x = 88; x <= 424; x += 56) {
+    ctx.beginPath();
+    ctx.moveTo(x, 34);
+    ctx.lineTo(x, 146);
+    ctx.stroke();
+  }
+  texture.update(true);
+
+  const material = new StandardMaterial('decor_wall_vent_mat', scene);
+  material.diffuseTexture = texture;
+  material.emissiveTexture = texture;
+  material.emissiveColor = new Color3(0.08, 0.08, 0.075);
+  material.specularColor = new Color3(0.08, 0.08, 0.075);
   material.backFaceCulling = false;
   return material;
 }
@@ -1702,33 +1910,11 @@ function createClockMaterial(scene: Scene): StandardMaterial {
   return material;
 }
 
-function createExitSignMaterial(scene: Scene): StandardMaterial {
-  const texture = new DynamicTexture('decor_exit_sign_tex', { width: 384, height: 160 }, scene, false);
-  texture.hasAlpha = false;
-  const ctx = texture.getContext() as CanvasRenderingContext2D;
-  ctx.fillStyle = '#083420';
-  ctx.fillRect(0, 0, 384, 160);
-  ctx.strokeStyle = '#d8ffe7';
-  ctx.lineWidth = 10;
-  ctx.strokeRect(10, 10, 364, 140);
-  ctx.textAlign = 'center';
-  ctx.textBaseline = 'middle';
-  drawFittedText(ctx, 'EXIT', 192, 83, 290, 82, '#d8ffe7', '#062114');
-  texture.update(true);
-
-  const material = new StandardMaterial('decor_exit_sign_mat', scene);
-  material.diffuseTexture = texture;
-  material.emissiveTexture = texture;
-  material.emissiveColor = new Color3(0.24, 0.62, 0.34);
-  material.specularColor = new Color3(0.03, 0.04, 0.03);
-  material.backFaceCulling = false;
-  return material;
-}
-
-function createPlaqueMaterial(scene: Scene, name: string, title: string, subtitle: string): StandardMaterial {
+function createPlaqueMaterial(scene: Scene, name: string, side: WallSide, title: string, subtitle: string): StandardMaterial {
   const texture = new DynamicTexture(name, { width: 640, height: 180 }, scene, false);
   texture.hasAlpha = false;
   texture.anisotropicFilteringLevel = 8;
+  applyWallTextTextureOrientation(texture, side);
   const ctx = texture.getContext() as CanvasRenderingContext2D;
   const gradient = ctx.createLinearGradient(0, 0, 640, 180);
   gradient.addColorStop(0, '#0b1c3a');

@@ -738,9 +738,11 @@ html, body {
 .boundary-clock {
   position: absolute;
   top: 18px;
-  right: clamp(18px, 4vw, 52px);
-  z-index: 13;
+  right: clamp(280px, 16vw, 340px);
+  z-index: 10;
   min-width: 132px;
+  max-width: min(220px, calc(100vw - 32px));
+  box-sizing: border-box;
   padding: 10px 14px 12px;
   border: 4px solid var(--ink);
   border-radius: 18px;
@@ -774,6 +776,15 @@ html, body {
   color: #b3261e;
   -webkit-text-stroke: 2px rgba(21, 33, 59, 0.24);
   text-shadow: 3px 3px 0 rgba(21, 33, 59, 0.14);
+}
+
+.boundary-clock-sub {
+  margin-top: 3px;
+  font-size: 10px;
+  font-weight: 900;
+  letter-spacing: 0.04em;
+  line-height: 1.1;
+  text-transform: uppercase;
 }
 
 @keyframes boundary-clock-pop {
@@ -1115,6 +1126,13 @@ html, body {
 }
 
 /* === Multiplayer panel — locker-room card === */
+@media (max-width: 1180px) {
+  .boundary-clock {
+    top: 76px;
+    right: 16px;
+  }
+}
+
 .multiplayer-panel {
   position: fixed;
   left: 16px;

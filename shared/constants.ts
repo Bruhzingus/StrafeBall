@@ -33,8 +33,8 @@ export const GAME_CONSTANTS = {
     softLimitBleedRate: 1.2,
     gravity: 18.75,
     fallGravityMultiplier: 1.32,
-    // Tuned for roughly 25% less regular jump height while keeping the arc responsive.
-    jumpSpeed: 5.98,
+    // Reduced another 15% to cut regular jump hang time while keeping the arc responsive.
+    jumpSpeed: 5.08,
     bhopGraceSeconds: 0.12,
     bhopSpeedBonus: 1.035,
     crouchHeightMultiplier: 0.62,
@@ -47,9 +47,12 @@ export const GAME_CONSTANTS = {
 
   slide: {
     minStartSpeed: 6.2,
-    // Reduced from 2.2 → shorter slide launch.
-    impulse: 1.4,
-    // Raised from 0.38 → slide bleeds speed faster → covers less ground.
+    heightScale: 0.8,
+    minStartBoostSpeed: 6.2,
+    airBufferSeconds: 0.18,
+    // Slide entry preserves momentum; low-speed entries are lifted to minStartBoostSpeed instead.
+    impulse: 0,
+    // Slide bleeds preserved speed smoothly over time.
     frictionMultiplier: 0.55,
     minDuration: 0.28,
     // Shortened from 1.2 → slides end sooner.
@@ -69,7 +72,7 @@ export const GAME_CONSTANTS = {
     runStartUpBoost: 2.2,
     minEntrySpeed: 2.0,
     jumpAwaySpeed: 9.5,
-    jumpUpSpeed: 8.5,
+    jumpUpSpeed: 6.8,
     reattachCooldownSeconds: 0.2,
     // Stop wall-run reattachment before the player reaches the ceiling clamp; otherwise the run
     // start boost can re-fire every frame at the top of the gym.
@@ -217,8 +220,8 @@ export const GAME_CONSTANTS = {
   dash: {
     maxCharges: 3,
     rechargeSeconds: 3,
-    // Reduced from 15 → shorter dash distance. Then a further 35% cut (11 → 7.15).
-    impulse: 7.15,
+    // Reduced from 15 → shorter dash distance. Then a further 35% cut (11 → 7.15), then a 15% cut (7.15 → 6.08).
+    impulse: 6.08,
     cooldownBetweenDashes: 0.18,
     // Reduced from 0.22 → friction reclaims the dash sooner → shorter carry.
     activeSeconds: 0.16,
@@ -245,6 +248,7 @@ export const GAME_CONSTANTS = {
     noBoundariesSeconds: 120,
     halfCourtCountdownSeconds: 10,
     illegalCrossDeathCountdownSeconds: 5,
+    illegalCrossPenaltyIntervalSeconds: 1,
     startVoteSeconds: 20,
     resetVoteSeconds: 20,
     illegalCrossWarningsBeforePenalty: 1,

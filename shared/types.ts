@@ -124,6 +124,7 @@ export interface PlayerMatchStats {
  */
 export interface MovementInternalState {
   slideTimer: number;
+  slideBufferTimer: number;
   jumpGraceTimer: number;
   wallRunTimer: number;
   wallReattachCooldown: number;
@@ -195,6 +196,7 @@ export interface HalfCourtViolationState {
   illegalCrossCount: number;
   warningsIssued: number;
   penaltiesIssued: number;
+  penaltyTickSeconds: number;
   wasAcross: boolean;
   deathCountdownActive: boolean;
   countdownSeconds: number;

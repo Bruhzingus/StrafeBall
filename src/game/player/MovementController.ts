@@ -34,6 +34,7 @@ export class MovementController {
   public dashingThisFrame = false;
 
   private slideTimer = 0;
+  private slideBufferTimer = 0;
   private jumpGraceTimer = 0;
   private wallRunTimer = 0;
   private wallReattachCooldown = 0;
@@ -68,6 +69,9 @@ export class MovementController {
     const wishDir = movementWishDirection(this.root.rotation.y, moveX, moveZ);
     const airWishDir = airStrafeWishDirection(this.root.rotation.y, moveX);
 
+    if (!this.grounded && this.slideHoldActive) {
+      this.slideBufferTimer = TUNING.slide.airBufferSeconds;
+    }
     this.updateGroundState();
     this.updateTimers(dt);
     this.tryStartSlide(input, wishDir);
@@ -147,6 +151,11 @@ export class MovementController {
     if (this.wallReattachCooldown > 0) this.wallReattachCooldown = Math.max(0, this.wallReattachCooldown - dt);
     if (this.catchBoostTimer > 0) this.catchBoostTimer = Math.max(0, this.catchBoostTimer - dt);
     if (this.dashActiveTimer > 0) this.dashActiveTimer = Math.max(0, this.dashActiveTimer - dt);
+    if (!this.grounded && this.slideHoldActive) {
+      this.slideBufferTimer = TUNING.slide.airBufferSeconds;
+    } else if (this.slideBufferTimer > 0) {
+      this.slideBufferTimer = Math.max(0, this.slideBufferTimer - dt);
+    }
     if (this.sliding) {
       this.slideTimer += dt;
       const speed = this.horizontalSpeed();
@@ -170,16 +179,22 @@ export class MovementController {
     // impulse every frame the instant a previous slide ends.
     const crouchPressed = input.wasKeyPressed(CONTROL_KEYS.crouch) || input.wasKeyPressed(CONTROL_KEYS.crouchAlt);
     const speed = this.horizontalSpeed();
-    const wantsSlide = input.wasKeyPressed(CONTROL_KEYS.slide) || (crouchPressed && speed > TUNING.player.crouchWalkSpeed);
-    const canSlideFromSpeed = input.wasKeyPressed(CONTROL_KEYS.slide)
-      ? speed >= TUNING.slide.minStartSpeed
+    const bufferedSlide = this.grounded && this.slideHoldActive && this.slideBufferTimer > 0;
+    const slidePressed = input.wasKeyPressed(CONTROL_KEYS.slide);
+    const wantsSlide = slidePressed || bufferedSlide || (crouchPressed && speed > TUNING.player.crouchWalkSpeed);
+    const canSlideFromSpeed = slidePressed || bufferedSlide
+      ? speed > 0.001 || wishDir.lengthSquared() > 0.001
       : speed > TUNING.player.crouchWalkSpeed;
     if (!this.grounded || this.sliding || !wantsSlide || !canSlideFromSpeed) return;
 
     this.sliding = true;
     this.slideTimer = 0;
+    this.slideBufferTimer = 0;
     const slideDir = wishDir.lengthSquared() > 0.001 ? wishDir : safeNormalize(new Vector3(this.velocity.x, 0, this.velocity.z), yawForward(this.root.rotation.y));
-    this.velocity.addInPlace(slideDir.scale(TUNING.slide.impulse));
+    if (speed < TUNING.slide.minStartBoostSpeed) {
+      this.velocity.x = slideDir.x * TUNING.slide.minStartBoostSpeed;
+      this.velocity.z = slideDir.z * TUNING.slide.minStartBoostSpeed;
+    }
   }
 
   /**
@@ -463,9 +478,8 @@ export class MovementController {
   }
 
   private currentBodyHeight(): number {
-    return this.crouching || this.sliding
-      ? TUNING.player.height * TUNING.player.crouchHeightMultiplier
-      : TUNING.player.height;
+    if (this.sliding) return TUNING.player.height * TUNING.slide.heightScale;
+    return this.crouching ? TUNING.player.height * TUNING.player.crouchHeightMultiplier : TUNING.player.height;
   }
 
   private clampToGymBounds(): void {
@@ -485,7 +499,11 @@ export class MovementController {
   }
 
   private applyCameraHeight(): void {
-    const height = this.crouching || this.sliding ? TUNING.player.eyeHeight * TUNING.player.crouchHeightMultiplier : TUNING.player.eyeHeight;
+    const height = this.sliding
+      ? TUNING.player.eyeHeight * TUNING.slide.heightScale
+      : this.crouching
+        ? TUNING.player.eyeHeight * TUNING.player.crouchHeightMultiplier
+        : TUNING.player.eyeHeight;
     this.camera.position.y = height;
   }
 

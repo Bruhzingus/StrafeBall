@@ -157,7 +157,8 @@ export function applyHalfCourtRule(
         ...existing,
         wasAcross: false,
         deathCountdownActive: false,
-        countdownSeconds: constants.match.illegalCrossDeathCountdownSeconds
+        penaltyTickSeconds: constants.match.illegalCrossPenaltyIntervalSeconds,
+        countdownSeconds: constants.match.illegalCrossPenaltyIntervalSeconds
       },
       { type: 'none' }
     );
@@ -172,7 +173,8 @@ export function applyHalfCourtRule(
         ...existing,
         wasAcross: false,
         deathCountdownActive: false,
-        countdownSeconds: constants.match.illegalCrossDeathCountdownSeconds
+        penaltyTickSeconds: constants.match.illegalCrossPenaltyIntervalSeconds,
+        countdownSeconds: constants.match.illegalCrossPenaltyIntervalSeconds
       },
       { type: 'none' }
     );
@@ -187,17 +189,28 @@ export function applyHalfCourtRule(
     !existing.wasAcross &&
     existing.warningsIssued < constants.match.illegalCrossWarningsBeforePenalty;
   const warningsIssued = shouldWarn ? existing.warningsIssued + 1 : existing.warningsIssued;
-  const startingCountdown = existing.deathCountdownActive
-    ? existing.countdownSeconds
-    : constants.match.illegalCrossDeathCountdownSeconds;
-  const countdownSeconds = Math.max(0, startingCountdown - Math.max(0, dt));
+  const penaltyIntervalSeconds = Math.max(0.001, constants.match.illegalCrossPenaltyIntervalSeconds);
+  const penaltyActive = !shouldWarn && (existing.deathCountdownActive || !existing.wasAcross);
+  const startingCountdown = existing.deathCountdownActive ? existing.countdownSeconds : penaltyIntervalSeconds;
+  const countdownSeconds = !penaltyActive
+    ? penaltyIntervalSeconds
+    : Math.max(0, startingCountdown - Math.max(0, dt));
+  const overduePenaltySeconds = penaltyActive ? Math.max(0, Math.max(0, dt) - startingCountdown) : 0;
+  const penaltiesDue = penaltyActive && countdownSeconds <= 0
+    ? 1 + Math.floor(overduePenaltySeconds / penaltyIntervalSeconds)
+    : 0;
+  const nextCountdownSeconds = penaltiesDue > 0
+    ? penaltyIntervalSeconds - (overduePenaltySeconds % penaltyIntervalSeconds)
+    : countdownSeconds;
   const nextViolation: HalfCourtViolationState = {
     ...existing,
     illegalCrossCount,
     warningsIssued,
+    penaltiesIssued: existing.penaltiesIssued + penaltiesDue,
+    penaltyTickSeconds: nextCountdownSeconds,
     wasAcross: true,
-    deathCountdownActive: true,
-    countdownSeconds
+    deathCountdownActive: penaltyActive,
+    countdownSeconds: nextCountdownSeconds
   };
 
   if (shouldWarn) {
@@ -209,15 +222,17 @@ export function applyHalfCourtRule(
     );
   }
 
-  if (countdownSeconds <= 0) {
+  if (penaltiesDue > 0) {
+    const opponentTeamId = getOpponentTeamId(match, offenderTeamId);
+    const value = penaltiesDue * constants.match.penaltyHitValue;
+    const scoredMatch = opponentTeamId && match.mode !== '2v2' ? applyScore(match, opponentTeamId, value) : match;
     return setHalfCourtViolation(
-      match,
+      scoredMatch,
       playerId,
-      {
-        ...nextViolation,
-        eliminationIssued: true
-      },
-      { type: 'half-court-elimination', playerId }
+      nextViolation,
+      opponentTeamId
+        ? { type: 'half-court-penalty', playerId, opponentTeamId, value }
+        : { type: 'none' }
     );
   }
 
@@ -229,9 +244,10 @@ function createHalfCourtViolationState(constants: GameConstants = GAME_CONSTANTS
     illegalCrossCount: 0,
     warningsIssued: 0,
     penaltiesIssued: 0,
+    penaltyTickSeconds: constants.match.illegalCrossPenaltyIntervalSeconds,
     wasAcross: false,
     deathCountdownActive: false,
-    countdownSeconds: constants.match.illegalCrossDeathCountdownSeconds,
+    countdownSeconds: constants.match.illegalCrossPenaltyIntervalSeconds,
     eliminationIssued: false
   };
 }

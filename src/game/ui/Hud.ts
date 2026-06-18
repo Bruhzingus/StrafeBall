@@ -199,6 +199,7 @@ export class Hud {
       warningsIssued: rules.boundary.illegalCrossWarnings,
       illegalCrossCount: rules.boundary.illegalCrossWarnings,
       penaltiesIssued: 0,
+      penaltyTickSeconds: rules.boundary.illegalCountdownSeconds,
       wasAcross: rules.boundary.illegalCountdownActive,
       eliminationIssued: false
     });
@@ -462,13 +463,17 @@ export class Hud {
 
   private updateBoundaryClock(elapsedSeconds: number, noBoundaries: boolean): void {
     const remainingSeconds = Math.max(0, TUNING.match.noBoundariesSeconds - elapsedSeconds);
+    const countdownSeconds = TUNING.match.halfCourtCountdownSeconds;
     const active =
       !noBoundaries &&
       remainingSeconds > 0 &&
-      remainingSeconds <= TUNING.match.halfCourtCountdownSeconds;
-    const label = active ? String(Math.max(1, Math.ceil(remainingSeconds))) : '';
+      remainingSeconds <= countdownSeconds;
+    const seconds = active ? Math.max(1, Math.ceil(remainingSeconds)) : 0;
+    const label = active ? String(seconds) : '';
+    const isOpeningWarning = active && seconds === countdownSeconds;
+    const renderKey = label ? `${label}:${isOpeningWarning ? 'warning' : 'countdown'}` : '';
 
-    if (label === this.lastBoundaryClockLabel) return;
+    if (renderKey === this.lastBoundaryClockLabel) return;
 
     if (label === '') {
       this.boundaryClock.classList.remove('boundary-clock--visible');
@@ -477,30 +482,32 @@ export class Hud {
     }
 
     this.boundaryClock.innerHTML = `
-      <div class="boundary-clock-label">Cross Opens</div>
+      <div class="boundary-clock-label">${isOpeningWarning ? 'Boundary Warning' : 'Half Court Drops In'}</div>
       <div class="boundary-clock-value">${label}</div>
+      <div class="boundary-clock-sub">${isOpeningWarning ? 'Boundaries lift in 10 seconds' : 'Full court opening'}</div>
     `;
     this.boundaryClock.classList.remove('boundary-clock--visible');
     void this.boundaryClock.offsetWidth;
     this.boundaryClock.classList.add('boundary-clock--visible');
-    this.lastBoundaryClockLabel = label;
+    this.lastBoundaryClockLabel = renderKey;
   }
 
   private updateHalfCourtWarning(violation: HalfCourtViolationState | undefined): void {
-    const active = !!violation?.deathCountdownActive && !violation.eliminationIssued && violation.countdownSeconds > 0;
+    const active = !!violation?.wasAcross && !violation.eliminationIssued;
     if (!active) {
       this.halfCourtWarning.classList.remove('half-court-warning--visible', 'half-court-warning--urgent');
       this.halfCourtWarning.innerHTML = '';
       return;
     }
 
+    const danger = !!violation?.deathCountdownActive && violation.countdownSeconds > 0;
     const seconds = Math.max(1, Math.ceil(violation.countdownSeconds));
-    this.halfCourtWarning.classList.toggle('half-court-warning--urgent', seconds <= 3);
+    this.halfCourtWarning.classList.toggle('half-court-warning--urgent', danger);
     this.halfCourtWarning.innerHTML = `
-      <div class="half-court-warning__stamp">RED WARNING</div>
+      <div class="half-court-warning__stamp">${danger ? 'DANGER' : 'WARNING'}</div>
       <div class="half-court-warning__title">GET BACK TO YOUR SIDE</div>
-      <div class="half-court-warning__body">Illegal half-court crossing</div>
-      <div class="half-court-warning__timer">OUT IN <strong>${seconds}</strong></div>
+      <div class="half-court-warning__body">${danger ? 'Taking 1 hit/life per second' : 'Wait until half court drops'}</div>
+      <div class="half-court-warning__timer">${danger ? `NEXT HIT IN <strong>${seconds}</strong>` : 'WARNING USED'}</div>
     `;
     this.halfCourtWarning.classList.add('half-court-warning--visible');
   }

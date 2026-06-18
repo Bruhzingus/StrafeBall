@@ -43,11 +43,13 @@ export class BoundaryRules {
 
     const event = this.match.boundary.lastEvent;
     if (event.type === 'half-court-warning') {
-      this.lastMessage = 'RED WARNING: illegal half-court. Get back now!';
+      this.lastMessage = 'WARNING: stay on your side until half court drops.';
+    } else if (event.type === 'half-court-penalty') {
+      this.lastMessage = `Half-court penalty: opponent +${event.value}.`;
     } else if (event.type === 'half-court-elimination') {
       this.lastMessage = 'Out! Half-court violation.';
     } else if (this.illegalCountdownActive) {
-      this.lastMessage = `Illegal side! Return in ${Math.ceil(this.illegalCountdownSeconds)}s or you are out.`;
+      this.lastMessage = `Illegal side! Next penalty in ${Math.ceil(this.illegalCountdownSeconds)}s.`;
     }
   }
 

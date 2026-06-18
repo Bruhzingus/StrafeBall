@@ -974,6 +974,7 @@ export class NetworkRenderer {
     const hitbox = playerHitCapsule(renderPlayer);
     const bodyHeight = eliminated ? Math.min(hitbox.height, TUNING.player.height * 0.56) : hitbox.height;
     const bodyScale = bodyHeight / TUNING.player.height;
+    const slideLean = pm.sliding && !eliminated ? 0.24 : 0;
     const eyeHeight = playerAimOriginHeight(player.movement);
     const headY = Math.max(0.62, Math.min(bodyHeight - 0.2, eyeHeight - 0.04));
     const legHeight = Math.max(0.36, Math.min(0.72, bodyHeight * 0.42));
@@ -981,20 +982,23 @@ export class NetworkRenderer {
     const shoulderY = Math.max(0.56, Math.min(bodyHeight - 0.32, eyeHeight - 0.34));
     const hipY = Math.max(0.26, legHeight + 0.06);
 
-    visual.body.position.y = bodyHeight * 0.5;
+    visual.body.position.set(flatForward.x * slideLean * 0.28, bodyHeight * 0.5, flatForward.z * slideLean * 0.28);
     visual.body.scaling.set(1, bodyScale, 1);
+    visual.body.rotationQuaternion ??= new Quaternion();
+    scratchA.set(flatForward.x * slideLean, 1, flatForward.z * slideLean).normalize();
+    Quaternion.FromUnitVectorsToRef(SCRATCH_UP, scratchA, visual.body.rotationQuaternion);
     visual.hitbox.position.y = bodyHeight * 0.5;
     visual.hitbox.scaling.set(1, bodyScale, 1);
     visual.hitbox.setEnabled(isHitboxDebugEnabled());
 
     // torso = flatForward*0.02 + (0, max(0.58, h*0.53), 0)
-    visual.torso.position.set(flatForward.x * 0.02, flatForward.y * 0.02 + Math.max(0.58, bodyHeight * 0.53), flatForward.z * 0.02);
+    visual.torso.position.set(flatForward.x * (0.02 + slideLean * 0.4), flatForward.y * 0.02 + Math.max(0.58, bodyHeight * 0.53), flatForward.z * (0.02 + slideLean * 0.4));
     visual.torso.scaling.set(1, torsoScaleY, 1);
     orientYaw(visual.torso, flatForward);
-    visual.chestStripe.position.set(flatForward.x * 0.235, flatForward.y * 0.235 + Math.max(0.72, bodyHeight * 0.62), flatForward.z * 0.235);
+    visual.chestStripe.position.set(flatForward.x * (0.235 + slideLean * 0.42), flatForward.y * 0.235 + Math.max(0.72, bodyHeight * 0.62), flatForward.z * (0.235 + slideLean * 0.42));
     visual.chestStripe.scaling.set(1, Math.max(0.8, bodyScale), 1);
     orientYaw(visual.chestStripe, flatForward);
-    visual.hips.position.set(0, hipY, 0);
+    visual.hips.position.set(-flatForward.x * slideLean * 0.12, hipY, -flatForward.z * slideLean * 0.12);
     visual.hips.scaling.set(1, Math.max(0.78, bodyScale), 1);
     orientYaw(visual.hips, flatForward);
 
@@ -1009,7 +1013,7 @@ export class NetworkRenderer {
     scratchEye.set(root.x, root.y + eyeHeight, root.z);
     scratchAimEnd.set(scratchEye.x + forwardV.x * 0.5, scratchEye.y + forwardV.y * 0.5, scratchEye.z + forwardV.z * 0.5);
 
-    visual.head.position.set(0, headY, 0.015);
+    visual.head.position.set(flatForward.x * slideLean * 0.42, headY, 0.015 + flatForward.z * slideLean * 0.42);
     visual.visor.position.set(forwardV.x * 0.225, headY + 0.035 + forwardV.y * 0.225, 0.015 + forwardV.z * 0.225);
     visual.visor.rotationQuaternion ??= new Quaternion();
     Quaternion.FromUnitVectorsToRef(SCRATCH_FWD_Z, forwardV, visual.visor.rotationQuaternion);
@@ -1217,6 +1221,7 @@ function createScratchPlayer(movement: PlayerState['movement']): PlayerState {
     movement,
     movementInternal: {
       slideTimer: 0,
+      slideBufferTimer: 0,
       jumpGraceTimer: 0,
       wallRunTimer: 0,
       wallReattachCooldown: 0,

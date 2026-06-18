@@ -1746,8 +1746,23 @@ export class ServerGameLoop {
         this.eliminatePlayer(player.id);
         this.refreshLastPlayerBuffs(this.stepNowMs);
         this.checkEliminationVictory();
+      } else if (this.state.match.boundary.lastEvent.type === 'half-court-penalty') {
+        this.applyHalfCourtPenalty(player.id, this.state.match.boundary.lastEvent.value);
       }
     }
+  }
+
+  private applyHalfCourtPenalty(playerId: string, value: number): void {
+    if (this.state.match.mode !== '2v2') return;
+
+    const player = this.state.players[playerId];
+    if (!player || !this.isPlayerAlive(player)) return;
+
+    player.lives = Math.max(0, player.lives - value);
+    this.adjustPlayerMatchStat(player.id, 'hitsTaken', value);
+    if (player.lives <= 0) this.eliminatePlayer(player.id);
+    this.refreshLastPlayerBuffs(this.stepNowMs);
+    this.checkEliminationVictory();
   }
 
   // ===========================================================================================

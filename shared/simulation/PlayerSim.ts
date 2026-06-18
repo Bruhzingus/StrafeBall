@@ -90,6 +90,7 @@ export function createPlayerMatchStats(overrides: Partial<PlayerMatchStats> = {}
 export function createMovementInternalState(overrides: Partial<MovementInternalState> = {}): MovementInternalState {
   return {
     slideTimer: 0,
+    slideBufferTimer: 0,
     jumpGraceTimer: 0,
     wallRunTimer: 0,
     wallReattachCooldown: 0,

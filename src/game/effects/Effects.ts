@@ -93,8 +93,7 @@ export class Effects {
   }
 
   onSlide(speed = 0): void {
-    this.sound.whoosh(0.4);
-    if (speed > 4.5) this.sound.squeak(0.65 + Math.min(0.45, speed / 18));
+    this.sound.slideBrush(speed);
     this.triggerFlash(0.1, 0.09, '80, 160, 255');
   }
 

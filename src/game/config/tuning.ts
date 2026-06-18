@@ -30,7 +30,7 @@ export const TUNING = {
     gravity: GAME_CONSTANTS.player.gravity,
     // Gravity is stronger while falling so jumps feel snappy and weighty, not floaty.
     fallGravityMultiplier: GAME_CONSTANTS.player.fallGravityMultiplier,
-    // Mirrors GAME_CONSTANTS.player.jumpSpeed (jump −35%). Kept in sync with the server sim.
+    // Mirrors GAME_CONSTANTS.player.jumpSpeed. Kept in sync with the server sim.
     jumpSpeed: GAME_CONSTANTS.player.jumpSpeed,
     bhopGraceSeconds: GAME_CONSTANTS.player.bhopGraceSeconds,
     bhopPerfectWindowSeconds: 0.07,
@@ -45,6 +45,9 @@ export const TUNING = {
 
   slide: {
     minStartSpeed: GAME_CONSTANTS.slide.minStartSpeed,
+    heightScale: GAME_CONSTANTS.slide.heightScale,
+    minStartBoostSpeed: GAME_CONSTANTS.slide.minStartBoostSpeed,
+    airBufferSeconds: GAME_CONSTANTS.slide.airBufferSeconds,
     impulse: GAME_CONSTANTS.slide.impulse,
     frictionMultiplier: GAME_CONSTANTS.slide.frictionMultiplier,
     minDuration: GAME_CONSTANTS.slide.minDuration,

@@ -54,8 +54,10 @@ export function stepMovement(
   let wallRunning = movementIn.wallRunning;
   let dashingThisFrame = false;
   const crouching = input.crouchHeld;
+  const slideHeldActive = input.slideHeld || input.crouchHeld;
 
   let slideTimer = internalIn.slideTimer;
+  let slideBufferTimer = internalIn.slideBufferTimer ?? 0;
   let jumpGraceTimer = internalIn.jumpGraceTimer;
   let wallRunTimer = internalIn.wallRunTimer;
   let wallReattachCooldown = internalIn.wallReattachCooldown;
@@ -71,6 +73,7 @@ export function stepMovement(
 
   let dash = dashIn;
   const speedScale = Number.isFinite(movementScale) ? Math.max(0.05, movementScale) : 1;
+  const wasGrounded = grounded;
 
   const yaw = input.lookYawRadians;
   const pitch = clampLookPitch(input.lookPitchRadians, c);
@@ -95,6 +98,10 @@ export function stepMovement(
   const airWishZ = moveX > EPS ? rightZ : moveX < -EPS ? -rightZ : 0;
   const hasAirWish = Math.abs(moveX) > EPS;
 
+  if (!wasGrounded && slideHeldActive) {
+    slideBufferTimer = c.slide.airBufferSeconds;
+  }
+
   // --- ground state (uses groundHeight resolved last tick) ---
   if (py <= groundHeight + 1e-3) {
     if (!grounded) jumpGraceTimer = c.player.bhopGraceSeconds;
@@ -105,6 +112,12 @@ export function stepMovement(
     wallRunning = false;
   } else {
     grounded = false;
+  }
+
+  if (!grounded && slideHeldActive) {
+    slideBufferTimer = c.slide.airBufferSeconds;
+  } else if (slideBufferTimer > 0) {
+    slideBufferTimer = Math.max(0, slideBufferTimer - dt);
   }
 
   // --- timers ---
@@ -121,7 +134,6 @@ export function stepMovement(
   if (wallReattachCooldown > 0) wallReattachCooldown = Math.max(0, wallReattachCooldown - dt);
   if (catchBoostTimer > 0) catchBoostTimer = Math.max(0, catchBoostTimer - dt);
   if (dashActiveTimer > 0) dashActiveTimer = Math.max(0, dashActiveTimer - dt);
-  const slideHeldActive = input.slideHeld || input.crouchHeld;
   if (sliding) {
     slideTimer += dt;
     const speed = Math.hypot(vx, vz);
@@ -140,13 +152,15 @@ export function stepMovement(
   const slidePressed = input.slidePressed;
   const crouchPressed = input.crouchPressed || (input.crouchHeld && !prevInput.crouchHeld);
   const hsBeforeSlide = Math.hypot(vx, vz);
-  const wantsSlide = slidePressed || (crouchPressed && hsBeforeSlide > c.player.crouchWalkSpeed);
-  const canSlideFromSpeed = slidePressed
-    ? hsBeforeSlide >= c.slide.minStartSpeed
+  const bufferedLandingSlide = !wasGrounded && grounded && slideHeldActive && slideBufferTimer > 0;
+  const wantsSlide = slidePressed || bufferedLandingSlide || (crouchPressed && hsBeforeSlide > c.player.crouchWalkSpeed);
+  const canSlideFromSpeed = slidePressed || bufferedLandingSlide
+    ? hsBeforeSlide > EPS || hasWish
     : hsBeforeSlide > c.player.crouchWalkSpeed;
   if (grounded && !sliding && wantsSlide && canSlideFromSpeed) {
     sliding = true;
     slideTimer = 0;
+    slideBufferTimer = 0;
     let sdx = wishX;
     let sdz = wishZ;
     if (!hasWish) {
@@ -159,8 +173,11 @@ export function stepMovement(
         sdz = fwdZ;
       }
     }
-    vx += sdx * c.slide.impulse * speedScale;
-    vz += sdz * c.slide.impulse * speedScale;
+    const minStartSpeed = c.slide.minStartBoostSpeed * speedScale;
+    if (hsBeforeSlide < minStartSpeed) {
+      vx = sdx * minStartSpeed;
+      vz = sdz * minStartSpeed;
+    }
   }
 
   // --- jump / wall-jump (edge-triggered) ---
@@ -405,6 +422,7 @@ export function stepMovement(
     },
     internal: {
       slideTimer,
+      slideBufferTimer,
       jumpGraceTimer,
       wallRunTimer,
       wallReattachCooldown,
@@ -445,7 +463,8 @@ function wallJumpAwayDirection(px: number, pz: number, yaw: number, c: GameConst
 }
 
 function currentBodyHeight(crouching: boolean, sliding: boolean, c: GameConstants): number {
-  return crouching || sliding ? c.player.height * c.player.crouchHeightMultiplier : c.player.height;
+  if (sliding) return c.player.height * c.slide.heightScale;
+  return crouching ? c.player.height * c.player.crouchHeightMultiplier : c.player.height;
 }
 
 function maxPlayerYForBodyHeight(bodyHeight: number, c: GameConstants): number {

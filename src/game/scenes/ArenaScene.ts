@@ -1269,7 +1269,7 @@ export class ArenaScene {
     // Crouch/slide lowers the eye height so the view follows the (shortened) body. Online mode
     // skips the offline MovementController, so the camera Y must be driven here from the predicted
     // crouch state. Smoothed exponentially toward the target so it dips/rises instead of snapping.
-    this.applyCrouchCameraHeight(movement.crouching || movement.sliding);
+    this.applyCrouchCameraHeight(movement.crouching, movement.sliding);
     this.player.movement.velocity.set(v.x, v.y, v.z);
     this.player.movement.grounded = movement.grounded;
     this.player.movement.crouching = movement.crouching;
@@ -1303,10 +1303,11 @@ export class ArenaScene {
    * exponential approach with the real frame delta so the dip is framerate-independent and reads as
    * a quick, natural crouch rather than a teleport.
    */
-  private applyCrouchCameraHeight(lowered: boolean): void {
+  private applyCrouchCameraHeight(crouching: boolean, sliding: boolean): void {
     const stand = TUNING.player.eyeHeight;
     const crouch = TUNING.player.eyeHeight * TUNING.player.crouchHeightMultiplier;
-    const target = lowered ? crouch : stand;
+    const slide = TUNING.player.eyeHeight * TUNING.slide.heightScale;
+    const target = sliding ? slide : crouching ? crouch : stand;
     const frameDt = Math.min(this.scene.getEngine().getDeltaTime() / 1000, TUNING.simulation.maxDeltaSeconds);
     // ~18/s smoothing rate matches the viewmodel's feel; 1 - e^(-k*dt) is the stable per-frame step.
     const k = 1 - Math.exp(-18 * frameDt);

@@ -35,6 +35,22 @@ export const LOBBY_MUSIC_TRACKS: readonly BattleMusicTrack[] = [
     "durationSeconds": 91.533
   },
   {
+    "id": "lmnt-studio-chill-house",
+    "artist": "Lmnt Studio",
+    "title": "Chill House",
+    "filename": "lmnt_studio-chill_house-419916.mp3",
+    "src": "/audio/lobby-music/lmnt_studio-chill_house-419916.mp3",
+    "durationSeconds": 138.998
+  },
+  {
+    "id": "lmnt-studio-the-fashion-house",
+    "artist": "Lmnt Studio",
+    "title": "The Fashion House",
+    "filename": "lmnt_studio-the_fashion_house-419905.mp3",
+    "src": "/audio/lobby-music/lmnt_studio-the_fashion_house-419905.mp3",
+    "durationSeconds": 118.518
+  },
+  {
     "id": "maison-brava-deep-chill-lounge-remix",
     "artist": "Maison Brava",
     "title": "Deep Chill Lounge Remix",
@@ -49,5 +65,21 @@ export const LOBBY_MUSIC_TRACKS: readonly BattleMusicTrack[] = [
     "filename": "maison_brava-piano-intro-392162.mp3",
     "src": "/audio/lobby-music/maison_brava-piano-intro-392162.mp3",
     "durationSeconds": 160.032
+  },
+  {
+    "id": "missywhimsyart-step-to-the-beat",
+    "artist": "Missywhimsyart",
+    "title": "Step To The Beat",
+    "filename": "missywhimsyart-step_to_the_beat-244653.mp3",
+    "src": "/audio/lobby-music/missywhimsyart-step_to_the_beat-244653.mp3",
+    "durationSeconds": 228.96
+  },
+  {
+    "id": "tokyorifft-maggie-the-muscle",
+    "artist": "Tokyorifft",
+    "title": "Maggie The Muscle",
+    "filename": "tokyorifft-maggie_the-muscle-512637.mp3",
+    "src": "/audio/lobby-music/tokyorifft-maggie_the-muscle-512637.mp3",
+    "durationSeconds": 212.64
   }
 ];

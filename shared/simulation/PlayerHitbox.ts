@@ -12,18 +12,16 @@ export function playerBodyHeight(
   movement: Pick<PlayerMovementState, 'crouching' | 'sliding'>,
   constants: GameConstants = GAME_CONSTANTS
 ): number {
-  return movement.crouching || movement.sliding
-    ? constants.player.height * constants.player.crouchHeightMultiplier
-    : constants.player.height;
+  if (movement.sliding) return constants.player.height * constants.slide.heightScale;
+  return movement.crouching ? constants.player.height * constants.player.crouchHeightMultiplier : constants.player.height;
 }
 
 export function playerAimOriginHeight(
   movement: Pick<PlayerMovementState, 'crouching' | 'sliding'>,
   constants: GameConstants = GAME_CONSTANTS
 ): number {
-  return movement.crouching || movement.sliding
-    ? constants.player.eyeHeight * constants.player.crouchHeightMultiplier
-    : constants.player.eyeHeight;
+  if (movement.sliding) return constants.player.eyeHeight * constants.slide.heightScale;
+  return movement.crouching ? constants.player.eyeHeight * constants.player.crouchHeightMultiplier : constants.player.eyeHeight;
 }
 
 export function playerHitCapsule(
