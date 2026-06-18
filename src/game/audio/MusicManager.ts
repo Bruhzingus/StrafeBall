@@ -17,7 +17,8 @@ const RESYNC_INTERVAL_SECONDS = 0.75;
 const IGNORE_DRIFT_SECONDS = 0.12;
 const SOFT_CORRECT_DRIFT_SECONDS = 0.5;
 const SEEK_DRIFT_SECONDS = 0.9;
-const MUSIC_OUTPUT_SCALE = 0.06;
+const LOBBY_MUSIC_OUTPUT_SCALE = 0.06;
+const BATTLE_MUSIC_OUTPUT_SCALE = LOBBY_MUSIC_OUTPUT_SCALE * 0.3;
 
 type MusicSource = 'none' | 'battle' | 'lobby';
 
@@ -274,8 +275,15 @@ export class MusicManager {
     }
   }
 
+  private outputScaleForActiveSource(): number {
+    const source = this.expectedPlayback()?.source ?? this.loadedSource;
+    if (source === 'battle') return BATTLE_MUSIC_OUTPUT_SCALE;
+    if (source === 'lobby') return LOBBY_MUSIC_OUTPUT_SCALE;
+    return LOBBY_MUSIC_OUTPUT_SCALE;
+  }
+
   private applyOutputVolume(): void {
-    this.audio.volume = clamp(settings.musicVolume, 0, 1) * this.fadeLevel * MUSIC_OUTPUT_SCALE;
+    this.audio.volume = clamp(settings.musicVolume, 0, 1) * this.fadeLevel * this.outputScaleForActiveSource();
   }
 
   private enablePitchPreservation(): void {
