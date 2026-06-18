@@ -69,6 +69,9 @@ export function createStartVoteState(overrides: Partial<StartVoteState> = {}): S
     voteCount: 0,
     requiredVotes: 0,
     expiresAtMs: null,
+    teamChoicesByPlayerId: {},
+    teamChoiceCount: 0,
+    requiredTeamChoices: 0,
     ...overrides
   };
 }

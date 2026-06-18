@@ -498,18 +498,7 @@ export class NetworkRenderer {
   }
 
   private updateAdaptiveInterpolationDelay(): void {
-    const interval = this.debugStats.avgSnapshotIntervalMs > 0
-      ? this.debugStats.avgSnapshotIntervalMs
-      : SNAPSHOT_INTERVAL_MS;
-    const minDelay = Math.max(35, interval * 3);
-    const maxDelay = Math.max(120, interval * 8);
-    const jitterPressure = this.debugStats.bufferUnderrunsPerSec > 0 ||
-      this.debugStats.maxSnapshotIntervalMs > this.interpolationDelayMs * 0.8;
-    const target = jitterPressure
-      ? Math.min(maxDelay, Math.max(INTERPOLATION_DELAY_MS, this.debugStats.maxSnapshotIntervalMs * 1.5))
-      : minDelay;
-    const blend = jitterPressure ? 0.35 : 0.08;
-    this.interpolationDelayMs += (target - this.interpolationDelayMs) * blend;
+    this.interpolationDelayMs = INTERPOLATION_DELAY_MS;
   }
 
   private updatePlayers(players: PlayerState[], localPlayerId: string, dt: number): void {

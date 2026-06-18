@@ -94,8 +94,8 @@ function resolveProcessMode(): NetMode {
   return DEFAULT_NET_MODE;
 }
 
-/** Compiled default mode. Phase 5 2v2 target: 128 sim / 128 input / 96 snapshots. */
-export const DEFAULT_NET_MODE: NetMode = 'A_128_128_96';
+/** Compiled default mode. Stable 1v1 baseline: 144 sim / 144 input / 96 snapshots. */
+export const DEFAULT_NET_MODE: NetMode = 'A_144_144_96';
 
 /**
  * Active mode resolved at module load from process.env (server) or the compiled default (client).

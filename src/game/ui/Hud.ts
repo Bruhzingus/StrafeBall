@@ -293,8 +293,12 @@ export class Hud {
     const resetVoteText = room.resetVote.voteCount > 0
       ? `<div class="scoreboard-msg hud-warn">Reset vote: ${room.resetVote.voteCount}/${room.resetVote.requiredVotes}</div>`
       : '';
-    const startVoteText = room.startVote.voteCount > 0
-      ? `<div class="scoreboard-msg hud-warn">Start vote: ${room.startVote.voteCount}/${room.startVote.requiredVotes}</div>`
+    const startVoteText = room.match.mode === '2v2' && room.match.status === 'warmup'
+      ? room.startVote.requiredTeamChoices > 0 && room.startVote.teamChoiceCount < room.startVote.requiredTeamChoices
+        ? `<div class="scoreboard-msg hud-warn">Choose teams: ${room.startVote.teamChoiceCount}/${room.startVote.requiredTeamChoices}</div>`
+        : room.startVote.voteCount > 0
+          ? `<div class="scoreboard-msg hud-warn">Start vote: ${room.startVote.voteCount}/${room.startVote.requiredVotes}</div>`
+          : ''
       : '';
 
     if (this.debugVisible) {
@@ -665,6 +669,9 @@ function formatHudRoster(players: PlayerState[], playersPerTeam: number, localPl
 function onlineRoomStatus(room: RoomState): string {
   const playerCount = Object.keys(room.players).length;
   const missingSeats = Math.max(0, room.match.maxPlayers - playerCount);
+  if (room.match.status === 'warmup' && room.match.mode === '2v2' && room.startVote.requiredTeamChoices > 0 && room.startVote.teamChoiceCount < room.startVote.requiredTeamChoices) {
+    return `Choose teams ${room.startVote.teamChoiceCount}/${room.startVote.requiredTeamChoices}.`;
+  }
   if (room.match.status === 'warmup' && room.match.mode === '2v2' && room.startVote.voteCount > 0) {
     return `Start vote ${room.startVote.voteCount}/${room.startVote.requiredVotes}.`;
   }

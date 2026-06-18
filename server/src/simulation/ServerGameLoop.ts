@@ -230,6 +230,7 @@ export class ServerGameLoop {
   private readonly lastEnqueuedSeqByPlayerId = new Map<string, number>();
   private readonly parryCooldownByPlayerId = new Map<string, number>();
   private readonly lastInputDebugAtByPlayerId = new Map<string, number>();
+  private readonly teamChoicesByPlayerId = new Set<string>();
   private readonly startVotesByPlayerId = new Map<string, number>();
   private readonly resetVotesByPlayerId = new Map<string, number>();
   // Anti "2-ball technique": tracks each player's most recent throw so a second throw landing
@@ -343,6 +344,7 @@ export class ServerGameLoop {
     this.catchAttemptByKey.delete(`${playerId}:right`);
     this.lastCatchAttemptIdByKey.delete(`${playerId}:left`);
     this.lastCatchAttemptIdByKey.delete(`${playerId}:right`);
+    this.teamChoicesByPlayerId.delete(playerId);
     this.startVotesByPlayerId.delete(playerId);
     this.resetVotesByPlayerId.delete(playerId);
     this.reconcilePregameState('remove');
@@ -384,6 +386,7 @@ export class ServerGameLoop {
     this.catchAttemptByKey.clear();
     this.lastCatchAttemptIdByKey.clear();
     this.recentHitByBallId.clear();
+    this.teamChoicesByPlayerId.clear();
     this.startVotesByPlayerId.clear();
     this.resetVotesByPlayerId.clear();
   }
@@ -629,6 +632,7 @@ export class ServerGameLoop {
     if (!player) return { ok: false, reason: 'unknown-player' };
     if (this.matchMode !== '2v2') return { ok: false, reason: 'unsupported-mode' };
     if (this.state.match.status !== 'warmup') return { ok: false, reason: 'match-already-started' };
+    if (!this.allConnectedPlayersChoseTeams()) return { ok: false, reason: 'teams-not-chosen' };
     if (!this.canVoteStart()) return { ok: false, reason: 'start-not-available' };
 
     this.pruneStartVotes(this.now());
@@ -687,6 +691,8 @@ export class ServerGameLoop {
     player.lastPlayerBuffUntilMs = null;
     this.seedInputTracking(player.id, slot.yawRadians);
 
+    this.teamChoicesByPlayerId.add(player.id);
+    if (occupant) this.teamChoicesByPlayerId.add(occupant.id);
     this.clearVotesForPregameChange();
     this.syncPlayerScores();
     return { ok: true, log: `team switch player=${playerId} team=${slot.teamId} slot=${slot.teamSlotIndex + 1}` };
@@ -1977,6 +1983,7 @@ export class ServerGameLoop {
     );
 
     this.resetSerial += 1;
+    this.teamChoicesByPlayerId.clear();
     this.startVotesByPlayerId.clear();
     this.resetVotesByPlayerId.clear();
     // Preserve the running tick so it stays monotonic across the reset (see createFreshRoomState).
@@ -2047,7 +2054,10 @@ export class ServerGameLoop {
       votesByPlayerId,
       voteCount: Object.keys(votesByPlayerId).length,
       requiredVotes: this.canVoteStart() ? this.connectedCount() : 0,
-      expiresAtMs
+      expiresAtMs,
+      teamChoicesByPlayerId: this.teamChoicesSnapshot(),
+      teamChoiceCount: this.teamChoiceCount(),
+      requiredTeamChoices: this.matchMode === '2v2' ? this.connectedCount() : 0
     });
   }
 
@@ -2066,7 +2076,7 @@ export class ServerGameLoop {
 
     if (this.state.match.status === 'countdown' || this.state.match.status === 'playing') {
       this.resolveForfeitIfNeeded(reason);
-    } else if (this.shouldAutoStart()) {
+    } else if (this.matchMode === '1v1' && this.shouldAutoStart()) {
       this.beginPregameCountdown('auto');
     } else {
       this.state.match = { ...this.state.match, status: 'warmup', countdownSeconds: 0, winnerTeamId: null };
@@ -2105,10 +2115,35 @@ export class ServerGameLoop {
     if (this.matchMode !== '2v2') return false;
     const connectedPlayers = players.filter((player) => player.connected !== false);
     if (connectedPlayers.length < 2) return false;
+    if (!this.allConnectedPlayersChoseTeams(connectedPlayers)) return false;
     return this.connectedTeamCount(connectedPlayers) >= this.teamsRequiredToPlay;
   }
 
+  private allConnectedPlayersChoseTeams(players: PlayerState[] = Object.values(this.state.players)): boolean {
+    const connectedPlayers = players.filter((player) => player.connected !== false);
+    return connectedPlayers.length > 0 && connectedPlayers.every((player) => this.teamChoicesByPlayerId.has(player.id));
+  }
+
+  private teamChoiceCount(): number {
+    let count = 0;
+    for (const playerId of this.teamChoicesByPlayerId) {
+      const player = this.state.players[playerId];
+      if (player && player.connected !== false) count += 1;
+    }
+    return count;
+  }
+
+  private teamChoicesSnapshot(): Record<string, true> {
+    const choices: Record<string, true> = {};
+    for (const playerId of this.teamChoicesByPlayerId) {
+      const player = this.state.players[playerId];
+      if (player && player.connected !== false) choices[playerId] = true;
+    }
+    return choices;
+  }
+
   private shouldAutoStart(players: PlayerState[] = Object.values(this.state.players)): boolean {
+    if (this.matchMode === '2v2') return false;
     if (!this.hasFullRoster(players)) return false;
     return this.teamIds.every((teamId) => players.filter((player) => player.connected !== false && player.teamId === teamId).length >= this.playersPerTeam);
   }

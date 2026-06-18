@@ -23,6 +23,12 @@ function create2v2Loop(): ServerGameLoop {
   return loop;
 }
 
+function chooseCurrentTeam(loop: ServerGameLoop, playerId: string): void {
+  const player = loop.state.players[playerId];
+  expect(player).toBeTruthy();
+  expect(loop.handleTeamSwitch(playerId, player.teamId, player.teamSlotIndex).ok).toBe(true);
+}
+
 function setLiveHitBall(loop: ServerGameLoop, ballId: string, throwerId: string, targetId: string): void {
   const target = loop.state.players[targetId];
   loop.state.balls[ballId] = {
@@ -518,13 +524,24 @@ describe('ServerGameLoop', () => {
   });
 
   describe('2v2 Phase 4 lifecycle', () => {
-    it('auto-starts a full 2v2 roster into countdown', () => {
+    it('keeps a full 2v2 roster in team-pick warmup until choices and start votes complete', () => {
       const loop = new ServerGameLoop('room', { mode: '2v2', playersPerTeam: 2 });
       loop.addPlayer('a', 'A');
       loop.addPlayer('b', 'B');
       loop.addPlayer('c', 'C');
       loop.addPlayer('d', 'D');
 
+      expect(loop.state.match.status).toBe('warmup');
+      expect(loop.handleStartVote('a').ok).toBe(false);
+      chooseCurrentTeam(loop, 'a');
+      chooseCurrentTeam(loop, 'b');
+      chooseCurrentTeam(loop, 'c');
+      chooseCurrentTeam(loop, 'd');
+      expect(loop.state.startVote.teamChoiceCount).toBe(4);
+      expect(loop.handleStartVote('a').ok).toBe(true);
+      expect(loop.handleStartVote('b').ok).toBe(true);
+      expect(loop.handleStartVote('c').ok).toBe(true);
+      expect(loop.handleStartVote('d').ok).toBe(true);
       expect(loop.state.match.status).toBe('countdown');
       expect(loop.state.match.countdownSeconds).toBe(GAME_CONSTANTS.match.countdownSeconds);
     });
@@ -536,6 +553,9 @@ describe('ServerGameLoop', () => {
       loop.addPlayer('c', 'C');
 
       expect(loop.state.match.status).toBe('warmup');
+      chooseCurrentTeam(loop, 'a');
+      chooseCurrentTeam(loop, 'b');
+      chooseCurrentTeam(loop, 'c');
       expect(loop.handleStartVote('a').ok).toBe(true);
       expect(loop.handleStartVote('b').ok).toBe(true);
       expect(loop.handleStartVote('c').ok).toBe(true);

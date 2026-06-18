@@ -24,7 +24,7 @@ import {
   resolveServerDebugFlags,
   type DebugFlags
 } from '../../../shared/netConfig';
-import { makeCompactSnapshot, rosterFromRoom, type CompactServerSnapshot } from '../../../shared/snapshotCodec';
+import { rosterFromRoom } from '../../../shared/snapshotCodec';
 import { ServerGameLoop } from '../simulation/ServerGameLoop';
 import { advanceSnapshotDeadline } from './snapshotScheduler';
 
@@ -39,7 +39,6 @@ export interface DuelRoomOptions {
 const COLYSEUS_PATCH_RATE_MS: number | null = null;
 // How long a dropped player has to reconnect before their team may forfeit (#12).
 const RECONNECT_SECONDS = GAME_CONSTANTS.match.disconnectForfeitSeconds;
-const SNAPSHOT_BACKPRESSURE_BYTES = 256 * 1024;
 // Hard cap on concurrent duel rooms per process (#19 — cheap DoS guard).
 const MAX_ROOMS = 200;
 let activeRoomCount = 0;
@@ -450,7 +449,7 @@ export class DuelRoom extends Room {
    * The payload-size sample uses JSON.stringify, which is expensive — so it runs at most ONCE per
    * report window, and only when PERF_DEBUG is on. Real playtests with PERF_DEBUG off pay nothing.
    */
-  private recordSnapshot(snapshot: ServerSnapshot | CompactServerSnapshot, buildMs: number, broadcastMs: number, lateMs: number): void {
+  private recordSnapshot(snapshot: ServerSnapshot, buildMs: number, broadcastMs: number, lateMs: number): void {
     this.snapshotsThisWindow += 1;
     this.snapshotBuildMsTotal += buildMs;
     this.snapshotBuildMsMax = Math.max(this.snapshotBuildMsMax, buildMs);
@@ -493,23 +492,13 @@ export class DuelRoom extends Room {
   }
 
   private broadcastSnapshot(dueAtMs: number, actualNowMs: number): void {
-    const snapshot = makeCompactSnapshot(this.game.snapshot());
+    const snapshot = this.game.snapshot();
     const buildMs = this.game.getLastSnapshotBuildMs();
     const broadcastStartedAt = performance.now();
-    let sentClients = 0;
-    for (const client of this.clients) {
-      const buffered = readClientBufferedAmount(client) ?? 0;
-      if (buffered > SNAPSHOT_BACKPRESSURE_BYTES) {
-        this.snapshotBackpressureSkipsThisWindow += 1;
-        continue;
-      }
-      client.send('snapshot', snapshot);
-      sentClients += 1;
-    }
-    if (sentClients === 0 && this.clients.length > 0) this.snapshotAllBackpressureSkipsThisWindow += 1;
+    this.broadcast('snapshot', snapshot);
     const broadcastMs = performance.now() - broadcastStartedAt;
     this.lastSnapshotTickSent = snapshot.tick;
-    if (sentClients > 0) this.recordSnapshot(snapshot, buildMs, broadcastMs, Math.max(0, actualNowMs - dueAtMs));
+    this.recordSnapshot(snapshot, buildMs, broadcastMs, Math.max(0, actualNowMs - dueAtMs));
   }
 
   private broadcastRosterUpdate(): void {

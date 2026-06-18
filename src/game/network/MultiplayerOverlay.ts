@@ -535,6 +535,8 @@ function summarizeRoom(room: RoomState | null, localPlayerId: string): {
       room.match.countdownSeconds.toFixed(0),
       room.startVote.voteCount,
       room.startVote.requiredVotes,
+      room.startVote.teamChoiceCount,
+      room.startVote.requiredTeamChoices,
       players.length,
       maxPlayers,
       disconnected.map((player) => `${player.id}:${formatReconnectSeconds(player.reconnectDeadlineAtMs)}`).join(','),
@@ -579,16 +581,21 @@ function buildPregameHtml(room: RoomState, localPlayerId: string): string {
     const rows: string[] = [];
     for (let slotIndex = 0; slotIndex < room.match.playersPerTeam; slotIndex += 1) {
       const occupant = Object.values(room.players).find((player) => player.teamId === teamId && player.teamSlotIndex === slotIndex);
+      const chosen = occupant ? room.startVote.teamChoicesByPlayerId[occupant.id] === true : false;
       const status = occupant
         ? occupant.connected === false
           ? 'Disconnected'
           : occupant.combatState === 'eliminated'
             ? 'Eliminated'
-            : 'Ready'
+            : chosen
+              ? 'Chosen'
+              : 'Choose team'
         : 'Open';
-      const buttonLabel = occupant?.id === localPlayerId ? 'You' : occupant ? 'Swap' : 'Join';
+      const buttonLabel = occupant?.id === localPlayerId
+        ? chosen ? 'Chosen' : 'Choose'
+        : occupant ? 'Swap' : 'Join';
       rows.push(`
-        <div class="multiplayer-slot-row">
+        <div class="multiplayer-slot-row${chosen ? ' multiplayer-slot-row--chosen' : ''}">
           <div>
             <strong>${escapeHtml(teamId.toUpperCase())} ${slotIndex + 1}</strong>
             <span>${occupant ? `${escapeHtml(occupant.name)} · ${status}` : 'Open slot'}</span>
@@ -600,9 +607,14 @@ function buildPregameHtml(room: RoomState, localPlayerId: string): string {
     return rows.join('');
   }).join('');
 
-  const voteLine = room.startVote.requiredVotes > 0
+  const choicesReady = room.startVote.requiredTeamChoices > 0 &&
+    room.startVote.teamChoiceCount >= room.startVote.requiredTeamChoices;
+  const choiceLine = room.startVote.requiredTeamChoices > 0
+    ? `Teams chosen: ${room.startVote.teamChoiceCount}/${room.startVote.requiredTeamChoices}`
+    : 'Choose teams to unlock start vote';
+  const voteLine = choicesReady && room.startVote.requiredVotes > 0
     ? `Vote start: ${room.startVote.voteCount}/${room.startVote.requiredVotes}`
-    : 'Vote start unavailable';
+    : choiceLine;
 
   return `
     <div class="multiplayer-pregame-card">
@@ -610,7 +622,7 @@ function buildPregameHtml(room: RoomState, localPlayerId: string): string {
       <div class="multiplayer-pregame-slots">${teams}</div>
       <div class="multiplayer-pregame-footer">
         <span>${voteLine}</span>
-        <button class="multiplayer-start-vote" type="button"${room.startVote.requiredVotes > 0 ? '' : ' disabled'}>Vote Start</button>
+        <button class="multiplayer-start-vote" type="button"${choicesReady && room.startVote.requiredVotes > 0 ? '' : ' disabled'}>Vote Start</button>
       </div>
     </div>
   `;

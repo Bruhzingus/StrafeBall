@@ -248,6 +248,9 @@ export interface StartVoteState {
   voteCount: number;
   requiredVotes: number;
   expiresAtMs: number | null;
+  teamChoicesByPlayerId: Record<string, true>;
+  teamChoiceCount: number;
+  requiredTeamChoices: number;
 }
 
 export interface RoomState {
