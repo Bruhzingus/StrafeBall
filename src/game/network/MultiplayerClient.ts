@@ -199,8 +199,8 @@ export class MultiplayerClient {
     return events;
   }
 
-  requestReset(): void {
-    this.room?.send('reset', { type: 'reset', playerId: this.localPlayerId } satisfies ResetRequest);
+  requestReset(mode: 'same-teams' | 'reset-teams' = 'same-teams'): void {
+    this.room?.send('reset', { type: 'reset', playerId: this.localPlayerId, mode } satisfies ResetRequest);
   }
 
   requestStartVote(): void {

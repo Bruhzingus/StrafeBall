@@ -111,7 +111,17 @@ html, body {
 .hud-top-center { top: 16px; left: 50%; transform: translateX(-50%); text-align: center; }
 .hud-bottom-left { bottom: 16px; left: 16px; transform: rotate(1.1deg); }
 .hud-bottom-right { bottom: 16px; right: 16px; transform: rotate(-1deg); }
-.hud-hearts { bottom: 16px; left: 50%; min-width: 570px; transform: translateX(-50%) rotate(0.8deg); z-index: 12; }
+.hud-hearts {
+  bottom: 18px;
+  left: 50%;
+  min-width: 0;
+  padding: 0;
+  transform: translateX(-50%);
+  z-index: 12;
+  border: 0;
+  background: transparent;
+  box-shadow: none;
+}
 
 .hud-title {
   font-weight: 900;
@@ -161,7 +171,7 @@ html, body {
 }
 
 .heart {
-  font-size: 54px;
+  font-size: 60px;
   line-height: 1;
   -webkit-text-stroke: 1px var(--ink);
 }
@@ -187,11 +197,87 @@ html, body {
 .hearts-warning {
   margin-top: 8px;
   padding-top: 6px;
-  border-top: 2px dashed rgba(21, 33, 59, 0.28);
+  text-align: center;
   color: var(--school-red);
   font-size: 11px;
   font-weight: 900;
   text-transform: uppercase;
+}
+
+.team-match-strip {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 14px;
+  width: min(820px, calc(100vw - 34px));
+  margin: 0 auto;
+  padding: 7px 10px;
+  border: 3px solid var(--ink);
+  border-radius: 12px;
+  background: rgba(16, 27, 52, 0.88);
+  box-shadow: 3px 3px 0 var(--ink);
+}
+
+.team-match-roster {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  min-width: 0;
+}
+
+.team-match-player {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  min-width: 0;
+  color: var(--paper);
+  font-size: 12px;
+  font-weight: 900;
+}
+
+.team-match-player--blue .team-match-name {
+  color: var(--electric-cyan);
+}
+
+.team-match-player--red .team-match-name {
+  color: #ff6c5f;
+}
+
+.team-match-name {
+  max-width: 92px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.team-match-player .heart {
+  font-size: 14px;
+  -webkit-text-stroke: 0;
+  text-shadow: 1px 1px 0 var(--ink);
+}
+
+.team-match-player .hearts {
+  gap: 2px;
+}
+
+.team-match-chip {
+  display: grid;
+  place-items: center;
+  flex: 0 0 auto;
+  min-width: 116px;
+  color: var(--paper);
+  font-size: 10px;
+  font-weight: 900;
+  text-transform: uppercase;
+}
+
+.team-match-chip strong {
+  color: var(--school-gold);
+  font-size: 12px;
+}
+
+.team-match-chip span {
+  color: rgba(255, 255, 255, 0.76);
 }
 
 .stamina-meter {
@@ -490,6 +576,16 @@ html, body {
 .score-event--neutral {
   background: #fff2c9;
   color: #c98800;
+}
+
+.score-event--team-blue {
+  background: #d8fbff;
+  color: var(--school-blue);
+}
+
+.score-event--team-red {
+  background: #ffe0dd;
+  color: var(--school-red);
 }
 
 @keyframes score-event-pop {
@@ -1252,11 +1348,78 @@ html, body {
   line-height: 1.45;
 }
 
+.multiplayer-modal--connected .multiplayer-room-summary,
+.multiplayer-line--status,
+.multiplayer-line--ping {
+  display: none;
+}
+
+.multiplayer-settings {
+  margin-top: 10px;
+}
+
+.multiplayer-settings summary {
+  display: block;
+  padding: 9px 11px;
+  border: 3px solid var(--ink);
+  border-radius: 12px;
+  background: #101b34;
+  color: var(--school-gold);
+  font-size: 12px;
+  font-weight: 900;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  cursor: pointer;
+  box-shadow: 2px 2px 0 var(--ink);
+  list-style: none;
+}
+
+.multiplayer-settings summary::-webkit-details-marker {
+  display: none;
+}
+
+.multiplayer-settings summary::after {
+  content: "+";
+  float: right;
+}
+
+.multiplayer-settings[open] summary::after {
+  content: "-";
+}
+
+.multiplayer-modal--connected .multiplayer-actions--create,
+.multiplayer-modal--connected .multiplayer-actions--join,
+.multiplayer-modal--connected .multiplayer-field--join-code,
+.multiplayer-modal--connected .multiplayer-mode-card,
+.multiplayer-modal--connected .multiplayer-mode-tabs {
+  display: none;
+}
+
+.multiplayer-modal--connected .multiplayer-field {
+  margin-top: 10px;
+}
+
+.multiplayer-actions--leave {
+  margin-top: 10px;
+}
+
 .multiplayer-pregame {
   margin-top: 8px;
 }
 
+.multiplayer-reset {
+  margin-top: 8px;
+}
+
 .multiplayer-pregame-card {
+  padding: 10px 11px;
+  border: 3px solid var(--ink);
+  border-radius: 14px;
+  background: rgba(16, 27, 52, 0.92);
+  color: var(--paper);
+}
+
+.multiplayer-reset-card {
   padding: 10px 11px;
   border: 3px solid var(--ink);
   border-radius: 14px;
@@ -1312,6 +1475,33 @@ html, body {
   font-weight: 900;
   cursor: pointer;
   box-shadow: 2px 2px 0 var(--ink);
+}
+
+.multiplayer-reset-actions {
+  display: grid;
+  gap: 8px;
+  margin-top: 10px;
+}
+
+.multiplayer-reset-action {
+  border: 2.5px solid var(--ink);
+  border-radius: 10px;
+  padding: 10px 8px;
+  background: linear-gradient(180deg, #ffe481, var(--school-gold));
+  color: var(--ink);
+  font-weight: 900;
+  cursor: pointer;
+  box-shadow: 2px 2px 0 var(--ink);
+}
+
+.multiplayer-reset-action--alt {
+  background: linear-gradient(180deg, #79f5ff, var(--electric-cyan));
+}
+
+.multiplayer-reset-action:disabled {
+  opacity: 0.5;
+  cursor: default;
+  box-shadow: 1px 1px 0 var(--ink);
 }
 
 .multiplayer-switch:disabled,
@@ -1744,10 +1934,41 @@ html, body {
     width: min(216px, calc(100vw - 20px));
   }
 
+  .team-match-strip {
+    width: calc(100vw - 20px);
+    gap: 7px;
+    padding: 6px 7px;
+  }
+
+  .team-match-roster {
+    gap: 6px;
+  }
+
+  .team-match-player {
+    gap: 3px;
+    font-size: 10px;
+  }
+
+  .team-match-name {
+    max-width: 54px;
+  }
+
+  .team-match-player .heart {
+    font-size: 11px;
+  }
+
+  .team-match-chip {
+    min-width: 84px;
+    font-size: 9px;
+  }
+
   .hud-hearts {
-    top: 10px;
-    right: 10px;
-    min-width: 160px;
+    top: auto;
+    right: auto;
+    bottom: 12px;
+    left: 50%;
+    min-width: 0;
+    transform: translateX(-50%);
   }
 
   .hud-bottom-right {

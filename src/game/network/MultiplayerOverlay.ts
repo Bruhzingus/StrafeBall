@@ -22,6 +22,7 @@ export class MultiplayerOverlay {
   private readonly capacityValue: HTMLSpanElement;
   private readonly rosterValue: HTMLDivElement;
   private readonly pregameValue: HTMLDivElement;
+  private readonly resetValue: HTMLDivElement;
   private readonly noticeValue: HTMLDivElement;
   private readonly errorValue: HTMLDivElement;
   private readonly createButton: HTMLButtonElement;
@@ -29,6 +30,7 @@ export class MultiplayerOverlay {
   private readonly leaveButton: HTMLButtonElement;
   private readonly copyButton: HTMLButtonElement;
   private readonly closeButton: HTMLButtonElement;
+  private readonly settingsDetails: HTMLDetailsElement;
   private readonly modeButtons: NodeListOf<HTMLButtonElement>;
   private readonly modeTitle: HTMLDivElement;
   private readonly modeSubtitle: HTMLDivElement;
@@ -65,44 +67,51 @@ export class MultiplayerOverlay {
         <div class="multiplayer-title">Choose Match</div>
         <div class="multiplayer-subtitle">Use the practice court portals, then create a room or paste a code.</div>
 
-        <div class="multiplayer-mode-tabs">
-          <button class="multiplayer-mode-tab" data-mode="1v1" type="button">1v1</button>
-          <button class="multiplayer-mode-tab" data-mode="2v2" type="button">2v2</button>
-        </div>
+        <details class="multiplayer-settings" open>
+          <summary>Match settings</summary>
+          <div class="multiplayer-mode-tabs">
+            <button class="multiplayer-mode-tab" data-mode="1v1" type="button">1v1</button>
+            <button class="multiplayer-mode-tab" data-mode="2v2" type="button">2v2</button>
+          </div>
 
-        <div class="multiplayer-mode-card">
-          <div class="multiplayer-mode-title"></div>
-          <div class="multiplayer-mode-subtitle"></div>
-          <div class="multiplayer-mode-notice"></div>
-        </div>
+          <div class="multiplayer-mode-card">
+            <div class="multiplayer-mode-title"></div>
+            <div class="multiplayer-mode-subtitle"></div>
+            <div class="multiplayer-mode-notice"></div>
+          </div>
 
-        <label class="multiplayer-field">
-          <span>Player</span>
-          <input class="multiplayer-name" maxlength="24" value="Player" />
-        </label>
-        <div class="multiplayer-actions">
-          <button class="multiplayer-create">Create Room</button>
-        </div>
-        <label class="multiplayer-field">
-          <span>Room Code</span>
-          <input class="multiplayer-join-code" placeholder="Paste code" />
-        </label>
-        <div class="multiplayer-actions">
-          <button class="multiplayer-join">Join</button>
+          <label class="multiplayer-field">
+            <span>Player</span>
+            <input class="multiplayer-name" maxlength="24" value="Player" />
+          </label>
+          <div class="multiplayer-actions multiplayer-actions--create">
+            <button class="multiplayer-create">Create Room</button>
+          </div>
+          <label class="multiplayer-field multiplayer-field--join-code">
+            <span>Room Code</span>
+            <input class="multiplayer-join-code" placeholder="Paste code" />
+          </label>
+          <div class="multiplayer-actions multiplayer-actions--join">
+            <button class="multiplayer-join">Join</button>
+          </div>
+          <div class="multiplayer-room-card">
+            <div>
+              <div class="multiplayer-card-label">Room Key</div>
+              <div class="multiplayer-room">Practice</div>
+            </div>
+            <button class="multiplayer-copy" type="button">Copy</button>
+          </div>
+        </details>
+
+        <div class="multiplayer-actions multiplayer-actions--leave">
           <button class="multiplayer-leave">Leave</button>
         </div>
-        <div class="multiplayer-room-card">
-          <div>
-            <div class="multiplayer-card-label">Current Room</div>
-            <div class="multiplayer-room">Practice</div>
-          </div>
-          <button class="multiplayer-copy" type="button">Copy</button>
-        </div>
-        <div class="multiplayer-line">Status <span class="multiplayer-status">practice</span></div>
-        <div class="multiplayer-line">Ping <span class="multiplayer-ping">-</span></div>
+        <div class="multiplayer-line multiplayer-line--status">Status <span class="multiplayer-status">practice</span></div>
+        <div class="multiplayer-line multiplayer-line--ping">Ping <span class="multiplayer-ping">-</span></div>
         <div class="multiplayer-line">Capacity <span class="multiplayer-capacity">0 / 0</span></div>
         <div class="multiplayer-room-summary"></div>
         <div class="multiplayer-pregame"></div>
+        <div class="multiplayer-reset"></div>
         <div class="multiplayer-room-notice"></div>
         <div class="multiplayer-error"></div>
       </div>
@@ -131,6 +140,7 @@ export class MultiplayerOverlay {
     this.capacityValue = this.mustQuery<HTMLSpanElement>('.multiplayer-capacity');
     this.rosterValue = this.mustQuery<HTMLDivElement>('.multiplayer-room-summary');
     this.pregameValue = this.mustQuery<HTMLDivElement>('.multiplayer-pregame');
+    this.resetValue = this.mustQuery<HTMLDivElement>('.multiplayer-reset');
     this.noticeValue = this.mustQuery<HTMLDivElement>('.multiplayer-room-notice');
     this.errorValue = this.mustQuery<HTMLDivElement>('.multiplayer-error');
     this.createButton = this.mustQuery<HTMLButtonElement>('.multiplayer-create');
@@ -138,6 +148,7 @@ export class MultiplayerOverlay {
     this.leaveButton = this.mustQuery<HTMLButtonElement>('.multiplayer-leave');
     this.copyButton = this.mustQuery<HTMLButtonElement>('.multiplayer-copy');
     this.closeButton = this.mustQuery<HTMLButtonElement>('.multiplayer-close');
+    this.settingsDetails = this.mustQuery<HTMLDetailsElement>('.multiplayer-settings');
     this.modeButtons = this.root.querySelectorAll<HTMLButtonElement>('.multiplayer-mode-tab');
     this.modeTitle = this.mustQuery<HTMLDivElement>('.multiplayer-mode-title');
     this.modeSubtitle = this.mustQuery<HTMLDivElement>('.multiplayer-mode-subtitle');
@@ -214,6 +225,7 @@ export class MultiplayerOverlay {
     ) {
       return;
     }
+    const wasConnected = this.lastRendered.connected;
     this.lastRendered = {
       connected,
       busy,
@@ -236,6 +248,7 @@ export class MultiplayerOverlay {
     this.capacityValue.textContent = roomSummary.capacityLabel;
     this.rosterValue.innerHTML = roomSummary.rosterHtml;
     this.pregameValue.innerHTML = roomSummary.pregameHtml;
+    this.resetValue.innerHTML = roomSummary.resetHtml;
     this.noticeValue.textContent = roomSummary.noticeText;
     this.errorValue.textContent = friendlyError(this.client.errorMessage);
 
@@ -262,6 +275,8 @@ export class MultiplayerOverlay {
     const compact = connected && !busy && this.client.status !== 'error' && (!this.modalOpen || liveMatch);
     this.root.classList.toggle('multiplayer-modal--compact', compact);
     this.root.classList.toggle('multiplayer-modal--live', liveMatch);
+    this.root.classList.toggle('multiplayer-modal--connected', connected);
+    if (connected && !wasConnected) this.settingsDetails.open = false;
     const shouldShow = this.modalOpen || connected || busy || this.client.status === 'error';
     this.root.classList.toggle('multiplayer-modal--hidden', !shouldShow);
     this.syncLockOverlaySuppression();
@@ -335,12 +350,21 @@ export class MultiplayerOverlay {
     }
 
     const switchButton = target.closest<HTMLButtonElement>('.multiplayer-switch');
-    if (!switchButton) return;
+    if (switchButton) {
+      event.preventDefault();
+      const teamId = switchButton.dataset.teamId;
+      const slotIndex = switchButton.dataset.slotIndex;
+      if (!teamId) return;
+      this.client.requestSwitchTeam(teamId, slotIndex === undefined ? undefined : Number(slotIndex));
+      return;
+    }
+
+    const resetButton = target.closest<HTMLButtonElement>('.multiplayer-reset-action');
+    if (!resetButton) return;
     event.preventDefault();
-    const teamId = switchButton.dataset.teamId;
-    const slotIndex = switchButton.dataset.slotIndex;
-    if (!teamId) return;
-    this.client.requestSwitchTeam(teamId, slotIndex === undefined ? undefined : Number(slotIndex));
+    const mode = resetButton.dataset.resetMode;
+    if (mode !== 'same-teams' && mode !== 'reset-teams') return;
+    this.client.requestReset(mode);
   };
 
   private onPortalFocusKeyUp = (event: KeyboardEvent): void => {
@@ -480,6 +504,7 @@ function summarizeRoom(room: RoomState | null, localPlayerId: string): {
   capacityLabel: string;
   rosterHtml: string;
   pregameHtml: string;
+  resetHtml: string;
   noticeText: string;
 } {
   if (!room) {
@@ -489,6 +514,7 @@ function summarizeRoom(room: RoomState | null, localPlayerId: string): {
       capacityLabel: '0 / 0',
       rosterHtml: '',
       pregameHtml: '',
+      resetHtml: '',
       noticeText: 'Warm up in the practice court, then create or join a room.'
     };
   }
@@ -533,12 +559,16 @@ function summarizeRoom(room: RoomState | null, localPlayerId: string): {
     <div class="multiplayer-room-summary__line"><strong>${room.match.mode === '2v2' ? 'Opponents' : 'Opponent'}</strong> ${formatRoster(opponentTeam, room.match.playersPerTeam, localPlayerId)}</div>
   `;
   const pregameHtml = buildPregameHtml(room, localPlayerId);
+  const resetHtml = buildResetControlsHtml(room, localPlayerId);
 
   return {
     key: [
       room.match.mode,
       room.match.status,
       room.match.countdownSeconds.toFixed(0),
+      room.resetVote.mode,
+      room.resetVote.voteCount,
+      room.resetVote.requiredVotes,
       room.startVote.voteCount,
       room.startVote.requiredVotes,
       room.startVote.teamChoiceCount,
@@ -552,6 +582,7 @@ function summarizeRoom(room: RoomState | null, localPlayerId: string): {
     capacityLabel: `${players.length} / ${maxPlayers}`,
     rosterHtml,
     pregameHtml,
+    resetHtml,
     noticeText
   };
 }
@@ -635,6 +666,21 @@ function buildPregameHtml(room: RoomState, localPlayerId: string): string {
         <span>${voteLine}</span>
       </div>
       <button class="multiplayer-start-vote multiplayer-start-vote--big" type="button"${startEnabled ? '' : ' disabled'}>${startLabel}</button>
+    </div>
+  `;
+}
+
+function buildResetControlsHtml(room: RoomState, localPlayerId: string): string {
+  if (room.match.mode !== '2v2') return '';
+  const sameTeamsVoted = room.resetVote.mode === 'same-teams' && room.resetVote.votesByPlayerId[localPlayerId] === true;
+  const resetTeamsVoted = room.resetVote.mode === 'reset-teams' && room.resetVote.votesByPlayerId[localPlayerId] === true;
+  return `
+    <div class="multiplayer-reset-card">
+      <div class="multiplayer-pregame-title">Match Reset</div>
+      <div class="multiplayer-reset-actions">
+        <button class="multiplayer-reset-action" type="button" data-reset-mode="same-teams"${sameTeamsVoted ? ' disabled' : ''}>${sameTeamsVoted ? 'Voted Same Teams' : 'Reset Match'}</button>
+        <button class="multiplayer-reset-action multiplayer-reset-action--alt" type="button" data-reset-mode="reset-teams"${resetTeamsVoted ? ' disabled' : ''}>${resetTeamsVoted ? 'Voted Reset Teams' : 'Reset Teams'}</button>
+      </div>
     </div>
   `;
 }

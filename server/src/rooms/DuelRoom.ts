@@ -3,6 +3,7 @@ import { monitorEventLoopDelay, performance } from 'node:perf_hooks';
 import type {
   ClientMessage,
   InputCommand,
+  ResetRequest,
   StartVoteRequest,
   SwitchTeamRequest,
   ServerMessage,
@@ -184,9 +185,9 @@ export class DuelRoom extends Room {
       if (!result.ok) this.reject(client, 'catch-parry', result.reason);
     });
 
-    this.onMessage('reset', (client) => {
+    this.onMessage('reset', (client, message: ResetRequest) => {
       if (!this.allow(client, 'reset')) return;
-      const result = this.game.handleReset(client.sessionId);
+      const result = this.game.handleReset(client.sessionId, message?.mode);
       if (!result.ok) this.reject(client, 'reset', result.reason);
     });
 

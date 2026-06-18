@@ -122,6 +122,7 @@ export class ArenaScene {
   private pendingOnlineScoreEvents: PendingOnlineScoreEvent[] = [];
   private lastOnlineWinnerTeamId: string | null = null;
   private readonly lastOnlineBallBounceCount = new Map<string, number>();
+  private readonly lastTeamChoiceAnnouncementKeyByPlayerId = new Map<string, string>();
   private lastResetSerial = -1;
   private lastResetVoteKey = '';
 
@@ -939,8 +940,11 @@ export class ArenaScene {
     }
 
     // Server-side actions outside the movement input stream. Reset votes are always allowed.
-    if (this.input.wasKeyPressed(CONTROL_KEYS.reset) || this.input.wasKeyPressed(CONTROL_KEYS.resetMatch)) {
-      this.multiplayer.requestReset();
+    if (this.input.wasKeyPressed(CONTROL_KEYS.reset)) {
+      this.multiplayer.requestReset('same-teams');
+    }
+    if (this.input.wasKeyPressed(CONTROL_KEYS.resetMatch)) {
+      this.multiplayer.requestReset('reset-teams');
     }
 
     // Remote players and balls: rendered from server state. Pass the local PREDICTED movement so a
@@ -948,6 +952,7 @@ export class ArenaScene {
     // the interpolation-delayed network position.
     if (snapshot) {
       this.handleOnlineResetEvents(snapshot);
+      this.handleOnlineTeamChoiceEvents(snapshot);
       this.handleOnlineBallBounceAudio(snapshot);
       // Seed live-ball visual prediction from any throw events that arrived this frame BEFORE the
       // renderer update so a freshly-thrown ball predicts from its very first rendered frame.
@@ -1388,6 +1393,7 @@ export class ArenaScene {
     this.pendingOnlineScoreEvents = [];
     this.lastOnlineWinnerTeamId = null;
     this.lastOnlineBallBounceCount.clear();
+    this.lastTeamChoiceAnnouncementKeyByPlayerId.clear();
     this.lastResetSerial = -1;
     this.lastResetVoteKey = '';
     this.onlineTeamSelector.setEnabled(false);
@@ -1408,6 +1414,7 @@ export class ArenaScene {
     this.pendingOnlineScoreEvents = [];
     this.lastOnlineWinnerTeamId = null;
     this.lastOnlineBallBounceCount.clear();
+    this.lastTeamChoiceAnnouncementKeyByPlayerId.clear();
     this.lastResetSerial = -1;
     this.lastResetVoteKey = '';
     this.onlineTeamSelector.setEnabled(false);
@@ -1618,6 +1625,7 @@ export class ArenaScene {
     this.pendingOnlineScoreEvents = [];
     this.lastOnlineWinnerTeamId = null;
     this.lastOnlineBallBounceCount.clear();
+    this.lastTeamChoiceAnnouncementKeyByPlayerId.clear();
     this.hud.showScoreEvent('RESET', 'Room reset', 'neutral');
   }
 
@@ -1630,7 +1638,26 @@ export class ArenaScene {
     this.lastResetVoteKey = voteKey;
 
     if (vote.voteCount > 0 && vote.requiredVotes > 0) {
-      this.hud.showScoreEvent('RESET VOTE', `${vote.voteCount}/${vote.requiredVotes}`, 'neutral');
+      const label = vote.mode === 'reset-teams' ? 'RESET TEAMS' : 'RESET MATCH';
+      this.hud.showScoreEvent(label, `${vote.voteCount}/${vote.requiredVotes}`, 'neutral');
+    }
+  }
+
+  private handleOnlineTeamChoiceEvents(snapshot: ServerSnapshot): void {
+    const room = snapshot.room;
+    if (room.match.mode !== '2v2' || room.match.status !== 'warmup') {
+      this.lastTeamChoiceAnnouncementKeyByPlayerId.clear();
+      return;
+    }
+
+    for (const player of Object.values(room.players)) {
+      const chosen = room.startVote.teamChoicesByPlayerId[player.id] === true;
+      const key = `${player.teamId}:${Number(chosen)}`;
+      const previous = this.lastTeamChoiceAnnouncementKeyByPlayerId.get(player.id);
+      this.lastTeamChoiceAnnouncementKeyByPlayerId.set(player.id, key);
+      if (previous === undefined) continue;
+      if (!chosen || previous === key) continue;
+      this.hud.showTeamJoinEvent(`${player.name} has joined ${player.teamId} team!`, player.teamId);
     }
   }
 

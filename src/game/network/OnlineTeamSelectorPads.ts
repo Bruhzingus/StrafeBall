@@ -80,7 +80,7 @@ export class OnlineTeamSelectorPads {
   private readonly promptSubtitle: HTMLDivElement;
   private readonly promptHint: HTMLDivElement;
   private readonly promptFill: HTMLDivElement;
-  private enabled = false;
+  private enabled = true;
   private promptVisible = false;
   private activePadId: TeamPadId | null = null;
   private lastGlowKey = '';

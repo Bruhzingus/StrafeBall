@@ -101,6 +101,14 @@ export class Hud {
   }
 
   showScoreEvent(title: string, subtitle: string, variant: 'good' | 'bad' | 'neutral' = 'neutral'): void {
+    this.showTimedScoreEvent(title, subtitle, variant, 1150);
+  }
+
+  showTeamJoinEvent(message: string, teamId: string): void {
+    this.showTimedScoreEvent(message, '', teamId === 'red' ? 'team-red' : 'team-blue', 2000);
+  }
+
+  private showTimedScoreEvent(title: string, subtitle: string, variant: string, ms: number): void {
     if (this.scoreEventTimer !== null) {
       window.clearTimeout(this.scoreEventTimer);
       this.scoreEventTimer = null;
@@ -118,7 +126,7 @@ export class Hud {
     this.scoreEventTimer = window.setTimeout(() => {
       this.scoreEvent.classList.remove('score-event--visible');
       this.scoreEventTimer = null;
-    }, 1150);
+    }, ms);
   }
 
   /**
@@ -283,15 +291,13 @@ export class Hud {
     const localTeam = players.filter((player) => player.teamId === localTeamId);
     const opponentTeam = players.filter((player) => player.teamId === opponentTeamId);
     const isTeamElimination = room.match.mode === '2v2';
-    const localScore = isTeamElimination ? teamLives(localTeam) : room.match.scoreByTeamId[localTeamId] ?? 0;
-    const opponentScore = isTeamElimination ? teamLives(opponentTeam) : room.match.scoreByTeamId[opponentTeamId] ?? 0;
-    const rosterLabel = formatHudRoster(localTeam, room.match.playersPerTeam, localPlayerId);
-    const opponentLabel = formatHudRoster(opponentTeam, room.match.playersPerTeam, localPlayerId);
+    const localScore = room.match.scoreByTeamId[localTeamId] ?? 0;
+    const opponentScore = room.match.scoreByTeamId[opponentTeamId] ?? 0;
     const roomStatus = onlineRoomStatus(room);
     const disconnectStatus = onlineDisconnectStatus(players);
     const noBoundariesTime = Math.max(0, TUNING.match.noBoundariesSeconds - room.match.boundary.elapsedSeconds);
     const resetVoteText = room.resetVote.voteCount > 0
-      ? `<div class="scoreboard-msg hud-warn">Reset vote: ${room.resetVote.voteCount}/${room.resetVote.requiredVotes}</div>`
+      ? `<div class="scoreboard-msg hud-warn">${room.resetVote.mode === 'reset-teams' ? 'Reset teams' : 'Reset match'}: ${room.resetVote.voteCount}/${room.resetVote.requiredVotes}</div>`
       : '';
     const startVoteText = room.match.mode === '2v2' && room.match.status === 'warmup'
       ? room.startVote.requiredTeamChoices > 0 && room.startVote.teamChoiceCount < room.startVote.requiredTeamChoices
@@ -328,27 +334,42 @@ export class Hud {
       : '';
     this.updateLivesPanel(room, localPlayerId);
 
-    this.setHtml(this.topCenter, `
-      <div class="scoreboard-title">${room.match.mode === '2v2' ? 'Team Match' : 'Private Duel'}</div>
-      <div class="scoreboard-digits">
-        <span class="scoreboard-team">YOUR TEAM</span>
-        <span class="scoreboard-num scoreboard-num--blue">${localScore}</span>
-        <span class="scoreboard-sep">-</span>
-        <span class="scoreboard-num scoreboard-num--red">${opponentScore}</span>
-        <span class="scoreboard-team">${room.match.mode === '2v2' ? 'OPP TEAM' : 'OPP'}</span>
-      </div>
-      <div class="scoreboard-sub">${isTeamElimination ? 'Team lives &middot; eliminate enemy team' : `First to ${room.match.scoreLimit}`} &middot; ${players.length}/${room.match.maxPlayers} players</div>
-      <div class="scoreboard-msg">You: ${rosterLabel}</div>
-      <div class="scoreboard-msg">Opp: ${opponentLabel}</div>
-      ${roomStatus ? `<div class="scoreboard-msg hud-warn">${escapeHtml(roomStatus)}</div>` : ''}
-      ${disconnectStatus ? `<div class="scoreboard-msg hud-bad">${escapeHtml(disconnectStatus)}</div>` : ''}
-      <div class="${room.match.boundary.noBoundaries ? 'hud-bad' : 'hud-warn'}" style="text-align:center;margin-top:3px">
-        ${room.match.boundary.noBoundaries ? 'NO BOUNDARIES' : `Half-court: ${noBoundariesTime.toFixed(0)}s`}
-      </div>
-      ${startVoteText}
-      ${resetVoteText}
-      ${winner}
-    `);
+    if (isTeamElimination) {
+      this.setHtml(this.topCenter, `
+        <div class="team-match-strip">
+          ${teamLivesStrip(localTeam, localPlayerId)}
+          <div class="team-match-chip">
+            <strong>Team Match</strong>
+            <span>${room.match.boundary.noBoundaries ? 'No boundaries' : `Half-court ${noBoundariesTime.toFixed(0)}s`}</span>
+          </div>
+          ${teamLivesStrip(opponentTeam, localPlayerId)}
+        </div>
+        ${roomStatus ? `<div class="scoreboard-msg hud-warn">${escapeHtml(roomStatus)}</div>` : ''}
+        ${disconnectStatus ? `<div class="scoreboard-msg hud-bad">${escapeHtml(disconnectStatus)}</div>` : ''}
+        ${startVoteText}
+        ${resetVoteText}
+        ${winner}
+      `);
+    } else {
+      this.setHtml(this.topCenter, `
+        <div class="scoreboard-title">Private Duel</div>
+        <div class="scoreboard-digits">
+          <span class="scoreboard-team">YOU</span>
+          <span class="scoreboard-num scoreboard-num--blue">${localScore}</span>
+          <span class="scoreboard-sep">-</span>
+          <span class="scoreboard-num scoreboard-num--red">${opponentScore}</span>
+          <span class="scoreboard-team">OPP</span>
+        </div>
+        <div class="scoreboard-sub">First to ${room.match.scoreLimit} &middot; ${players.length}/${room.match.maxPlayers} players</div>
+        ${roomStatus ? `<div class="scoreboard-msg hud-warn">${escapeHtml(roomStatus)}</div>` : ''}
+        ${disconnectStatus ? `<div class="scoreboard-msg hud-bad">${escapeHtml(disconnectStatus)}</div>` : ''}
+        <div class="${room.match.boundary.noBoundaries ? 'hud-bad' : 'hud-warn'}" style="text-align:center;margin-top:3px">
+          ${room.match.boundary.noBoundaries ? 'NO BOUNDARIES' : `Half-court: ${noBoundariesTime.toFixed(0)}s`}
+        </div>
+        ${resetVoteText}
+        ${winner}
+      `);
+    }
 
     const left = local?.hands.left;
     const right = local?.hands.right;
@@ -518,36 +539,15 @@ export class Hud {
     }
 
     this.hearts.style.display = '';
-    const teammates = Object.values(room.players)
-      .filter((player) => player.teamId === local.teamId && player.id !== localPlayerId)
-      .sort(compareHudPlayers);
-    const opponents = Object.values(room.players)
-      .filter((player) => player.teamId !== local.teamId)
-      .sort(compareHudPlayers);
     const buffSeconds = Math.max(0, Math.ceil(((local.lastPlayerBuffUntilMs ?? 0) - Date.now()) / 1000));
     const buffLine = buffSeconds > 0
       ? `<div class="hearts-warning">Last player alive, finish the mission <span>${buffSeconds}s</span></div>`
       : '';
 
     this.setHtml(this.hearts, `
-      <div class="hud-title">Lives</div>
       <div class="hearts-row hearts-row--local">
-        <span>You</span>
-        <span>${formatHearts(local.lives, TUNING.match.playerLives)}</span>
+        ${formatHearts(local.lives, TUNING.match.playerLives)}
       </div>
-      ${teammates.map((player) => `
-        <div class="hearts-row">
-          <span>${escapeHtml(player.name)}${player.combatState === 'eliminated' ? ' <em>OUT</em>' : player.connected === false ? ' <em>DC</em>' : ''}</span>
-          <span>${formatHearts(player.lives, TUNING.match.playerLives)}</span>
-        </div>
-      `).join('')}
-      ${opponents.length > 0 ? `<div class="hearts-label">Opponents</div>` : ''}
-      ${opponents.map((player) => `
-        <div class="hearts-row hearts-row--opp">
-          <span>${escapeHtml(player.name)}${player.combatState === 'eliminated' ? ' <em>OUT</em>' : player.connected === false ? ' <em>DC</em>' : ''}</span>
-          <span>${formatHearts(player.lives, TUNING.match.playerLives)}</span>
-        </div>
-      `).join('')}
       ${buffLine}
     `);
   }
@@ -627,12 +627,6 @@ export class Hud {
   }
 }
 
-function teamLives(players: PlayerState[]): number {
-  let total = 0;
-  for (const player of players) total += Math.max(0, Math.min(TUNING.match.playerLives, player.lives));
-  return total;
-}
-
 function formatHearts(lives: number, maxLives: number): string {
   const filled = Math.max(0, Math.min(maxLives, Math.ceil(lives)));
   let html = '<span class="hearts">';
@@ -640,6 +634,19 @@ function formatHearts(lives: number, maxLives: number): string {
     html += `<span class="heart ${i < filled ? 'heart--full' : 'heart--empty'}">&hearts;</span>`;
   }
   return `${html}</span>`;
+}
+
+function teamLivesStrip(players: PlayerState[], localPlayerId: string): string {
+  return `
+    <div class="team-match-roster">
+      ${players.map((player) => `
+        <div class="team-match-player team-match-player--${escapeHtml(player.teamId)}">
+          <span class="team-match-name">${escapeHtml(player.name)}${player.id === localPlayerId ? ' (You)' : ''}</span>
+          ${formatHearts(player.lives, TUNING.match.playerLives)}
+        </div>
+      `).join('')}
+    </div>
+  `;
 }
 
 function escapeHtml(value: string): string {

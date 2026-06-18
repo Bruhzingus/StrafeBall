@@ -820,7 +820,66 @@ describe('ServerGameLoop', () => {
       expect(loop.state.players.c.lastPlayerBuffUntilMs).toBeNull();
     });
 
-    it('resets to warmup and clears disconnected players/countdowns', () => {
+    it('does not grant the last-player buff while a 2v2 room is still in warmup', () => {
+      const loop = new ServerGameLoop('room', { mode: '2v2', playersPerTeam: 2 });
+      loop.addPlayer('a', 'A');
+      loop.addPlayer('b', 'B');
+      loop.addPlayer('c', 'C');
+      loop.step();
+
+      expect(loop.state.match.status).toBe('warmup');
+      expect(loop.state.players.a.lastPlayerBuffUntilMs).toBeNull();
+      expect(loop.state.players.b.lastPlayerBuffUntilMs).toBeNull();
+      expect(loop.state.players.c.lastPlayerBuffUntilMs).toBeNull();
+    });
+
+    it('reset match keeps the current teams and re-enters countdown', () => {
+      const loop = new ServerGameLoop('room', { mode: '2v2', playersPerTeam: 2 });
+      loop.addPlayer('a', 'A');
+      loop.addPlayer('b', 'B');
+      loop.addPlayer('c', 'C');
+      playNow(loop);
+
+      const before = Object.fromEntries(
+        Object.values(loop.state.players).map((player) => [player.id, `${player.teamId}:${player.teamSlotIndex}`])
+      );
+      const serialBefore = loop.state.resetVote.resetSerial;
+
+      expect(loop.handleReset('a', 'same-teams').ok).toBe(true);
+      expect(loop.handleReset('b', 'same-teams').ok).toBe(true);
+      expect(loop.handleReset('c', 'same-teams').ok).toBe(true);
+
+      expect(loop.state.match.status).toBe('countdown');
+      expect(loop.state.match.countdownSeconds).toBe(GAME_CONSTANTS.match.countdownSeconds);
+      expect(loop.state.resetVote.resetSerial).toBe(serialBefore + 1);
+      expect(loop.state.startVote.teamChoiceCount).toBe(3);
+      for (const player of Object.values(loop.state.players)) {
+        expect(`${player.teamId}:${player.teamSlotIndex}`).toBe(before[player.id]);
+      }
+    });
+
+    it('reset teams returns a 2v2 match to warmup with team selection unlocked again', () => {
+      const loop = new ServerGameLoop('room', { mode: '2v2', playersPerTeam: 2 });
+      loop.addPlayer('a', 'A');
+      loop.addPlayer('b', 'B');
+      loop.addPlayer('c', 'C');
+      playNow(loop);
+
+      const serialBefore = loop.state.resetVote.resetSerial;
+      expect(loop.handleReset('a', 'reset-teams').ok).toBe(true);
+      expect(loop.state.resetVote.mode).toBe('reset-teams');
+      expect(loop.handleReset('b', 'reset-teams').ok).toBe(true);
+      expect(loop.handleReset('c', 'reset-teams').ok).toBe(true);
+
+      expect(loop.state.match.status).toBe('warmup');
+      expect(loop.state.match.countdownSeconds).toBe(0);
+      expect(loop.state.resetVote.resetSerial).toBe(serialBefore + 1);
+      expect(loop.state.startVote.teamChoiceCount).toBe(0);
+      expect(loop.state.startVote.requiredTeamChoices).toBe(3);
+      expect(loop.state.startVote.voteCount).toBe(0);
+    });
+
+    it('reset match clears disconnected players and restarts countdown for the remaining teams', () => {
       const loop = create2v2Loop();
       loop.setConnected('a', false, Date.now() + 30000);
 
@@ -828,7 +887,7 @@ describe('ServerGameLoop', () => {
       expect(loop.handleReset('c').ok).toBe(true);
       expect(loop.handleReset('d').ok).toBe(true);
 
-      expect(loop.state.match.status).toBe('warmup');
+      expect(loop.state.match.status).toBe('countdown');
       expect(loop.state.players.a).toBeUndefined();
       expect(Object.values(loop.state.players).every((player) => player.reconnectDeadlineAtMs === null)).toBe(true);
     });

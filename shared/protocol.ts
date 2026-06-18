@@ -117,6 +117,7 @@ export interface CatchParryRequest {
 export interface ResetRequest {
   type: 'reset';
   playerId: string;
+  mode?: 'same-teams' | 'reset-teams';
 }
 
 export interface StartVoteRequest {

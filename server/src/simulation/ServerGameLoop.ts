@@ -671,21 +671,25 @@ export class ServerGameLoop {
     return { ok: true };
   }
 
-  handleReset(playerId: string): ActionResult {
+  handleReset(playerId: string, mode: 'same-teams' | 'reset-teams' = 'same-teams'): ActionResult {
     if (!this.state.players[playerId]) return { ok: false, reason: 'unknown-player' };
+    if (mode === 'reset-teams' && this.matchMode !== '2v2') return { ok: false, reason: 'unsupported-mode' };
 
     this.pruneResetVotes(this.now());
+    if (this.state.resetVote.mode !== mode && this.resetVotesByPlayerId.size > 0) {
+      this.resetVotesByPlayerId.clear();
+    }
     this.resetVotesByPlayerId.set(playerId, this.now() + RESET_VOTE_TTL_MS);
-    this.syncResetVoteState();
+    this.syncResetVoteState(mode);
 
     const vote = this.state.resetVote;
-    if (this.debug.NET_DEBUG) this.logger(`reset vote player=${playerId} votes=${vote.voteCount}/${vote.requiredVotes}`);
+    if (this.debug.NET_DEBUG) this.logger(`reset vote player=${playerId} mode=${mode} votes=${vote.voteCount}/${vote.requiredVotes}`);
     if (vote.requiredVotes > 0 && vote.voteCount >= vote.requiredVotes) {
-      this.performRoomReset(playerId);
-      return { ok: true, log: `room reset approved player=${playerId}` };
+      this.performRoomReset(playerId, mode);
+      return { ok: true, log: `room reset approved player=${playerId} mode=${mode}` };
     }
 
-    return { ok: true, log: `reset vote pending player=${playerId} votes=${vote.voteCount}/${vote.requiredVotes}` };
+    return { ok: true, log: `reset vote pending player=${playerId} mode=${mode} votes=${vote.voteCount}/${vote.requiredVotes}` };
   }
 
   handleStartVote(playerId: string): ActionResult {
@@ -1400,7 +1404,7 @@ export class ServerGameLoop {
       const teamPlayers = Object.values(this.state.players).filter((player) => player.teamId === teamId);
       const activeFighters = teamPlayers.filter((player) => this.isPlayerActiveFighter(player));
       const unavailableCount = Math.max(0, this.playersPerTeam - activeFighters.length);
-      const buffedPlayer = this.state.match.status !== 'complete' && activeFighters.length === 1 && unavailableCount >= 1
+      const buffedPlayer = this.state.match.status === 'playing' && activeFighters.length === 1 && unavailableCount >= 1
         ? activeFighters[0]
         : null;
 
@@ -2165,7 +2169,7 @@ export class ServerGameLoop {
     }
   }
 
-  private performRoomReset(triggerPlayerId: string): void {
+  private performRoomReset(triggerPlayerId: string, mode: 'same-teams' | 'reset-teams' = 'same-teams'): void {
     const players = Object.values(this.state.players)
       .filter((player) => player.connected !== false)
       .map((player) =>
@@ -2181,18 +2185,23 @@ export class ServerGameLoop {
     );
 
     this.resetSerial += 1;
-    this.teamChoicesByPlayerId.clear();
     this.startVotesByPlayerId.clear();
     this.resetVotesByPlayerId.clear();
     // Preserve the running tick so it stays monotonic across the reset (see createFreshRoomState).
     this.state = this.createFreshRoomState(players, this.state.tick);
+    this.teamChoicesByPlayerId.clear();
     for (const player of players) {
       this.seedInputTracking(player.id, this.slotForPlayer(player).yawRadians);
     }
-    if (this.matchMode === '1v1' && this.shouldAutoStart(players)) this.beginPregameCountdown('auto');
+    if (mode === 'same-teams' && this.matchMode === '2v2') {
+      for (const player of players) this.teamChoicesByPlayerId.add(player.id);
+      if (this.canVoteStart(players)) this.beginPregameCountdown('reset');
+    } else if (this.matchMode === '1v1' && this.shouldAutoStart(players)) {
+      this.beginPregameCountdown('auto');
+    }
     this.syncStartVoteState();
     this.syncResetVoteState();
-    if (this.debug.NET_DEBUG) this.logger(`room reset by player=${triggerPlayerId} players=${players.length} serial=${this.resetSerial}`);
+    if (this.debug.NET_DEBUG) this.logger(`room reset by player=${triggerPlayerId} mode=${mode} players=${players.length} serial=${this.resetSerial}`);
   }
 
   private pruneResetVotes(now: number): void {
@@ -2207,7 +2216,7 @@ export class ServerGameLoop {
     if (changed) this.syncResetVoteState();
   }
 
-  private syncResetVoteState(): void {
+  private syncResetVoteState(mode = this.state.resetVote.mode): void {
     const votesByPlayerId: Record<string, true> = {};
     let expiresAtMs: number | null = null;
 
@@ -2218,6 +2227,7 @@ export class ServerGameLoop {
     }
 
     this.state.resetVote = createResetVoteState({
+      mode,
       votesByPlayerId,
       voteCount: Object.keys(votesByPlayerId).length,
       requiredVotes: this.connectedCount(),
@@ -2295,7 +2305,7 @@ export class ServerGameLoop {
     const vote = this.state.resetVote;
     if (vote.requiredVotes > 0 && vote.voteCount >= vote.requiredVotes && vote.voteCount > 0) {
       const triggerPlayerId = Object.keys(vote.votesByPlayerId)[0] ?? 'roster-change';
-      this.performRoomReset(triggerPlayerId);
+      this.performRoomReset(triggerPlayerId, vote.mode);
     }
   }
 
@@ -2346,7 +2356,7 @@ export class ServerGameLoop {
     return this.teamIds.every((teamId) => players.filter((player) => player.connected !== false && player.teamId === teamId).length >= this.playersPerTeam);
   }
 
-  private beginPregameCountdown(kind: 'auto' | 'vote'): void {
+  private beginPregameCountdown(kind: 'auto' | 'vote' | 'reset'): void {
     this.startVotesByPlayerId.clear();
     this.syncStartVoteState();
     this.state.match = {

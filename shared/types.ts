@@ -236,6 +236,7 @@ export interface MatState {
 }
 
 export interface ResetVoteState {
+  mode: 'same-teams' | 'reset-teams';
   votesByPlayerId: Record<string, true>;
   voteCount: number;
   requiredVotes: number;

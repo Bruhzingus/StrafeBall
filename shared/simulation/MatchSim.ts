@@ -54,6 +54,7 @@ export function createRoomState(options: {
 
 export function createResetVoteState(overrides: Partial<ResetVoteState> = {}): ResetVoteState {
   return {
+    mode: 'same-teams',
     votesByPlayerId: {},
     voteCount: 0,
     requiredVotes: 0,
