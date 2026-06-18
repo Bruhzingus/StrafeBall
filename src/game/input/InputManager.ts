@@ -33,7 +33,13 @@ export class InputManager {
     window.removeEventListener('mousemove', this.onMouseMove);
     window.removeEventListener('mousedown', this.onMouseDown);
     window.removeEventListener('mouseup', this.onMouseUp);
+    window.removeEventListener('pointerdown', this.onPointerDown);
+    window.removeEventListener('pointerup', this.onPointerUp);
     window.removeEventListener('contextmenu', this.onContextMenu);
+    document.removeEventListener('pointerdown', this.onPointerDown);
+    document.removeEventListener('pointerup', this.onPointerUp);
+    document.removeEventListener('mousedown', this.onMouseDown);
+    document.removeEventListener('mouseup', this.onMouseUp);
     document.removeEventListener('pointerlockchange', this.onPointerLockChange);
     document.removeEventListener('pointerlockerror', this.onPointerLockError);
     if (this.pointerLockErrorTimer !== null) window.clearTimeout(this.pointerLockErrorTimer);
@@ -98,9 +104,15 @@ export class InputManager {
     window.addEventListener('keydown', this.onKeyDown);
     window.addEventListener('keyup', this.onKeyUp);
     window.addEventListener('mousemove', this.onMouseMove);
+    window.addEventListener('pointerdown', this.onPointerDown);
+    window.addEventListener('pointerup', this.onPointerUp);
     window.addEventListener('mousedown', this.onMouseDown);
     window.addEventListener('mouseup', this.onMouseUp);
     window.addEventListener('contextmenu', this.onContextMenu);
+    document.addEventListener('pointerdown', this.onPointerDown);
+    document.addEventListener('pointerup', this.onPointerUp);
+    document.addEventListener('mousedown', this.onMouseDown);
+    document.addEventListener('mouseup', this.onMouseUp);
     document.addEventListener('pointerlockchange', this.onPointerLockChange);
     document.addEventListener('pointerlockerror', this.onPointerLockError);
   }
@@ -128,24 +140,26 @@ export class InputManager {
     this.mouseDeltaY += event.movementY;
   };
 
-  private onMouseDown = (event: MouseEvent): void => {
-    // Clicks on interactive UI marked [data-no-lock] (e.g. the settings slider) must not grab
-    // pointer lock, otherwise the cursor vanishes the instant you try to use the control.
-    const onUi = event.target instanceof Element && event.target.closest('[data-no-lock]') !== null;
-    if (onUi) return;
+  private onPointerDown = (event: PointerEvent): void => {
+    if (event.pointerType !== 'mouse') return;
+    if (this.shouldIgnoreUiPointer(event.target)) return;
+    if (!this.pointerLocked) this.requestPointerLock();
+    this.recordMouseDown(event.button);
+  };
 
-    if (!this.pointerLocked) {
-      this.requestPointerLock();
-    }
-    if (!this.mouseDown.has(event.button)) {
-      this.mousePressed.add(event.button);
-    }
-    this.mouseDown.add(event.button);
+  private onPointerUp = (event: PointerEvent): void => {
+    if (event.pointerType !== 'mouse') return;
+    this.recordMouseUp(event.button);
+  };
+
+  private onMouseDown = (event: MouseEvent): void => {
+    if (this.shouldIgnoreUiPointer(event.target)) return;
+    if (!this.pointerLocked) this.requestPointerLock();
+    this.recordMouseDown(event.button);
   };
 
   private onMouseUp = (event: MouseEvent): void => {
-    this.mouseDown.delete(event.button);
-    this.mouseReleased.add(event.button);
+    this.recordMouseUp(event.button);
   };
 
   private onContextMenu = (event: MouseEvent): void => {
@@ -185,6 +199,20 @@ export class InputManager {
       Click to play
       <span>mouse = look &middot; WASD = move &middot; Esc releases the cursor</span>
     `;
+  }
+
+  private shouldIgnoreUiPointer(target: EventTarget | null): boolean {
+    return target instanceof Element && target.closest('[data-no-lock]') !== null;
+  }
+
+  private recordMouseDown(button: number): void {
+    if (!this.mouseDown.has(button)) this.mousePressed.add(button);
+    this.mouseDown.add(button);
+  }
+
+  private recordMouseUp(button: number): void {
+    this.mouseDown.delete(button);
+    this.mouseReleased.add(button);
   }
 }
 
