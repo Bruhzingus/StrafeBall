@@ -356,7 +356,7 @@ html, body {
 
 .settings-content {
   display: none;
-  width: 216px;
+  width: 232px;
   padding: 12px 14px;
   background: var(--paper);
   border: var(--outline);
@@ -397,6 +397,38 @@ html, body {
   width: 100%;
   accent-color: var(--school-red);
   cursor: pointer;
+}
+
+.music-hud {
+  position: fixed;
+  left: 18px;
+  bottom: 18px;
+  z-index: 8;
+  max-width: min(34vw, 280px);
+  padding: 10px 12px 9px;
+  border: 3px solid var(--ink);
+  border-radius: 14px;
+  background: linear-gradient(180deg, rgba(13, 18, 32, 0.88) 0%, rgba(28, 38, 63, 0.84) 100%);
+  box-shadow: 4px 4px 0 rgba(0, 0, 0, 0.34);
+  color: var(--paper);
+  pointer-events: none;
+}
+
+.music-hud-title {
+  font-size: 12px;
+  font-weight: 900;
+  letter-spacing: 0.03em;
+  line-height: 1.25;
+  color: var(--school-gold);
+}
+
+.music-hud-time {
+  margin-top: 4px;
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: rgba(255, 255, 255, 0.78);
 }
 
 /* === Lock overlay — big varsity banner === */
@@ -1421,6 +1453,10 @@ html, body {
   margin-top: 8px;
 }
 
+.multiplayer-postmatch {
+  margin-top: 8px;
+}
+
 .multiplayer-pregame-card {
   padding: 10px 11px;
   border: 3px solid var(--ink);
@@ -1439,6 +1475,252 @@ html, body {
   border-radius: 14px;
   background: rgba(16, 27, 52, 0.92);
   color: var(--paper);
+}
+
+.multiplayer-report-card {
+  padding: 12px 12px 11px;
+  border: 3px solid var(--ink);
+  border-radius: 16px;
+  background:
+    linear-gradient(180deg, rgba(255, 255, 255, 0.74), rgba(255, 246, 203, 0.94)),
+    var(--paper);
+  color: var(--ink);
+  box-shadow: 4px 4px 0 rgba(16, 27, 52, 0.28);
+}
+
+.multiplayer-report-card--win {
+  background:
+    linear-gradient(180deg, rgba(255, 255, 255, 0.78), rgba(215, 255, 229, 0.96)),
+    var(--paper);
+}
+
+.multiplayer-report-card--loss {
+  background:
+    linear-gradient(180deg, rgba(255, 255, 255, 0.76), rgba(255, 226, 226, 0.96)),
+    var(--paper);
+}
+
+.multiplayer-report-card__top {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.multiplayer-report-card__eyebrow {
+  color: #40557d;
+  font-size: 10px;
+  font-weight: 900;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+}
+
+.multiplayer-report-card__title {
+  margin-top: 4px;
+  font-size: 28px;
+  font-weight: 900;
+  line-height: 0.95;
+  letter-spacing: -0.04em;
+}
+
+.multiplayer-report-card__subtitle {
+  margin-top: 5px;
+  max-width: 240px;
+  color: #30415f;
+  font-size: 12px;
+  font-weight: 700;
+  line-height: 1.35;
+}
+
+.multiplayer-report-card__grade {
+  min-width: 78px;
+  padding: 8px 10px;
+  border: 3px solid var(--ink);
+  border-radius: 14px;
+  background: #fffef6;
+  color: #177b3f;
+  font-size: 34px;
+  font-weight: 900;
+  text-align: center;
+  line-height: 1;
+  box-shadow: 3px 3px 0 rgba(16, 27, 52, 0.22);
+}
+
+.multiplayer-report-card--loss .multiplayer-report-card__grade {
+  color: #c32828;
+  background: #fff6f6;
+}
+
+.multiplayer-report-card__summary {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-top: 10px;
+}
+
+.multiplayer-report-card__summary span,
+.multiplayer-report-card__vote {
+  border-radius: 999px;
+  padding: 5px 9px;
+  background: rgba(16, 27, 52, 0.08);
+  color: #314361;
+  font-size: 11px;
+  font-weight: 800;
+}
+
+.multiplayer-report-card__teams {
+  display: grid;
+  gap: 8px;
+  margin-top: 10px;
+}
+
+.multiplayer-report-team {
+  border: 2px solid rgba(16, 27, 52, 0.22);
+  border-radius: 14px;
+  padding: 9px 10px;
+  background: rgba(255, 255, 255, 0.68);
+}
+
+.multiplayer-report-team--winner {
+  box-shadow: inset 0 0 0 2px rgba(27, 168, 90, 0.22);
+}
+
+.multiplayer-report-team--loser {
+  box-shadow: inset 0 0 0 2px rgba(224, 36, 24, 0.12);
+}
+
+.multiplayer-report-team__header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+}
+
+.multiplayer-report-team__header strong,
+.multiplayer-report-team__header span {
+  display: block;
+}
+
+.multiplayer-report-team__header strong {
+  font-size: 14px;
+  font-weight: 900;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
+
+.multiplayer-report-team__header span {
+  margin-top: 2px;
+  color: #526684;
+  font-size: 10px;
+  font-weight: 800;
+  text-transform: uppercase;
+}
+
+.multiplayer-report-team__score {
+  min-width: 36px;
+  border-radius: 10px;
+  padding: 6px 8px;
+  background: #101b34;
+  color: var(--paper);
+  font-size: 22px;
+  font-weight: 900;
+  text-align: center;
+  line-height: 1;
+}
+
+.multiplayer-report-team__totals,
+.multiplayer-report-player__stats,
+.multiplayer-report-card__actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.multiplayer-report-team__totals {
+  margin-top: 8px;
+}
+
+.multiplayer-report-team__totals span,
+.multiplayer-report-player__stats span {
+  border-radius: 999px;
+  padding: 4px 8px;
+  background: rgba(16, 27, 52, 0.08);
+  color: #2c3f5e;
+  font-size: 10px;
+  font-weight: 900;
+  text-transform: uppercase;
+}
+
+.multiplayer-report-team__players {
+  display: grid;
+  gap: 7px;
+  margin-top: 8px;
+}
+
+.multiplayer-report-player {
+  border-radius: 12px;
+  padding: 8px;
+  background: rgba(255, 255, 255, 0.72);
+  box-shadow: inset 0 0 0 1px rgba(16, 27, 52, 0.08);
+}
+
+.multiplayer-report-player__main {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.multiplayer-report-player__main strong {
+  font-size: 13px;
+  font-weight: 900;
+}
+
+.multiplayer-report-player__main span {
+  color: #526684;
+  font-size: 10px;
+  font-weight: 900;
+  text-transform: uppercase;
+}
+
+.multiplayer-report-player__stats {
+  margin-top: 6px;
+}
+
+.multiplayer-report-card__actions {
+  margin-top: 11px;
+}
+
+.multiplayer-postmatch-action {
+  border: 2.5px solid var(--ink);
+  border-radius: 11px;
+  padding: 8px 10px;
+  background: linear-gradient(180deg, #ffe481, var(--school-gold));
+  color: var(--ink);
+  font-size: 11px;
+  font-weight: 900;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  cursor: pointer;
+  box-shadow: 2px 2px 0 var(--ink);
+}
+
+.multiplayer-postmatch-action--alt {
+  background: linear-gradient(180deg, #79f5ff, var(--electric-cyan));
+}
+
+.multiplayer-postmatch-action--paper {
+  background: #fffef6;
+}
+
+.multiplayer-postmatch-action:disabled {
+  opacity: 0.5;
+  cursor: default;
+  box-shadow: 1px 1px 0 var(--ink);
+}
+
+.multiplayer-report-card__vote {
+  margin-top: 9px;
 }
 
 .multiplayer-pregame-title {
@@ -1662,6 +1944,10 @@ html, body {
 }
 
 .multiplayer-modal--compact .multiplayer-pregame {
+  display: none;
+}
+
+.multiplayer-modal--compact .multiplayer-postmatch {
   display: none;
 }
 

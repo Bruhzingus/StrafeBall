@@ -1,6 +1,7 @@
 import { Client, Room } from 'colyseus';
 import { monitorEventLoopDelay, performance } from 'node:perf_hooks';
 import type {
+  BattleMusicSyncMessage,
   ClientMessage,
   InputCommand,
   ResetRequest,
@@ -272,6 +273,7 @@ export class DuelRoom extends Room {
         // Broadcast any authoritative throw events accepted this step BEFORE the snapshot, so the
         // client can seed deterministic live-ball prediction the instant a throw lands.
         this.broadcastStepEvents();
+        this.broadcastBattleMusicSyncIfDirty();
 
         // Coupled fast path (mode A/C, snapshots == sim): broadcast every step, exactly the old
         // behavior — lowest latency, no snapshot accumulator drift.
@@ -318,6 +320,7 @@ export class DuelRoom extends Room {
       room: this.game.snapshot().room,
       playerId: player.id
     } satisfies ServerMessage);
+    this.sendBattleMusicSync(client);
 
     this.broadcast('player-joined', { type: 'player-joined', playerId: player.id } satisfies ServerMessage, { except: client });
     this.broadcastRosterUpdate();
@@ -338,6 +341,7 @@ export class DuelRoom extends Room {
   onReconnect(client: Client): void {
     this.game.setConnected(client.sessionId, true, null);
     this.log(`player reconnected id=${client.sessionId}`);
+    this.sendBattleMusicSync(client);
     this.broadcastRosterUpdate();
   }
 
@@ -572,6 +576,16 @@ export class DuelRoom extends Room {
     for (const event of combatEvents) this.broadcast(event.type, event);
   }
 
+  private broadcastBattleMusicSyncIfDirty(): void {
+    const music = this.game.drainBattleMusicSyncDirty();
+    if (!music) return;
+    this.broadcast('music-sync', {
+      type: 'music-sync',
+      serverTimeMs: Date.now(),
+      music
+    } satisfies ServerMessage);
+  }
+
   private broadcastDueSnapshot(actualNowMs: number): void {
     if (actualNowMs + 0.001 < this.nextSnapshotDueAtMs) return;
 
@@ -651,6 +665,15 @@ export class DuelRoom extends Room {
       type: 'roster-update',
       roster: rosterFromRoom(this.game.state)
     } satisfies ServerMessage);
+  }
+
+  private sendBattleMusicSync(client: Client): void {
+    const payload: BattleMusicSyncMessage = {
+      type: 'music-sync',
+      serverTimeMs: Date.now(),
+      music: this.game.getBattleMusicSyncState()
+    };
+    client.send('music-sync', payload satisfies ServerMessage);
   }
 
   private socketBufferStats(): { avgBytes: number; maxBytes: number } {

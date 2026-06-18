@@ -1,5 +1,6 @@
 import type { HandSide, PlayerInput, RoomState, Vec3 } from './types';
 import type { CompactServerSnapshot, PlayerRoster } from './snapshotCodec';
+import type { BattleMusicSyncState } from './music/BattleMusic';
 
 export interface InputCommand {
   type: 'input';
@@ -88,6 +89,12 @@ export interface HitRevertEvent {
   serverTimeMs: number;
 }
 
+export interface BattleMusicSyncMessage {
+  type: 'music-sync';
+  serverTimeMs: number;
+  music: BattleMusicSyncState;
+}
+
 export interface PickupRequest {
   type: 'pickup';
   playerId: string;
@@ -152,6 +159,7 @@ export type ServerMessage =
   | ParryEvent
   | HitEvent
   | HitRevertEvent
+  | BattleMusicSyncMessage
   | { type: 'joined-room'; room: RoomState; playerId: string }
   | { type: 'roster-update'; roster: PlayerRoster }
   | { type: 'player-joined'; playerId: string }

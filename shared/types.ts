@@ -106,6 +106,14 @@ export interface DashState {
   cooldownSeconds: number;
 }
 
+export interface PlayerMatchStats {
+  hits: number;
+  hitsTaken: number;
+  catches: number;
+  parries: number;
+  saves: number;
+}
+
 /**
  * Persistent, frame-to-frame movement timers that don't belong in the outward-facing
  * PlayerMovementState but must survive across ticks AND be reconciled on the client (the
@@ -140,6 +148,7 @@ export interface PlayerState {
   hands: PlayerHandsState;
   dash: DashState;
   score: number;
+  matchStats: PlayerMatchStats;
   lives: number;
   combatState: PlayerCombatState;
   eliminatedAtMs: number | null;

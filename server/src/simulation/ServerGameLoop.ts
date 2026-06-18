@@ -7,6 +7,7 @@ import type {
   HandSide,
   MatchState,
   MatchMode,
+  MatchStatus,
   PlayerCombatState,
   PlayerInput,
   PlayerState,
@@ -68,6 +69,12 @@ import { clampLookPitch } from '../../../shared/simulation/AimMath';
 import { computePlayerHandAnchor } from '../../../shared/simulation/HandAnchors';
 import { calculateThrow, isCurveThrow } from '../../../shared/simulation/ThrowMath';
 import { playerBallHitRadius, playerHitCapsule } from '../../../shared/simulation/PlayerHitbox';
+import { BATTLE_MUSIC_TRACKS } from '../../../shared/music/generatedBattleMusicManifest';
+import {
+  createBattleMusicSessionSeed,
+  createInactiveBattleMusicSyncState,
+  type BattleMusicSyncState
+} from '../../../shared/music/BattleMusic';
 
 export interface ServerGameLoopOptions {
   tickRate?: number;
@@ -75,6 +82,7 @@ export interface ServerGameLoopOptions {
   playersPerTeam?: number;
   teamIds?: string[];
   logger?: (message: string) => void;
+  battleMusicTrackCount?: number;
   /** Per-channel debug flags. All default OFF — a real playtest produces zero per-tick logging. */
   debug?: Partial<DebugFlags>;
   /**
@@ -234,6 +242,7 @@ export class ServerGameLoop {
   private readonly playersPerTeam: number;
   private readonly maxPlayers: number;
   private readonly teamsRequiredToPlay: number;
+  private readonly battleMusicTrackCount: number;
   private readonly playerSlots: readonly PlayerSlot[];
   /** Injectable wall-clock (ms). Defaults to Date.now; overridden by a virtual clock in tests. */
   private readonly now: () => number;
@@ -307,6 +316,9 @@ export class ServerGameLoop {
   // Wall-clock time of the current step, captured once at the top of step() for history timestamps.
   private stepNowMs = 0;
   private lastSnapshotBuildMs = 0;
+  private battleMusicSyncState: BattleMusicSyncState = createInactiveBattleMusicSyncState();
+  private battleMusicSyncDirty = false;
+  private nextBattleMusicSessionId = 0;
 
   constructor(roomId: string, options: ServerGameLoopOptions = {}) {
     this.roomId = roomId;
@@ -318,6 +330,7 @@ export class ServerGameLoop {
     this.playersPerTeam = Math.max(1, Math.trunc(options.playersPerTeam ?? 1));
     this.maxPlayers = this.teamIds.length * this.playersPerTeam;
     this.teamsRequiredToPlay = Math.min(2, this.teamIds.length);
+    this.battleMusicTrackCount = Math.max(0, Math.trunc(options.battleMusicTrackCount ?? BATTLE_MUSIC_TRACKS.length));
     this.matchMode = options.mode ?? (this.playersPerTeam >= 2 ? '2v2' : '1v1');
     this.playerSlots = buildPlayerSlots(this.teamIds, this.playersPerTeam);
     // All flags default OFF. The legacy `debugInput` boolean maps to NET_DEBUG for compat; an
@@ -813,6 +826,7 @@ export class ServerGameLoop {
 
   advance(): void {
     const fixedDt = this.tickSeconds;
+    const previousMatchStatus = this.state.match.status;
     this.state.tick += 1;
     // One wall-clock read per step, reused for all history timestamps + attempt windows so every
     // sample/attempt in this tick shares a consistent "now".
@@ -870,6 +884,7 @@ export class ServerGameLoop {
 
     this.repairBallHandConsistency();
     this.syncPlayerScores();
+    this.syncBattleMusicForMatchTransition(previousMatchStatus, this.stepNowMs);
   }
 
   /** Tick the pre-round countdown timer; flip to 'playing' once it reaches 0. */
@@ -964,6 +979,16 @@ export class ServerGameLoop {
     const events = this.pendingCombatEvents;
     this.pendingCombatEvents = [];
     return events;
+  }
+
+  getBattleMusicSyncState(): BattleMusicSyncState {
+    return this.battleMusicSyncState;
+  }
+
+  drainBattleMusicSyncDirty(): BattleMusicSyncState | null {
+    if (!this.battleMusicSyncDirty) return null;
+    this.battleMusicSyncDirty = false;
+    return this.battleMusicSyncState;
   }
 
   getLastSnapshotBuildMs(): number {
@@ -1395,6 +1420,8 @@ export class ServerGameLoop {
 
     if (this.state.match.mode !== '2v2') {
       this.state = registerPlayerHit(this.state, throwerId);
+      this.adjustPlayerMatchStat(throwerId, 'hits', 1);
+      this.adjustPlayerMatchStat(target.id, 'hitsTaken', 1);
       return {
         kind: 'score',
         throwerTeamId: scorer.teamId,
@@ -1412,6 +1439,8 @@ export class ServerGameLoop {
     const winnerTeamIdBefore = this.state.match.winnerTeamId;
 
     this.state.players[throwerId] = { ...scorer, dash: grantDashCharge(scorer.dash) };
+    this.adjustPlayerMatchStat(throwerId, 'hits', 1);
+    this.adjustPlayerMatchStat(target.id, 'hitsTaken', 1);
     targetLive.lives = Math.max(0, targetLive.lives - 1);
     if (targetLive.lives <= 0) this.eliminatePlayer(targetLive.id);
     this.refreshLastPlayerBuffs(this.stepNowMs);
@@ -1823,6 +1852,7 @@ export class ServerGameLoop {
       this.state.balls[ball.id] = deflectBall(ball, defenderId, aim, GAME_CONSTANTS, this.throwCounter);
       this.parryCooldownByPlayerId.set(defenderId, GAME_CONSTANTS.parry.cooldownSeconds);
       this.combatMetrics.parries += 1;
+      this.adjustPlayerMatchStat(defenderId, 'parries', 1);
       if (ball.isSuper) this.dropOneHeldBall(defender); // super-parry drops a defender ball
       this.pendingCombatEvents.push({ type: 'parry-event', ballId: ball.id, deflectorId: defenderId, serverTick: this.state.tick, serverTimeMs: this.stepNowMs });
       if (this.debug.PARRY_DEBUG || this.debug.NET_DEBUG) {
@@ -2002,6 +2032,8 @@ export class ServerGameLoop {
       movement: { ...defender.movement, velocity: add(defender.movement.velocity, scale(boostDir, GAME_CONSTANTS.catch.catchBoostSpeed)) },
       movementInternal: { ...defender.movementInternal, catchBoostTimer: GAME_CONSTANTS.catch.catchBoostDuration }
     };
+    this.adjustPlayerMatchStat(defenderId, 'catches', 1);
+    if (reclaim) this.adjustPlayerMatchStat(defenderId, 'saves', 1);
     this.undoRecentHitIfClaimed(ballId, defenderId, nowMs);
     this.ballHistoryById.delete(ballId);
     this.combatMetrics.catches += 1;
@@ -2039,6 +2071,8 @@ export class ServerGameLoop {
 
   /** Revert a scored hit: decrement the thrower team's score, restore their dash, recompute outcome. */
   private revertHit(hit: RecentHit): void {
+    this.adjustPlayerMatchStat(hit.throwerId, 'hits', -hit.value);
+    this.adjustPlayerMatchStat(hit.defenderId, 'hitsTaken', -hit.value);
     if (hit.kind === 'score') {
       const current = this.state.match.scoreByTeamId[hit.throwerTeamId] ?? 0;
       const scoreByTeamId = { ...this.state.match.scoreByTeamId, [hit.throwerTeamId]: Math.max(0, current - hit.value) };
@@ -2247,7 +2281,65 @@ export class ServerGameLoop {
     }
   }
 
+  private adjustPlayerMatchStat(playerId: string, key: keyof PlayerState['matchStats'], delta: number): void {
+    if (delta === 0) return;
+    const player = this.state.players[playerId];
+    if (!player) return;
+    const current = player.matchStats[key] ?? 0;
+    player.matchStats = {
+      ...player.matchStats,
+      [key]: Math.max(0, current + delta)
+    };
+  }
+
+  private syncBattleMusicForMatchTransition(previousStatus: MatchStatus, nowMs: number): void {
+    const nextStatus = this.state.match.status;
+    if (previousStatus !== 'playing' && nextStatus === 'playing') {
+      this.startBattleMusicSession(nowMs);
+      return;
+    }
+    if (previousStatus === 'playing' && nextStatus !== 'playing') {
+      this.stopBattleMusic();
+    }
+  }
+
+  private startBattleMusicSession(nowMs: number): void {
+    if (this.battleMusicTrackCount === 0) {
+      this.stopBattleMusic();
+      return;
+    }
+    this.nextBattleMusicSessionId += 1;
+    this.setBattleMusicSyncState({
+      active: true,
+      sessionId: this.nextBattleMusicSessionId,
+      shuffleSeed: createBattleMusicSessionSeed(this.nextBattleMusicSessionId, nowMs),
+      playlistStartedAtServerTimeMs: nowMs
+    });
+  }
+
+  private stopBattleMusic(): void {
+    if (!this.battleMusicSyncState.active) return;
+    this.setBattleMusicSyncState({
+      ...this.battleMusicSyncState,
+      active: false
+    });
+  }
+
+  private setBattleMusicSyncState(nextState: BattleMusicSyncState): void {
+    if (
+      this.battleMusicSyncState.active === nextState.active &&
+      this.battleMusicSyncState.sessionId === nextState.sessionId &&
+      this.battleMusicSyncState.shuffleSeed === nextState.shuffleSeed &&
+      this.battleMusicSyncState.playlistStartedAtServerTimeMs === nextState.playlistStartedAtServerTimeMs
+    ) {
+      return;
+    }
+    this.battleMusicSyncState = nextState;
+    this.battleMusicSyncDirty = true;
+  }
+
   private performRoomReset(triggerPlayerId: string, mode: 'same-teams' | 'reset-teams' = 'same-teams'): void {
+    const previousMatchStatus = this.state.match.status;
     const players = Object.values(this.state.players)
       .filter((player) => player.connected !== false)
       .map((player) =>
@@ -2279,6 +2371,7 @@ export class ServerGameLoop {
     }
     this.syncStartVoteState();
     this.syncResetVoteState();
+    this.syncBattleMusicForMatchTransition(previousMatchStatus, this.now());
     if (this.debug.NET_DEBUG) this.logger(`room reset by player=${triggerPlayerId} mode=${mode} players=${players.length} serial=${this.resetSerial}`);
   }
 
@@ -2348,6 +2441,7 @@ export class ServerGameLoop {
   }
 
   private reconcilePregameState(reason: 'join' | 'remove' | 'disconnect' | 'reconnect'): void {
+    const previousMatchStatus = this.state.match.status;
     this.pruneStartVotes(this.now());
     this.pruneResetVotes(this.now());
     this.resolveResetVotesAfterRosterChange();
@@ -2369,6 +2463,7 @@ export class ServerGameLoop {
       this.syncStartVoteState();
       this.syncResetVoteState();
     }
+    this.syncBattleMusicForMatchTransition(previousMatchStatus, this.now());
   }
 
   private clearVotesForPregameChange(): void {

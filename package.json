@@ -6,6 +6,7 @@
   "scripts": {
     "dev": "vite",
     "build": "tsc && vite build",
+    "music:manifest": "node scripts/generateBattleMusicManifest.mjs",
     "typecheck": "tsc --noEmit",
     "preview": "vite preview",
     "test": "vitest run",
@@ -19,6 +20,7 @@
     "vite": "^6.0.0"
   },
   "devDependencies": {
+    "music-metadata": "^11.9.0",
     "vitest": "^4.1.9"
   }
 }

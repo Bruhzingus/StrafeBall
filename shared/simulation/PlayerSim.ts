@@ -1,5 +1,5 @@
 import { GAME_CONSTANTS, type GameConstants } from '../constants';
-import type { DashState, LegalHalf, MovementInternalState, PlayerState, SpawnSide, Vec3 } from '../types';
+import type { DashState, LegalHalf, MovementInternalState, PlayerMatchStats, PlayerState, SpawnSide, Vec3 } from '../types';
 import { createHands } from './HandSim';
 import { add, cloneVec3, dot, length, lengthSquared, normalize, scale, vec3 } from './CollisionMath';
 
@@ -43,6 +43,7 @@ export function createPlayerState(
     hands: createHands(),
     dash: createDashState(),
     score: 0,
+    matchStats: createPlayerMatchStats(),
     lives: overrides.lives ?? GAME_CONSTANTS.match.playerLives,
     combatState: overrides.combatState ?? 'alive',
     eliminatedAtMs: overrides.eliminatedAtMs ?? null,
@@ -70,7 +71,19 @@ export function createPlayerState(
       : base.movementInternal,
     hands: overrides.hands ?? base.hands,
     dash: overrides.dash ? { ...base.dash, ...overrides.dash } : base.dash,
+    matchStats: overrides.matchStats ? { ...base.matchStats, ...overrides.matchStats } : base.matchStats,
     lastProcessedInputSeq: overrides.lastProcessedInputSeq ?? base.lastProcessedInputSeq
+  };
+}
+
+export function createPlayerMatchStats(overrides: Partial<PlayerMatchStats> = {}): PlayerMatchStats {
+  return {
+    hits: 0,
+    hitsTaken: 0,
+    catches: 0,
+    parries: 0,
+    saves: 0,
+    ...overrides
   };
 }
 

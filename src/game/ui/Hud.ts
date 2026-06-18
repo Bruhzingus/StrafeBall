@@ -4,9 +4,11 @@ import { PlayerController } from '../player/PlayerController';
 import { BallManager } from '../ball/BallManager';
 import { BallState } from '../ball/BallState';
 import { Crosshair } from './Crosshair';
+import { MusicHud } from './MusicHud';
 import type { ServerSnapshot } from '../../../shared/protocol';
 import type { PlayerState, RoomState } from '../../../shared/types';
 import { SERVER_TICK_RATE, SNAPSHOT_RATE } from '../../../shared/netConfig';
+import type { MusicHudState } from '../audio/MusicManager';
 
 export class Hud {
   private readonly root: HTMLDivElement;
@@ -20,6 +22,7 @@ export class Hud {
   private readonly hitMarker: HTMLDivElement;
   private readonly countdown: HTMLDivElement;
   private readonly boundaryClock: HTMLDivElement;
+  private readonly musicHud: MusicHud;
   private lastCountdownLabel = '';
   private lastBoundaryClockLabel = '';
   private readonly crosshair: Crosshair;
@@ -45,6 +48,7 @@ export class Hud {
     this.topLeft.style.display = 'none';
     this.topCenter = this.panel('hud-top-center');
     this.bottomLeft = this.panel('hud-bottom-left');
+    this.bottomLeft.style.display = 'none';
     this.bottomRight = this.panel('hud-bottom-right');
     this.hearts = this.panel('hud-hearts');
     this.hearts.style.display = 'none';
@@ -68,6 +72,7 @@ export class Hud {
     this.boundaryClock = document.createElement('div');
     this.boundaryClock.className = 'boundary-clock';
     this.root.appendChild(this.boundaryClock);
+    this.musicHud = new MusicHud(this.root);
 
     // Center stamina segments — one block + inner fill per charge, pre-built, no per-frame allocations.
     this.staminaWidget = document.createElement('div');
@@ -174,11 +179,15 @@ export class Hud {
     this.crosshair.pulse(kind);
   }
 
+  updateMusic(state: MusicHudState | null): void {
+    this.musicHud.update(state);
+  }
+
   update(player: PlayerController, rules: MatchRules, ballManager: BallManager, fps: number, frameMs: number): void {
     // No countdown in offline practice.
     this.updateCountdown('playing', 0);
     this.hearts.style.display = 'none';
-    this.bottomLeft.style.display = '';
+    this.bottomLeft.style.display = 'none';
     this.updateBoundaryClock(rules.boundary.elapsed, rules.boundary.noBoundaries);
     const movement = player.lastMovementSnapshot;
     const hands = player.hands;
@@ -521,6 +530,7 @@ export class Hud {
       window.clearTimeout(this.hitMarkerTimer);
       this.hitMarkerTimer = null;
     }
+    this.musicHud.dispose();
     this.root.remove();
   }
 

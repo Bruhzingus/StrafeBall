@@ -10,10 +10,12 @@ export const SENSITIVITY_MIN = 0.0006;
 export const SENSITIVITY_MAX = 0.006;
 export const SENSITIVITY_DEFAULT = 0.0022;
 export const SFX_VOLUME_DEFAULT = 0.8;
+export const MUSIC_VOLUME_DEFAULT = 0.2;
 
 class SettingsStore {
   public mouseSensitivity = SENSITIVITY_DEFAULT;
   public sfxVolume = SFX_VOLUME_DEFAULT;
+  public musicVolume = MUSIC_VOLUME_DEFAULT;
   public reducedEffects = false;
 
   constructor() {
@@ -30,6 +32,11 @@ class SettingsStore {
     this.save();
   }
 
+  setMusicVolume(value: number): void {
+    this.musicVolume = clamp(value, 0, 1);
+    this.save();
+  }
+
   setReducedEffects(value: boolean): void {
     this.reducedEffects = value;
     this.save();
@@ -42,6 +49,7 @@ class SettingsStore {
       const parsed = JSON.parse(raw) as {
         mouseSensitivity?: unknown;
         sfxVolume?: unknown;
+        musicVolume?: unknown;
         reducedEffects?: unknown;
       };
       if (typeof parsed.mouseSensitivity === 'number' && Number.isFinite(parsed.mouseSensitivity)) {
@@ -49,6 +57,9 @@ class SettingsStore {
       }
       if (typeof parsed.sfxVolume === 'number' && Number.isFinite(parsed.sfxVolume)) {
         this.sfxVolume = clamp(parsed.sfxVolume, 0, 1);
+      }
+      if (typeof parsed.musicVolume === 'number' && Number.isFinite(parsed.musicVolume)) {
+        this.musicVolume = clamp(parsed.musicVolume, 0, 1);
       }
       if (typeof parsed.reducedEffects === 'boolean') {
         this.reducedEffects = parsed.reducedEffects;
@@ -63,6 +74,7 @@ class SettingsStore {
       localStorage.setItem(STORAGE_KEY, JSON.stringify({
         mouseSensitivity: this.mouseSensitivity,
         sfxVolume: this.sfxVolume,
+        musicVolume: this.musicVolume,
         reducedEffects: this.reducedEffects
       }));
     } catch {

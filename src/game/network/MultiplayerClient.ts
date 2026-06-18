@@ -1,5 +1,6 @@
 import { Client, Room } from '@colyseus/sdk';
 import type {
+  BattleMusicSyncMessage,
   CatchEvent,
   CatchParryRequest,
   DropRequest,
@@ -18,6 +19,7 @@ import type {
   ThrowRequest
 } from '../../../shared/protocol';
 import type { HandSide, MatchMode, PlayerInput, Vec3 } from '../../../shared/types';
+import type { BattleMusicSyncState } from '../../../shared/music/BattleMusic';
 import { PERF_REPORT_INTERVAL_MS } from '../../../shared/netConfig';
 import {
   hydrateSnapshotRoster,
@@ -44,6 +46,7 @@ export class MultiplayerClient {
   public localPlayerId = '';
   public pingMs: number | null = null;
   public latestSnapshot: ServerSnapshot | null = null;
+  public battleMusicSync: BattleMusicSyncState | null = null;
   // Throw events received since the last drain. The renderer drains these each frame to seed/refresh
   // deterministic live-ball visual prediction. Bounded: cleared on drain and on leave/reset.
   private throwEventQueue: ThrowEvent[] = [];
@@ -85,6 +88,8 @@ export class MultiplayerClient {
   // newer call (e.g. user double-clicks Create) and leave the orphaned room rather than
   // overwriting this.room and leaking the server-side session.
   private connectGeneration = 0;
+  private lastServerTimeSampleMs: number | null = null;
+  private lastServerTimeSampleReceivedAtMs = 0;
 
   constructor(serverUrl = import.meta.env.VITE_SERVER_URL ?? 'ws://localhost:2567') {
     this.serverUrl = serverUrl;
@@ -136,6 +141,7 @@ export class MultiplayerClient {
     this.roomId = '';
     this.localPlayerId = '';
     this.latestSnapshot = null;
+    this.battleMusicSync = null;
     this.throwEventQueue = [];
     this.catchEventQueue = [];
     this.parryEventQueue = [];
@@ -283,6 +289,7 @@ export class MultiplayerClient {
         return;
       }
       this.latestSnapshot = snapshot;
+      this.recordServerTimeSample(snapshot.serverTimeMs);
     });
 
     room.onMessage('throw-event', (message: ThrowEvent) => {
@@ -328,6 +335,12 @@ export class MultiplayerClient {
       };
     });
 
+    room.onMessage('music-sync', (message: BattleMusicSyncMessage) => {
+      if (this.room !== room) return;
+      this.battleMusicSync = message.music;
+      this.recordServerTimeSample(message.serverTimeMs);
+    });
+
     room.onMessage('roster-update', (message: Extract<ServerMessage, { type: 'roster-update' }>) => {
       if (this.room !== room) return;
       replaceRoster(this.roster, message.roster);
@@ -350,6 +363,7 @@ export class MultiplayerClient {
       this.awaitingPong = false;
       this.lastPongReceivedAtMs = Date.now();
       this.consecutiveMissedPongs = 0;
+      this.recordServerTimeSample(message.serverTimeMs, this.pingMs * 0.5);
     });
 
     room.onError((code, message) => {
@@ -366,6 +380,7 @@ export class MultiplayerClient {
       this.roomId = '';
       this.localPlayerId = '';
       this.latestSnapshot = null;
+      this.battleMusicSync = null;
       this.throwEventQueue = [];
       this.catchEventQueue = [];
       this.parryEventQueue = [];
@@ -375,6 +390,11 @@ export class MultiplayerClient {
       this.resetSnapshotDebug();
       this.resetConnectionDebug();
     });
+  }
+
+  estimateServerTimeMs(): number | null {
+    if (this.lastServerTimeSampleMs === null || this.lastServerTimeSampleReceivedAtMs <= 0) return null;
+    return this.lastServerTimeSampleMs + Math.max(0, Date.now() - this.lastServerTimeSampleReceivedAtMs);
   }
 
   private recordSnapshotReceived(message: ServerSnapshot): void {
@@ -485,6 +505,14 @@ export class MultiplayerClient {
     this.missedPongs = 0;
     this.consecutiveMissedPongs = 0;
     this.awaitingPong = false;
+    this.lastServerTimeSampleMs = null;
+    this.lastServerTimeSampleReceivedAtMs = 0;
+  }
+
+  private recordServerTimeSample(serverTimeMs: number, oneWayDelayMs = (this.pingMs ?? 0) * 0.5): void {
+    if (!Number.isFinite(serverTimeMs)) return;
+    this.lastServerTimeSampleMs = serverTimeMs + Math.max(0, oneWayDelayMs);
+    this.lastServerTimeSampleReceivedAtMs = Date.now();
   }
 }
 

@@ -126,6 +126,13 @@ function packPlayer(player: PlayerState): unknown[] {
     [packHand(player.hands.left), packHand(player.hands.right)],
     [player.dash.charges, player.dash.rechargeTimerSeconds, player.dash.cooldownSeconds],
     player.score,
+    [
+      player.matchStats.hits,
+      player.matchStats.hitsTaken,
+      player.matchStats.catches,
+      player.matchStats.parries,
+      player.matchStats.saves
+    ],
     player.lives,
     player.combatState,
     player.eliminatedAtMs,
@@ -140,6 +147,7 @@ function unpackPlayer(packed: unknown[]): PlayerState {
   const movementInternal = packed[16] as unknown[];
   const hands = packed[17] as [unknown[], unknown[]];
   const dash = packed[18] as unknown[];
+  const matchStats = packed[20] as unknown[];
   return {
     id: packed[0] as string,
     name: '',
@@ -185,13 +193,20 @@ function unpackPlayer(packed: unknown[]): PlayerState {
       cooldownSeconds: dash[2] as number
     },
     score: packed[19] as number,
-    lives: packed[20] as number,
-    combatState: packed[21] as PlayerState['combatState'],
-    eliminatedAtMs: packed[22] as number | null,
-    lastPlayerBuffUntilMs: packed[23] as number | null,
-    connected: Boolean(packed[24]),
-    reconnectDeadlineAtMs: packed[25] as number | null,
-    lastProcessedInputSeq: packed[26] as number
+    matchStats: {
+      hits: matchStats[0] as number,
+      hitsTaken: matchStats[1] as number,
+      catches: matchStats[2] as number,
+      parries: matchStats[3] as number,
+      saves: matchStats[4] as number
+    },
+    lives: packed[21] as number,
+    combatState: packed[22] as PlayerState['combatState'],
+    eliminatedAtMs: packed[23] as number | null,
+    lastPlayerBuffUntilMs: packed[24] as number | null,
+    connected: Boolean(packed[25]),
+    reconnectDeadlineAtMs: packed[26] as number | null,
+    lastProcessedInputSeq: packed[27] as number
   };
 }
 

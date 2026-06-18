@@ -16,6 +16,7 @@ import { MatchRules } from '../rules/MatchRules';
 import { TUNING } from '../config/tuning';
 import { CONTROL_KEYS, MOUSE_BUTTON } from '../config/controls';
 import { SoundManager } from '../audio/SoundManager';
+import { MusicManager } from '../audio/MusicManager';
 import { Effects } from '../effects/Effects';
 import { PracticeBot } from '../bot/PracticeBot';
 import { PracticeControlWall } from '../practice/PracticeControlWall';
@@ -70,6 +71,7 @@ export class ArenaScene {
   private readonly rules = new MatchRules();
   private readonly targetDummies: Mesh[] = [];
   private readonly sound: SoundManager;
+  private readonly music: MusicManager;
   private readonly ballVisualEffects: BallVisualEffects;
   private readonly effects: Effects;
   private readonly quickBot: PracticeBot;
@@ -221,6 +223,7 @@ export class ArenaScene {
     // All meshes with targetDummy metadata — includes both static and the moving dummy.
     this.targetDummies = this.scene.meshes.filter((mesh): mesh is Mesh => mesh instanceof Mesh && !!mesh.metadata?.targetDummy);
     this.sound = new SoundManager();
+    this.music = new MusicManager(() => this.multiplayer.estimateServerTimeMs());
     this.ballVisualEffects = new BallVisualEffects(this.scene);
 
     // Balls collide with bleachers only (mats are immune to balls — they pass through).
@@ -265,6 +268,7 @@ export class ArenaScene {
     this.multiplayerOverlay.update();
     if (this.multiplayer.connected) {
       this.enterOnlineMode();
+      this.music.setSyncState(this.multiplayer.battleMusicSync);
       this.stepOnline(dt);
       if (this.multiplayer.latestSnapshot) {
         const connectionDebug = this.multiplayer.getConnectionDebug();
@@ -297,9 +301,12 @@ export class ArenaScene {
       }
     } else {
       this.exitOnlineMode();
+      this.music.setSyncState(null);
       this.step(dt);
       this.hud.update(this.player, this.rules, this.ballManager, engine.getFps(), frameMs);
     }
+    this.music.update(dt);
+    this.hud.updateMusic(this.music.getHudState());
     this.input.endFrame();
   }
 
@@ -320,6 +327,7 @@ export class ArenaScene {
     this.guideWall.dispose();
     this.effects.dispose();
     this.gym.dispose();
+    this.music.dispose();
     this.sound.dispose();
   }
 

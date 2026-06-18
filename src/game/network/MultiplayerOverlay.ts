@@ -1,6 +1,6 @@
 import { GAME_CONSTANTS } from '../../../shared/constants';
 import type { LobbyMode } from '../practice/LobbyModePortals';
-import type { MatchMode, RoomState } from '../../../shared/types';
+import type { MatchMode, PlayerState, RoomState } from '../../../shared/types';
 import { MultiplayerClient } from './MultiplayerClient';
 
 type PendingAction = (() => Promise<void>) | null;
@@ -23,6 +23,7 @@ export class MultiplayerOverlay {
   private readonly rosterValue: HTMLDivElement;
   private readonly pregameValue: HTMLDivElement;
   private readonly resetValue: HTMLDivElement;
+  private readonly postmatchValue: HTMLDivElement;
   private readonly noticeValue: HTMLDivElement;
   private readonly errorValue: HTMLDivElement;
   private readonly createButton: HTMLButtonElement;
@@ -43,6 +44,7 @@ export class MultiplayerOverlay {
   private modalOpen = false;
   private pendingAction: PendingAction = null;
   private awaitingInteractReleaseFocus = false;
+  private lastCompletedMatchKey = '';
   private lastRendered = {
     connected: false,
     busy: false,
@@ -112,6 +114,7 @@ export class MultiplayerOverlay {
         <div class="multiplayer-room-summary"></div>
         <div class="multiplayer-pregame"></div>
         <div class="multiplayer-reset"></div>
+        <div class="multiplayer-postmatch"></div>
         <div class="multiplayer-room-notice"></div>
         <div class="multiplayer-error"></div>
       </div>
@@ -141,6 +144,7 @@ export class MultiplayerOverlay {
     this.rosterValue = this.mustQuery<HTMLDivElement>('.multiplayer-room-summary');
     this.pregameValue = this.mustQuery<HTMLDivElement>('.multiplayer-pregame');
     this.resetValue = this.mustQuery<HTMLDivElement>('.multiplayer-reset');
+    this.postmatchValue = this.mustQuery<HTMLDivElement>('.multiplayer-postmatch');
     this.noticeValue = this.mustQuery<HTMLDivElement>('.multiplayer-room-notice');
     this.errorValue = this.mustQuery<HTMLDivElement>('.multiplayer-error');
     this.createButton = this.mustQuery<HTMLButtonElement>('.multiplayer-create');
@@ -205,6 +209,11 @@ export class MultiplayerOverlay {
     if (this.client.connected && snapshot) {
       this.selectedMode = snapshot.room.match.mode;
     }
+    const completedKey = completedMatchKey(snapshot?.room ?? null);
+    if (completedKey && completedKey !== this.lastCompletedMatchKey) {
+      this.lastCompletedMatchKey = completedKey;
+      this.modalOpen = true;
+    }
     const liveMatch = isLiveMatch(snapshot?.room ?? null);
     if (liveMatch && this.modalOpen) {
       this.modalOpen = false;
@@ -249,6 +258,7 @@ export class MultiplayerOverlay {
     this.rosterValue.innerHTML = roomSummary.rosterHtml;
     this.pregameValue.innerHTML = roomSummary.pregameHtml;
     this.resetValue.innerHTML = roomSummary.resetHtml;
+    this.postmatchValue.innerHTML = roomSummary.postmatchHtml;
     this.noticeValue.textContent = roomSummary.noticeText;
     this.errorValue.textContent = friendlyError(this.client.errorMessage);
 
@@ -294,6 +304,7 @@ export class MultiplayerOverlay {
 
   private leaveRoom = (): void => {
     this.client.leave();
+    this.lastCompletedMatchKey = '';
     this.modalOpen = true;
     this.update();
   };
@@ -356,6 +367,27 @@ export class MultiplayerOverlay {
       const slotIndex = switchButton.dataset.slotIndex;
       if (!teamId) return;
       this.client.requestSwitchTeam(teamId, slotIndex === undefined ? undefined : Number(slotIndex));
+      return;
+    }
+
+    const postmatchButton = target.closest<HTMLButtonElement>('.multiplayer-postmatch-action');
+    if (postmatchButton) {
+      event.preventDefault();
+      const action = postmatchButton.dataset.postmatchAction;
+      if (action === 'leave-lobby') {
+        this.client.leave();
+        this.modalOpen = true;
+        this.lastCompletedMatchKey = '';
+        this.update();
+        return;
+      }
+      if (action === 'rematch') {
+        this.client.requestReset('same-teams');
+        return;
+      }
+      if (action === 'reshuffle') {
+        this.client.requestReset('reset-teams');
+      }
       return;
     }
 
@@ -511,6 +543,7 @@ function summarizeRoom(room: RoomState | null, localPlayerId: string): {
   rosterHtml: string;
   pregameHtml: string;
   resetHtml: string;
+  postmatchHtml: string;
   noticeText: string;
 } {
   if (!room) {
@@ -521,6 +554,7 @@ function summarizeRoom(room: RoomState | null, localPlayerId: string): {
       rosterHtml: '',
       pregameHtml: '',
       resetHtml: '',
+      postmatchHtml: '',
       noticeText: 'Warm up in the practice court, then create or join a room.'
     };
   }
@@ -558,6 +592,10 @@ function summarizeRoom(room: RoomState | null, localPlayerId: string): {
     noticeText = `Waiting for ${missingSeats} more player${missingSeats === 1 ? '' : 's'}.`;
   } else if (room.match.status === 'countdown') {
     noticeText = `Teams locked. Round starts in ${Math.max(1, Math.ceil(room.match.countdownSeconds))}s.`;
+  } else if (room.match.status === 'complete') {
+    noticeText = room.match.mode === '2v2'
+      ? 'Review the report card, vote rematch or change teams, or head back to the lobby.'
+      : 'Review the report card, vote rematch, or head back to the lobby.';
   }
 
   const rosterHtml = `
@@ -566,6 +604,7 @@ function summarizeRoom(room: RoomState | null, localPlayerId: string): {
   `;
   const pregameHtml = buildPregameHtml(room, localPlayerId);
   const resetHtml = buildResetControlsHtml(room, localPlayerId);
+  const postmatchHtml = buildPostmatchHtml(room, localPlayerId);
 
   return {
     key: [
@@ -582,13 +621,29 @@ function summarizeRoom(room: RoomState | null, localPlayerId: string): {
       players.length,
       maxPlayers,
       disconnected.map((player) => `${player.id}:${formatReconnectSeconds(player.reconnectDeadlineAtMs)}`).join(','),
-      players.map((player) => `${player.id}:${player.connected ? 1 : 0}:${player.teamId}:${player.teamSlotIndex}:${player.name}`).join('|')
+      players.map((player) =>
+        [
+          player.id,
+          player.connected ? 1 : 0,
+          player.teamId,
+          player.teamSlotIndex,
+          player.name,
+          player.score,
+          player.lives,
+          player.matchStats.hits,
+          player.matchStats.hitsTaken,
+          player.matchStats.catches,
+          player.matchStats.parries,
+          player.matchStats.saves
+        ].join(':')
+      ).join('|')
     ].join('~'),
     statusLabel,
     capacityLabel: `${players.length} / ${maxPlayers}`,
     rosterHtml,
     pregameHtml,
     resetHtml,
+    postmatchHtml,
     noticeText
   };
 }
@@ -677,7 +732,7 @@ function buildPregameHtml(room: RoomState, localPlayerId: string): string {
 }
 
 function buildResetControlsHtml(room: RoomState, localPlayerId: string): string {
-  if (room.match.mode !== '2v2') return '';
+  if (room.match.mode !== '2v2' || room.match.status === 'complete') return '';
   const sameTeamsVoted = room.resetVote.mode === 'same-teams' && room.resetVote.votesByPlayerId[localPlayerId] === true;
   const resetTeamsVoted = room.resetVote.mode === 'reset-teams' && room.resetVote.votesByPlayerId[localPlayerId] === true;
   const voteLabel = room.resetVote.requiredVotes > 0
@@ -695,6 +750,159 @@ function buildResetControlsHtml(room: RoomState, localPlayerId: string): string 
       </div>
     </div>
   `;
+}
+
+function buildPostmatchHtml(room: RoomState, localPlayerId: string): string {
+  if (room.match.status !== 'complete') return '';
+
+  const players = Object.values(room.players).sort(compareRosterPlayers);
+  const local = room.players[localPlayerId];
+  const localTeamId = local?.teamId ?? room.match.teamIds[0] ?? 'blue';
+  const winnerTeamId = room.match.winnerTeamId ?? localTeamId;
+  const localWon = local ? local.teamId === winnerTeamId : winnerTeamId === localTeamId;
+  const grade = localWon ? 'A+' : 'F';
+  const verdict = localWon ? 'Victory' : 'Defeat';
+  const reportVoteLabel = describeResetVote(room.resetVote);
+  const rematchVoted = room.resetVote.mode === 'same-teams' && room.resetVote.votesByPlayerId[localPlayerId] === true;
+  const reshuffleVoted = room.resetVote.mode === 'reset-teams' && room.resetVote.votesByPlayerId[localPlayerId] === true;
+  const orderedTeamIds = [
+    localTeamId,
+    ...room.match.teamIds.filter((teamId) => teamId !== localTeamId)
+  ];
+  const teamCards = orderedTeamIds
+    .map((teamId) => buildReportTeamHtml(room, teamId, localPlayerId, winnerTeamId, players.filter((player) => player.teamId === teamId)))
+    .join('');
+  const subtitle = room.match.mode === '2v2'
+    ? `${escapeHtml(winnerTeamId.toUpperCase())} team wins the class match.`
+    : `${localWon ? 'You passed the duel.' : 'You got marked down in the duel.'}`;
+
+  return `
+    <div class="multiplayer-report-card multiplayer-report-card--${localWon ? 'win' : 'loss'}" data-mode="${room.match.mode}">
+      <div class="multiplayer-report-card__top">
+        <div>
+          <div class="multiplayer-report-card__eyebrow">Final Report Card</div>
+          <div class="multiplayer-report-card__title">${verdict}</div>
+          <div class="multiplayer-report-card__subtitle">${subtitle}</div>
+        </div>
+        <div class="multiplayer-report-card__grade" aria-label="Match grade">${grade}</div>
+      </div>
+      <div class="multiplayer-report-card__summary">
+        <span>Result: <strong>${escapeHtml(winnerTeamId.toUpperCase())}</strong></span>
+        <span>${room.match.mode === '2v2' ? 'Lives:' : 'Score:'} <strong>${formatScoreLine(room)}</strong></span>
+        <span>${room.match.mode === '2v2' ? 'Class project report' : 'One-on-one exam'}</span>
+      </div>
+      <div class="multiplayer-report-card__teams">${teamCards}</div>
+      <div class="multiplayer-report-card__actions">
+        <button class="multiplayer-postmatch-action" type="button" data-postmatch-action="rematch"${rematchVoted ? ' disabled' : ''}>${rematchVoted ? 'Rematch Voted' : 'Vote Rematch'}</button>
+        ${room.match.mode === '2v2'
+          ? `<button class="multiplayer-postmatch-action multiplayer-postmatch-action--alt" type="button" data-postmatch-action="reshuffle"${reshuffleVoted ? ' disabled' : ''}>${reshuffleVoted ? 'Teams Voted' : 'Vote Change Teams'}</button>`
+          : ''
+        }
+        <button class="multiplayer-postmatch-action multiplayer-postmatch-action--paper" type="button" data-postmatch-action="leave-lobby">Back To Lobby</button>
+      </div>
+      <div class="multiplayer-report-card__vote">${escapeHtml(reportVoteLabel)}</div>
+    </div>
+  `;
+}
+
+function buildReportTeamHtml(
+  room: RoomState,
+  teamId: string,
+  localPlayerId: string,
+  winnerTeamId: string,
+  players: PlayerState[]
+): string {
+  const totals = players.reduce((acc, player) => {
+    acc.hits += player.matchStats.hits;
+    acc.hitsTaken += player.matchStats.hitsTaken;
+    acc.catches += player.matchStats.catches;
+    acc.parries += player.matchStats.parries;
+    acc.saves += player.matchStats.saves;
+    acc.lives += Math.max(0, player.lives);
+    return acc;
+  }, { hits: 0, hitsTaken: 0, catches: 0, parries: 0, saves: 0, lives: 0 });
+  const isWinner = teamId === winnerTeamId;
+  const teamScore = room.match.scoreByTeamId[teamId] ?? 0;
+  const teamMetric = room.match.mode === '2v2' ? totals.lives : teamScore;
+  const teamLabel = room.match.mode === '2v2'
+    ? `${escapeHtml(teamId.toUpperCase())} Team`
+    : teamId === room.players[localPlayerId]?.teamId ? 'You' : 'Opponent';
+
+  return `
+    <div class="multiplayer-report-team multiplayer-report-team--${isWinner ? 'winner' : 'loser'}">
+      <div class="multiplayer-report-team__header">
+        <div>
+          <strong>${teamLabel}</strong>
+          <span>${isWinner ? 'Honor Roll' : 'Needs Improvement'}</span>
+        </div>
+        <div class="multiplayer-report-team__score">${teamMetric}</div>
+      </div>
+      <div class="multiplayer-report-team__totals">
+        <span>Hits ${totals.hits}</span>
+        <span>Catches ${totals.catches}</span>
+        <span>Parries ${totals.parries}</span>
+        <span>Saves ${totals.saves}</span>
+        <span>Taken ${totals.hitsTaken}</span>
+        ${room.match.mode === '2v2' ? `<span>Lives ${totals.lives}</span>` : ''}
+      </div>
+      <div class="multiplayer-report-team__players">
+        ${players.map((player) => buildReportPlayerHtml(room.match.mode, player, localPlayerId)).join('')}
+      </div>
+    </div>
+  `;
+}
+
+function buildReportPlayerHtml(mode: MatchMode, player: PlayerState, localPlayerId: string): string {
+  const suffix = player.id === localPlayerId ? ' (You)' : player.connected === false ? ' (DC)' : '';
+  const status = mode === '2v2'
+    ? player.combatState === 'eliminated'
+      ? 'Out'
+      : `${player.lives} life${player.lives === 1 ? '' : 's'} left`
+    : `${player.score} point${player.score === 1 ? '' : 's'}`;
+
+  return `
+    <div class="multiplayer-report-player">
+      <div class="multiplayer-report-player__main">
+        <strong>${escapeHtml(player.name)}${suffix}</strong>
+        <span>${escapeHtml(status)}</span>
+      </div>
+      <div class="multiplayer-report-player__stats">
+        <span>Hits ${player.matchStats.hits}</span>
+        <span>Catches ${player.matchStats.catches}</span>
+        <span>Parries ${player.matchStats.parries}</span>
+        <span>Saves ${player.matchStats.saves}</span>
+        <span>Taken ${player.matchStats.hitsTaken}</span>
+      </div>
+    </div>
+  `;
+}
+
+function describeResetVote(vote: RoomState['resetVote']): string {
+  if (vote.requiredVotes <= 0 || vote.voteCount <= 0) {
+    return 'All connected players need to agree before the next match begins.';
+  }
+  return `${vote.mode === 'reset-teams' ? 'Change teams' : 'Rematch'} vote: ${vote.voteCount}/${vote.requiredVotes}.`;
+}
+
+function formatScoreLine(room: RoomState): string {
+  if (room.match.mode === '2v2') {
+    return room.match.teamIds
+      .map((teamId) => {
+        const lives = Object.values(room.players)
+          .filter((player) => player.teamId === teamId)
+          .reduce((total, player) => total + Math.max(0, player.lives), 0);
+        return `${teamId.toUpperCase()} ${lives}L`;
+      })
+      .join(' - ');
+  }
+  return room.match.teamIds
+    .map((teamId) => `${teamId.toUpperCase()} ${room.match.scoreByTeamId[teamId] ?? 0}`)
+    .join(' - ');
+}
+
+function completedMatchKey(room: RoomState | null): string | null {
+  if (!room || room.match.status !== 'complete') return null;
+  return `${room.id}:${room.resetVote.resetSerial}:${room.match.winnerTeamId ?? 'none'}:${room.match.mode}`;
 }
 
 function escapeHtml(value: string): string {

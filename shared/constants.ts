@@ -138,15 +138,16 @@ export const GAME_CONSTANTS = {
   },
 
   catch: {
-    coneDegrees: 25,
+    // Tightened ~10% from 25 -> 23 for a stricter catch cone.
+    coneDegrees: 23,
     superParryConeDegrees: 10,
     // Hold-to-catch was removed (it didn't suit the game's feel). Catch is now a server-authoritative
     // timed "catch attempt": one click opens a short active window (see `combat`), and the catch
     // succeeds if a live ball's swept path crosses the hand's catch zone during that window. This
     // field is retained at 0 for any legacy callers but no longer gates the attempt model.
     trackingSeconds: 0,
-    // Reduced 1 ft (0.305 m) from 3.62 -> 3.315 m for a tighter catch reach.
-    rangeMeters: 3.315,
+    // Reduced 1 ft (0.305 m) from 3.62 -> 3.315 m, then a further 0.4 m -> 2.915 m for a tighter catch reach.
+    rangeMeters: 2.915,
     cooldownSeconds: 0.47,
     catchBoostSpeed: 3,
     catchBoostDuration: 0.25,

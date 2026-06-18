@@ -15,6 +15,8 @@ export class SettingsPanel {
   private readonly sensitivityReadout: HTMLSpanElement;
   private readonly sfxSlider: HTMLInputElement;
   private readonly sfxReadout: HTMLSpanElement;
+  private readonly musicSlider: HTMLInputElement;
+  private readonly musicReadout: HTMLSpanElement;
   private readonly reducedEffectsToggle: HTMLInputElement;
   private readonly preventKeySteal = (event: KeyboardEvent): void => event.preventDefault();
   private expanded = false;
@@ -47,6 +49,11 @@ export class SettingsPanel {
     this.sfxSlider = this.range(0, 1, 0.05, settings.sfxVolume);
     this.sfxSlider.addEventListener('input', this.onSfxInput);
 
+    const musicLabel = this.row('Music');
+    this.musicReadout = musicLabel.readout;
+    this.musicSlider = this.range(0, 1, 0.05, settings.musicVolume);
+    this.musicSlider.addEventListener('input', this.onMusicInput);
+
     const effectsLabel = document.createElement('label');
     effectsLabel.className = 'settings-row settings-row--toggle';
     const effectsName = document.createElement('span');
@@ -58,7 +65,16 @@ export class SettingsPanel {
     this.reducedEffectsToggle.addEventListener('keydown', this.preventKeySteal);
     effectsLabel.append(effectsName, this.reducedEffectsToggle);
 
-    this.content.append(title, sensitivityLabel.label, this.sensitivitySlider, sfxLabel.label, this.sfxSlider, effectsLabel);
+    this.content.append(
+      title,
+      sensitivityLabel.label,
+      this.sensitivitySlider,
+      sfxLabel.label,
+      this.sfxSlider,
+      musicLabel.label,
+      this.musicSlider,
+      effectsLabel
+    );
     this.root.append(this.toggleButton, this.content);
     parent.appendChild(this.root);
 
@@ -70,9 +86,11 @@ export class SettingsPanel {
     this.toggleButton.removeEventListener('click', this.toggleExpanded);
     this.sensitivitySlider.removeEventListener('input', this.onSensitivityInput);
     this.sfxSlider.removeEventListener('input', this.onSfxInput);
+    this.musicSlider.removeEventListener('input', this.onMusicInput);
     this.reducedEffectsToggle.removeEventListener('input', this.onReducedEffectsInput);
     this.sensitivitySlider.removeEventListener('keydown', this.preventKeySteal);
     this.sfxSlider.removeEventListener('keydown', this.preventKeySteal);
+    this.musicSlider.removeEventListener('keydown', this.preventKeySteal);
     this.reducedEffectsToggle.removeEventListener('keydown', this.preventKeySteal);
     this.root.remove();
   }
@@ -84,6 +102,11 @@ export class SettingsPanel {
 
   private onSfxInput = (): void => {
     settings.setSfxVolume(parseFloat(this.sfxSlider.value));
+    this.updateReadout();
+  };
+
+  private onMusicInput = (): void => {
+    settings.setMusicVolume(parseFloat(this.musicSlider.value));
     this.updateReadout();
   };
 
@@ -105,6 +128,7 @@ export class SettingsPanel {
   private updateReadout(): void {
     this.sensitivityReadout.textContent = (settings.mouseSensitivity * 1000).toFixed(2);
     this.sfxReadout.textContent = `${Math.round(settings.sfxVolume * 100)}%`;
+    this.musicReadout.textContent = `${Math.round(settings.musicVolume * 100)}%`;
   }
 
   private row(labelText: string): { label: HTMLLabelElement; readout: HTMLSpanElement } {
