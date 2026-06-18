@@ -28,6 +28,11 @@ import { settings } from '../config/Settings';
 import { MultiplayerClient } from '../network/MultiplayerClient';
 import { MultiplayerOverlay } from '../network/MultiplayerOverlay';
 import { NetworkRenderer } from '../network/NetworkRenderer';
+import {
+  onlineHandInputLooksEmpty,
+  shouldClearPendingOnlineThrowRelease,
+  type PendingOnlineThrowRelease
+} from '../network/OnlineHandIntent';
 import type { CatchEvent, HitEvent, HitRevertEvent, ParryEvent, ServerSnapshot } from '../../../shared/protocol';
 import type { DashState, MovementInternalState, PlayerInput, PlayerMovementState, PlayerState, Vec3 } from '../../../shared/types';
 import { stepMovement, facingFromAngles } from '../../../shared/simulation/MovementSim';
@@ -100,6 +105,7 @@ export class ArenaScene {
   private networkPitch = 0;
   private readonly onlineCharging: Record<'left' | 'right', boolean> = { left: false, right: false };
   private readonly onlineChargeSeconds: Record<'left' | 'right', number> = { left: 0, right: 0 };
+  private readonly pendingOnlineThrowRelease: Record<'left' | 'right', PendingOnlineThrowRelease | null> = { left: null, right: null };
   // Catch-attempt ids (server-authoritative timed catch). A click on an EMPTY hand assigns a fresh
   // id; the latched id is stamped on every input packet (so the trigger survives packet loss) until
   // the server's hand.lastCatchAttemptId catches up, at which point we stop re-sending it.
@@ -864,6 +870,16 @@ export class ArenaScene {
 
       this.sentInputClientTimeBySeq.set(input.sequence, input.clientTimeMs);
       this.pruneSentInputClientTimes();
+      if ((input.leftCatchAttemptId > 0 || input.rightCatchAttemptId > 0) && isCatchTraceDebugEnabled()) {
+        console.log(
+          `[catch/client] input-sent seq=${input.sequence}` +
+          ` left=${input.leftCatchAttemptId} right=${input.rightCatchAttemptId}` +
+          ` leftAck=${local?.hands.left.lastCatchAttemptId ?? 0} rightAck=${local?.hands.right.lastCatchAttemptId ?? 0}` +
+          ` leftHeld=${local?.hands.left.heldBallId ?? 'none'} rightHeld=${local?.hands.right.heldBallId ?? 'none'}` +
+          ` leftReleasePending=${this.pendingOnlineThrowRelease.left?.ballId ?? 'none'}` +
+          ` rightReleasePending=${this.pendingOnlineThrowRelease.right?.ballId ?? 'none'}`
+        );
+      }
       this.multiplayer.sendInput(input);
       this.onlineRateLogInputCount += 1;
       this.perfReportInputCount += 1;
@@ -1323,6 +1339,8 @@ export class ArenaScene {
     this.recentCatchAttemptBySide.right = null;
     this.lastOnlineHeldBallId.left = null;
     this.lastOnlineHeldBallId.right = null;
+    this.pendingOnlineThrowRelease.left = null;
+    this.pendingOnlineThrowRelease.right = null;
   }
 
   private enterOnlineMode(): void {
@@ -1862,6 +1880,39 @@ export class ArenaScene {
     });
   }
 
+  private aimedOnlineBallId(local: PlayerState): string | null {
+    const snapshot = this.multiplayer.latestSnapshot;
+    if (!snapshot) return null;
+    const origin = {
+      x: local.movement.position.x,
+      y: local.movement.position.y + GAME_CONSTANTS.player.eyeHeight,
+      z: local.movement.position.z
+    };
+    const forward = facingFromAngles(this.networkYaw, this.networkPitch);
+    const minDot = Math.cos((GAME_CONSTANTS.catch.coneDegrees + 8) * Math.PI / 180);
+    const maxRange = GAME_CONSTANTS.catch.rangeMeters * 1.75;
+    let bestId: string | null = null;
+    let bestScore = Number.POSITIVE_INFINITY;
+
+    for (const ball of Object.values(snapshot.room.balls)) {
+      if (ball.phase === 'held') continue;
+      const dx = ball.position.x - origin.x;
+      const dy = ball.position.y - origin.y;
+      const dz = ball.position.z - origin.z;
+      const dist = Math.sqrt(dx * dx + dy * dy + dz * dz);
+      if (dist <= 0.001 || dist > maxRange) continue;
+      const dot = (dx * forward.x + dy * forward.y + dz * forward.z) / dist;
+      if (dot < minDot) continue;
+      const score = dist + (1 - dot) * 4;
+      if (score < bestScore) {
+        bestScore = score;
+        bestId = ball.id;
+      }
+    }
+
+    return bestId;
+  }
+
   private sendOnlineHandActions(dt: number, local: PlayerState): void {
     this.updateOnlineHandAction('left', MOUSE_BUTTON.leftHand, dt, this.input.isMouseDown(MOUSE_BUTTON.leftHand), local);
     this.updateOnlineHandAction('right', MOUSE_BUTTON.rightHand, dt, this.input.isMouseDown(MOUSE_BUTTON.rightHand), local);
@@ -1895,13 +1946,25 @@ export class ArenaScene {
     const hand = local.hands[side];
     const pressed = this.input.wasMousePressed(button);
     const released = this.input.wasMouseReleased(button);
+    const nowMs = Date.now();
+    if (shouldClearPendingOnlineThrowRelease(hand.heldBallId, this.pendingOnlineThrowRelease[side], nowMs)) {
+      if (isCatchTraceDebugEnabled() && this.pendingOnlineThrowRelease[side]) {
+        console.log(
+          `[catch/client] release-ack hand=${side}` +
+          ` pendingBall=${this.pendingOnlineThrowRelease[side]?.ballId ?? 'none'}` +
+          ` serverHeld=${hand.heldBallId ?? 'none'}`
+        );
+      }
+      this.pendingOnlineThrowRelease[side] = null;
+    }
+    const inputHandEmpty = onlineHandInputLooksEmpty(hand.heldBallId, this.pendingOnlineThrowRelease[side], nowMs);
 
     // Stop re-latching an attempt once the server has acknowledged it (ack travels in hand state).
     if (this.pendingCatchAttemptId[side] !== 0 && hand.lastCatchAttemptId >= this.pendingCatchAttemptId[side]) {
       this.pendingCatchAttemptId[side] = 0;
     }
 
-    if (!hand.heldBallId) {
+    if (inputHandEmpty) {
       this.onlineCharging[side] = false;
       this.onlineChargeSeconds[side] = 0;
       // Empty-hand click = a server-authoritative timed CATCH attempt. Assign a fresh latched id
@@ -1910,13 +1973,29 @@ export class ArenaScene {
       if (pressed) {
         const attemptId = this.nextCatchAttemptId;
         this.pendingCatchAttemptId[side] = attemptId;
-        this.recentCatchAttemptBySide[side] = { id: attemptId, openedAtMs: Date.now() };
+        this.recentCatchAttemptBySide[side] = { id: attemptId, openedAtMs: nowMs };
         this.nextCatchAttemptId += 1;
+        if (isCatchTraceDebugEnabled()) {
+          console.log(
+            `[catch/client] attempt-created hand=${side} id=${attemptId}` +
+            ` serverHeld=${hand.heldBallId ?? 'none'}` +
+            ` releasePending=${this.pendingOnlineThrowRelease[side]?.ballId ?? 'none'}` +
+            ` ack=${hand.lastCatchAttemptId} aimedBall=${this.aimedOnlineBallId(local) ?? 'none'}`
+          );
+        }
         this.player.hands.playCatchAttemptAnimation(side);
         this.effects.onCatchAttempt(side);
         this.hud.pulseCrosshair('catch');
       }
       return;
+    }
+
+    if (pressed && isCatchTraceDebugEnabled()) {
+      console.log(
+        `[catch/client] held-click-no-catch hand=${side}` +
+        ` serverHeld=${hand.heldBallId ?? 'none'} mode=${hand.mode}` +
+        ` charging=${Number(this.onlineCharging[side])} ack=${hand.lastCatchAttemptId}`
+      );
     }
 
     if (this.onlineCharging[side] && this.input.wasKeyPressed(CONTROL_KEYS.fakeThrow)) {
@@ -1938,6 +2017,12 @@ export class ArenaScene {
     if (this.onlineCharging[side] && released) {
       // The release itself is sent through PlayerInput.left/rightHandReleased this same fixed tick.
       // Play instant local feedback while the server-authoritative throw event follows shortly after.
+      if (hand.heldBallId) {
+        this.pendingOnlineThrowRelease[side] = { ballId: hand.heldBallId, releasedAtMs: nowMs };
+        if (isCatchTraceDebugEnabled()) {
+          console.log(`[catch/client] local-throw-release hand=${side} ball=${hand.heldBallId} optimisticEmpty=1`);
+        }
+      }
       this.effects.playerThrow();
       this.player.hands.playThrowAnimation(side);
       this.hud.pulseCrosshair('throw');
@@ -2148,6 +2233,14 @@ function isPerfDebugEnabled(): boolean {
 function isSoakDebugEnabled(): boolean {
   try {
     return window.localStorage.getItem('strafeball.debug.soak') === '1';
+  } catch {
+    return false;
+  }
+}
+
+function isCatchTraceDebugEnabled(): boolean {
+  try {
+    return window.localStorage.getItem('strafeball.debug.catch') === '1';
   } catch {
     return false;
   }

@@ -269,6 +269,8 @@ export class ServerGameLoop {
   private readonly catchAttemptByKey = new Map<string, CatchAttempt>();
   // Highest catch-attempt id consumed per player+hand (dedupe latched re-sends). Keyed as above.
   private readonly lastCatchAttemptIdByKey = new Map<string, number>();
+  // De-spam catch trace evaluation lines: one line per player/hand/attempt/ball/reason.
+  private readonly catchTraceEvalSeen = new Set<string>();
   // Hits applied in the last ~catchHitGraceMs, keyed by ballId. A lag-compensated catch from the
   // hit defender can revert the score if their well-timed catch arrived after the server scored.
   private readonly recentHitByBallId = new Map<string, RecentHit>();
@@ -306,6 +308,7 @@ export class ServerGameLoop {
       THROW_DEBUG: options.debug?.THROW_DEBUG ?? DEBUG_DEFAULTS.THROW_DEBUG,
       COLLISION_DEBUG: options.debug?.COLLISION_DEBUG ?? DEBUG_DEFAULTS.COLLISION_DEBUG,
       CATCH_DEBUG: options.debug?.CATCH_DEBUG ?? DEBUG_DEFAULTS.CATCH_DEBUG,
+      CATCH_TRACE_DEBUG: options.debug?.CATCH_TRACE_DEBUG ?? DEBUG_DEFAULTS.CATCH_TRACE_DEBUG,
       PARRY_DEBUG: options.debug?.PARRY_DEBUG ?? DEBUG_DEFAULTS.PARRY_DEBUG,
       BALL_PREDICT_DEBUG: options.debug?.BALL_PREDICT_DEBUG ?? DEBUG_DEFAULTS.BALL_PREDICT_DEBUG
     };
@@ -396,6 +399,7 @@ export class ServerGameLoop {
     this.ballHistoryById.clear();
     this.catchAttemptByKey.clear();
     this.lastCatchAttemptIdByKey.clear();
+    this.catchTraceEvalSeen.clear();
     this.recentHitByBallId.clear();
     this.teamChoicesByPlayerId.clear();
     this.startVotesByPlayerId.clear();
@@ -415,17 +419,40 @@ export class ServerGameLoop {
     // pre-first-reset baseline) is gated strictly against the current timeline.
     if (rawInput.resetSerial !== undefined) {
       const inputResetSerial = Math.max(0, Math.trunc(Number(rawInput.resetSerial) || 0));
-      if (inputResetSerial < this.resetSerial) return true; // stale timeline → drop
+      if (inputResetSerial < this.resetSerial) {
+        if ((rawInput.leftCatchAttemptId ?? 0) > 0 || (rawInput.rightCatchAttemptId ?? 0) > 0) {
+          this.catchTrace(
+            `input-received player=${playerId} seq=${seq} resetSerial=${inputResetSerial}/${this.resetSerial}` +
+            ` left=${rawInput.leftCatchAttemptId ?? 0} right=${rawInput.rightCatchAttemptId ?? 0} result=drop reason=stale-reset`
+          );
+        }
+        return true; // stale timeline → drop
+      }
     }
 
     const lastSeq = this.lastEnqueuedSeqByPlayerId.get(playerId) ?? 0;
     const sequence = Number.isFinite(seq) ? seq : 0;
-    if (sequence > 0 && sequence <= lastSeq) return true; // stale/duplicate
+    if (sequence > 0 && sequence <= lastSeq) {
+      if ((rawInput.leftCatchAttemptId ?? 0) > 0 || (rawInput.rightCatchAttemptId ?? 0) > 0) {
+        this.catchTrace(
+          `input-received player=${playerId} seq=${sequence} lastSeq=${lastSeq}` +
+          ` left=${rawInput.leftCatchAttemptId ?? 0} right=${rawInput.rightCatchAttemptId ?? 0} result=drop reason=stale-seq`
+        );
+      }
+      return true; // stale/duplicate
+    }
     if (sequence > 0) this.lastEnqueuedSeqByPlayerId.set(playerId, sequence);
     this.updateInputRttEstimate(playerId, rttMs);
 
     const fallback = this.lastInputByPlayerId.get(playerId);
     const input = normalizeInput({ ...rawInput, sequence }, fallback);
+    if (input.leftCatchAttemptId > 0 || input.rightCatchAttemptId > 0) {
+      this.catchTrace(
+        `input-received player=${playerId} seq=${sequence || lastSeq} resetSerial=${input.resetSerial}` +
+        ` left=${input.leftCatchAttemptId} right=${input.rightCatchAttemptId}` +
+        ` clientTimeMs=${Math.round(input.clientTimeMs)} queueBefore=${this.inputQueueByPlayerId.get(playerId)?.length ?? 0}`
+      );
+    }
     this.lastInputByPlayerId.set(playerId, input);
     this.lastInputAtByPlayerId.set(playerId, this.now());
 
@@ -451,6 +478,11 @@ export class ServerGameLoop {
     const rttMs = this.inputRttMsByPlayerId.get(playerId) ?? GAME_CONSTANTS.combat.catchDefaultRttMs;
     const raw = GAME_CONSTANTS.combat.catchRewindMs + (rttMs - GAME_CONSTANTS.combat.catchDefaultRttMs);
     return clamp(raw, GAME_CONSTANTS.combat.defenseInputGraceMs, GAME_CONSTANTS.combat.defenseMaxRewindMs);
+  }
+
+  private catchTrace(message: string): void {
+    if (!this.debug.CATCH_TRACE_DEBUG && !this.debug.CATCH_DEBUG) return;
+    this.logger(`[catch/trace] ${message}`);
   }
 
   handlePickup(playerId: string): ActionResult {
@@ -1151,7 +1183,12 @@ export class ServerGameLoop {
           this.debug.COLLISION_DEBUG ? this.logger : undefined);
         current = settleBallIfSlow(collided);
 
-        if (!combatDone && (current.phase === 'dead' || current.phase === 'loose')) combatDone = true;
+        if (
+          !combatDone &&
+          (current.phase === 'loose' || (current.phase === 'dead' && !isBallCatchableInFlight(current)))
+        ) {
+          combatDone = true;
+        }
       }
 
       this.state.balls[ball.id] = current;
@@ -1599,16 +1636,35 @@ export class ServerGameLoop {
     if (attemptId <= 0) return;
     const key = `${player.id}:${hand}`;
     const lastId = this.lastCatchAttemptIdByKey.get(key) ?? 0;
-    if (attemptId <= lastId) return; // stale/duplicate latched re-send — already consumed.
+    const handEmptyAtIngest = !player.hands[hand].heldBallId;
+    const handCooldownSeconds = player.hands[hand].cooldownSeconds;
+    if (attemptId <= lastId) {
+      this.catchTrace(
+        `attempt-ingest player=${player.id} hand=${hand} id=${attemptId} result=deduped` +
+        ` last=${lastId} handEmpty=${Number(handEmptyAtIngest)} cooldown=${handCooldownSeconds.toFixed(3)}`
+      );
+      return; // stale/duplicate latched re-send — already consumed.
+    }
     this.lastCatchAttemptIdByKey.set(key, attemptId);
     // Acknowledge on the hand state so the client knows the attempt was received (whether or not it
     // ultimately catches — the catch resolves over the active window below).
     player.hands = setHandLastCatchAttemptId(player.hands, hand, attemptId);
-    if (!this.isPlayerAlive(player)) return;
+    if (!this.isPlayerAlive(player)) {
+      this.catchTrace(
+        `attempt-ingest player=${player.id} hand=${hand} id=${attemptId} result=rejected reason=not-alive` +
+        ` last=${lastId} handEmpty=${Number(handEmptyAtIngest)} cooldown=${handCooldownSeconds.toFixed(3)}`
+      );
+      return;
+    }
 
     const now = this.stepNowMs;
     const existing = this.catchAttemptByKey.get(key);
     if (existing && now < existing.cooldownUntilMs) {
+      this.catchTrace(
+        `attempt-ingest player=${player.id} hand=${hand} id=${attemptId} result=rejected reason=cooldown` +
+        ` last=${lastId} handEmpty=${Number(handEmptyAtIngest)} cooldownRemainingMs=${Math.round(existing.cooldownUntilMs - now)}` +
+        ` openedAtMs=${Math.round(existing.openedAtMs)} activeUntilMs=${Math.round(existing.activeUntilMs)}`
+      );
       if (this.debug.CATCH_DEBUG) {
         this.logger(`catch attempt player=${player.id} hand=${hand} id=${attemptId} result=fail reason=cooldown remainingMs=${Math.round(existing.cooldownUntilMs - now)}`);
       }
@@ -1636,9 +1692,12 @@ export class ServerGameLoop {
       resolved: false
     });
     this.combatMetrics.catchAttemptsOpened += 1;
-    if (this.debug.CATCH_DEBUG) {
-      this.logger(`catch attempt OPEN player=${player.id} hand=${hand} id=${attemptId} rewindMs=${rewindMs}`);
-    }
+    this.catchTrace(
+      `attempt-ingest player=${player.id} hand=${hand} id=${attemptId} result=accepted` +
+      ` last=${lastId} handEmpty=${Number(handEmptyAtIngest)} cooldown=${handCooldownSeconds.toFixed(3)}` +
+      ` openedAtMs=${Math.round(openedAtMs)} activeUntilMs=${Math.round(openedAtMs + GAME_CONSTANTS.combat.catchStartupMs + GAME_CONSTANTS.combat.catchActiveMs)}` +
+      ` clickTimeMs=${Math.round(openedAtMs - rewindMs)} rewindMs=${Math.round(rewindMs)} clientClickMs=${Math.round(clientClickMs)}`
+    );
   }
 
   /**
@@ -1727,6 +1786,7 @@ export class ServerGameLoop {
         const sample = this.sampleDefenseAt(defenderId, attempt.openedAtMs);
         const fail = this.catchFailReason(defender, hand, sample, ball, segPrev, segCurr, attempt, now);
         if (fail) {
+          this.logCatchTraceEval(defenderId, hand, ball, sample, segPrev, segCurr, attempt, fail);
           if (this.debug.CATCH_DEBUG) this.logCatch(defenderId, hand, ball, sample, segPrev, segCurr, attempt, fail);
           continue;
         }
@@ -1734,6 +1794,7 @@ export class ServerGameLoop {
         // Success — consume the attempt and give the ball to this hand.
         const facing = sample ? sample.forward : defender.movement.facing;
         const caught = this.applyCatch(defenderId, hand, ball.id, facing, attempt, now);
+        this.logCatchTraceEval(defenderId, hand, ball, sample, segPrev, segCurr, attempt, null);
         if (this.debug.CATCH_DEBUG || this.debug.NET_DEBUG) {
           this.logger(`catch SUCCESS defender=${defenderId} hand=${hand} ball=${ball.id} id=${attempt.attemptId}`);
         }
@@ -1777,11 +1838,20 @@ export class ServerGameLoop {
           // A ball already in someone's hand can't be reclaimed.
           if (this.state.balls[ballId].phase === 'held') continue;
           const ring = this.ballHistoryById.get(ballId);
-          if (!ring) continue;
+          if (!ring) {
+            this.logCatchTraceReclaimSkip(defenderId, hand, attempt, ballId, 'ball-history-missing', evalTime);
+            continue;
+          }
           const bracket = ring.bracket(evalTime);
-          if (!bracket) continue;
+          if (!bracket) {
+            this.logCatchTraceReclaimSkip(defenderId, hand, attempt, ballId, 'ball-history-bracket-missing', evalTime);
+            continue;
+          }
           const at = ring.nearest(evalTime);
-          if (!at) continue;
+          if (!at) {
+            this.logCatchTraceReclaimSkip(defenderId, hand, attempt, ballId, 'ball-history-nearest-missing', evalTime);
+            continue;
+          }
           // Reconstruct the ball as the defender saw it at evalTime (phase/velocity/owner/bounce from
           // history) and test the swept segment that straddles that moment.
           const fail = sweptCatchFailReason({
@@ -1796,7 +1866,10 @@ export class ServerGameLoop {
             // No `timing` block: the server-time window is already gated above; the rewound history
             // sample carries its own (past) time.
           });
-          if (fail) continue;
+          if (fail) {
+            this.logCatchTraceReclaimSkip(defenderId, hand, attempt, ballId, fail, evalTime, at, bracket);
+            continue;
+          }
 
           const facing = sample ? sample.forward : defender.movement.facing;
           this.applyCatch(defenderId, hand, ballId, facing, attempt, nowMs, true);
@@ -1846,6 +1919,11 @@ export class ServerGameLoop {
       serverTimeMs: nowMs,
       reclaim
     });
+    this.catchTrace(
+      `catch-apply player=${defenderId} hand=${hand} id=${attempt.attemptId}` +
+      ` ball=${ballId} result=held heldBy=${caught.heldByPlayerId ?? 'none'} heldHand=${caught.heldHand ?? 'none'}` +
+      ` event=catch-event snapshotHandBall=${this.state.players[defenderId]?.hands[hand].heldBallId ?? 'none'} reclaim=${Number(reclaim)}`
+    );
     return caught;
   }
 
@@ -1961,6 +2039,69 @@ export class ServerGameLoop {
     const minTime = this.stepNowMs - GAME_CONSTANTS.combat.defenseMaxRewindMs - GAME_CONSTANTS.combat.defenseInputGraceMs;
     const target = Math.max(minTime, atServerTimeMs);
     return ring.nearest(target);
+  }
+
+  private logCatchTraceEval(
+    defenderId: string,
+    hand: HandSide,
+    ball: BallState,
+    sample: DefenseSample | null,
+    segPrev: Vec3,
+    segCurr: Vec3,
+    attempt: CatchAttempt,
+    reason: CatchFailReason | null
+  ): void {
+    if (!this.debug.CATCH_TRACE_DEBUG && !this.debug.CATCH_DEBUG) return;
+    const result = reason ? 'fail' : 'success';
+    const key = `${defenderId}:${hand}:${attempt.attemptId}:${ball.id}:${result}:${reason ?? 'ok'}`;
+    if (reason && this.catchTraceEvalSeen.has(key)) return;
+    this.catchTraceEvalSeen.add(key);
+
+    const origin = sample ? sample.eye : add(this.state.players[defenderId]?.movement.position ?? vec3(), vec3(0, GAME_CONSTANTS.player.eyeHeight, 0));
+    const closest = closestPointOnSegment(segPrev, segCurr, origin);
+    const range = distance(origin, closest);
+    const handEmpty = sample ? (hand === 'left' ? sample.leftHandEmpty : sample.rightHandEmpty) : !this.state.players[defenderId]?.hands[hand].heldBallId;
+    const dashing = sample ? sample.dashing : Boolean(this.state.players[defenderId]?.movement.dashingThisFrame);
+    const sampleAgeMs = sample ? Math.round(Math.abs(sample.serverTimeMs - attempt.openedAtMs)) : 'missing';
+
+    this.catchTrace(
+      `catch-eval result=${result}${reason ? ` reason=${reason}` : ''}` +
+      ` player=${defenderId} hand=${hand} id=${attempt.attemptId}` +
+      ` ball=${ball.id} phase=${ball.phase} speed=${length(ball.velocity).toFixed(2)}` +
+      ` bounce=${ball.bounceCount} owner=${ball.ownerId ?? 'none'}` +
+      ` heldBy=${ball.heldByPlayerId ?? 'none'} heldHand=${ball.heldHand ?? 'none'} throwId=${ball.throwId}` +
+      ` catchable=${Number(isBallCatchableInFlight(ball))}` +
+      ` range=${range.toFixed(2)}/${GAME_CONSTANTS.catch.rangeMeters}` +
+      ` handEmpty=${Number(handEmpty)} dashing=${Number(dashing)} sampleAgeMs=${sampleAgeMs}` +
+      ` nowMs=${Math.round(this.stepNowMs)} openedAtMs=${Math.round(attempt.openedAtMs)}` +
+      ` activeUntilMs=${Math.round(attempt.activeUntilMs)}` +
+      ` segStart=(${segPrev.x.toFixed(2)},${segPrev.y.toFixed(2)},${segPrev.z.toFixed(2)})` +
+      ` segEnd=(${segCurr.x.toFixed(2)},${segCurr.y.toFixed(2)},${segCurr.z.toFixed(2)})`
+    );
+  }
+
+  private logCatchTraceReclaimSkip(
+    defenderId: string,
+    hand: HandSide,
+    attempt: CatchAttempt,
+    ballId: string,
+    reason: string,
+    evalTime: number,
+    sample?: BallSample,
+    bracket?: [BallSample, BallSample]
+  ): void {
+    if (!this.debug.CATCH_TRACE_DEBUG && !this.debug.CATCH_DEBUG) return;
+    const key = `${defenderId}:${hand}:${attempt.attemptId}:${ballId}:reclaim:${reason}`;
+    if (this.catchTraceEvalSeen.has(key)) return;
+    this.catchTraceEvalSeen.add(key);
+    this.catchTrace(
+      `catch-reclaim result=fail reason=${reason}` +
+      ` player=${defenderId} hand=${hand} id=${attempt.attemptId} ball=${ballId}` +
+      ` evalTimeMs=${Math.round(evalTime)} clickTimeMs=${Math.round(attempt.clickTimeMs)}` +
+      ` rewindMs=${Math.round(attempt.rewindMs)}` +
+      ` historySample=${sample ? `${sample.phase}/speed=${length(sample.velocity).toFixed(2)}/bounce=${sample.bounceCount}` : 'missing'}` +
+      ` bracket=${bracket ? `${bracket[0].tick}->${bracket[1].tick}` : 'missing'}`
+    );
   }
 
   private logCatch(
@@ -2439,6 +2580,19 @@ export class ServerGameLoop {
     if (queue && queuedCount > 0) {
       const drained = queue.splice(0, queuedCount);
       const command = coalesceQueuedInputs(drained);
+      if (
+        command.input.leftCatchAttemptId > 0 ||
+        command.input.rightCatchAttemptId > 0 ||
+        drained.some((entry) => entry.input.leftCatchAttemptId > 0 || entry.input.rightCatchAttemptId > 0)
+      ) {
+        const newest = drained[drained.length - 1]?.input;
+        this.catchTrace(
+          `input-coalesce player=${player.id} drained=${queuedCount} seq=${command.seq}` +
+          ` resultLeft=${command.input.leftCatchAttemptId} resultRight=${command.input.rightCatchAttemptId}` +
+          ` newestLeft=${newest?.leftCatchAttemptId ?? 0} newestRight=${newest?.rightCatchAttemptId ?? 0}` +
+          ` resultClientTimeMs=${Math.round(command.input.clientTimeMs)}`
+        );
+      }
       this.inputDrainMetrics.inputsDrainedTotal += queuedCount;
       if (queuedCount > this.inputDrainMetrics.maxInputsDrainedThisTick) {
         this.inputDrainMetrics.maxInputsDrainedThisTick = queuedCount;
@@ -2534,6 +2688,7 @@ export class ServerGameLoop {
     // open catch attempts, and undelivered throw events so lag-comp never rewinds across the reset.
     this.ballHistoryById.clear();
     this.catchAttemptByKey.clear();
+    this.catchTraceEvalSeen.clear();
     this.recentHitByBallId.clear();
     this.pendingThrowEvents = [];
     const room = createRoomState({
@@ -3079,7 +3234,8 @@ function clearEdges(input: PlayerInput): PlayerInput {
     leftHandPressed: false,
     rightHandPressed: false,
     leftHandReleased: false,
-    rightHandReleased: false
+    rightHandReleased: false,
+    backflipThrowTier: 0
   };
 }
 

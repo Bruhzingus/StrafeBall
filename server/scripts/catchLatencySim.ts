@@ -118,6 +118,59 @@ function runCatchScenario(oneWayMs: number, ballSpeed: number, clickDist: number
   return result(outcome, -1, clickAtMs, perceivedWorldMs, inputArriveMs, reclaim);
 }
 
+function runBouncedDeadCatchScenario(oneWayMs: number, ballSpeed: number, clickDist: number): SimResult {
+  const ctx = createScenario();
+  const { loop, pending, seqByPlayer, ballHistory } = ctx;
+  const viewDelayMs = INTERPOLATION_DELAY_MS + oneWayMs;
+  const throwMs = ctx.serverMs;
+
+  injectBouncedDeadIncomingBall(loop, ballSpeed);
+  ballHistory.push({ ms: ctx.serverMs, pos: { ...loop.state.balls.ball_0.position } });
+
+  let decided = false;
+  let clickAtMs = -1;
+  let perceivedWorldMs = -1;
+  let inputArriveMs = -1;
+
+  for (let elapsedMs = 0; elapsedMs <= MAX_SCENARIO_MS; elapsedMs += SERVER_STEP_MS) {
+    ctx.serverMs += SERVER_STEP_MS;
+
+    if (!decided) {
+      const perceivedSampleTime = ctx.serverMs - viewDelayMs;
+      const perceived = sampleHistory(ballHistory, perceivedSampleTime);
+      if (perceived && distance(perceived, eyePos(DEFENDER_Z)) <= clickDist) {
+        decided = true;
+        clickAtMs = ctx.serverMs - throwMs;
+        perceivedWorldMs = perceivedSampleTime - throwMs;
+      }
+    }
+
+    const bInput: Partial<PlayerInput> = { lookYawRadians: Math.PI, lookPitchRadians: 0 };
+    if (decided) bInput.leftCatchAttemptId = 1;
+    sendInput(pending, seqByPlayer, 'a', ctx.serverMs, oneWayMs, { lookYawRadians: 0, lookPitchRadians: 0 });
+    sendInput(pending, seqByPlayer, 'b', ctx.serverMs, oneWayMs, bInput);
+
+    deliverDue(loop, pending, ctx.serverMs);
+    loop.step();
+
+    ballHistory.push({ ms: ctx.serverMs, pos: { ...loop.state.balls.ball_0.position } });
+
+    if (decided && inputArriveMs < 0 && loop.state.players.b.hands.left.lastCatchAttemptId >= 1) {
+      inputArriveMs = ctx.serverMs - throwMs;
+    }
+
+    for (const event of loop.drainCombatEvents()) {
+      if (event.type === 'catch-event' && event.ballId === 'ball_0' && event.catcherId === 'b') {
+        return result('catch', event.serverTimeMs - throwMs, clickAtMs, perceivedWorldMs, inputArriveMs, event.reclaim);
+      }
+    }
+  }
+
+  const ball = loop.state.balls.ball_0;
+  const outcome: Outcome = ball.phase === 'held' ? 'catch' : 'expired';
+  return result(outcome, -1, clickAtMs, perceivedWorldMs, inputArriveMs, false);
+}
+
 function runParryScenario(oneWayMs: number, ballSpeed: number): SimResult {
   const ctx = createScenario({ parryStance: true });
   const { loop, pending, seqByPlayer } = ctx;
@@ -193,6 +246,24 @@ function injectIncomingBall(loop: ServerGameLoop, speed: number): void {
     velocity: vec3(0, 0, speed),
     bounceCount: 0,
     isSuper: speed > GAME_CONSTANTS.ball.chargedThrowSpeed,
+    curveAccel: vec3(),
+    throwId: 1
+  };
+}
+
+function injectBouncedDeadIncomingBall(loop: ServerGameLoop, speed: number): void {
+  const startZ = DEFENDER_Z - Math.max(0.75, CATCH_RANGE - 0.2);
+  loop.state.balls.ball_0 = {
+    ...loop.state.balls.ball_0,
+    phase: 'dead',
+    ownerKind: null,
+    ownerId: null,
+    heldByPlayerId: null,
+    heldHand: null,
+    position: vec3(0, EYE, startZ),
+    velocity: vec3(0, 0, speed),
+    bounceCount: 1,
+    isSuper: false,
     curveAccel: vec3(),
     throwId: 1
   };
@@ -312,6 +383,16 @@ function speedCases(): SpeedCase[] {
   ];
 }
 
+function bouncedDeadSpeedCases(): SpeedCase[] {
+  const min = GAME_CONSTANTS.catch.bouncedCatchMinSpeed;
+  return [
+    { label: 'below', speed: 0.1 },
+    { label: 'exact', speed: min },
+    { label: 'above', speed: min + 2 },
+    { label: 'rebound', speed: GAME_CONSTANTS.ball.quickThrowSpeed * GAME_CONSTANTS.ball.bounceRestitution }
+  ];
+}
+
 function main(): void {
   const oneWayLatencies = [0, 25, 50, 75, 100];
   const speeds = speedCases();
@@ -347,6 +428,22 @@ function main(): void {
     }
     console.log('');
   }
+
+  console.log('=== Bounced/dead catch: moving dead ball, bounceCount=1, owner cleared ===');
+  console.log('oneWay | speedCase | m/s  | expected | outcome | out@  | click | seen  | arrive | fair');
+  console.log('-------+-----------+------+----------+---------+-------+-------+-------+--------+-----');
+  for (const oneWayMs of oneWayLatencies) {
+    for (const speed of bouncedDeadSpeedCases()) {
+      const r = runBouncedDeadCatchScenario(oneWayMs, speed.speed, Math.max(0.5, CATCH_RANGE - 0.25));
+      const expected = speed.speed < GAME_CONSTANTS.catch.bouncedCatchMinSpeed ? 'fail' : 'catch';
+      console.log(
+        `${String(oneWayMs).padStart(6)} | ${speed.label.padEnd(9)} | ${speed.speed.toFixed(1).padStart(4)} | ` +
+        `${expected.padEnd(8)} | ${r.outcome.padEnd(7)} | ${fmtMs(r.outcomeAtMs)} | ${fmtMs(r.clickAtMs)} | ` +
+        `${fmtMs(r.perceivedWorldMs)} | ${fmtMs(r.inputArriveMs)} | ${r.fair}`
+      );
+    }
+  }
+  console.log('');
 
   console.log('=== Auto-parry sanity: defender holds two balls and aims at incoming throw ===');
   console.log('oneWay | speedCase | m/s  | outcome | out@  | fair');

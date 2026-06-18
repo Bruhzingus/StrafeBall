@@ -61,8 +61,8 @@ export interface PlayerInput {
    * server rejects any input whose resetSerial is OLDER than its current one, so pre-reset packets
    * still in flight when a room reset happens are discarded instead of corrupting the post-reset
    * input stream (which otherwise bumps the server's last-seen sequence back to a stale-high value
-   * and makes every fresh input look like a duplicate — the "stuck after reset" freeze). 0 = a
-   * client that predates this field; the server treats 0 as "unknown" and does not reject it.
+   * and makes every fresh input look like a duplicate — the "stuck after reset" freeze). 0 is the
+   * initial room timeline; only an omitted field is treated as a pre-resetSerial legacy client.
    */
   resetSerial: number;
 }

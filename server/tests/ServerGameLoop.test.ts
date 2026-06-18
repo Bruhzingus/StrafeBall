@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { GAME_CONSTANTS } from '../../shared/constants';
+import { isBallCatchableInFlight } from '../../shared/simulation/BallSim';
 import { length, vec3 } from '../../shared/simulation/CollisionMath';
 import { backflipQteSpeed } from '../../shared/simulation/ThrowMath';
 import { ServerGameLoop } from '../src/simulation/ServerGameLoop';
@@ -197,6 +198,87 @@ describe('ServerGameLoop', () => {
     expect(loop.state.players.b.lastProcessedInputSeq).toBe(3);
     expect(loop.state.players.b.hands.left.lastCatchAttemptId).toBe(7);
     expect(loop.state.players.b.hands.right.lastCatchAttemptId).toBe(9);
+  });
+
+  it('coalesces both hand release edges from bunched inputs even when the newest packet has none', () => {
+    const loop = new ServerGameLoop('room');
+    loop.addPlayer('a', 'A');
+    loop.addPlayer('b', 'B');
+    playNow(loop);
+    loop.state.players.a.movement.position = vec3(0, 0, 0);
+    expect(loop.handlePickup('a').ok).toBe(true);
+    expect(loop.handlePickup('a').ok).toBe(true);
+
+    loop.handleInput('a', {
+      leftHandPressed: true,
+      leftHandHeld: true,
+      rightHandPressed: true,
+      rightHandHeld: true,
+      sequence: 1
+    }, 1);
+    loop.step();
+
+    expect(loop.state.players.a.hands.left.mode).toBe('charging');
+    expect(loop.state.players.a.hands.right.mode).toBe('charging');
+
+    loop.handleInput('a', { leftHandReleased: true, sequence: 2 }, 2);
+    loop.handleInput('a', { rightHandReleased: true, sequence: 3 }, 3);
+    loop.handleInput('a', { lookYawRadians: Math.PI / 8, sequence: 4 }, 4);
+    loop.step();
+
+    expect(loop.state.players.a.lastProcessedInputSeq).toBe(4);
+    expect(loop.state.players.a.hands.left.heldBallId).toBeNull();
+    expect(loop.state.players.a.hands.right.heldBallId).toBeNull();
+    expect(Object.values(loop.state.balls).filter((ball) => ball.phase === 'live')).toHaveLength(2);
+  });
+
+  it('coalesces fake-throw and drop edges from bunched inputs', () => {
+    const loop = new ServerGameLoop('room');
+    loop.addPlayer('a', 'A');
+    loop.addPlayer('b', 'B');
+    playNow(loop);
+    loop.state.players.a.movement.position = vec3(0, 0, 0);
+    expect(loop.handlePickup('a').ok).toBe(true);
+    const ballId = loop.state.players.a.hands.left.heldBallId;
+    expect(ballId).toBeTruthy();
+
+    loop.handleInput('a', { leftHandPressed: true, leftHandHeld: true, sequence: 1 }, 1);
+    loop.step();
+    expect(loop.state.players.a.hands.left.mode).toBe('charging');
+
+    loop.handleInput('a', { fakeThrowPressed: true, sequence: 2 }, 2);
+    loop.handleInput('a', { sequence: 3 }, 3);
+    loop.step();
+    expect(loop.state.players.a.hands.left.mode).toBe('holding');
+    expect(loop.state.players.a.hands.left.heldBallId).toBe(ballId);
+    expect(Object.values(loop.state.balls).filter((ball) => ball.phase === 'live')).toHaveLength(0);
+
+    loop.handleInput('a', { dropPressed: true, sequence: 4 }, 4);
+    loop.handleInput('a', { sequence: 5 }, 5);
+    loop.step();
+    expect(loop.state.players.a.lastProcessedInputSeq).toBe(5);
+    expect(loop.state.players.a.hands.left.heldBallId).toBeNull();
+    expect(loop.state.balls[ballId!].heldByPlayerId).toBeNull();
+  });
+
+  it('coalesces backflip throw tier with a release edge when newer packets are neutral', () => {
+    const loop = new ServerGameLoop('room');
+    loop.addPlayer('a', 'A');
+    loop.addPlayer('b', 'B');
+    playNow(loop);
+    loop.state.players.a.movement.position = vec3(0, 0, 0);
+    expect(loop.handlePickup('a').ok).toBe(true);
+    loop.state.players.a.movement.grounded = true;
+    loop.state.players.a.movementInternal.backflipCooldown = GAME_CONSTANTS.backflip.cooldownSeconds;
+
+    loop.handleInput('a', { leftHandReleased: true, backflipThrowTier: 5, sequence: 1 }, 1);
+    loop.handleInput('a', { sequence: 2 }, 2);
+    loop.step();
+
+    const live = Object.values(loop.state.balls).find((ball) => ball.phase === 'live');
+    expect(live).toBeTruthy();
+    expect(live!.isSuper).toBe(true);
+    expect(length(live!.velocity)).toBeCloseTo(backflipQteSpeed(5), 1);
   });
 
   it('clears drained one-shot edges from fallback ticks', () => {
@@ -1133,14 +1215,14 @@ describe('ServerGameLoop', () => {
 
     // Put defender 'b' at the origin facing -Z (yaw π) and seed their look angles via input so the
     // recorded defense sample aims down -Z. Returns the loop with both players present + active.
-    function defenderFacingIncoming(): ServerGameLoop {
+    function defenderFacingIncoming(pitchRadians = 0): ServerGameLoop {
       const loop = new ServerGameLoop('room');
       loop.addPlayer('a', 'A');
       loop.addPlayer('b', 'B');
       playNow(loop); // combat tests bypass the pre-round countdown
       loop.state.players.b.movement.position = vec3(0, 0, 0);
       // Aim straight down -Z (yaw π, pitch 0). Send it as input so the server stores it + the sample.
-      loop.handleInput('b', { lookYawRadians: Math.PI, lookPitchRadians: 0, sequence: 1 }, 1);
+      loop.handleInput('b', { lookYawRadians: Math.PI, lookPitchRadians: pitchRadians, sequence: 1 }, 1);
       loop.step();
       return loop;
     }
@@ -1273,6 +1355,186 @@ describe('ServerGameLoop', () => {
       expect(ball.phase).toBe('held');
       expect(ball.heldByPlayerId).toBe('b');
       expect(loop.state.match.scoreByTeamId.blue).toBe(0);
+    });
+
+    it('catches moving bounced dead ball from real PlayerInput and emits a catch event', () => {
+      const loop = defenderFacingIncoming();
+      loop.state.balls.ball_0 = {
+        ...loop.state.balls.ball_0,
+        phase: 'dead',
+        ownerKind: null,
+        ownerId: null,
+        heldByPlayerId: null,
+        heldHand: null,
+        bounceCount: 1,
+        position: vec3(0, eye, -2.6),
+        velocity: vec3(0, 0, GAME_CONSTANTS.catch.bouncedCatchMinSpeed + 5),
+        throwId: 7
+      };
+
+      loop.handleInput('b', {
+        lookYawRadians: Math.PI,
+        lookPitchRadians: 0,
+        leftCatchAttemptId: 11,
+        sequence: 2,
+        clientTimeMs: 100
+      }, 2);
+
+      let catchEvent = loop.drainCombatEvents().find((event) => event.type === 'catch-event');
+      const maxSteps = Math.ceil(GAME_CONSTANTS.combat.catchActiveMs / SERVER_STEP_MS) + 3;
+      for (let i = 0; i < maxSteps && loop.state.balls.ball_0.heldByPlayerId !== 'b'; i += 1) {
+        loop.step();
+        catchEvent ??= loop.drainCombatEvents().find((event) => event.type === 'catch-event');
+      }
+
+      const ball = loop.state.balls.ball_0;
+      expect(ball.phase).toBe('held');
+      expect(ball.heldByPlayerId).toBe('b');
+      expect(ball.heldHand).toBe('left');
+      expect(loop.state.players.b.hands.left.heldBallId).toBe('ball_0');
+      expect(catchEvent).toMatchObject({
+        type: 'catch-event',
+        ballId: 'ball_0',
+        catcherId: 'b',
+        hand: 'left'
+      });
+    });
+
+    it('catches a dead ball after a real floor rebound transition and keeps ball history through the bounce', () => {
+      const loop = defenderFacingIncoming(0.55);
+      loop.state.balls.ball_0 = {
+        ...loop.state.balls.ball_0,
+        phase: 'live',
+        ownerKind: 'player',
+        ownerId: 'a',
+        heldByPlayerId: null,
+        heldHand: null,
+        bounceCount: 0,
+        position: vec3(0, 0.35, -2.8),
+        velocity: vec3(0, -8, 12),
+        throwId: 9
+      };
+
+      let seq = 2;
+      let reboundSeen = false;
+      for (let i = 0; i < 24; i += 1) {
+        loop.handleInput('b', { lookYawRadians: Math.PI, lookPitchRadians: 0.55, sequence: seq }, seq);
+        seq += 1;
+        loop.step();
+        loop.drainCombatEvents();
+        const ball = loop.state.balls.ball_0;
+        if (ball.phase === 'dead' && ball.bounceCount >= 1 && isBallCatchableInFlight(ball)) {
+          reboundSeen = true;
+          expect(ball.ownerId).toBeNull();
+          expect(ball.heldByPlayerId).toBeNull();
+          expect(length(ball.velocity)).toBeGreaterThanOrEqual(GAME_CONSTANTS.catch.bouncedCatchMinSpeed);
+          expect(loop.getDebugBufferStats().ballHistoryEntries).toBeGreaterThan(0);
+          break;
+        }
+      }
+
+      expect(reboundSeen).toBe(true);
+      loop.handleInput('b', {
+        lookYawRadians: Math.PI,
+        lookPitchRadians: 0.55,
+        leftCatchAttemptId: 12,
+        sequence: seq,
+        clientTimeMs: 200
+      }, seq);
+
+      let catchEvent = loop.drainCombatEvents().find((event) => event.type === 'catch-event');
+      for (let i = 0; i < 12 && loop.state.balls.ball_0.heldByPlayerId !== 'b'; i += 1) {
+        loop.step();
+        catchEvent ??= loop.drainCombatEvents().find((event) => event.type === 'catch-event');
+      }
+
+      expect(loop.state.balls.ball_0.phase).toBe('held');
+      expect(loop.state.balls.ball_0.heldByPlayerId).toBe('b');
+      expect(loop.state.players.b.hands.left.heldBallId).toBe('ball_0');
+      expect(catchEvent).toMatchObject({ type: 'catch-event', ballId: 'ball_0', catcherId: 'b', hand: 'left' });
+    });
+
+    it('catches a wall-rebound ball after the real bounds bounce transition', () => {
+      const loop = new ServerGameLoop('room');
+      loop.addPlayer('a', 'A');
+      loop.addPlayer('b', 'B');
+      playNow(loop);
+      loop.state.players.b.movement.position = vec3(0, 0, 14);
+      let seq = 1;
+      loop.handleInput('b', { lookYawRadians: 0, lookPitchRadians: 0, sequence: seq }, seq);
+      seq += 1;
+      loop.step();
+
+      loop.state.balls.ball_0 = {
+        ...loop.state.balls.ball_0,
+        phase: 'live',
+        ownerKind: 'player',
+        ownerId: 'b',
+        heldByPlayerId: null,
+        heldHand: null,
+        bounceCount: 0,
+        position: vec3(0, eye, GAME_CONSTANTS.map.halfLength - 0.9),
+        velocity: vec3(0, 0, GAME_CONSTANTS.ball.quickThrowSpeed),
+        throwId: 10
+      };
+
+      let reboundSeen = false;
+      for (let i = 0; i < 40; i += 1) {
+        loop.handleInput('b', { lookYawRadians: 0, lookPitchRadians: 0, sequence: seq }, seq);
+        seq += 1;
+        loop.step();
+        loop.drainCombatEvents();
+        const ball = loop.state.balls.ball_0;
+        if (ball.bounceCount >= 1 && ball.velocity.z < 0 && isBallCatchableInFlight(ball)) {
+          reboundSeen = true;
+          expect(ball.heldByPlayerId).toBeNull();
+          break;
+        }
+      }
+
+      expect(reboundSeen).toBe(true);
+      loop.handleInput('b', {
+        lookYawRadians: 0,
+        lookPitchRadians: 0,
+        rightCatchAttemptId: 13,
+        sequence: seq,
+        clientTimeMs: 300
+      }, seq);
+
+      let catchEvent = loop.drainCombatEvents().find((event) => event.type === 'catch-event');
+      for (let i = 0; i < 16 && loop.state.balls.ball_0.heldByPlayerId !== 'b'; i += 1) {
+        loop.step();
+        catchEvent ??= loop.drainCombatEvents().find((event) => event.type === 'catch-event');
+      }
+
+      expect(loop.state.balls.ball_0.phase).toBe('held');
+      expect(loop.state.balls.ball_0.heldByPlayerId).toBe('b');
+      expect(loop.state.balls.ball_0.heldHand).toBe('right');
+      expect(loop.state.players.b.hands.right.heldBallId).toBe('ball_0');
+      expect(catchEvent).toMatchObject({ type: 'catch-event', ballId: 'ball_0', catcherId: 'b', hand: 'right' });
+    });
+
+    it('advances fast catchable dead balls for a full server tick', () => {
+      const loop = defenderFacingIncoming();
+      const startZ = -6;
+      const speed = GAME_CONSTANTS.catch.bouncedCatchMinSpeed + 5;
+      loop.state.balls.ball_0 = {
+        ...loop.state.balls.ball_0,
+        phase: 'dead',
+        ownerKind: null,
+        ownerId: null,
+        heldByPlayerId: null,
+        heldHand: null,
+        bounceCount: 1,
+        position: vec3(4, eye, startZ),
+        velocity: vec3(0, 0, speed),
+        throwId: 14
+      };
+
+      loop.step();
+
+      expect(loop.state.balls.ball_0.position.z).toBeCloseTo(startZ + speed * (SERVER_STEP_MS / 1000), 4);
+      expect(isBallCatchableInFlight(loop.state.balls.ball_0)).toBe(true);
     });
 
     it('does NOT catch a settled/slow dead ball, but does catch fast multi-bounce balls', () => {

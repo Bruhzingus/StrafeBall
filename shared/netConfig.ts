@@ -8,7 +8,8 @@
  * Prediction and the server must use compatible fixed dt; with SERVER_TICK_RATE === CLIENT_INPUT_RATE
  * they are identical, which is the only configuration that makes reconciliation residual ≈ 0.
  *
- * To switch test configs, change ACTIVE_NET_MODE below (or set VITE_NET_MODE / NET_MODE env).
+ * To switch test configs, change DEFAULT_NET_MODE below and rebuild, or set NET_MODE on the
+ * server. The browser build validates VITE_NET_MODE but does not hot-swap rates after compile.
  * The supported modes:
  *   A. 128 sim / 128 input / 96 snapshots (current smooth 1v1/2v2 target)
  *   B. 90 sim / 90 input / 60 snapshots   (stable lower-bandwidth fallback)
@@ -49,8 +50,7 @@ const MODES: Record<NetMode, NetModeConfig> = {
   A_128_128_96: { serverTickRate: 128, clientInputRate: 128, snapshotRate: 96, interpolationDelayMs: 50 },
   // A — 128Hz sim/input with 90Hz snapshots. Sim dt ~7.8ms; snapshot interval ~11.1ms.
   // With LIVE_BALL_COMBAT_SUBSTEPS=2 effective combat checks run at ~256Hz.
-  // 50ms interp covers ~4.5 snapshots at the nominal 90Hz rate; adaptive client logic
-  // clamps it lower (35ms) when jitter is low for sharper visual response.
+  // 50ms interp covers ~4.5 snapshots at the nominal 90Hz rate.
   A_128_128_90: { serverTickRate: 128, clientInputRate: 128, snapshotRate: 90, interpolationDelayMs: 50 },
   // Phase 5 fallback 2v2 target. Snapshot interval ~13.9ms; 60ms interp covers ~4 snapshots.
   A_120_120_72: { serverTickRate: 120, clientInputRate: 120, snapshotRate: 72, interpolationDelayMs: 60 },
@@ -71,10 +71,9 @@ const MODES: Record<NetMode, NetModeConfig> = {
  * Resolve the active mode from an env override if present, else the compiled default. The override
  * lets local-vs-deployed tests pick a mode without editing this constant:
  *   - server: NET_MODE=B_60_60_30 (process.env, read here)
- *   - client: VITE_NET_MODE=B_60_60_30 — the client calls applyClientNetMode() at startup with
- *     its own import.meta.env value, because this `shared` file is compiled as CommonJS for the
- *     Node server where a bare `import.meta` token is a syntax error (TS1343). Keeping the
- *     import.meta reference OUT of shared code is what lets the same file build for both targets.
+ *   - client: VITE_NET_MODE=B_60_60_30 is validated in src/main.ts; rebuild the client with the
+ *     matching default mode before using it. Keeping the import.meta reference OUT of shared code
+ *     is what lets the same file build for both browser and Node targets.
  */
 /**
  * Read process.env via globalThis so this file type-checks under BOTH builds: the client tsconfig
@@ -99,17 +98,14 @@ export const DEFAULT_NET_MODE: NetMode = 'A_128_128_96';
 
 /**
  * Active mode resolved at module load from process.env (server) or the compiled default (client).
- * The client may narrow this further at startup via applyClientNetMode(); since rates are read
- * eagerly below, a client override should be applied before the first room connection. In practice
- * the compiled default A_128_128_96 is what ships, so no client override is required for the playtest.
+ * Client and server rates are resolved eagerly from this mode. The browser warns if VITE_NET_MODE
+ * disagrees with the compiled mode; it does not mutate these constants at runtime.
  */
 export const ACTIVE_NET_MODE: NetMode = resolveProcessMode();
 
 /**
- * Client-side hook to validate a VITE_NET_MODE value against the known modes. The client reads its
- * own import.meta.env.VITE_NET_MODE (allowed in client code, which Vite compiles as ESM) and passes
- * it here; returns the matching NetModeConfig or null if unset/unknown. This keeps the import.meta
- * token in client-only code, never in this shared CommonJS-compiled file.
+ * Client-side hook to validate a VITE_NET_MODE value against the known modes. This keeps the
+ * import.meta token in client-only code, never in this shared CommonJS-compiled file.
  */
 export function netModeConfig(mode: string | undefined): NetModeConfig | null {
   return mode && mode in MODES ? MODES[mode as NetMode] : null;
@@ -184,8 +180,9 @@ export const USE_COMPACT_SNAPSHOTS = SNAPSHOT_ENCODING === 'compact';
 export const SNAPSHOT_BACKPRESSURE_BYTES = 64 * 1024;
 
 /**
- * Debug flags — ALL OFF by default. These gate per-tick/per-frame logging that must never run
- * during a real playtest (it dominates CPU and GC). Each may be enabled out-of-band:
+ * Debug flags. Chatty per-tick/per-frame channels default off because they dominate CPU and GC.
+ * PERF_DEBUG is the one exception: it drives only throttled 5s aggregate reports and defaults on.
+ * Each may be enabled out-of-band:
  *   - server: env vars (NET_DEBUG=1, PERF_DEBUG=1, BALL_DEBUG=1, PICKUP_DEBUG=1, THROW_DEBUG=1)
  *   - client: localStorage (strafeball.debug.net, .perf, .ball, .pickup, .throw)
  * PERF_DEBUG additionally controls the every-5s [rates] line, which is the one log worth keeping
@@ -201,6 +198,7 @@ export interface DebugFlags {
   COLLISION_DEBUG: boolean;
   // Combat correctness channels (Phase 13). All per-tick; default OFF for real playtests.
   CATCH_DEBUG: boolean;
+  CATCH_TRACE_DEBUG: boolean;
   PARRY_DEBUG: boolean;
   BALL_PREDICT_DEBUG: boolean;
 }
@@ -220,6 +218,7 @@ export const DEBUG_DEFAULTS: DebugFlags = {
   THROW_DEBUG: false,
   COLLISION_DEBUG: false,
   CATCH_DEBUG: false,
+  CATCH_TRACE_DEBUG: false,
   PARRY_DEBUG: false,
   BALL_PREDICT_DEBUG: false
 };
@@ -243,6 +242,7 @@ export function resolveServerDebugFlags(env: Record<string, string | undefined> 
     THROW_DEBUG: all || on(env.THROW_DEBUG),
     COLLISION_DEBUG: all || on(env.COLLISION_DEBUG),
     CATCH_DEBUG: all || on(env.CATCH_DEBUG),
+    CATCH_TRACE_DEBUG: all || on(env.CATCH_TRACE_DEBUG),
     PARRY_DEBUG: all || on(env.PARRY_DEBUG),
     BALL_PREDICT_DEBUG: all || on(env.BALL_PREDICT_DEBUG)
   };

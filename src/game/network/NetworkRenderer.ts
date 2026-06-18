@@ -259,11 +259,13 @@ export class NetworkRenderer {
     this.debugStats.remoteInterpolationBufferSize = this.snapshotBuffer.length;
     this.debugStats.ballInterpolationBufferSize = this.snapshotBuffer.length;
     this.debugStats.renderDelayMs = this.interpolationDelayMs;
-    const now = Date.now();
     const oldest = this.snapshotBuffer[0];
     const newest = this.snapshotBuffer[this.snapshotBuffer.length - 1];
-    this.debugStats.latestSnapshotAgeMs = newest ? Math.max(0, now - newest.serverTimeMs) : 0;
-    this.debugStats.oldestSnapshotAgeMs = oldest ? Math.max(0, now - oldest.serverTimeMs) : 0;
+    const now = Date.now();
+    // Buffer age is a local wall-clock metric; use receive time so server/client clock skew cannot
+    // make the perf HUD report negative or wildly inflated snapshot ages.
+    this.debugStats.latestSnapshotAgeMs = newest ? Math.max(0, now - newest.receivedAtMs) : 0;
+    this.debugStats.oldestSnapshotAgeMs = oldest ? Math.max(0, now - oldest.receivedAtMs) : 0;
     const ballPredictionStats = this.ballPredictor.getStats();
     this.debugStats.ballPredictionCount = ballPredictionStats.activePredictions;
     this.debugStats.ballPredictionCorrections = ballPredictionStats.totalCorrections;
@@ -364,7 +366,7 @@ export class NetworkRenderer {
   /**
    * Map a snapshot to a monotonic SERVER-timeline value. Prefer the server's own serverTimeMs.
    * If that field is missing/non-monotonic (e.g. the synthetic joined-room snapshot), reconstruct
-   * it from tick deltas using the known snapshot interval, anchored to the first usable value.
+   * it from tick deltas using the known server step, anchored to the first usable value.
    */
   private deriveServerTime(snapshot: ServerSnapshot): number {
     const reported = snapshot.serverTimeMs;
