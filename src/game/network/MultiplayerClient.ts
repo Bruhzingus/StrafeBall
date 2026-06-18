@@ -131,6 +131,7 @@ export class MultiplayerClient {
       playerId: this.localPlayerId,
       sequence: input.sequence,
       clientTimeMs: input.clientTimeMs,
+      ...(this.pingMs !== null ? { rttMs: this.pingMs } : {}),
       input
     } satisfies InputCommand);
   }

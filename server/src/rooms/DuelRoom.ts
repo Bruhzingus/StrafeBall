@@ -141,7 +141,8 @@ export class DuelRoom extends Room {
         : undefined;
       const input = wrapped ? wrapped.input : (message as Partial<PlayerInput> | undefined);
       const seq = wrapped?.sequence ?? wrapped?.input?.sequence ?? (message as { sequence?: number } | undefined)?.sequence ?? 0;
-      if (!this.game.handleInput(client.sessionId, input, seq)) {
+      const rttMs = typeof wrapped?.rttMs === 'number' && Number.isFinite(wrapped.rttMs) ? wrapped.rttMs : undefined;
+      if (!this.game.handleInput(client.sessionId, input, seq, rttMs)) {
         this.reject(client, 'input', 'unknown-player');
       }
     });

@@ -6,6 +6,8 @@ export interface InputCommand {
   playerId: string;
   sequence: number;
   clientTimeMs: number;
+  /** Client-measured round-trip time in ms. Used server-side only to size lag-comp catch rewind. */
+  rttMs?: number;
   input: PlayerInput;
 }
 

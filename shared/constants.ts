@@ -1,3 +1,17 @@
+import { INTERPOLATION_DELAY_MS, SERVER_STEP_MS, SNAPSHOT_INTERVAL_MS } from './netConfig';
+
+const CATCH_ACTIVE_MS = 220;
+const CATCH_DEFAULT_RTT_MS = 50;
+const CATCH_MAX_RTT_MS = 200;
+const CATCH_REWIND_TICK_SLOP_MS = Math.ceil(SERVER_STEP_MS * 2);
+const CATCH_DEFAULT_REWIND_MS = Math.ceil(INTERPOLATION_DELAY_MS + CATCH_DEFAULT_RTT_MS + CATCH_REWIND_TICK_SLOP_MS);
+const CATCH_MAX_REWIND_MS = Math.ceil(INTERPOLATION_DELAY_MS + CATCH_MAX_RTT_MS + CATCH_REWIND_TICK_SLOP_MS);
+const CATCH_INPUT_GRACE_MS = Math.max(60, Math.ceil(SERVER_STEP_MS * 4));
+const CATCH_HIT_GRACE_MS = Math.ceil(CATCH_MAX_REWIND_MS + Math.max(40, SNAPSHOT_INTERVAL_MS + SERVER_STEP_MS));
+const DEFENSE_HISTORY_MS = Math.ceil(
+  Math.max(700, CATCH_MAX_REWIND_MS + CATCH_ACTIVE_MS + CATCH_INPUT_GRACE_MS + 100)
+);
+
 export const GAME_CONSTANTS = {
   simulation: {
     maxDeltaSeconds: 0.05
@@ -174,24 +188,24 @@ export const GAME_CONSTANTS = {
    */
   combat: {
     catchStartupMs: 0,       // 0–30ms: earliest the attempt can catch (0 = lands on the click tick)
-    catchActiveMs: 220,      // active window the swept ball must cross the cone within (covers
+    catchActiveMs: CATCH_ACTIVE_MS,      // active window the swept ball must cross the cone within (covers
                              // anticipation + the rewind scan; not a "free block" — cone/range gated)
     catchCooldownMs: 470,    // ~250–400ms recovery before another attempt is allowed
     // LAG COMPENSATION. A catch click is judged against the world the defender SAW, not the present
-    // server state. The defender's view trails the server by ~(interpolation delay + their ping),
-    // and the click takes another ~ping to arrive — so by the time a fast straight throw's catch
-    // click reaches the server the ball has usually already hit/passed. We rewind the catch
-    // evaluation by `catchRewindMs` and check the ball's swept path from HISTORY at that rewound
-    // time, each tick the window is open (the window scans a span of recent history). Fixed value
-    // (no per-client RTT plumbing): sized to cover ~75ms interp + ~2×(typical 0–75ms ping).
-    catchRewindMs: 150,
+    // server state. Required rewind is roughly:
+    //   render interpolation delay + client RTT + a couple of server ticks of scheduling slop.
+    // The server sizes the final attempt rewind from the client's measured RTT and clamps it to
+    // `defenseMaxRewindMs`; `catchRewindMs` is the fallback/default RTT budget.
+    catchDefaultRttMs: CATCH_DEFAULT_RTT_MS,
+    catchMaxRttMs: CATCH_MAX_RTT_MS,
+    catchRewindMs: CATCH_DEFAULT_REWIND_MS,
     // A hit's score is REVERTED if a lag-compensated catch legitimately claims the same ball within
     // this window (a high-ping defender whose well-timed catch arrived after the server applied the
-    // hit). Must exceed catchRewindMs so a catch rewound that far can still cancel the hit.
-    catchHitGraceMs: 220,
-    defenseMaxRewindMs: 200, // hard cap on how far catch evaluation may rewind from "now"
-    defenseInputGraceMs: 60, // slack around the rewound moment when sampling history
-    defenseHistoryMs: 520    // recent defensive/ball history retained (must exceed maxRewind+active)
+    // hit). Must exceed max rewind so a catch rewound that far can still cancel the hit.
+    catchHitGraceMs: CATCH_HIT_GRACE_MS,
+    defenseMaxRewindMs: CATCH_MAX_REWIND_MS, // hard cap on how far catch evaluation may rewind from "now"
+    defenseInputGraceMs: CATCH_INPUT_GRACE_MS, // slack around the rewound moment when sampling history
+    defenseHistoryMs: DEFENSE_HISTORY_MS    // recent defensive/ball history retained (must exceed maxRewind+active)
   },
 
   dash: {

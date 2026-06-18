@@ -132,8 +132,8 @@ export class ArenaScene {
   private matRestoreHold = 0;
   private static readonly MAT_RESTORE_HOLD_SECONDS = 0.6;
   // Fixed timestep for input send + prediction + reconciliation replay. Driven entirely by the
-  // shared net config (must equal the server's fixed dt for reconciliation residual ≈ 0). At the
-  // active 144/144 mode this is 1/144; the fixed-step loop below then sends at 144Hz.
+  // shared net config (must equal the server's fixed dt for reconciliation residual ≈ 0). The
+  // fixed-step loop below sends at the active CLIENT_INPUT_RATE.
   private static readonly NET_FIXED_DT = CLIENT_FIXED_DT;
   private static readonly RECONCILE_SNAP_THRESHOLD_M = 0.5;
   private static readonly DESYNC_TRACKER_SECONDS = 5;

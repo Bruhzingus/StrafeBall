@@ -85,7 +85,7 @@ export interface ServerGameLoopOptions {
   /**
    * Wall-clock source (ms). Defaults to Date.now. Injectable so combat timing (catch windows,
    * defensive/ball history timestamps, stale-input detection) can be driven by a deterministic
-   * virtual clock in tests — the only way to exercise the real 90Hz tick spacing + network latency
+   * virtual clock in tests — the only way to exercise the real fixed tick spacing + network latency
    * without sleeping. Production passes nothing and gets Date.now.
    */
   now?: () => number;
@@ -228,6 +228,7 @@ export class ServerGameLoop {
   private readonly previousInputByPlayerId = new Map<string, PlayerInput>();
   private readonly lastInputAtByPlayerId = new Map<string, number>();
   private readonly lastEnqueuedSeqByPlayerId = new Map<string, number>();
+  private readonly inputRttMsByPlayerId = new Map<string, number>();
   private readonly parryCooldownByPlayerId = new Map<string, number>();
   private readonly lastInputDebugAtByPlayerId = new Map<string, number>();
   private readonly teamChoicesByPlayerId = new Set<string>();
@@ -344,6 +345,7 @@ export class ServerGameLoop {
     this.previousInputByPlayerId.delete(playerId);
     this.lastInputAtByPlayerId.delete(playerId);
     this.lastEnqueuedSeqByPlayerId.delete(playerId);
+    this.inputRttMsByPlayerId.delete(playerId);
     this.parryCooldownByPlayerId.delete(playerId);
     this.lastInputDebugAtByPlayerId.delete(playerId);
     this.defenseHistoryByPlayerId.delete(playerId);
@@ -386,6 +388,7 @@ export class ServerGameLoop {
     this.previousInputByPlayerId.clear();
     this.lastInputAtByPlayerId.clear();
     this.lastEnqueuedSeqByPlayerId.clear();
+    this.inputRttMsByPlayerId.clear();
     this.parryCooldownByPlayerId.clear();
     this.lastInputDebugAtByPlayerId.clear();
     this.defenseHistoryByPlayerId.clear();
@@ -400,7 +403,7 @@ export class ServerGameLoop {
   }
 
   /** Enqueue a client input. `seq` lets the client reconcile; out-of-order/dupes are ignored. */
-  handleInput(playerId: string, rawInput: Partial<PlayerInput> = {}, seq = 0): boolean {
+  handleInput(playerId: string, rawInput: Partial<PlayerInput> = {}, seq = 0, rttMs?: number): boolean {
     const player = this.state.players[playerId];
     if (!player) return false;
 
@@ -419,6 +422,7 @@ export class ServerGameLoop {
     const sequence = Number.isFinite(seq) ? seq : 0;
     if (sequence > 0 && sequence <= lastSeq) return true; // stale/duplicate
     if (sequence > 0) this.lastEnqueuedSeqByPlayerId.set(playerId, sequence);
+    this.updateInputRttEstimate(playerId, rttMs);
 
     const fallback = this.lastInputByPlayerId.get(playerId);
     const input = normalizeInput({ ...rawInput, sequence }, fallback);
@@ -430,6 +434,23 @@ export class ServerGameLoop {
     while (queue.length > MAX_INPUT_QUEUE) queue.shift();
     this.inputQueueByPlayerId.set(playerId, queue);
     return true;
+  }
+
+  private updateInputRttEstimate(playerId: string, rttMs: number | undefined): void {
+    if (typeof rttMs !== 'number' || !Number.isFinite(rttMs)) return;
+    const clamped = clamp(
+      rttMs,
+      0,
+      GAME_CONSTANTS.combat.catchMaxRttMs
+    );
+    const previous = this.inputRttMsByPlayerId.get(playerId);
+    this.inputRttMsByPlayerId.set(playerId, previous === undefined ? clamped : previous * 0.85 + clamped * 0.15);
+  }
+
+  private catchRewindMsForPlayer(playerId: string): number {
+    const rttMs = this.inputRttMsByPlayerId.get(playerId) ?? GAME_CONSTANTS.combat.catchDefaultRttMs;
+    const raw = GAME_CONSTANTS.combat.catchRewindMs + (rttMs - GAME_CONSTANTS.combat.catchDefaultRttMs);
+    return clamp(raw, GAME_CONSTANTS.combat.defenseInputGraceMs, GAME_CONSTANTS.combat.defenseMaxRewindMs);
   }
 
   handlePickup(playerId: string): ActionResult {
@@ -1594,14 +1615,11 @@ export class ServerGameLoop {
       return;
     }
 
-    // Anchor the rewind to when the client actually clicked. Prefer the input's client timestamp
-    // mapped to server time via our ping estimate; fall back to "now" if unavailable. Clamp the
-    // rewind so we never look further back than the configured max.
-    // Lag-comp rewind for this attempt: judge the catch against the world the defender SAW, which
-    // trails the server by ~(interp + their ping) plus the click's transit. A fixed value (clamped)
-    // keeps it server-only with no per-client RTT plumbing; the active window scans a span of recent
-    // history so a click a touch early/late around the in-cone moment still lands.
-    const rewindMs = clamp(GAME_CONSTANTS.combat.catchRewindMs, GAME_CONSTANTS.combat.defenseInputGraceMs, GAME_CONSTANTS.combat.defenseMaxRewindMs);
+    // Judge the catch against the world the defender saw. Required history is roughly render
+    // interpolation delay + measured RTT + tick slop; clamp so bogus/missing latency cannot request
+    // unlimited history. The active window scans a span of recent history, so a click a touch
+    // early/late around the in-cone moment still lands.
+    const rewindMs = this.catchRewindMsForPlayer(player.id);
     // Sub-tick anchor: clamp clientTimeMs offset to one tick window so clock skew can't corrupt it.
     const clientClickMs = input.clientTimeMs ?? 0;
     const subTickOffset = clientClickMs > 0 ? clamp(now - clientClickMs, 0, SERVER_STEP_MS) : 0;

@@ -3,6 +3,7 @@ import { GAME_CONSTANTS } from '../../shared/constants';
 import { length, vec3 } from '../../shared/simulation/CollisionMath';
 import { backflipQteSpeed } from '../../shared/simulation/ThrowMath';
 import { ServerGameLoop } from '../src/simulation/ServerGameLoop';
+import { SERVER_STEP_MS } from '../../shared/netConfig';
 
 /**
  * Skip the pre-round countdown for tests that exercise live combat/hits. A real match now starts in
@@ -1366,10 +1367,10 @@ describe('ServerGameLoop', () => {
     // only after the ball already hit/passed them, so the catch is judged against BALL HISTORY
     // rewound to what the defender saw, and a legit catch reverts the hit it superseded. These tests
     // drive a VIRTUAL clock at the true tick spacing so the wall-clock windows behave like online. ---
-    const STEP_MS = 1000 / 90;
+    const STEP_MS = SERVER_STEP_MS;
 
     // Run a fast straight throw into a -Z-facing defender at the origin, stepping a virtual clock at
-    // 90Hz, WITHOUT a catch — returns the loop right after 'b' is hit (score blue == 1). The ball's
+    // the active server tick rate, WITHOUT a catch — returns the loop right after 'b' is hit (score blue == 1). The ball's
     // pre-hit swept history is retained so a late catch can rewind to it.
     function hitThenReadyForLateCatch(aimYaw = Math.PI): { loop: ServerGameLoop; clock: { ms: number }; seq: number } {
       const clock = { ms: 100000 };

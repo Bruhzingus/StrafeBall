@@ -37,6 +37,7 @@ interface SimResult {
 
 interface PendingInput {
   arriveMs: number;
+  rttMs: number;
   playerId: string;
   input: Partial<PlayerInput>;
   seq: number;
@@ -236,6 +237,7 @@ function sendInput(
   seqByPlayer[playerId] += 1;
   pending.push({
     arriveMs: sentAtMs + oneWayMs,
+    rttMs: oneWayMs * 2,
     playerId,
     input: { ...input, clientTimeMs: sentAtMs, sequence: seqByPlayer[playerId] },
     seq: seqByPlayer[playerId]
@@ -246,7 +248,7 @@ function deliverDue(loop: ServerGameLoop, pending: PendingInput[], nowMs: number
   for (let i = pending.length - 1; i >= 0; i -= 1) {
     if (pending[i].arriveMs <= nowMs) {
       const p = pending[i];
-      loop.handleInput(p.playerId, p.input, p.seq);
+      loop.handleInput(p.playerId, p.input, p.seq, p.rttMs);
       pending.splice(i, 1);
     }
   }
@@ -324,7 +326,8 @@ function main(): void {
     `\nCatch/parry latency diagnostic mode=${ACTIVE_NET_MODE} server=${SERVER_TICK_RATE}Hz ` +
     `step=${SERVER_STEP_MS.toFixed(2)}ms interpDelay=${INTERPOLATION_DELAY_MS}ms ` +
     `catchRange=${CATCH_RANGE.toFixed(3)}m active=${GAME_CONSTANTS.combat.catchActiveMs}ms ` +
-    `rewind=${GAME_CONSTANTS.combat.catchRewindMs}ms grace=${GAME_CONSTANTS.combat.catchHitGraceMs}ms`
+    `rewindDefault=${GAME_CONSTANTS.combat.catchRewindMs}ms max=${GAME_CONSTANTS.combat.defenseMaxRewindMs}ms ` +
+    `grace=${GAME_CONSTANTS.combat.catchHitGraceMs}ms`
   );
   console.log('oneWayMs is one-way latency. ping ~= 2x oneWayMs. clickAt/perceived/arrive/outcome are server-time ms since throw.\n');
 

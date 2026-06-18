@@ -10,11 +10,11 @@
  *
  * To switch test configs, change ACTIVE_NET_MODE below (or set VITE_NET_MODE / NET_MODE env).
  * The supported modes:
- *   A. 144 sim / 144 input / 128 snapshots (target — sharp input with lighter snapshot cost)
- *   B. 72 sim / 72 input / 60 snapshots  (sharper input with 60Hz snapshots)
- *   C. 60 sim / 60 input / 60 snapshots  (legacy full-rate fallback)
- *   D. 60 sim / 60 input / 30 snapshots  (bandwidth fallback)
- *   E. 30 sim / 30 input / 30 snapshots  (baseline — safest for a 1 vCPU box)
+ *   A. 128 sim / 128 input / 96 snapshots (current smooth 1v1/2v2 target)
+ *   B. 90 sim / 90 input / 60 snapshots   (stable lower-bandwidth fallback)
+ *   C. 60 sim / 60 input / 60 snapshots   (legacy full-rate fallback)
+ *   D. 60 sim / 60 input / 30 snapshots   (bandwidth fallback)
+ *   E. 30 sim / 30 input / 30 snapshots   (baseline for constrained hosts)
  */
 
 export type NetMode = 'A_180_180_96' | 'A_180_180_128' | 'A_144_144_96' | 'A_144_144_100' | 'A_144_144_128' | 'A_128_128_96' | 'A_128_128_90' | 'A_120_120_72' | 'A_90_90_60' | 'A_72_72_60' | 'A_60_60_60' | 'B_60_60_30' | 'C_30_30_30';
@@ -94,14 +94,14 @@ function resolveProcessMode(): NetMode {
   return DEFAULT_NET_MODE;
 }
 
-/** Compiled default mode. Temporary stable 1v1 baseline: 90 sim / 90 input / 60 snapshots. */
-export const DEFAULT_NET_MODE: NetMode = 'A_90_90_60';
+/** Compiled default mode. Smooth 1v1/2v2 baseline: 128 sim / 128 input / 96 snapshots. */
+export const DEFAULT_NET_MODE: NetMode = 'A_128_128_96';
 
 /**
  * Active mode resolved at module load from process.env (server) or the compiled default (client).
  * The client may narrow this further at startup via applyClientNetMode(); since rates are read
  * eagerly below, a client override should be applied before the first room connection. In practice
- * the compiled default A_90_90_60 is what ships, so no client override is required for the playtest.
+ * the compiled default A_128_128_96 is what ships, so no client override is required for the playtest.
  */
 export const ACTIVE_NET_MODE: NetMode = resolveProcessMode();
 
