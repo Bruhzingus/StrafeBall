@@ -120,6 +120,12 @@ export interface NetworkRendererDebugStats {
   ballPredictionCount: number;
   ballPredictionCorrections: number;
   ballPredictionMaxCorrections: number;
+  ballPredictionMaxErrorM: number;
+  ballPredictionLastErrorM: number;
+  ballPredictionSnapCount: number;
+  ballPredictionSoftCorrections: number;
+  ballPredictionMediumCorrections: number;
+  ballPredictionSnapReasonCounts: Record<string, number>;
 }
 
 export class NetworkRenderer {
@@ -262,6 +268,12 @@ export class NetworkRenderer {
     this.debugStats.ballPredictionCount = ballPredictionStats.activePredictions;
     this.debugStats.ballPredictionCorrections = ballPredictionStats.totalCorrections;
     this.debugStats.ballPredictionMaxCorrections = ballPredictionStats.maxCorrections;
+    this.debugStats.ballPredictionMaxErrorM = ballPredictionStats.maxErrorM;
+    this.debugStats.ballPredictionLastErrorM = ballPredictionStats.lastErrorM;
+    this.debugStats.ballPredictionSnapCount = ballPredictionStats.snapCount;
+    this.debugStats.ballPredictionSoftCorrections = ballPredictionStats.softCorrectionCount;
+    this.debugStats.ballPredictionMediumCorrections = ballPredictionStats.mediumCorrectionCount;
+    this.debugStats.ballPredictionSnapReasonCounts = ballPredictionStats.snapReasonCounts;
     return this.debugStats;
   }
 
@@ -689,6 +701,7 @@ export class NetworkRenderer {
           target.x = result.position.x;
           target.y = result.position.y;
           target.z = result.position.z;
+          if (result.snapped) this.recordCorrection(`ball-predict-${result.snapReason || 'snap'}`);
           if (isBallPredictDebugEnabled() && (result.snapped || result.errorM > 0.5)) {
             console.log(
               `[ball/predict] id=${ball.id} throwId=${result.throwId} mode=${ball.phase}` +
@@ -1247,7 +1260,13 @@ function emptyDebugStats(): NetworkRendererDebugStats {
     lastCorrectionReason: '',
     ballPredictionCount: 0,
     ballPredictionCorrections: 0,
-    ballPredictionMaxCorrections: 0
+    ballPredictionMaxCorrections: 0,
+    ballPredictionMaxErrorM: 0,
+    ballPredictionLastErrorM: 0,
+    ballPredictionSnapCount: 0,
+    ballPredictionSoftCorrections: 0,
+    ballPredictionMediumCorrections: 0,
+    ballPredictionSnapReasonCounts: {}
   };
 }
 

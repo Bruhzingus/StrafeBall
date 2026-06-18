@@ -96,7 +96,16 @@ html, body {
 }
 
 .hud-top-left { top: 16px; left: 16px; transform: rotate(-1.4deg); }
-.hud-debug-panel { top: 430px; left: 18px; width: 292px; transform: rotate(0.8deg); z-index: 13; }
+.hud-debug-panel {
+  position: fixed;
+  top: 132px;
+  left: 18px;
+  z-index: 40;
+  width: min(340px, calc(100vw - 36px));
+  max-height: calc(100vh - 164px);
+  overflow: hidden;
+  transform: rotate(0.8deg);
+}
 .hud-top-center { top: 16px; left: 50%; transform: translateX(-50%); text-align: center; }
 .hud-bottom-left { bottom: 16px; left: 16px; transform: rotate(1.1deg); }
 .hud-bottom-right { bottom: 16px; right: 16px; transform: rotate(-1deg); }
@@ -1682,9 +1691,10 @@ html, body {
   }
 
   .hud-debug-panel {
-    top: 380px;
+    top: 112px;
     left: 10px;
     width: min(292px, calc(100vw - 20px));
+    max-height: calc(100vh - 132px);
   }
 
   .settings-panel {

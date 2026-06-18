@@ -247,6 +247,10 @@ export class ArenaScene {
     const frameMs = engine.getDeltaTime();
     const dt = Math.min(frameMs / 1000, TUNING.simulation.maxDeltaSeconds);
 
+    if (this.input.wasKeyPressed(CONTROL_KEYS.toggleDebug)) {
+      this.hud.toggleDebug();
+    }
+
     this.multiplayerOverlay.update();
     if (this.multiplayer.connected) {
       this.enterOnlineMode();
@@ -682,10 +686,6 @@ export class ArenaScene {
       this.rules.boundary.lastMessage = 'You reached 5 hits. Reset with K.';
     }
 
-    if (this.input.wasKeyPressed(CONTROL_KEYS.toggleDebug)) {
-      this.hud.toggleDebug();
-    }
-
     if (this.input.wasKeyPressed(CONTROL_KEYS.debugBallLauncher)) {
       this.launchTestBallAtPlayer();
     }
@@ -989,6 +989,12 @@ export class ArenaScene {
         ` ballPredictions=${render.ballPredictionCount}` +
         ` ballPredictionCorrections=${render.ballPredictionCorrections}` +
         ` ballPredictionMaxCorrections=${render.ballPredictionMaxCorrections}` +
+        ` ballPredictionMaxError=${render.ballPredictionMaxErrorM.toFixed(3)}m` +
+        ` ballPredictionLastError=${render.ballPredictionLastErrorM.toFixed(3)}m` +
+        ` ballPredictionSnaps=${render.ballPredictionSnapCount}` +
+        ` ballPredictionSoft=${render.ballPredictionSoftCorrections}` +
+        ` ballPredictionMedium=${render.ballPredictionMediumCorrections}` +
+        ` ballPredictionSnapReasons=${formatCountMap(render.ballPredictionSnapReasonCounts)}` +
         ` activeMeshes=${activeMeshes}`
       );
 
@@ -1292,7 +1298,11 @@ export class ArenaScene {
         ` underruns=${renderStats.bufferUnderrunsPerSec.toFixed(1)}/s` +
         ` overruns=${renderStats.bufferOverrunsPerSec.toFixed(1)}/s` +
         ` interpAvgMs=${renderStats.avgSnapshotIntervalMs.toFixed(1)}` +
-        ` interpMaxMs=${renderStats.maxSnapshotIntervalMs.toFixed(1)}`
+        ` interpMaxMs=${renderStats.maxSnapshotIntervalMs.toFixed(1)}` +
+        ` ballPred=${renderStats.ballPredictionCount}` +
+        ` ballPredErrMax=${renderStats.ballPredictionMaxErrorM.toFixed(3)}m` +
+        ` ballPredErrLast=${renderStats.ballPredictionLastErrorM.toFixed(3)}m` +
+        ` ballPredSnaps=${renderStats.ballPredictionSnapCount}`
       );
     }
 
@@ -2154,6 +2164,12 @@ function readJsHeapStats(): string | null {
   const usedMb = (perf.memory.usedJSHeapSize / 1048576).toFixed(1);
   const totalMb = (perf.memory.totalJSHeapSize / 1048576).toFixed(1);
   return `${usedMb}/${totalMb}MB`;
+}
+
+function formatCountMap(counts: Record<string, number>): string {
+  const entries = Object.entries(counts).filter(([, count]) => count > 0);
+  if (entries.length === 0) return 'none';
+  return entries.map(([key, count]) => `${key}:${count}`).join(',');
 }
 
 function neutralNetInput(yawRadians: number, pitchRadians = 0): PlayerInput {

@@ -1,34 +1,27 @@
 import type { ThrowEvent } from '../../../shared/protocol';
 import type { BallState, Vec3 } from '../../../shared/types';
+import { LIVE_BALL_COMBAT_SUBSTEPS, SERVER_FIXED_DT } from '../../../shared/netConfig';
 import { advanceBall, createBallState } from '../../../shared/simulation/BallSim';
 
 /**
- * Client-side VISUAL prediction for live thrown balls (Phases 5/6). Purely cosmetic: it makes a
- * live ball move smoothly between snapshots by replaying the SAME deterministic shared simulation
- * (advanceBall — gravity + curve) the server runs, seeded from the authoritative throw event. It
- * NEVER decides hits/catches/parries/score/ownership; the authoritative ball state still flows in
- * snapshots and always wins on reconciliation.
- *
- * One predicted entry per ball id. It is created/replaced when a throw event with a new throwId
- * arrives, advanced each render frame to the current render time, and reconciled toward the
- * snapshot position (soft-correct small error, snap on large error / identity change).
+ * Client-side VISUAL prediction for live thrown balls. Purely cosmetic: it replays the shared ball
+ * simulation from authoritative throw events, then reconciles toward authoritative snapshots.
+ * It never decides hits, catches, parries, score, ownership, or rules.
  */
-
-const FIXED_DT = 1 / 120; // prediction substep — fine enough that curve+gravity match the server.
-const SOFT_CORRECT_PER_FRAME = 0.2; // fraction of small error corrected per frame (visual smoothing).
-const MEDIUM_BLEND_PER_FRAME = 0.5; // faster blend for medium error.
-const MEDIUM_ERROR_M = 0.6; // below this: soft-correct. above SNAP: hard snap. between: medium blend.
-const SNAP_ERROR_M = 2.5; // prediction error above which we snap to the authoritative position.
+const PREDICTION_FIXED_DT = SERVER_FIXED_DT / Math.max(1, LIVE_BALL_COMBAT_SUBSTEPS);
+const PREDICTION_MAX_CATCHUP_MS = 500;
+const SOFT_CORRECT_PER_FRAME = 0.2;
+const MEDIUM_BLEND_PER_FRAME = 0.5;
+const MEDIUM_ERROR_M = 0.6;
+const SNAP_ERROR_M = 2.5;
+const CORRECTION_COUNT_EPSILON_M = 0.03;
 
 interface PredictedBall {
   throwId: number;
   ballId: string;
   ownerId: string;
-  /** Simulated ball used to carry forward position/velocity deterministically. */
   sim: BallState;
-  /** Server time (ms) the simulation is currently advanced to. */
   simTimeMs: number;
-  /** Last rendered position (after reconciliation) — what the mesh should show. */
   render: Vec3;
   correctionCount: number;
 }
@@ -47,10 +40,24 @@ export interface BallPredictorStats {
   activePredictions: number;
   totalCorrections: number;
   maxCorrections: number;
+  maxErrorM: number;
+  lastErrorM: number;
+  snapCount: number;
+  softCorrectionCount: number;
+  mediumCorrectionCount: number;
+  snapReasonCounts: Record<string, number>;
 }
 
 export class BallPredictor {
   private readonly balls = new Map<string, PredictedBall>();
+  private totalCorrections = 0;
+  private maxCorrections = 0;
+  private maxErrorM = 0;
+  private lastErrorM = 0;
+  private snapCount = 0;
+  private softCorrectionCount = 0;
+  private mediumCorrectionCount = 0;
+  private readonly snapReasonCounts: Record<string, number> = {};
 
   /** Seed/replace a predicted ball from an authoritative throw event (new throw identity). */
   applyThrowEvent(event: ThrowEvent): void {
@@ -82,24 +89,13 @@ export class BallPredictor {
   }
 
   /**
-   * Advance a seeded prediction to `renderServerTimeMs` and return its position WITHOUT reconciling
-   * against (or being invalidated by) the authoritative snapshot. Used only to bridge the brief
-   * window after a local throw where the throw event has seeded prediction but the interpolation-
-   * delayed snapshot still shows the ball held — so the thrower's ball detaches instantly. Returns
-   * null if there is no seeded prediction for this ball.
+   * Advance a seeded prediction to `renderServerTimeMs` and return its position without reconciling
+   * against the authoritative snapshot. Used only to bridge the brief local-throw detach window.
    */
   advanceVisualOnly(ballId: string, renderServerTimeMs: number): Vec3 | null {
     const entry = this.balls.get(ballId);
     if (!entry) return null;
-    if (renderServerTimeMs > entry.simTimeMs) {
-      let remaining = Math.min(renderServerTimeMs - entry.simTimeMs, 500);
-      while (remaining > 0) {
-        const step = Math.min(FIXED_DT, remaining / 1000);
-        entry.sim = advanceBall(entry.sim, step);
-        remaining -= step * 1000;
-      }
-      entry.simTimeMs = renderServerTimeMs;
-    }
+    this.advancePrediction(entry, renderServerTimeMs);
     entry.render.x = entry.sim.position.x;
     entry.render.y = entry.sim.position.y;
     entry.render.z = entry.sim.position.z;
@@ -108,6 +104,14 @@ export class BallPredictor {
 
   clear(): void {
     this.balls.clear();
+    this.totalCorrections = 0;
+    this.maxCorrections = 0;
+    this.maxErrorM = 0;
+    this.lastErrorM = 0;
+    this.snapCount = 0;
+    this.softCorrectionCount = 0;
+    this.mediumCorrectionCount = 0;
+    for (const reason in this.snapReasonCounts) delete this.snapReasonCounts[reason];
   }
 
   has(ballId: string): boolean {
@@ -115,40 +119,38 @@ export class BallPredictor {
   }
 
   getStats(): BallPredictorStats {
-    let totalCorrections = 0;
-    let maxCorrections = 0;
-    for (const entry of this.balls.values()) {
-      totalCorrections += entry.correctionCount;
-      maxCorrections = Math.max(maxCorrections, entry.correctionCount);
-    }
     return {
       activePredictions: this.balls.size,
-      totalCorrections,
-      maxCorrections
+      totalCorrections: this.totalCorrections,
+      maxCorrections: this.maxCorrections,
+      maxErrorM: this.maxErrorM,
+      lastErrorM: this.lastErrorM,
+      snapCount: this.snapCount,
+      softCorrectionCount: this.softCorrectionCount,
+      mediumCorrectionCount: this.mediumCorrectionCount,
+      snapReasonCounts: { ...this.snapReasonCounts }
     };
   }
 
   /**
    * Produce the predicted render position for a live ball at `renderServerTimeMs`, reconciled to the
-   * authoritative `snapshotBall`. Returns null when there is no active prediction for this ball (the
-   * caller should then fall back to plain snapshot interpolation). The returned position is what the
-   * mesh should display this frame.
+   * authoritative `snapshotBall`. Returns null when prediction no longer owns this visual.
    */
   predict(snapshotBall: BallState, renderServerTimeMs: number): BallPredictionResult | null {
     const entry = this.balls.get(snapshotBall.id);
     if (!entry) return null;
 
-    // Identity change → the prediction is stale; drop it and let the caller snap to the snapshot.
-    // (A new throw event for the new throwId will reseed prediction.)
     if (snapshotBall.throwId !== entry.throwId || snapshotBall.ownerId !== entry.ownerId) {
+      this.recordSnap('identity-change');
       this.balls.delete(snapshotBall.id);
       return null;
     }
-    // Phase left live/deflected (caught/dead/loose/held) → stop predicting, snapshot owns it now.
+
     if (snapshotBall.phase !== 'live' && snapshotBall.phase !== 'deflected') {
       this.balls.delete(snapshotBall.id);
       return null;
     }
+
     if (snapshotBall.bounceCount !== entry.sim.bounceCount) {
       entry.sim = {
         ...snapshotBall,
@@ -160,7 +162,8 @@ export class BallPredictor {
       entry.render.x = snapshotBall.position.x;
       entry.render.y = snapshotBall.position.y;
       entry.render.z = snapshotBall.position.z;
-      entry.correctionCount += 1;
+      this.recordEntryCorrection(entry);
+      this.recordSnap('bounce');
       return {
         position: entry.render,
         snapped: true,
@@ -171,41 +174,34 @@ export class BallPredictor {
       };
     }
 
-    // Advance the deterministic sim forward to the render time (catch up missed substeps).
-    let snapReason = '';
-    if (renderServerTimeMs > entry.simTimeMs) {
-      let remaining = renderServerTimeMs - entry.simTimeMs;
-      // Cap catch-up so a long stall doesn't run thousands of substeps.
-      remaining = Math.min(remaining, 500);
-      while (remaining > 0) {
-        const step = Math.min(FIXED_DT, remaining / 1000);
-        entry.sim = advanceBall(entry.sim, step);
-        remaining -= step * 1000;
-      }
-      entry.simTimeMs = renderServerTimeMs;
-    }
+    this.advancePrediction(entry, renderServerTimeMs);
 
-    // Reconcile the predicted position toward the authoritative snapshot position.
     const predicted = entry.sim.position;
     const target = snapshotBall.position;
     const errorM = distance(predicted, target);
+    this.recordError(errorM);
 
+    let snapReason = '';
     if (errorM > SNAP_ERROR_M) {
-      // Large divergence (bounce off wall/player the predictor didn't model, big desync): snap the
-      // sim to authoritative state so prediction re-tracks reality.
       entry.sim = { ...entry.sim, position: { ...target }, velocity: { ...snapshotBall.velocity } };
       entry.render.x = target.x;
       entry.render.y = target.y;
       entry.render.z = target.z;
-      entry.correctionCount += 1;
+      this.recordEntryCorrection(entry);
+      this.recordSnap('large-error');
       snapReason = 'large-error';
     } else {
-      // Render the predicted position, then ease it toward the authoritative one so small errors
-      // wash out without visible popping. Medium errors blend faster.
       const k = errorM > MEDIUM_ERROR_M ? MEDIUM_BLEND_PER_FRAME : SOFT_CORRECT_PER_FRAME;
       entry.render.x = predicted.x + (target.x - predicted.x) * k;
       entry.render.y = predicted.y + (target.y - predicted.y) * k;
       entry.render.z = predicted.z + (target.z - predicted.z) * k;
+      if (errorM > MEDIUM_ERROR_M) {
+        this.mediumCorrectionCount += 1;
+        this.recordEntryCorrection(entry);
+      } else if (errorM > CORRECTION_COUNT_EPSILON_M) {
+        this.softCorrectionCount += 1;
+        this.recordEntryCorrection(entry);
+      }
     }
 
     return {
@@ -216,6 +212,33 @@ export class BallPredictor {
       throwId: entry.throwId,
       snapReason
     };
+  }
+
+  private advancePrediction(entry: PredictedBall, renderServerTimeMs: number): void {
+    if (renderServerTimeMs <= entry.simTimeMs) return;
+    let remaining = Math.min(renderServerTimeMs - entry.simTimeMs, PREDICTION_MAX_CATCHUP_MS);
+    while (remaining > 0) {
+      const step = Math.min(PREDICTION_FIXED_DT, remaining / 1000);
+      entry.sim = advanceBall(entry.sim, step);
+      remaining -= step * 1000;
+    }
+    entry.simTimeMs = renderServerTimeMs;
+  }
+
+  private recordEntryCorrection(entry: PredictedBall): void {
+    entry.correctionCount += 1;
+    this.totalCorrections += 1;
+    this.maxCorrections = Math.max(this.maxCorrections, entry.correctionCount);
+  }
+
+  private recordError(errorM: number): void {
+    this.lastErrorM = errorM;
+    this.maxErrorM = Math.max(this.maxErrorM, errorM);
+  }
+
+  private recordSnap(reason: string): void {
+    this.snapCount += 1;
+    this.snapReasonCounts[reason] = (this.snapReasonCounts[reason] ?? 0) + 1;
   }
 }
 

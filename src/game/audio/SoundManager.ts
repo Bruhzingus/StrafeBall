@@ -23,6 +23,10 @@ interface LegacyAudioListener {
 const MIN_AUDIO_PARAM_VALUE = 0.0001;
 const MIN_AUDIBLE_PEAK = 0.00001;
 
+function mirrorX(p: AudioPoint): AudioPoint {
+  return { x: -p.x, y: p.y, z: p.z };
+}
+
 export class SoundManager {
   private ctx: AudioContext | null = null;
   private master: GainNode | null = null;
@@ -54,7 +58,12 @@ export class SoundManager {
     const ctx = this.ensureContext();
     if (!ctx || !this.master) return;
 
-    this.setListenerPose(listenerPosition, listenerForward, listenerUp);
+    // Babylon's scene is left-handed, but the Web Audio listener/panner model is right-handed
+    // (same convention as OpenAL). Feeding left-handed X straight in flips the perceived stereo
+    // image — a ball on the player's left was panning to the right ear. Mirroring X at this single
+    // chokepoint (every positional sound funnels through here) converts to the right-handed frame
+    // Web Audio expects, without touching Babylon's own left-handed math anywhere else.
+    this.setListenerPose(mirrorX(listenerPosition), listenerForward && mirrorX(listenerForward), listenerUp && mirrorX(listenerUp));
 
     const panner = ctx.createPanner();
     // Equal-power panning is cheaper than HRTF and enough for readable bounce direction.
@@ -63,9 +72,10 @@ export class SoundManager {
     panner.refDistance = 4;
     panner.maxDistance = 42;
     panner.rolloffFactor = 1.15;
-    setAudioParam(panner.positionX, position.x, ctx.currentTime);
-    setAudioParam(panner.positionY, position.y, ctx.currentTime);
-    setAudioParam(panner.positionZ, position.z, ctx.currentTime);
+    const mirroredPosition = mirrorX(position);
+    setAudioParam(panner.positionX, mirroredPosition.x, ctx.currentTime);
+    setAudioParam(panner.positionY, mirroredPosition.y, ctx.currentTime);
+    setAudioParam(panner.positionZ, mirroredPosition.z, ctx.currentTime);
     panner.connect(this.master);
 
     this.pingTo(speed, gain, panner);

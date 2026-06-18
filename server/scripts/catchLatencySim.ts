@@ -1,27 +1,38 @@
 /**
- * Virtual-time catch latency simulation. Models the REAL online pipeline that unit tests skip:
- *   - server stepping at the true 90Hz spacing (via an injected virtual clock)
- *   - client view delayed by INTERPOLATION_DELAY + one-way latency
- *   - the catch click taking another one-way latency to reach the server
+ * Virtual-time catch/parry latency diagnostic.
  *
- * The defender (B) is given the BEST possible case: stationary, aiming dead-center at the incoming
- * ball, clicking exactly when they perceive it at a chosen distance. If catch fails even here, the
- * model is broken for real play. Run: `npx tsx scripts/catchLatencySim.ts`
+ * Models the online server loop with a virtual clock, delayed client perception, delayed input
+ * arrival, and the real ServerGameLoop catch/parry code. This is intentionally diagnostic only:
+ * it does not tune windows or change gameplay. Run from server/: npx tsx scripts/catchLatencySim.ts
  */
 import { GAME_CONSTANTS } from '../../shared/constants';
-import { INTERPOLATION_DELAY_MS, SERVER_STEP_MS, SERVER_TICK_RATE } from '../../shared/netConfig';
+import {
+  ACTIVE_NET_MODE,
+  INTERPOLATION_DELAY_MS,
+  SERVER_STEP_MS,
+  SERVER_TICK_RATE
+} from '../../shared/netConfig';
+import type { HandSide, PlayerInput, Vec3 } from '../../shared/types';
 import { distance, vec3 } from '../../shared/simulation/CollisionMath';
-import type { PlayerInput } from '../../shared/types';
+import { backflipQteSpeed } from '../../shared/simulation/ThrowMath';
 import { ServerGameLoop } from '../src/simulation/ServerGameLoop';
 
 const EYE = GAME_CONSTANTS.player.eyeHeight;
+const DEFENDER_Z = 12;
+const START_Z = 6;
 const CATCH_RANGE = GAME_CONSTANTS.catch.rangeMeters;
+const MAX_SCENARIO_MS = 2500;
+
+type Outcome = 'catch' | 'hit' | 'hit-then-reverted' | 'expired' | 'timeout' | 'parry';
 
 interface SimResult {
-  outcome: 'catch' | 'hit' | 'expired' | 'timeout';
-  atMs: number;          // server time the outcome occurred, relative to throw
-  clickArriveMs: number; // server time the catch attempt was processed, relative to throw
-  perceivedAtMs: number; // server time B decided to click, relative to throw
+  outcome: Outcome;
+  outcomeAtMs: number;
+  clickAtMs: number;
+  perceivedWorldMs: number;
+  inputArriveMs: number;
+  reclaim: boolean;
+  fair: 'yes' | 'no' | 'n/a';
 }
 
 interface PendingInput {
@@ -31,46 +42,145 @@ interface PendingInput {
   seq: number;
 }
 
-function eyePos(z: number): { x: number; y: number; z: number } {
-  return vec3(0, EYE, z);
+interface BallHistorySample {
+  ms: number;
+  pos: Vec3;
 }
 
-/**
- * Run one catch scenario.
- * @param oneWayMs   one-way network latency (ping = 2*oneWayMs)
- * @param ballSpeed  incoming ball speed (m/s)
- * @param clickDist  distance (m) at which B clicks when they PERCEIVE the ball that close
- * @param startZ     z where the incoming ball starts (B is at +12; ball travels +Z)
- */
-function runScenario(oneWayMs: number, ballSpeed: number, clickDist: number, startZ = 6): SimResult {
+interface SpeedCase {
+  label: string;
+  speed: number;
+}
+
+function runCatchScenario(oneWayMs: number, ballSpeed: number, clickDist: number): SimResult {
+  const ctx = createScenario();
+  const { loop, pending, seqByPlayer, ballHistory } = ctx;
+  const viewDelayMs = INTERPOLATION_DELAY_MS + oneWayMs;
+  const throwMs = ctx.serverMs;
+
+  injectIncomingBall(loop, ballSpeed);
+  ballHistory.push({ ms: ctx.serverMs, pos: { ...loop.state.balls.ball_0.position } });
+
+  let decided = false;
+  let clickAtMs = -1;
+  let perceivedWorldMs = -1;
+  let inputArriveMs = -1;
+  let hitAtMs = -1;
+  let reclaim = false;
+
+  for (let elapsedMs = 0; elapsedMs <= MAX_SCENARIO_MS; elapsedMs += SERVER_STEP_MS) {
+    ctx.serverMs += SERVER_STEP_MS;
+
+    if (!decided) {
+      const perceivedSampleTime = ctx.serverMs - viewDelayMs;
+      const perceived = sampleHistory(ballHistory, perceivedSampleTime);
+      if (perceived && distance(perceived, eyePos(DEFENDER_Z)) <= clickDist) {
+        decided = true;
+        clickAtMs = ctx.serverMs - throwMs;
+        perceivedWorldMs = perceivedSampleTime - throwMs;
+      }
+    }
+
+    const bInput: Partial<PlayerInput> = { lookYawRadians: Math.PI, lookPitchRadians: 0 };
+    if (decided) bInput.leftCatchAttemptId = 1;
+    sendInput(pending, seqByPlayer, 'a', ctx.serverMs, oneWayMs, { lookYawRadians: 0, lookPitchRadians: 0 });
+    sendInput(pending, seqByPlayer, 'b', ctx.serverMs, oneWayMs, bInput);
+
+    deliverDue(loop, pending, ctx.serverMs);
+    loop.step();
+
+    ballHistory.push({ ms: ctx.serverMs, pos: { ...loop.state.balls.ball_0.position } });
+
+    if (decided && inputArriveMs < 0 && loop.state.players.b.hands.left.lastCatchAttemptId >= 1) {
+      inputArriveMs = ctx.serverMs - throwMs;
+    }
+
+    for (const event of loop.drainCombatEvents()) {
+      if (event.type === 'hit-event' && event.ballId === 'ball_0' && event.targetId === 'b' && hitAtMs < 0) {
+        hitAtMs = event.serverTimeMs - throwMs;
+      } else if (event.type === 'catch-event' && event.ballId === 'ball_0' && event.catcherId === 'b') {
+        reclaim = event.reclaim;
+        const outcome: Outcome = hitAtMs >= 0 || reclaim ? 'hit-then-reverted' : 'catch';
+        return result(outcome, event.serverTimeMs - throwMs, clickAtMs, perceivedWorldMs, inputArriveMs, reclaim);
+      } else if (event.type === 'hit-revert-event' && event.ballId === 'ball_0' && event.targetId === 'b') {
+        reclaim = true;
+      }
+    }
+
+    if (hitAtMs >= 0 && (ctx.serverMs - throwMs) - hitAtMs > GAME_CONSTANTS.combat.catchHitGraceMs) {
+      return result('hit', hitAtMs, clickAtMs, perceivedWorldMs, inputArriveMs, reclaim);
+    }
+  }
+
+  const ball = loop.state.balls.ball_0;
+  const outcome: Outcome = ball.phase === 'live' || ball.phase === 'deflected' ? 'timeout' : 'expired';
+  return result(outcome, -1, clickAtMs, perceivedWorldMs, inputArriveMs, reclaim);
+}
+
+function runParryScenario(oneWayMs: number, ballSpeed: number): SimResult {
+  const ctx = createScenario({ parryStance: true });
+  const { loop, pending, seqByPlayer } = ctx;
+  const throwMs = ctx.serverMs;
+  injectIncomingBall(loop, ballSpeed);
+
+  let hitAtMs = -1;
+  for (let elapsedMs = 0; elapsedMs <= MAX_SCENARIO_MS; elapsedMs += SERVER_STEP_MS) {
+    ctx.serverMs += SERVER_STEP_MS;
+    sendInput(pending, seqByPlayer, 'a', ctx.serverMs, oneWayMs, { lookYawRadians: 0, lookPitchRadians: 0 });
+    sendInput(pending, seqByPlayer, 'b', ctx.serverMs, oneWayMs, { lookYawRadians: Math.PI, lookPitchRadians: 0 });
+    deliverDue(loop, pending, ctx.serverMs);
+    loop.step();
+
+    for (const event of loop.drainCombatEvents()) {
+      if (event.type === 'parry-event' && event.ballId === 'ball_0' && event.deflectorId === 'b') {
+        return result('parry', event.serverTimeMs - throwMs, -1, -1, -1, false);
+      }
+      if (event.type === 'hit-event' && event.ballId === 'ball_0' && event.targetId === 'b' && hitAtMs < 0) {
+        hitAtMs = event.serverTimeMs - throwMs;
+      }
+    }
+
+    if (hitAtMs >= 0) return result('hit', hitAtMs, -1, -1, -1, false);
+  }
+
+  return result('timeout', -1, -1, -1, -1, false);
+}
+
+function createScenario(options: { parryStance?: boolean } = {}): {
+  loop: ServerGameLoop;
+  pending: PendingInput[];
+  seqByPlayer: Record<string, number>;
+  ballHistory: BallHistorySample[];
+  serverMs: number;
+} {
   let serverMs = 100000;
   const loop = new ServerGameLoop('sim', { tickRate: SERVER_TICK_RATE, now: () => serverMs });
   loop.addPlayer('a', 'A');
   loop.addPlayer('b', 'B');
   loop.state.match = { ...loop.state.match, status: 'playing', countdownSeconds: 0 };
+  loop.state.players.a.movement.position = vec3(0, 0, -12);
+  loop.state.players.b.movement.position = vec3(0, 0, DEFENDER_Z);
 
-  // B (positiveZ) sits at +12 facing -Z; pin it there. A is at -12 facing +Z.
-  const bz = 12;
-  loop.state.players.b.movement.position = vec3(0, 0, bz);
+  if (options.parryStance) giveHeldBall(loop, 'b', 'left', 'ball_1');
+  if (options.parryStance) giveHeldBall(loop, 'b', 'right', 'ball_2');
 
   const pending: PendingInput[] = [];
   const seqByPlayer: Record<string, number> = { a: 0, b: 0 };
-  const ballHistory: Array<{ ms: number; pos: { x: number; y: number; z: number } }> = [];
+  const ballHistory: BallHistorySample[] = [];
 
-  const viewDelayMs = INTERPOLATION_DELAY_MS + oneWayMs;
-  const step = SERVER_STEP_MS;
-
-  // Warm up a few ticks so defense history populates and the match is live.
-  for (let i = 0; i < 5; i += 1) {
-    serverMs += step;
+  for (let i = 0; i < 8; i += 1) {
+    serverMs += SERVER_STEP_MS;
+    sendInput(pending, seqByPlayer, 'a', serverMs, 0, { lookYawRadians: 0, lookPitchRadians: 0 });
+    sendInput(pending, seqByPlayer, 'b', serverMs, 0, { lookYawRadians: Math.PI, lookPitchRadians: 0 });
     deliverDue(loop, pending, serverMs);
-    // both players send a look input
-    sendInput(pending, seqByPlayer, 'a', serverMs, oneWayMs, { lookYawRadians: 0, lookPitchRadians: 0 });
-    sendInput(pending, seqByPlayer, 'b', serverMs, oneWayMs, { lookYawRadians: Math.PI, lookPitchRadians: 0 });
     loop.step();
+    loop.drainCombatEvents();
   }
 
-  // Inject the incoming live ball owned by A, on a straight path toward B at eye height.
+  return { loop, pending, seqByPlayer, ballHistory, get serverMs() { return serverMs; }, set serverMs(value: number) { serverMs = value; } };
+}
+
+function injectIncomingBall(loop: ServerGameLoop, speed: number): void {
   loop.state.balls.ball_0 = {
     ...loop.state.balls.ball_0,
     phase: 'live',
@@ -78,69 +188,41 @@ function runScenario(oneWayMs: number, ballSpeed: number, clickDist: number, sta
     ownerId: 'a',
     heldByPlayerId: null,
     heldHand: null,
-    position: vec3(0, EYE, startZ),
-    velocity: vec3(0, 0, ballSpeed),
+    position: vec3(0, EYE, START_Z),
+    velocity: vec3(0, 0, speed),
     bounceCount: 0,
+    isSuper: speed > GAME_CONSTANTS.ball.chargedThrowSpeed,
+    curveAccel: vec3(),
     throwId: 1
   };
-  const throwMs = serverMs;
+}
 
-  let decided = false;
-  let perceivedAtMs = -1;
-  let clickArriveMs = -1;
-  let attemptLatched = false;
-  let hitAtMs = -1; // server time (rel throw) a hit FIRST scored — may be reverted by a late catch
-
-  // Score can tick up on a hit then be REVERTED by a lag-compensated catch reclaim within the grace,
-  // so we never declare 'hit' on the first positive score — we run on and let the catch resolve.
-  const graceMs = GAME_CONSTANTS.combat.catchHitGraceMs;
-  const maxMs = 2500;
-  for (let t = 0; t < maxMs; t += step) {
-    serverMs += step;
-
-    // B's perception of the ball is delayed; decide when to click.
-    if (!decided) {
-      const perceived = sampleHistory(ballHistory, serverMs - viewDelayMs);
-      if (perceived && distance(perceived, eyePos(bz)) <= clickDist) {
-        decided = true;
-        perceivedAtMs = serverMs - throwMs;
-      }
+function giveHeldBall(loop: ServerGameLoop, playerId: string, hand: HandSide, ballId: string): void {
+  const player = loop.state.players[playerId];
+  player.hands = {
+    ...player.hands,
+    [hand]: {
+      ...player.hands[hand],
+      heldBallId: ballId,
+      mode: 'holding',
+      chargeSeconds: 0,
+      cooldownSeconds: 0
     }
-
-    // B aims dead-center at the incoming ball every tick (best case). Once decided, latch the
-    // catch attempt id onto every input until the sim ends (server dedupes the latched re-send).
-    const bInput: Partial<PlayerInput> = { lookYawRadians: Math.PI, lookPitchRadians: 0 };
-    if (decided) {
-      attemptLatched = true;
-      bInput.leftCatchAttemptId = 1;
-    }
-    sendInput(pending, seqByPlayer, 'b', serverMs, oneWayMs, bInput);
-    sendInput(pending, seqByPlayer, 'a', serverMs, oneWayMs, { lookYawRadians: 0, lookPitchRadians: 0 });
-
-    deliverDue(loop, pending, serverMs);
-    loop.step();
-
-    const ball = loop.state.balls.ball_0;
-    ballHistory.push({ ms: serverMs, pos: { ...ball.position } });
-
-    // Record when the latched attempt was first acknowledged (= processed) by the server.
-    if (attemptLatched && clickArriveMs < 0 && loop.state.players.b.hands.left.lastCatchAttemptId >= 1) {
-      clickArriveMs = serverMs - throwMs;
-    }
-
-    // A catch wins outright (even if it reclaimed an already-scored ball — the score is reverted).
-    if (ball.phase === 'held' && ball.heldByPlayerId === 'b') {
-      return { outcome: 'catch', atMs: serverMs - throwMs, clickArriveMs, perceivedAtMs };
-    }
-    if (loop.state.match.scoreByTeamId.blue > 0 && hitAtMs < 0) hitAtMs = serverMs - throwMs;
-    // Finalize a hit only after the catch-undo grace has fully elapsed with the score still standing.
-    if (loop.state.match.scoreByTeamId.blue > 0 && hitAtMs >= 0 && (serverMs - throwMs) - hitAtMs > graceMs) {
-      return { outcome: 'hit', atMs: hitAtMs, clickArriveMs, perceivedAtMs };
-    }
-  }
-  // Out of time: if a hit was scored and never reverted, it's a hit; else nothing connected.
-  if (loop.state.match.scoreByTeamId.blue > 0) return { outcome: 'hit', atMs: hitAtMs, clickArriveMs, perceivedAtMs };
-  return { outcome: 'expired', atMs: -1, clickArriveMs, perceivedAtMs };
+  };
+  loop.state.balls[ballId] = {
+    ...loop.state.balls[ballId],
+    phase: 'held',
+    ownerKind: 'player',
+    ownerId: playerId,
+    heldByPlayerId: playerId,
+    heldHand: hand,
+    position: eyePos(DEFENDER_Z),
+    velocity: vec3(),
+    bounceCount: 0,
+    isSuper: false,
+    curveAccel: vec3(),
+    throwId: 0
+  };
 }
 
 function sendInput(
@@ -152,7 +234,12 @@ function sendInput(
   input: Partial<PlayerInput>
 ): void {
   seqByPlayer[playerId] += 1;
-  pending.push({ arriveMs: sentAtMs + oneWayMs, playerId, input: { ...input, sequence: seqByPlayer[playerId] }, seq: seqByPlayer[playerId] });
+  pending.push({
+    arriveMs: sentAtMs + oneWayMs,
+    playerId,
+    input: { ...input, clientTimeMs: sentAtMs, sequence: seqByPlayer[playerId] },
+    seq: seqByPlayer[playerId]
+  });
 }
 
 function deliverDue(loop: ServerGameLoop, pending: PendingInput[], nowMs: number): void {
@@ -165,44 +252,110 @@ function deliverDue(loop: ServerGameLoop, pending: PendingInput[], nowMs: number
   }
 }
 
-function sampleHistory(
-  history: Array<{ ms: number; pos: { x: number; y: number; z: number } }>,
-  targetMs: number
-): { x: number; y: number; z: number } | null {
+function sampleHistory(history: BallHistorySample[], targetMs: number): Vec3 | null {
   if (history.length === 0) return null;
   let best = history[0];
   let bestDelta = Math.abs(history[0].ms - targetMs);
-  for (const h of history) {
-    const d = Math.abs(h.ms - targetMs);
-    if (d < bestDelta) { best = h; bestDelta = d; }
+  for (const sample of history) {
+    const delta = Math.abs(sample.ms - targetMs);
+    if (delta < bestDelta) {
+      best = sample;
+      bestDelta = delta;
+    }
   }
   return best.pos;
 }
 
+function eyePos(z: number): Vec3 {
+  return vec3(0, EYE, z);
+}
+
+function result(
+  outcome: Outcome,
+  outcomeAtMs: number,
+  clickAtMs: number,
+  perceivedWorldMs: number,
+  inputArriveMs: number,
+  reclaim: boolean
+): SimResult {
+  return {
+    outcome,
+    outcomeAtMs,
+    clickAtMs,
+    perceivedWorldMs,
+    inputArriveMs,
+    reclaim,
+    fair: fairness(outcome, clickAtMs)
+  };
+}
+
+function fairness(outcome: Outcome, clickAtMs: number): SimResult['fair'] {
+  if (outcome === 'catch' || outcome === 'hit-then-reverted' || outcome === 'parry') return 'yes';
+  if (outcome === 'hit' && clickAtMs >= 0) return 'no';
+  return 'n/a';
+}
+
+function fmtMs(value: number): string {
+  return value >= 0 ? Math.round(value).toString().padStart(6) : '     -';
+}
+
+function speedCases(): SpeedCase[] {
+  const quick = GAME_CONSTANTS.ball.quickThrowSpeed;
+  return [
+    { label: 'quick', speed: quick },
+    { label: 'charged', speed: GAME_CONSTANTS.ball.chargedThrowSpeed },
+    { label: 'fast2x', speed: quick * GAME_CONSTANTS.ball.fastDoubleThrowPenalty },
+    { label: 'qte3', speed: backflipQteSpeed(3) },
+    { label: 'qte5', speed: backflipQteSpeed(5) }
+  ];
+}
+
 function main(): void {
-  const pings = [0, 30, 60, 100, 150];
-  const speeds = [18, 24, 30];
-  // Defender clicks when they perceive the ball at this distance. Sweep a few: edge-of-range,
-  // a bit early (anticipation), and very early.
-  const clickDists = [CATCH_RANGE, CATCH_RANGE + 1.5, 6];
+  const oneWayLatencies = [0, 25, 50, 75, 100];
+  const speeds = speedCases();
+  const clickDistances = [
+    Math.max(0.5, CATCH_RANGE - 0.25),
+    CATCH_RANGE,
+    CATCH_RANGE + 0.75,
+    CATCH_RANGE + 1.5
+  ];
 
-  console.log(`\nCatch latency simulation @ ${SERVER_TICK_RATE}Hz, interpDelay=${INTERPOLATION_DELAY_MS}ms, catchRange=${CATCH_RANGE}m, activeWindow=${GAME_CONSTANTS.combat.catchActiveMs}ms`);
-  console.log('clickDist = distance at which the defender clicks when they SEE the ball that close\n');
+  console.log(
+    `\nCatch/parry latency diagnostic mode=${ACTIVE_NET_MODE} server=${SERVER_TICK_RATE}Hz ` +
+    `step=${SERVER_STEP_MS.toFixed(2)}ms interpDelay=${INTERPOLATION_DELAY_MS}ms ` +
+    `catchRange=${CATCH_RANGE.toFixed(3)}m active=${GAME_CONSTANTS.combat.catchActiveMs}ms ` +
+    `rewind=${GAME_CONSTANTS.combat.catchRewindMs}ms grace=${GAME_CONSTANTS.combat.catchHitGraceMs}ms`
+  );
+  console.log('oneWayMs is one-way latency. ping ~= 2x oneWayMs. clickAt/perceived/arrive/outcome are server-time ms since throw.\n');
 
-  for (const clickDist of clickDists) {
-    console.log(`=== Defender clicks at perceived distance ${clickDist.toFixed(2)}m ===`);
-    console.log('ping(ms) | speed | outcome  | outcome@ms | clickProc@ms | perceived@ms');
-    console.log('---------+-------+----------+-----------+-------------+------------');
-    for (const ping of pings) {
+  for (const clickDist of clickDistances) {
+    console.log(`=== Catch: defender clicks at perceived distance ${clickDist.toFixed(2)}m ===`);
+    console.log('oneWay | speedCase | m/s  | outcome           | out@  | click | seen  | arrive | reclaim | fair');
+    console.log('-------+-----------+------+-------------------+-------+-------+-------+--------+---------+-----');
+    for (const oneWayMs of oneWayLatencies) {
       for (const speed of speeds) {
-        const r = runScenario(ping / 2, speed, clickDist);
+        const r = runCatchScenario(oneWayMs, speed.speed, clickDist);
         console.log(
-          `${String(ping).padStart(8)} | ${String(speed).padStart(5)} | ${r.outcome.padEnd(8)} |` +
-          ` ${String(r.atMs).padStart(9)} | ${String(r.clickArriveMs).padStart(11)} | ${String(r.perceivedAtMs).padStart(10)}`
+          `${String(oneWayMs).padStart(6)} | ${speed.label.padEnd(9)} | ${speed.speed.toFixed(1).padStart(4)} | ` +
+          `${r.outcome.padEnd(17)} | ${fmtMs(r.outcomeAtMs)} | ${fmtMs(r.clickAtMs)} | ` +
+          `${fmtMs(r.perceivedWorldMs)} | ${fmtMs(r.inputArriveMs)} | ${String(r.reclaim).padEnd(7)} | ${r.fair}`
         );
       }
     }
     console.log('');
+  }
+
+  console.log('=== Auto-parry sanity: defender holds two balls and aims at incoming throw ===');
+  console.log('oneWay | speedCase | m/s  | outcome | out@  | fair');
+  console.log('-------+-----------+------+---------+-------+-----');
+  for (const oneWayMs of oneWayLatencies) {
+    for (const speed of speeds) {
+      const r = runParryScenario(oneWayMs, speed.speed);
+      console.log(
+        `${String(oneWayMs).padStart(6)} | ${speed.label.padEnd(9)} | ${speed.speed.toFixed(1).padStart(4)} | ` +
+        `${r.outcome.padEnd(7)} | ${fmtMs(r.outcomeAtMs)} | ${r.fair}`
+      );
+    }
   }
 }
 
