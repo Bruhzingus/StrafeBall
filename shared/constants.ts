@@ -31,10 +31,10 @@ export const GAME_CONSTANTS = {
     crouchWalkSpeed: 2.0,
     softSpeedLimit: 18,
     softLimitBleedRate: 1.2,
-    gravity: 22,
-    fallGravityMultiplier: 1.45,
+    gravity: 18.75,
+    fallGravityMultiplier: 1.32,
     // Jump impulse reduced 35% (8.2 → 5.33) — lower hops.
-    jumpSpeed: 5.33,
+    jumpSpeed: 6.9,
     bhopGraceSeconds: 0.12,
     bhopSpeedBonus: 1.035,
     crouchHeightMultiplier: 0.62,

@@ -60,7 +60,8 @@ function neutralInput(): PlayerInput {
     leftCatchAttemptId: 0,
     rightCatchAttemptId: 0,
     backflipThrowTier: 0,
-    resetSerial: 0
+    resetSerial: 0,
+    interactHeld: false
   };
 }
 

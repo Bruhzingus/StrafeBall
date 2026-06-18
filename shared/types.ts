@@ -65,6 +65,8 @@ export interface PlayerInput {
    * initial room timeline; only an omitted field is treated as a pre-resetSerial legacy client.
    */
   resetSerial: number;
+  /** True while the player holds the interact key (E). Used server-side to stand up a knocked-over mat. */
+  interactHeld: boolean;
 }
 
 export type PlayerHandMode = 'empty' | 'holding' | 'charging' | 'catching';

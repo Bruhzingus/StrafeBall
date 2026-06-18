@@ -253,6 +253,11 @@ export class ServerGameLoop {
   private readonly playerCollisionScratch: AABB[] = [];
   private readonly ballCollisionScratch: AABB[] = [];
   private readonly knockedOverMatIds = new Set<string>();
+  // Hold-E mat restore: per-player progress (seconds) toward standing the nearest knocked-over mat
+  // back up. Resets when E is released or the player moves out of reach.
+  private readonly matRestoreHoldByPlayerId = new Map<string, number>();
+  private static readonly MAT_RESTORE_HOLD_SECONDS = 0.6;
+  private static readonly MAT_RESTORE_REACH = GAME_CONSTANTS.player.radius + 1.0;
 
   private readonly inputQueueByPlayerId = new Map<string, QueuedInput[]>();
   private readonly lastInputByPlayerId = new Map<string, PlayerInput>();
@@ -862,6 +867,7 @@ export class ServerGameLoop {
       // Mat knock-over uses the player's PRE-resolution velocity: the collision solver zeros the
       // component pushing into the mat, so post-resolution speed can be ~0 on a head-on walk-in.
       this.knockOverMatsForPlayer(player, preVelocity);
+      this.updateMatRestoreForPlayer(player, command.input, fixedDt);
       // Record this player's post-update defensive state for lag-compensated catch/parry rewind.
       this.recordDefenseSample(player);
     }
@@ -1674,6 +1680,53 @@ export class ServerGameLoop {
       this.playerCollisionBoxes = createPlayerCollisionBoxes(this.knockedOverMatIds);
       this.ballCollisionBoxes = createBallCollisionBoxes(this.knockedOverMatIds);
     }
+  }
+
+  /**
+   * Hold E next to a knocked-over mat to stand it back up online. Mirrors the offline client's
+   * restore behavior so the mechanic actually works in multiplayer (the server is authoritative for
+   * mat state, so the client-only restore never reached other players). Picks the nearest downed mat
+   * within reach; releasing E or stepping out of reach resets the hold timer.
+   */
+  private updateMatRestoreForPlayer(player: PlayerState, input: PlayerInput, dt: number): void {
+    if (!input.interactHeld || this.knockedOverMatIds.size === 0) {
+      this.matRestoreHoldByPlayerId.delete(player.id);
+      return;
+    }
+
+    const pos = player.movement.position;
+    const reachSq = ServerGameLoop.MAT_RESTORE_REACH * ServerGameLoop.MAT_RESTORE_REACH;
+    let nearestId: string | null = null;
+    let nearestDistSq = Infinity;
+
+    for (const spec of MAT_SPECS) {
+      if (!this.knockedOverMatIds.has(spec.id)) continue;
+      const dx = pos.x - spec.x;
+      const dz = pos.z - spec.z;
+      const distSq = dx * dx + dz * dz;
+      if (distSq <= reachSq && distSq < nearestDistSq) {
+        nearestDistSq = distSq;
+        nearestId = spec.id;
+      }
+    }
+
+    if (!nearestId) {
+      this.matRestoreHoldByPlayerId.delete(player.id);
+      return;
+    }
+
+    const hold = (this.matRestoreHoldByPlayerId.get(player.id) ?? 0) + dt;
+    if (hold < ServerGameLoop.MAT_RESTORE_HOLD_SECONDS) {
+      this.matRestoreHoldByPlayerId.set(player.id, hold);
+      return;
+    }
+
+    this.matRestoreHoldByPlayerId.delete(player.id);
+    this.state.mats[nearestId] = { ...this.state.mats[nearestId], knockedOver: false, knockDirection: vec3() };
+    this.knockedOverMatIds.delete(nearestId);
+    this.playerCollisionBoxes = createPlayerCollisionBoxes(this.knockedOverMatIds);
+    this.ballCollisionBoxes = createBallCollisionBoxes(this.knockedOverMatIds);
+    if (this.debug.COLLISION_DEBUG) this.logger(`mat restored id=${nearestId} by player=${player.id}`);
   }
 
   private updateRules(dt: number): void {
@@ -2890,6 +2943,7 @@ export class ServerGameLoop {
   private createFreshRoomState(players: PlayerState[] = [], startTick = 0): RoomState {
     // All mats stand again on a fresh state / reset; rebuild both collision sets to include them.
     this.knockedOverMatIds.clear();
+    this.matRestoreHoldByPlayerId.clear();
     this.playerCollisionBoxes = createPlayerCollisionBoxes();
     this.ballCollisionBoxes = createBallCollisionBoxes();
     // Combat history is timeline-specific: a reset is a discontinuity, so drop ball history, any
@@ -3272,7 +3326,8 @@ function defaultInput(yawRadians = 0): PlayerInput {
     leftCatchAttemptId: 0,
     rightCatchAttemptId: 0,
     backflipThrowTier: 0,
-    resetSerial: 0
+    resetSerial: 0,
+    interactHeld: false
   };
 }
 
@@ -3324,7 +3379,8 @@ function normalizeInput(input: Partial<PlayerInput>, fallback: PlayerInput = def
     rightCatchAttemptId: Math.max(0, Math.trunc(finiteNumber(input.rightCatchAttemptId, fallback.rightCatchAttemptId))),
     // Backflip QTE tier is a one-shot value carried on the release packet; clamp to [0, tierCount].
     backflipThrowTier: clamp(Math.trunc(finiteNumber(input.backflipThrowTier, 0)), 0, GAME_CONSTANTS.backflip.qte.tierCount),
-    resetSerial: Math.max(0, Math.trunc(finiteNumber(input.resetSerial, fallback.resetSerial)))
+    resetSerial: Math.max(0, Math.trunc(finiteNumber(input.resetSerial, fallback.resetSerial))),
+    interactHeld: Boolean(input.interactHeld) || legacyPressed(legacy.interact, false)
   };
 }
 

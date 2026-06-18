@@ -268,7 +268,9 @@ export class ArenaScene {
     this.multiplayerOverlay.update();
     if (this.multiplayer.connected) {
       this.enterOnlineMode();
-      this.music.setSyncState(this.multiplayer.battleMusicSync);
+      const matchStatus = this.multiplayer.latestSnapshot?.room.match.status ?? 'warmup';
+      this.music.setBattleSyncState(this.multiplayer.battleMusicSync);
+      this.music.setLobbyMusicActive(matchStatus !== 'playing');
       this.stepOnline(dt);
       if (this.multiplayer.latestSnapshot) {
         const connectionDebug = this.multiplayer.getConnectionDebug();
@@ -301,7 +303,8 @@ export class ArenaScene {
       }
     } else {
       this.exitOnlineMode();
-      this.music.setSyncState(null);
+      this.music.setBattleSyncState(null);
+      this.music.setLobbyMusicActive(true);
       this.step(dt);
       this.hud.update(this.player, this.rules, this.ballManager, engine.getFps(), frameMs);
     }
@@ -1786,7 +1789,8 @@ export class ArenaScene {
       backflipThrowTier: this.pendingBackflipTier,
       // Stamp the timeline this input belongs to so the server can drop pre-reset packets still in
       // flight after a room reset (otherwise they freeze the player at spawn).
-      resetSerial: this.currentResetSerial()
+      resetSerial: this.currentResetSerial(),
+      interactHeld: this.input.isKeyDown(CONTROL_KEYS.interact)
     };
   }
 
@@ -2366,6 +2370,7 @@ function neutralNetInput(yawRadians: number, pitchRadians = 0): PlayerInput {
     leftCatchAttemptId: 0,
     rightCatchAttemptId: 0,
     backflipThrowTier: 0,
-    resetSerial: 0
+    resetSerial: 0,
+    interactHeld: false
   };
 }

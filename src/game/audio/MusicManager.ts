@@ -3,6 +3,9 @@ import {
   BATTLE_MUSIC_TRACKS
 } from '../../../shared/music/generatedBattleMusicManifest';
 import {
+  LOBBY_MUSIC_TRACKS
+} from '../../../shared/music/generatedLobbyMusicManifest';
+import {
   formatBattleMusicTimestamp,
   resolveBattleMusicTimeline,
   type BattleMusicSyncState
@@ -14,6 +17,9 @@ const RESYNC_INTERVAL_SECONDS = 0.75;
 const IGNORE_DRIFT_SECONDS = 0.12;
 const SOFT_CORRECT_DRIFT_SECONDS = 0.5;
 const SEEK_DRIFT_SECONDS = 0.9;
+const MUSIC_OUTPUT_SCALE = 0.06;
+
+type MusicSource = 'none' | 'battle' | 'lobby';
 
 type PitchPreservingAudioElement = HTMLAudioElement & {
   mozPreservesPitch?: boolean;
@@ -30,9 +36,14 @@ export interface MusicHudState {
 
 export class MusicManager {
   private readonly audio: PitchPreservingAudioElement = new Audio();
-  private syncState: BattleMusicSyncState | null = null;
+  private readonly lobbyShuffleSeed = randomUint32();
+  private readonly lobbyStartOffsetSeconds = randomLobbyStartOffsetSeconds();
+  private battleSyncState: BattleMusicSyncState | null = null;
+  private lobbyMusicActive = false;
+  private lobbyMusicStartedAtMs = 0;
   private activeTrackIndex = -1;
   private loadedTrackIndex = -1;
+  private loadedSource: MusicSource = 'none';
   private fadeLevel = 0;
   private fadeTarget = 0;
   private pauseWhenSilent = false;
@@ -70,15 +81,15 @@ export class MusicManager {
     window.removeEventListener('keydown', this.onUserGesture);
   }
 
-  setSyncState(syncState: BattleMusicSyncState | null): void {
-    if (sameSyncState(this.syncState, syncState)) return;
-    const previousSessionId = this.syncState?.sessionId ?? -1;
-    const previousActive = this.syncState?.active ?? false;
-    this.syncState = syncState;
+  setBattleSyncState(syncState: BattleMusicSyncState | null): void {
+    if (sameSyncState(this.battleSyncState, syncState)) return;
+    const previousSessionId = this.battleSyncState?.sessionId ?? -1;
+    const previousActive = this.battleSyncState?.active ?? false;
+    this.battleSyncState = syncState;
     this.needsImmediateResync = true;
 
     if (!syncState?.active) {
-      this.beginFadeOut();
+      if (!this.lobbyMusicActive) this.beginFadeOut();
       return;
     }
 
@@ -86,6 +97,22 @@ export class MusicManager {
       this.activeTrackIndex = -1;
       this.loadedTrackIndex = -1;
     }
+  }
+
+  setLobbyMusicActive(active: boolean): void {
+    if (this.lobbyMusicActive === active) return;
+    this.lobbyMusicActive = active;
+    this.needsImmediateResync = true;
+
+    if (active) {
+      this.lobbyMusicStartedAtMs = performance.now();
+      this.activeTrackIndex = -1;
+      this.loadedTrackIndex = -1;
+      this.loadedSource = 'none';
+      return;
+    }
+
+    if (!(this.battleSyncState?.active)) this.beginFadeOut();
   }
 
   update(dt: number): void {
@@ -114,30 +141,48 @@ export class MusicManager {
   }
 
   getHudState(): MusicHudState | null {
-    const timeline = this.expectedTimeline();
-    if (!timeline) return null;
-    const track = BATTLE_MUSIC_TRACKS[timeline.trackIndex];
+    const context = this.expectedPlayback();
+    if (!context) return null;
+    const track = context.tracks[context.timeline.trackIndex];
     return {
       artist: track.artist,
       title: track.title,
-      currentLabel: formatBattleMusicTimestamp(timeline.trackElapsedSeconds),
-      durationLabel: formatBattleMusicTimestamp(timeline.trackDurationSeconds)
+      currentLabel: formatBattleMusicTimestamp(context.timeline.trackElapsedSeconds),
+      durationLabel: formatBattleMusicTimestamp(context.timeline.trackDurationSeconds)
     };
   }
 
-  private expectedTimeline() {
-    if (!this.syncState?.active) return null;
-    const serverNowMs = this.estimateServerTimeMs();
-    if (serverNowMs === null) return null;
-    return resolveBattleMusicTimeline(
-      BATTLE_MUSIC_TRACKS,
-      this.syncState.shuffleSeed,
-      Math.max(0, (serverNowMs - this.syncState.playlistStartedAtServerTimeMs) / 1000)
-    );
+  private expectedPlayback() {
+    if (this.battleSyncState?.active && BATTLE_MUSIC_TRACKS.length > 0) {
+      const serverNowMs = this.estimateServerTimeMs();
+      if (serverNowMs !== null) {
+        const timeline = resolveBattleMusicTimeline(
+          BATTLE_MUSIC_TRACKS,
+          this.battleSyncState.shuffleSeed,
+          Math.max(0, (serverNowMs - this.battleSyncState.playlistStartedAtServerTimeMs) / 1000)
+        );
+        if (timeline) {
+          return { source: 'battle' as const, tracks: BATTLE_MUSIC_TRACKS, timeline };
+        }
+      }
+    }
+
+    if (this.lobbyMusicActive && LOBBY_MUSIC_TRACKS.length > 0) {
+      const timeline = resolveBattleMusicTimeline(
+        LOBBY_MUSIC_TRACKS,
+        this.lobbyShuffleSeed,
+        this.lobbyStartOffsetSeconds + Math.max(0, (performance.now() - this.lobbyMusicStartedAtMs) / 1000)
+      );
+      if (timeline) {
+        return { source: 'lobby' as const, tracks: LOBBY_MUSIC_TRACKS, timeline };
+      }
+    }
+
+    return null;
   }
 
   private shouldDisplayMusic(): boolean {
-    return !!this.syncState?.active && BATTLE_MUSIC_TRACKS.length > 0;
+    return this.expectedPlayback() !== null;
   }
 
   private shouldAudiblyPlay(): boolean {
@@ -145,20 +190,20 @@ export class MusicManager {
   }
 
   private resyncPlayback(): void {
-    const timeline = this.expectedTimeline();
-    if (!timeline) {
+    const context = this.expectedPlayback();
+    if (!context) {
       this.beginFadeOut();
       return;
     }
 
-    if (timeline.trackIndex !== this.loadedTrackIndex) {
-      this.loadTrack(timeline.trackIndex);
+    if (context.source !== this.loadedSource || context.timeline.trackIndex !== this.loadedTrackIndex) {
+      this.loadTrack(context.source, context.tracks[context.timeline.trackIndex], context.timeline.trackIndex);
       return;
     }
 
     if (this.audio.readyState < HTMLMediaElement.HAVE_METADATA) return;
 
-    const expected = clampAudioTime(timeline.trackElapsedSeconds, timeline.trackDurationSeconds);
+    const expected = clampAudioTime(context.timeline.trackElapsedSeconds, context.timeline.trackDurationSeconds);
     const drift = this.audio.currentTime - expected;
     if (Math.abs(drift) >= SEEK_DRIFT_SECONDS) {
       this.audio.currentTime = expected;
@@ -176,9 +221,9 @@ export class MusicManager {
     else this.beginFadeIn();
   }
 
-  private loadTrack(trackIndex: number): void {
-    const track = BATTLE_MUSIC_TRACKS[trackIndex];
-    if (!track) return;
+  private loadTrack(source: MusicSource, track: { src: string } | undefined, trackIndex: number): void {
+    if (!track || source === 'none') return;
+    this.loadedSource = source;
     this.loadedTrackIndex = trackIndex;
     this.activeTrackIndex = trackIndex;
     this.audio.pause();
@@ -230,7 +275,7 @@ export class MusicManager {
   }
 
   private applyOutputVolume(): void {
-    this.audio.volume = clamp(settings.musicVolume, 0, 1) * this.fadeLevel;
+    this.audio.volume = clamp(settings.musicVolume, 0, 1) * this.fadeLevel * MUSIC_OUTPUT_SCALE;
   }
 
   private enablePitchPreservation(): void {
@@ -240,9 +285,9 @@ export class MusicManager {
   }
 
   private onLoadedMetadata = (): void => {
-    const timeline = this.expectedTimeline();
-    if (!timeline || timeline.trackIndex !== this.loadedTrackIndex) return;
-    this.audio.currentTime = clampAudioTime(timeline.trackElapsedSeconds, timeline.trackDurationSeconds);
+    const context = this.expectedPlayback();
+    if (!context || context.source !== this.loadedSource || context.timeline.trackIndex !== this.loadedTrackIndex) return;
+    this.audio.currentTime = clampAudioTime(context.timeline.trackElapsedSeconds, context.timeline.trackDurationSeconds);
   };
 
   private onCanPlay = (): void => {
@@ -299,4 +344,18 @@ function sameSyncState(a: BattleMusicSyncState | null, b: BattleMusicSyncState |
     a.shuffleSeed === b.shuffleSeed &&
     a.playlistStartedAtServerTimeMs === b.playlistStartedAtServerTimeMs
   );
+}
+
+function randomUint32(): number {
+  if (typeof crypto !== 'undefined' && typeof crypto.getRandomValues === 'function') {
+    return crypto.getRandomValues(new Uint32Array(1))[0] ?? 0;
+  }
+  return Math.floor(Math.random() * 0x100000000) >>> 0;
+}
+
+function randomLobbyStartOffsetSeconds(): number {
+  if (LOBBY_MUSIC_TRACKS.length === 0) return 0;
+  const totalDurationSeconds = LOBBY_MUSIC_TRACKS.reduce((sum, track) => sum + track.durationSeconds, 0);
+  if (!Number.isFinite(totalDurationSeconds) || totalDurationSeconds <= 0) return 0;
+  return (Math.random() * totalDurationSeconds) % totalDurationSeconds;
 }
