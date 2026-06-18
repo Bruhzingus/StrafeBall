@@ -5,6 +5,7 @@ import {
   MeshBuilder,
   Scene,
   StandardMaterial,
+  Texture,
   TransformNode,
   Vector3
 } from '@babylonjs/core';
@@ -91,8 +92,12 @@ export class Scoreboard3D {
     this.rim.isPickable = false;
 
     // LED face with a DynamicTexture we paint the score onto.
-    this.faceTexture = new DynamicTexture(`${name}_face_tex`, { width: 512, height: 192 }, scene, false);
+    this.faceTexture = new DynamicTexture(`${name}_face_tex`, { width: 512, height: 192 }, scene, true);
     this.faceTexture.hasAlpha = false;
+    this.faceTexture.anisotropicFilteringLevel = 16;
+    this.faceTexture.updateSamplingMode(Texture.TRILINEAR_SAMPLINGMODE);
+    this.faceTexture.wrapU = Texture.CLAMP_ADDRESSMODE;
+    this.faceTexture.wrapV = Texture.CLAMP_ADDRESSMODE;
     // Babylon's plane UVs read mirrored from the court-facing side here; flip U once so the
     // scoreboard text reads correctly on both end walls.
     this.faceTexture.uScale = -1;

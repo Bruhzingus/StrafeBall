@@ -1,4 +1,5 @@
 import { Engine, HemisphericLight, Mesh, Scene, Vector3 } from '@babylonjs/core';
+import { FxaaPostProcess } from '@babylonjs/core/PostProcesses/fxaaPostProcess';
 import { InputManager } from '../input/InputManager';
 import { PlayerController } from '../player/PlayerController';
 import { GymArena } from '../map/GymArena';
@@ -86,6 +87,7 @@ export class ArenaScene {
   private readonly multiplayerOverlay: MultiplayerOverlay;
   private readonly networkRenderer: NetworkRenderer;
   private readonly onlineTeamSelector: OnlineTeamSelectorPads;
+  private readonly fxaaPostProcess: FxaaPostProcess;
   // Backflip landing quick-time event: armed when the local player lands from a backflip holding a
   // ball; resolving it throws (tiered speed). Owned here so it works in both offline and online.
   private readonly backflipQte = new BackflipQteController();
@@ -237,6 +239,7 @@ export class ArenaScene {
     this.effects = new Effects(this.scene, this.sound);
 
     this.player = new PlayerController(this.scene, this.input, this.ballManager, this.gym.collision, this.effects);
+    this.fxaaPostProcess = new FxaaPostProcess('scene_fxaa', 1.0, this.player.camera);
     this.quickBot = new PracticeBot(this.scene, this.ballManager, 'quick');
     this.chargeBot = new PracticeBot(this.scene, this.ballManager, 'charge');
     this.practiceWall = new PracticeControlWall(this.scene, this.practiceState, this.ballManager, (id) => this.handleButtonPress(id));
@@ -324,6 +327,7 @@ export class ArenaScene {
     this.settingsPanel.dispose();
     this.ballManager.clear();
     this.ballVisualEffects.dispose();
+    this.fxaaPostProcess.dispose();
     this.quickBot.dispose();
     this.chargeBot.dispose();
     this.practiceWall.dispose();

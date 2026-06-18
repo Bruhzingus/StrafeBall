@@ -1926,6 +1926,70 @@ describe('ServerGameLoop', () => {
       expect(loop.state.match.scoreByTeamId.blue).toBe(0);
     });
 
+    it('nice/great backflip throws break a two-ball parry guard without also hitting the defender', () => {
+      const loop = defenderFacingIncoming();
+      loop.state.players.b.hands.left.heldBallId = 'ball_4';
+      loop.state.players.b.hands.right.heldBallId = 'ball_5';
+      loop.state.balls.ball_4 = { ...loop.state.balls.ball_4, phase: 'held', heldByPlayerId: 'b', heldHand: 'left', ownerId: 'b' };
+      loop.state.balls.ball_5 = { ...loop.state.balls.ball_5, phase: 'held', heldByPlayerId: 'b', heldHand: 'right', ownerId: 'b' };
+      loop.handleInput('b', { lookYawRadians: Math.PI / 2, sequence: 2 }, 2);
+      loop.step();
+      loop.state.balls.ball_0 = {
+        ...loop.state.balls.ball_0,
+        phase: 'live',
+        ownerKind: 'player',
+        ownerId: 'a',
+        heldByPlayerId: null,
+        heldHand: null,
+        position: vec3(0, eye, -0.55),
+        velocity: vec3(0, 0, 16),
+        bounceCount: 0,
+        isSuper: true,
+        throwId: 7
+      };
+      (loop.state.balls.ball_0 as any).backflipTier = 4;
+
+      loop.step();
+
+      expect(loop.state.players.b.hands.left.heldBallId).toBeNull();
+      expect(loop.state.players.b.hands.right.heldBallId).toBeNull();
+      expect(loop.state.balls.ball_0.phase).toBe('dead');
+      expect(loop.state.match.scoreByTeamId.blue).toBe(0);
+      expect(loop.state.players.b.combatState).not.toBe('stunned');
+    });
+
+    it('perfect backflip throws still break a two-ball parry guard and hit through it', () => {
+      const loop = defenderFacingIncoming();
+      loop.state.players.b.hands.left.heldBallId = 'ball_4';
+      loop.state.players.b.hands.right.heldBallId = 'ball_5';
+      loop.state.balls.ball_4 = { ...loop.state.balls.ball_4, phase: 'held', heldByPlayerId: 'b', heldHand: 'left', ownerId: 'b' };
+      loop.state.balls.ball_5 = { ...loop.state.balls.ball_5, phase: 'held', heldByPlayerId: 'b', heldHand: 'right', ownerId: 'b' };
+      loop.handleInput('b', { lookYawRadians: Math.PI / 2, sequence: 2 }, 2);
+      loop.step();
+      loop.state.balls.ball_0 = {
+        ...loop.state.balls.ball_0,
+        phase: 'live',
+        ownerKind: 'player',
+        ownerId: 'a',
+        heldByPlayerId: null,
+        heldHand: null,
+        position: vec3(0, eye, -0.55),
+        velocity: vec3(0, 0, 16),
+        bounceCount: 0,
+        isSuper: true,
+        throwId: 8
+      };
+      (loop.state.balls.ball_0 as any).backflipTier = GAME_CONSTANTS.backflip.qte.tierCount;
+
+      loop.step();
+
+      expect(loop.state.players.b.hands.left.heldBallId).toBeNull();
+      expect(loop.state.players.b.hands.right.heldBallId).toBeNull();
+      expect(loop.state.balls.ball_0.phase).toBe('dead');
+      expect(loop.state.match.scoreByTeamId.blue).toBe(1);
+      expect(loop.state.players.b.combatState).toBe('alive');
+    });
+
     it('a successful catch prevents the hit from also applying that tick (order: catch before hit)', () => {
       const loop = defenderFacingIncoming();
       // Ball positioned so it is both catchable AND on a hit path to 'b'. Catch must win.

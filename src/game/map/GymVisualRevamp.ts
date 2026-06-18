@@ -1,6 +1,9 @@
 import {
   Color3,
   DynamicTexture,
+  HemisphericLight,
+  ImageProcessingConfiguration,
+  Material,
   Mesh,
   MeshBuilder,
   PBRMaterial,
@@ -46,10 +49,13 @@ const WALL_DECAL_INSET = 0.048;
 const WALL_PAD_DECAL_INSET = 0.085;
 const DECOR_META = { decorative: true, noGameplay: true };
 const GYM_TEXTURES = {
+  // Tuned copies: desaturated/recolored stand-ins for the raw source art so the blue vinyl isn't
+  // neon. Floor keeps the original art (preferred look) — only its material/lighting is tuned.
+  // Originals are kept untouched.
   floor: '/assets/textures/gym/floor/Wood-Floor.png',
   wall: '/assets/textures/gym/walls/Wall_Stones.png',
-  wallPad: '/assets/textures/gym/walls/Wall_Mat.png',
-  coverMat: '/assets/textures/gym/Obstacles/Cover_Mat.png',
+  wallPad: '/assets/textures/gym/walls/gym_wall_padding_blue_tuned.png',
+  coverMat: '/assets/textures/gym/Obstacles/gym_cover_mat_blue_tuned.png',
   banners: {
     championshipCourt: '/assets/textures/gym/banners/ChampionshipCourt.png',
     homeOfChamps: '/assets/textures/gym/banners/HomeOfChamps.png',
@@ -106,6 +112,7 @@ const PALETTES = {
 } satisfies Record<string, BannerPalette>;
 
 export function applyGymVisualRevamp(scene: Scene): void {
+  createCheapEnvironmentReflection(scene);
   enhanceExistingMaterials(scene);
   brightenExistingLighting(scene);
   createWallColorBlocking(scene);
@@ -119,7 +126,6 @@ export function applyGymVisualRevamp(scene: Scene): void {
   createBleacherUnderframes(scene);
   createCourtLineShadows(scene);
   createFloorDetailDecals(scene);
-  createFloorGloss(scene);
   createOverheadLightLenses(scene);
   createOverheadLightFrames(scene);
   createCeilingConduits(scene);
@@ -128,47 +134,48 @@ export function applyGymVisualRevamp(scene: Scene): void {
 function enhanceExistingMaterials(scene: Scene): void {
   const floorMaterial = scene.getMaterialByName('floor_material');
   if (floorMaterial instanceof PBRMaterial) {
-    const floorTexture = createImageTexture(scene, 'gym_floor_polished_maple_png', GYM_TEXTURES.floor, 3.2, 7.8);
+    // Tile so each repeat covers ~2.7m of court (26x36m floor / ~2.7 = 10x13 repeats) — bigger,
+    // more readable plank width than the earlier 2.2m tile.
+    const floorTexture = createImageTexture(scene, 'gym_floor_polished_maple_png', GYM_TEXTURES.floor, 10, 13);
     floorMaterial.albedoTexture = floorTexture;
-    floorMaterial.albedoColor = new Color3(1, 1, 1);
+    floorMaterial.albedoColor = new Color3(0.97, 0.95, 0.9);
     floorMaterial.metallic = 0;
-    floorMaterial.roughness = 0.24;
-    floorMaterial.environmentIntensity = 0.9;
+    // Glossy polished maple, not a mirror: roughness in the requested 0.28-0.45 band.
+    floorMaterial.roughness = 0.32;
+    floorMaterial.environmentIntensity = 0.55;
+    floorMaterial.specularIntensity = 1.0;
   }
 
   setZoneMaterial(scene, 'zone_player_mat', 'blue');
   setZoneMaterial(scene, 'zone_opp_mat', 'red');
 
-  const wallMaterial = scene.getMaterialByName('wall_material');
-  if (wallMaterial instanceof PBRMaterial) {
-    const wallTexture = createImageTexture(scene, 'gym_wall_cinderblock_png', GYM_TEXTURES.wall, 5.2, 2.2);
-    wallMaterial.albedoTexture = wallTexture;
-    wallMaterial.albedoColor = new Color3(0.98, 0.96, 0.9);
-    wallMaterial.roughness = 0.62;
-  }
+  applyWallStoneTexture(scene);
 
+  // Wall pads: darker satin vinyl, low gloss (it's a thick foam-backed pad, not a shiny surface).
   const wallPadMaterial = scene.getMaterialByName('wallPad_material');
   if (wallPadMaterial instanceof PBRMaterial) {
     const padTexture = createImageTexture(scene, 'gym_wall_pad_vinyl_png', GYM_TEXTURES.wallPad, 8, 1);
     wallPadMaterial.albedoTexture = padTexture;
-    wallPadMaterial.albedoColor = new Color3(0.92, 0.96, 1);
-    wallPadMaterial.emissiveColor = new Color3(0.006, 0.018, 0.055);
+    wallPadMaterial.albedoColor = new Color3(0.82, 0.85, 0.92);
+    wallPadMaterial.emissiveColor = new Color3(0.004, 0.012, 0.04);
     wallPadMaterial.metallic = 0;
-    wallPadMaterial.roughness = 0.38;
-    wallPadMaterial.environmentIntensity = 0.5;
+    wallPadMaterial.roughness = 0.55;
+    wallPadMaterial.environmentIntensity = 0.32;
   }
 
+  // Cover mats/blockers: padded vinyl, slightly brighter and glossier than the wall pads.
   const coverMatMaterial = scene.getMaterialByName('mat_material');
   if (coverMatMaterial instanceof PBRMaterial) {
     const coverTexture = createImageTexture(scene, 'gym_cover_mat_png', GYM_TEXTURES.coverMat, 1, 1);
     coverMatMaterial.albedoTexture = coverTexture;
-    coverMatMaterial.albedoColor = new Color3(1, 1, 1);
-    coverMatMaterial.emissiveColor = new Color3(0.004, 0.015, 0.05);
+    coverMatMaterial.albedoColor = new Color3(0.94, 0.95, 1);
+    coverMatMaterial.emissiveColor = new Color3(0.006, 0.016, 0.05);
     coverMatMaterial.metallic = 0;
-    coverMatMaterial.roughness = 0.4;
-    coverMatMaterial.environmentIntensity = 0.48;
+    coverMatMaterial.roughness = 0.42;
+    coverMatMaterial.environmentIntensity = 0.42;
   }
 
+  // Bleachers: painted blue metal/plastic frame — less glossy than vinyl, slightly metallic sheen.
   const bleacherMaterial = scene.getMaterialByName('bleacher_material');
   if (bleacherMaterial instanceof PBRMaterial) {
     bleacherMaterial.albedoColor = new Color3(0.56, 0.6, 0.64);
@@ -178,10 +185,10 @@ function enhanceExistingMaterials(scene: Scene): void {
 
   const seatMaterial = scene.getMaterialByName('bleacher_seat_mat');
   if (seatMaterial instanceof StandardMaterial) {
-    seatMaterial.diffuseColor = new Color3(0.12, 0.3, 0.72);
-    seatMaterial.emissiveColor = new Color3(0.008, 0.022, 0.07);
-    seatMaterial.specularColor = new Color3(0.18, 0.2, 0.23);
-    seatMaterial.specularPower = 54;
+    seatMaterial.diffuseColor = new Color3(0.14, 0.27, 0.58);
+    seatMaterial.emissiveColor = new Color3(0.006, 0.016, 0.05);
+    seatMaterial.specularColor = new Color3(0.12, 0.14, 0.16);
+    seatMaterial.specularPower = 38;
   }
 
   const panelMaterial = scene.getMaterialByName('bleacher_panel_mat');
@@ -198,27 +205,94 @@ function enhanceExistingMaterials(scene: Scene): void {
   }
 }
 
+/**
+ * Cheap stand-in for image-based lighting: a tiny generated gradient (dark floor, neutral walls,
+ * warm glow up top) set as the scene's environment texture. This gives the floor's PBR material a
+ * soft ambient highlight/reflection so it reads as glossy rather than flat, without the cost of a
+ * real cubemap render, reflection probe, or planar reflection pass.
+ */
+function createCheapEnvironmentReflection(scene: Scene): void {
+  if (scene.getTextureByName('gym_env_gradient_tex')) return;
+
+  const texture = new DynamicTexture('gym_env_gradient_tex', { width: 4, height: 64 }, scene, false);
+  texture.name = 'gym_env_gradient_tex';
+  const ctx = texture.getContext() as CanvasRenderingContext2D;
+  const gradient = ctx.createLinearGradient(0, 0, 0, 64);
+  gradient.addColorStop(0, '#fff2cf');
+  gradient.addColorStop(0.35, '#cfd6e0');
+  gradient.addColorStop(0.75, '#9aa0a6');
+  gradient.addColorStop(1, '#2a2a28');
+  ctx.fillStyle = gradient;
+  ctx.fillRect(0, 0, 4, 64);
+  texture.update(false);
+  texture.gammaSpace = true;
+  // Flat 2D texture, not a cube: SPHERICAL_MODE tells the PBR shader to sample it against the
+  // view-reflection vector like a fake sky tint, which is enough for a cheap specular highlight.
+  texture.coordinatesMode = Texture.SPHERICAL_MODE;
+
+  scene.environmentTexture = texture;
+}
+
+function applyWallStoneTexture(scene: Scene): void {
+  const wallTexture = createImageTexture(scene, 'gym_wall_cinderblock_png', GYM_TEXTURES.wall, 5.2, 2.2);
+
+  for (const material of scene.materials) {
+    const name = material?.name?.toLowerCase?.() ?? '';
+    if (!name.includes('wall')) continue;
+    if (name.includes('wallpad')) continue;
+    if (name.startsWith('decor_')) continue;
+
+    if (material instanceof PBRMaterial) {
+      material.albedoTexture = wallTexture;
+      material.albedoColor = new Color3(0.98, 0.96, 0.9);
+      material.metallic = 0;
+      material.roughness = 0.62;
+      continue;
+    }
+
+    if (material instanceof StandardMaterial) {
+      material.diffuseTexture = wallTexture;
+      material.diffuseColor = new Color3(0.98, 0.96, 0.9);
+      material.specularColor = new Color3(0.08, 0.08, 0.07);
+      material.specularPower = 20;
+    }
+  }
+}
+
 function setZoneMaterial(scene: Scene, name: string, tone: 'blue' | 'red'): void {
   const material = scene.getMaterialByName(name);
   if (!(material instanceof StandardMaterial)) return;
 
-  const texture = createImageTexture(scene, `${name}_polished_court_png`, GYM_TEXTURES.floor, 3.2, 4.2);
+  // Match the floor's ~2.7m tile scale (see enhanceExistingMaterials) so the tinted half-court
+  // overlay's plank pattern lines up with the main floor instead of looking stretched.
+  const texture = createImageTexture(scene, `${name}_polished_court_png`, GYM_TEXTURES.floor, 10, 7);
   material.diffuseTexture = texture;
   material.diffuseColor = tone === 'blue'
-    ? new Color3(0.72, 0.8, 1)
-    : new Color3(1, 0.78, 0.66);
+    ? new Color3(0.78, 0.84, 0.98)
+    : new Color3(0.98, 0.8, 0.7);
   material.specularColor = tone === 'blue' ? new Color3(0.42, 0.5, 0.65) : new Color3(0.62, 0.4, 0.28);
   material.specularPower = 92;
 }
 
 function brightenExistingLighting(scene: Scene): void {
+  // Cheap global polish: tone mapping + a touch of contrast/exposure makes flat direct lighting
+  // read as more "rendered" without any extra draw calls or render targets.
+  scene.imageProcessingConfiguration.toneMappingEnabled = true;
+  scene.imageProcessingConfiguration.toneMappingType = ImageProcessingConfiguration.TONEMAPPING_ACES;
+  scene.imageProcessingConfiguration.exposure = 1.08;
+  scene.imageProcessingConfiguration.contrast = 1.12;
+
   for (const light of scene.lights) {
-    if (light.name === 'gym_hemi_light') {
-      light.intensity = Math.max(light.intensity, 1.22);
+    if (light instanceof HemisphericLight) {
+      light.intensity = Math.max(light.intensity, 1.32);
+      // A non-black ground color stops the underside of geometry (and the ceiling read) from
+      // looking like a flat void — cheap because it's a single extra constant in the same light.
+      light.groundColor = new Color3(0.16, 0.16, 0.2);
+      light.specular = new Color3(0.35, 0.34, 0.3);
     }
     if (light.name.startsWith('ceil_pt_')) {
-      light.intensity = 0.5;
-      light.range = 14.5;
+      light.intensity = 0.62;
+      light.range = 15.5;
     }
   }
 }
@@ -240,25 +314,27 @@ function createWallColorBlocking(scene: Scene): void {
 
   for (const side of wallSides()) {
     const span = wallSpan(side);
-    createWallPlane(scene, `decor_wall_blue_band_${side}`, side, span, 0.28, 2.04, 0, royalBlue);
-    createWallPlane(scene, `decor_wall_orange_trim_${side}`, side, span, 0.055, 1.82, 0, orange);
-    createWallPlane(scene, `decor_wall_gold_trim_${side}`, side, span, 0.052, 2.24, 0, gold);
-    createWallPlane(scene, `decor_wall_white_pinstripe_${side}`, side, span, 0.032, 1.93, 0, white);
+    // Each stripe gets its own depth offset from the wall so coplanar planes don't z-fight
+    // (without this, two planes at the exact same depth flicker in and out depending on view angle).
+    createWallPlane(scene, `decor_wall_blue_band_${side}`, side, span, 0.28, 2.04, 0, royalBlue, WALL_DECAL_INSET);
+    createWallPlane(scene, `decor_wall_orange_trim_${side}`, side, span, 0.055, 1.82, 0, orange, WALL_DECAL_INSET + 0.004);
+    createWallPlane(scene, `decor_wall_gold_trim_${side}`, side, span, 0.052, 2.24, 0, gold, WALL_DECAL_INSET + 0.008);
+    createWallPlane(scene, `decor_wall_white_pinstripe_${side}`, side, span, 0.032, 1.93, 0, white, WALL_DECAL_INSET + 0.012);
   }
 }
 
 function createWallPaddingDetails(scene: Scene): void {
-  const seamMaterial = solidMaterial(scene, 'decor_wall_padding_seam_mat', new Color3(0.025, 0.09, 0.28), {
+  const seamMaterial = solidMaterial(scene, 'decor_wall_padding_seam_mat', new Color3(0.022, 0.075, 0.22), {
     alpha: 0.62,
-    emissive: new Color3(0, 0.006, 0.025)
+    emissive: new Color3(0, 0.005, 0.02)
   });
-  const topCapMaterial = solidMaterial(scene, 'decor_wall_padding_top_cap_mat', new Color3(0.05, 0.13, 0.38), {
-    emissive: new Color3(0.004, 0.012, 0.04),
-    specular: new Color3(0.12, 0.14, 0.16)
+  const topCapMaterial = solidMaterial(scene, 'decor_wall_padding_top_cap_mat', new Color3(0.045, 0.11, 0.3), {
+    emissive: new Color3(0.004, 0.01, 0.032),
+    specular: new Color3(0.1, 0.11, 0.13)
   });
-  const stitchMaterial = solidMaterial(scene, 'decor_wall_padding_stitch_mat', new Color3(0.26, 0.48, 0.98), {
+  const stitchMaterial = solidMaterial(scene, 'decor_wall_padding_stitch_mat', new Color3(0.22, 0.4, 0.78), {
     alpha: 0.52,
-    emissive: new Color3(0.016, 0.04, 0.11)
+    emissive: new Color3(0.012, 0.032, 0.088)
   });
 
   for (const side of wallSides()) {
@@ -304,17 +380,17 @@ function createRaisedWallPadPanels(scene: Scene): void {
     scene,
     'decor_wall_pad_cushion_deep_blue_mat',
     GYM_TEXTURES.wallPad,
-    { uScale: 1, vScale: 1, diffuse: new Color3(0.74, 0.84, 1), emissive: new Color3(0.004, 0.014, 0.048), specular: new Color3(0.08, 0.12, 0.18) }
+    { uScale: 1, vScale: 1, diffuse: new Color3(0.8, 0.85, 0.95), emissive: new Color3(0.004, 0.012, 0.04), specular: new Color3(0.06, 0.09, 0.13) }
   );
   const cushionB = texturedStandardMaterial(
     scene,
     'decor_wall_pad_cushion_royal_blue_mat',
     GYM_TEXTURES.wallPad,
-    { uScale: 1, vScale: 1, diffuse: new Color3(0.88, 0.94, 1), emissive: new Color3(0.006, 0.018, 0.06), specular: new Color3(0.1, 0.15, 0.22) }
+    { uScale: 1, vScale: 1, diffuse: new Color3(0.9, 0.93, 1), emissive: new Color3(0.005, 0.015, 0.05), specular: new Color3(0.08, 0.11, 0.16) }
   );
-  const bevelMat = solidMaterial(scene, 'decor_wall_pad_bevel_highlight_mat', new Color3(0.18, 0.38, 0.95), {
-    emissive: new Color3(0.012, 0.032, 0.1),
-    specular: new Color3(0.12, 0.16, 0.22)
+  const bevelMat = solidMaterial(scene, 'decor_wall_pad_bevel_highlight_mat', new Color3(0.16, 0.32, 0.78), {
+    emissive: new Color3(0.01, 0.026, 0.082),
+    specular: new Color3(0.1, 0.13, 0.18)
   });
 
   for (const side of wallSides()) {
@@ -485,11 +561,11 @@ function createGymBanners(scene: Scene): void {
     y: 7.25,
     width: 4.95,
     height: 1.65,
-    title: 'PRIVATE DUEL',
-    subtitle: 'BLUE VS RED',
+    title: 'STRAFEBALL',
+    subtitle: 'DODGEBALL LEAGUE',
     palette: PALETTES.navy,
-    icon: 'stars',
-    textureUrl: GYM_TEXTURES.banners.privateDuel,
+    icon: 'ball',
+    textureUrl: GYM_TEXTURES.banners.strafeBallLeague,
     alphaTexture: true
   });
   createRectBanner(scene, {
@@ -535,6 +611,17 @@ function createPennant(scene: Scene, spec: Omit<BannerSpec, 'template' | 'shape'
 }
 
 function placeBanner(scene: Scene, spec: BannerSpec): void {
+  if (!spec.textureUrl) {
+    createDecorBackingPanel(scene, {
+      name: `${spec.name}_backing`,
+      side: spec.side,
+      width: spec.width,
+      height: spec.height,
+      y: bannerVisualY(spec),
+      offset: spec.offset,
+      variant: 'banner'
+    });
+  }
   const material = createBannerMaterial(scene, spec);
   createWallPlane(scene, spec.name, spec.side, spec.width, spec.height, bannerVisualY(spec), spec.offset, material);
   createBannerRod(scene, spec);
@@ -650,15 +737,10 @@ function createCourtLineShadows(scene: Scene): void {
     specular: new Color3(0.1, 0.08, 0.04)
   });
   const halfW = TUNING.map.halfWidth;
-  const halfL = TUNING.map.halfLength;
   const y = 0.018;
 
   const zLines = [
-    { name: 'center', z: 0, depth: 0.26 },
-    { name: 'attack_neg', z: -4.5, depth: 0.1 },
-    { name: 'attack_pos', z: 4.5, depth: 0.1 },
-    { name: 'warning_neg', z: -8.5, depth: 0.1 },
-    { name: 'warning_pos', z: 8.5, depth: 0.1 }
+    { name: 'center', z: 0, depth: 0.26 }
   ];
 
   for (const line of zLines) {
@@ -680,102 +762,13 @@ function createCourtLineShadows(scene: Scene): void {
     shine.material = highlightMat;
     markDecorative(shine);
   }
-
-  for (const x of [-(halfW - 0.08), halfW - 0.08]) {
-    const shadow = MeshBuilder.CreateBox(`decor_side_line_shadow_${x > 0 ? 'r' : 'l'}`, {
-      width: 0.12,
-      height: 0.004,
-      depth: halfL * 2
-    }, scene);
-    shadow.position.set(x + (x > 0 ? -0.032 : 0.032), y, 0.035);
-    shadow.material = shadowMat;
-    markDecorative(shadow);
-  }
 }
 
 function createFloorDetailDecals(scene: Scene): void {
-  const seamMat = solidMaterial(scene, 'decor_floor_plank_seam_mat', new Color3(0.42, 0.22, 0.09), {
-    emissive: new Color3(0.018, 0.008, 0.002),
-    specular: new Color3(0.05, 0.035, 0.018)
-  });
-  const nailMat = solidMaterial(scene, 'decor_floor_nail_dot_mat', new Color3(0.18, 0.12, 0.07), {
-    emissive: new Color3(0.006, 0.004, 0.002),
-    specular: new Color3(0.08, 0.06, 0.04)
-  });
-
-  const halfW = TUNING.map.halfWidth;
-  const halfL = TUNING.map.halfLength;
-  for (let i = 1; i < 13; i += 1) {
-    const x = -halfW + i * ((halfW * 2) / 13);
-    const seam = MeshBuilder.CreateBox(`decor_floor_plank_long_seam_${i}`, {
-      width: 0.014,
-      height: 0.003,
-      depth: halfL * 2 - 0.6
-    }, scene);
-    seam.position.set(x, 0.0075, 0);
-    seam.material = seamMat;
-    markDecorative(seam);
-  }
-
-  for (let row = 0; row < 7; row += 1) {
-    const z = -halfL + 2.4 + row * 5.0;
-    for (const x of [-9.6, -6.4, -3.2, 3.2, 6.4, 9.6]) {
-      const nail = MeshBuilder.CreateCylinder(`decor_floor_nail_${row}_${x}`, {
-        height: 0.004,
-        diameter: 0.045,
-        tessellation: 12
-      }, scene);
-      nail.position.set(x, 0.0105, z);
-      nail.material = nailMat;
-      markDecorative(nail);
-    }
-  }
-
   const blueLogoMat = createFloorLogoMaterial(scene, 'decor_floor_blue_crest_tex', '#174baf', '#ffd24a', 'BLUE COURT');
   const redLogoMat = createFloorLogoMaterial(scene, 'decor_floor_red_crest_tex', '#b82d2a', '#ffe27a', 'RED COURT');
   createFloorLogo(scene, 'decor_floor_blue_crest', -5.9, -2.65, blueLogoMat);
   createFloorLogo(scene, 'decor_floor_red_crest', 5.9, 2.65, redLogoMat);
-}
-
-function createFloorGloss(scene: Scene): void {
-  const glossTexture = new DynamicTexture('decor_floor_gloss_texture', { width: 512, height: 512 }, scene, false);
-  glossTexture.hasAlpha = true;
-  const ctx = glossTexture.getContext() as CanvasRenderingContext2D;
-  ctx.clearRect(0, 0, 512, 512);
-  const gradient = ctx.createLinearGradient(0, 0, 512, 0);
-  gradient.addColorStop(0, 'rgba(255,255,255,0)');
-  gradient.addColorStop(0.42, 'rgba(255,255,255,0.11)');
-  gradient.addColorStop(0.5, 'rgba(255,242,202,0.18)');
-  gradient.addColorStop(0.58, 'rgba(255,255,255,0.11)');
-  gradient.addColorStop(1, 'rgba(255,255,255,0)');
-  ctx.fillStyle = gradient;
-  ctx.fillRect(0, 0, 512, 512);
-  glossTexture.update(true);
-
-  const glossMat = new StandardMaterial('decor_floor_gloss_overlay_mat', scene);
-  glossMat.diffuseTexture = glossTexture;
-  glossMat.opacityTexture = glossTexture;
-  glossMat.useAlphaFromDiffuseTexture = true;
-  glossMat.emissiveTexture = glossTexture;
-  glossMat.emissiveColor = new Color3(0.45, 0.38, 0.28);
-  glossMat.disableLighting = true;
-  glossMat.backFaceCulling = false;
-  glossMat.specularColor = new Color3(0, 0, 0);
-
-  const highlights = [
-    { name: 'decor_floor_gloss_overlay_0', x: -7.8, z: -2.0, width: 2.4, depth: 30.0 },
-    { name: 'decor_floor_gloss_overlay_1', x: -2.8, z: 1.3, width: 1.8, depth: 27.0 },
-    { name: 'decor_floor_gloss_overlay_2', x: 3.4, z: -1.0, width: 2.0, depth: 29.0 },
-    { name: 'decor_floor_gloss_overlay_3', x: 8.1, z: 2.0, width: 1.6, depth: 24.0 }
-  ];
-
-  for (const highlight of highlights) {
-    const mesh = MeshBuilder.CreatePlane(highlight.name, { width: highlight.width, height: highlight.depth }, scene);
-    mesh.position.set(highlight.x, 0.026, highlight.z);
-    mesh.rotation.x = Math.PI / 2;
-    mesh.material = glossMat;
-    markDecorative(mesh);
-  }
 }
 
 function createOverheadLightLenses(scene: Scene): void {
@@ -850,12 +843,12 @@ function createOverheadLightFrames(scene: Scene): void {
 
 function createCeilingConduits(scene: Scene): void {
   const conduitMat = solidMaterial(scene, 'decor_ceiling_conduit_mat', new Color3(0.18, 0.2, 0.22), {
-    emissive: new Color3(0.004, 0.004, 0.005),
-    specular: new Color3(0.12, 0.12, 0.12)
+    emissive: new Color3(0.001, 0.001, 0.0015),
+    specular: new Color3(0.015, 0.015, 0.015)
   });
   const junctionMat = solidMaterial(scene, 'decor_ceiling_junction_box_mat', new Color3(0.1, 0.115, 0.13), {
-    emissive: new Color3(0.002, 0.002, 0.003),
-    specular: new Color3(0.16, 0.15, 0.14)
+    emissive: new Color3(0.001, 0.001, 0.0015),
+    specular: new Color3(0.02, 0.02, 0.018)
   });
   const y = TUNING.map.wallHeight - 0.315;
 
@@ -1161,11 +1154,10 @@ function createBannerMaterial(scene: Scene, spec: BannerSpec): StandardMaterial 
     return createMaskedBannerImageMaterial(scene, spec);
   }
 
-  const texture = new DynamicTexture(`${spec.name}_tex`, { width: 768, height: 384 }, scene, false);
-  texture.hasAlpha = spec.shape !== 'rectangle';
-  texture.anisotropicFilteringLevel = 8;
-  texture.updateSamplingMode(Texture.TRILINEAR_SAMPLINGMODE);
-  applyWallTextTextureOrientation(texture, spec.side);
+  const texture = createSignageDynamicTexture(scene, `${spec.name}_tex`, 768, 384, {
+    hasAlpha: spec.shape !== 'rectangle',
+    side: spec.side
+  });
 
   const ctx = texture.getContext() as CanvasRenderingContext2D;
   drawBannerTexture(ctx, 768, 384, spec);
@@ -1189,12 +1181,9 @@ function createMaskedBannerImageMaterial(scene: Scene, spec: BannerSpec): Standa
   const aspect = Math.max(0.25, spec.width / Math.max(0.001, spec.height));
   const textureWidth = aspect >= 1 ? 1024 : Math.max(256, Math.round(1024 * aspect));
   const textureHeight = aspect >= 1 ? Math.max(256, Math.round(1024 / aspect)) : 1024;
-  const texture = new DynamicTexture(`${spec.name}_masked_tex`, { width: textureWidth, height: textureHeight }, scene, false);
-  texture.hasAlpha = true;
-  texture.anisotropicFilteringLevel = 8;
-  texture.updateSamplingMode(Texture.TRILINEAR_SAMPLINGMODE);
-  texture.wrapU = Texture.CLAMP_ADDRESSMODE;
-  texture.wrapV = Texture.CLAMP_ADDRESSMODE;
+  const texture = createSignageDynamicTexture(scene, `${spec.name}_masked_tex`, textureWidth, textureHeight, {
+    hasAlpha: true
+  });
 
   const ctx = texture.getContext() as CanvasRenderingContext2D;
   ctx.clearRect(0, 0, textureWidth, textureHeight);
@@ -1210,6 +1199,8 @@ function createMaskedBannerImageMaterial(scene: Scene, spec: BannerSpec): Standa
   material.specularPower = 34;
   material.backFaceCulling = false;
   material.useAlphaFromDiffuseTexture = true;
+  material.transparencyMode = Material.MATERIAL_ALPHATEST;
+  material.alphaCutOff = 0.38;
 
   const image = new Image();
   image.onload = () => {
@@ -1218,6 +1209,25 @@ function createMaskedBannerImageMaterial(scene: Scene, spec: BannerSpec): Standa
   image.src = spec.textureUrl ?? '';
 
   return material;
+}
+
+function createSignageDynamicTexture(
+  scene: Scene,
+  name: string,
+  width: number,
+  height: number,
+  options: { hasAlpha: boolean; side?: WallSide }
+): DynamicTexture {
+  const texture = new DynamicTexture(name, { width, height }, scene, true);
+  texture.hasAlpha = options.hasAlpha;
+  texture.anisotropicFilteringLevel = 16;
+  texture.updateSamplingMode(Texture.TRILINEAR_SAMPLINGMODE);
+  texture.wrapU = Texture.CLAMP_ADDRESSMODE;
+  texture.wrapV = Texture.CLAMP_ADDRESSMODE;
+  if (options.side) {
+    applyWallTextTextureOrientation(texture, options.side);
+  }
+  return texture;
 }
 
 function drawMaskedBannerImage(texture: DynamicTexture, image: HTMLImageElement, textureWidth: number, textureHeight: number): void {
@@ -1229,6 +1239,7 @@ function drawMaskedBannerImage(texture: DynamicTexture, image: HTMLImageElement,
   sourceCtx.drawImage(image, 0, 0, source.width, source.height);
   const imageData = sourceCtx.getImageData(0, 0, source.width, source.height);
   maskConnectedLightBackground(imageData, source.width, source.height);
+  dilateOpaqueEdges(imageData, source.width, source.height, 3);
   sourceCtx.putImageData(imageData, 0, 0);
 
   const bounds = findOpaqueBounds(imageData, source.width, source.height);
@@ -1296,6 +1307,52 @@ function isLightBackgroundPixel(r: number, g: number, b: number, a: number): boo
   const max = Math.max(r, g, b);
   const min = Math.min(r, g, b);
   return r > 186 && g > 186 && b > 186 && max - min < 42;
+}
+
+function dilateOpaqueEdges(imageData: ImageData, width: number, height: number, passes: number): void {
+  const data = imageData.data;
+  const scratch = new Uint8ClampedArray(data.length);
+  const neighbors = [-1, 0, 1];
+
+  for (let pass = 0; pass < passes; pass += 1) {
+    scratch.set(data);
+    let changed = false;
+
+    for (let y = 0; y < height; y += 1) {
+      for (let x = 0; x < width; x += 1) {
+        const index = (y * width + x) * 4;
+        if (scratch[index + 3] > 0) continue;
+
+        let sourceIndex = -1;
+        let strongestAlpha = 0;
+
+        for (const dy of neighbors) {
+          const ny = y + dy;
+          if (ny < 0 || ny >= height) continue;
+          for (const dx of neighbors) {
+            const nx = x + dx;
+            if (nx < 0 || nx >= width || (dx === 0 && dy === 0)) continue;
+            const neighborIndex = (ny * width + nx) * 4;
+            const neighborAlpha = scratch[neighborIndex + 3];
+            if (neighborAlpha <= strongestAlpha) continue;
+            strongestAlpha = neighborAlpha;
+            sourceIndex = neighborIndex;
+          }
+        }
+
+        if (sourceIndex < 0 || strongestAlpha <= 0) continue;
+        data[index] = scratch[sourceIndex];
+        data[index + 1] = scratch[sourceIndex + 1];
+        data[index + 2] = scratch[sourceIndex + 2];
+        data[index + 3] = 0;
+        changed = true;
+      }
+    }
+
+    if (!changed) {
+      return;
+    }
+  }
 }
 
 function findOpaqueBounds(imageData: ImageData, width: number, height: number): { minX: number; minY: number; maxX: number; maxY: number } | null {
@@ -1737,8 +1794,87 @@ function createGymSign(
     palette: BannerPalette;
   }
 ): void {
+  createDecorBackingPanel(scene, {
+    name: `${spec.name}_backing`,
+    side: spec.side,
+    width: spec.width,
+    height: spec.height,
+    y: spec.y,
+    offset: spec.offset,
+    variant: 'sign'
+  });
   const material = createGymSignMaterial(scene, spec);
   createWallPlane(scene, spec.name, spec.side, spec.width, spec.height, spec.y, spec.offset, material, WALL_DECAL_INSET + 0.016);
+}
+
+function createDecorBackingPanel(
+  scene: Scene,
+  spec: {
+    name: string;
+    side: WallSide;
+    width: number;
+    height: number;
+    y: number;
+    offset: number;
+    variant: 'banner' | 'bannerImage' | 'sign';
+  }
+): void {
+  const backing = solidMaterial(scene, 'decor_sign_backing_mat', new Color3(0.075, 0.095, 0.13), {
+    emissive: new Color3(0.004, 0.006, 0.01),
+    specular: new Color3(0.1, 0.11, 0.12)
+  });
+  const bevel = solidMaterial(scene, 'decor_sign_bevel_mat', new Color3(0.16, 0.19, 0.24), {
+    emissive: new Color3(0.008, 0.012, 0.016),
+    specular: new Color3(0.14, 0.15, 0.16)
+  });
+  const trim = solidMaterial(scene, 'decor_sign_trim_mat', new Color3(0.94, 0.74, 0.2), {
+    emissive: new Color3(0.05, 0.03, 0.002),
+    specular: new Color3(0.2, 0.16, 0.06)
+  });
+
+  const pad = spec.variant === 'sign' ? 0.04 : spec.variant === 'bannerImage' ? 0.07 : 0.05;
+  const trimInset = spec.variant === 'sign' ? 0.05 : 0.07;
+  const backingThickness = spec.variant === 'sign' ? 0.024 : 0.028;
+  const bevelThickness = 0.012;
+  const trimThickness = 0.014;
+  // Wall boxes are positioned by center, so their front face sits `thickness / 2` closer to the
+  // camera than the inset value. Keep every layer fully behind the image plane.
+  const backingInset = WALL_DECAL_INSET + backingThickness * 0.5 + 0.008;
+  const bevelInset = WALL_DECAL_INSET + bevelThickness * 0.5 + 0.006;
+  const trimInsetDepth = WALL_DECAL_INSET + trimThickness * 0.5 + 0.004;
+
+  createWallBox(
+    scene,
+    `${spec.name}_core`,
+    spec.side,
+    spec.width + pad * 2,
+    spec.height + pad * 2,
+    spec.y,
+    spec.offset,
+    backingThickness,
+    backing,
+    backingInset
+  );
+
+  createWallBox(
+    scene,
+    `${spec.name}_bevel`,
+    spec.side,
+    spec.width + pad * 2 - 0.028,
+    spec.height + pad * 2 - 0.028,
+    spec.y,
+    spec.offset,
+    bevelThickness,
+    bevel,
+    bevelInset
+  );
+
+  const outerW = spec.width + pad * 2;
+  const outerH = spec.height + pad * 2;
+  createWallBox(scene, `${spec.name}_trim_top`, spec.side, outerW, trimInset, spec.y + outerH * 0.5 - trimInset * 0.5, spec.offset, trimThickness, trim, trimInsetDepth);
+  createWallBox(scene, `${spec.name}_trim_bottom`, spec.side, outerW, trimInset, spec.y - outerH * 0.5 + trimInset * 0.5, spec.offset, trimThickness, trim, trimInsetDepth);
+  createWallBox(scene, `${spec.name}_trim_left`, spec.side, trimInset, outerH - trimInset * 2, spec.y, spec.offset - outerW * 0.5 + trimInset * 0.5, trimThickness, trim, trimInsetDepth);
+  createWallBox(scene, `${spec.name}_trim_right`, spec.side, trimInset, outerH - trimInset * 2, spec.y, spec.offset + outerW * 0.5 - trimInset * 0.5, trimThickness, trim, trimInsetDepth);
 }
 
 function createGymSignMaterial(
@@ -1751,10 +1887,10 @@ function createGymSignMaterial(
     palette: BannerPalette;
   }
 ): StandardMaterial {
-  const texture = new DynamicTexture(`${spec.name}_tex`, { width: 512, height: 192 }, scene, false);
-  texture.hasAlpha = false;
-  texture.anisotropicFilteringLevel = 8;
-  applyWallTextTextureOrientation(texture, spec.side);
+  const texture = createSignageDynamicTexture(scene, `${spec.name}_tex`, 512, 192, {
+    hasAlpha: false,
+    side: spec.side
+  });
 
   const ctx = texture.getContext() as CanvasRenderingContext2D;
   const gradient = ctx.createLinearGradient(0, 0, 512, 192);
@@ -1911,10 +2047,10 @@ function createClockMaterial(scene: Scene): StandardMaterial {
 }
 
 function createPlaqueMaterial(scene: Scene, name: string, side: WallSide, title: string, subtitle: string): StandardMaterial {
-  const texture = new DynamicTexture(name, { width: 640, height: 180 }, scene, false);
-  texture.hasAlpha = false;
-  texture.anisotropicFilteringLevel = 8;
-  applyWallTextTextureOrientation(texture, side);
+  const texture = createSignageDynamicTexture(scene, name, 640, 180, {
+    hasAlpha: false,
+    side
+  });
   const ctx = texture.getContext() as CanvasRenderingContext2D;
   const gradient = ctx.createLinearGradient(0, 0, 640, 180);
   gradient.addColorStop(0, '#0b1c3a');

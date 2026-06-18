@@ -1348,9 +1348,15 @@ export class ServerGameLoop {
       const hitbox = playerHitCapsule(target);
       if (!sweptBallHitsBody(segPrev, segCurr, hitbox.base, hitbox.top, radius)) continue;
 
-      // Defense Break: Nice/Perfect backflip throws (Tier 3+) force players to drop balls
-      if ((ball as any).backflipTier >= 3) {
+      const backflipTier = Math.max(0, Math.trunc((ball as any).backflipTier ?? 0));
+      const breaksParryGuard = backflipTier >= 3 && heldBallCount(target.hands) >= GAME_CONSTANTS.ball.maxHeldBalls;
+      if (breaksParryGuard) {
         this.scatterHeldBalls(target);
+        // Nice/Great (tiers 3/4) only shatter the defender's two-ball guard. Only a Perfect (tier 5)
+        // is allowed to continue through the guard and register the player hit as well.
+        if (backflipTier < GAME_CONSTANTS.backflip.qte.tierCount) {
+          return markBallDead(ball);
+        }
       }
 
       const previousScore = scorer ? this.state.match.scoreByTeamId[scorer.teamId] ?? 0 : 0;

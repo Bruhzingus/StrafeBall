@@ -53,7 +53,10 @@ export function stepMovement(
   let sliding = movementIn.sliding;
   let wallRunning = movementIn.wallRunning;
   let dashingThisFrame = false;
-  const crouching = input.crouchHeld;
+  // Crouch only takes physical effect on the ground (body height, speed cap). Holding crouch in
+  // the air must NOT shrink the hitbox/body height — that perturbs air-strafe momentum — but it
+  // still arms the instant slide-on-landing below via slideHeldActive/crouchPressed.
+  const crouching = grounded && input.crouchHeld;
   const slideHeldActive = input.slideHeld || input.crouchHeld;
 
   let slideTimer = internalIn.slideTimer;

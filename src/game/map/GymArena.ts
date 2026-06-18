@@ -31,9 +31,6 @@ export class GymArena {
   private readonly movingDummyAmplitude = 4.5; // meters from center
   private readonly movingDummyPeriod = 3.8;    // seconds per full oscillation
   private courtLineCenterMat: StandardMaterial | null = null;
-  private courtLineNegativeMat: StandardMaterial | null = null;
-  private courtLinePositiveMat: StandardMaterial | null = null;
-  private courtLineSideMat: StandardMaterial | null = null;
   private courtLineState = {
     negativeHalfActive: false,
     positiveHalfActive: false,
@@ -119,19 +116,19 @@ export class GymArena {
     const t = 0.35;
     const ceilingMat = new StandardMaterial('gym_ceiling_mat', this.scene);
     ceilingMat.diffuseColor = new Color3(0.72, 0.73, 0.68);
-    ceilingMat.specularColor = new Color3(0.08, 0.08, 0.07);
+    ceilingMat.specularColor = new Color3(0.015, 0.015, 0.014);
 
     const panelMat = new StandardMaterial('gym_roof_panel_mat', this.scene);
     panelMat.diffuseColor = new Color3(0.82, 0.83, 0.78);
-    panelMat.specularColor = new Color3(0.04, 0.04, 0.035);
+    panelMat.specularColor = new Color3(0.01, 0.01, 0.009);
 
     const beamMat = new StandardMaterial('gym_roof_beam_mat', this.scene);
     beamMat.diffuseColor = new Color3(0.34, 0.36, 0.38);
-    beamMat.specularColor = new Color3(0.12, 0.12, 0.12);
+    beamMat.specularColor = new Color3(0.025, 0.025, 0.025);
 
     const seamMat = new StandardMaterial('gym_roof_seam_mat', this.scene);
-    seamMat.diffuseColor = new Color3(0.5, 0.51, 0.48);
-    seamMat.specularColor = new Color3(0.03, 0.03, 0.03);
+    seamMat.diffuseColor = new Color3(0.22, 0.23, 0.24);
+    seamMat.specularColor = new Color3(0.004, 0.004, 0.004);
 
     const ceiling = MeshBuilder.CreateBox('gym_ceiling', {
       width: TUNING.map.halfWidth * 2 + t * 2,
@@ -180,10 +177,10 @@ export class GymArena {
 
       const seam = MeshBuilder.CreateBox(`gym_roof_seam_${z}`, {
         width: TUNING.map.halfWidth * 2 - 0.6,
-        height: 0.025,
-        depth: 0.035
+        height: 0.04,
+        depth: 0.06
       }, this.scene);
-      seam.position.set(0, h - 0.055, z + 3);
+      seam.position.set(0, h - 0.07, z + 3);
       seam.material = seamMat;
       seam.isPickable = false;
     }
@@ -261,50 +258,17 @@ export class GymArena {
 
   private createCourtLines(): void {
     const halfW = TUNING.map.halfWidth;
-    const halfL = TUNING.map.halfLength;
     const lineY = 0.012;
     this.courtLineCenterMat = this.createCourtLineMaterial('court_line_center_mat', new Color3(1.0, 0.98, 0.92), new Color3(0.045, 0.03, 0.01));
-    this.courtLineNegativeMat = this.createCourtLineMaterial('court_line_negative_mat', new Color3(0.9, 0.96, 1.0), new Color3(0.012, 0.035, 0.06));
-    this.courtLinePositiveMat = this.createCourtLineMaterial('court_line_positive_mat', new Color3(1.0, 0.94, 0.9), new Color3(0.06, 0.02, 0.008));
-    this.courtLineSideMat = this.createCourtLineMaterial('court_line_side_mat', new Color3(0.98, 0.96, 0.9), new Color3(0.03, 0.028, 0.012));
 
-    // Bold center stripe — the most important line on the court.
+    // Bold center stripe — the only court line kept; the rest (attack/warning/side lines) read as
+    // visual clutter on the floor and were removed.
     const centerLine = this.loader.createVisual('line', {
       name: 'center_line',
       size: { width: halfW * 2, height: 0.018, depth: 0.20 },
       position: new Vector3(0, lineY, 0)
     });
     centerLine.material = this.courtLineCenterMat;
-
-    // Attack lines (4.5 m from center — marking the approach zone).
-    for (const z of [-4.5, 4.5]) {
-      const line = this.loader.createVisual('line', {
-        name: `attack_line_${z}`,
-        size: { width: halfW * 2, height: 0.013, depth: 0.06 },
-        position: new Vector3(0, lineY - 0.001, z)
-      });
-      line.material = z < 0 ? this.courtLineNegativeMat : this.courtLinePositiveMat;
-    }
-
-    // Half-court warning lines (8.5 m from center).
-    for (const z of [-8.5, 8.5]) {
-      const line = this.loader.createVisual('line', {
-        name: `warning_line_${z}`,
-        size: { width: halfW * 2, height: 0.013, depth: 0.06 },
-        position: new Vector3(0, lineY - 0.001, z)
-      });
-      line.material = z < 0 ? this.courtLineNegativeMat : this.courtLinePositiveMat;
-    }
-
-    // Side boundary lines along the long walls.
-    for (const x of [-(halfW - 0.08), halfW - 0.08]) {
-      const line = this.loader.createVisual('line', {
-        name: `side_line_${x > 0 ? 'r' : 'l'}`,
-        size: { width: 0.07, height: 0.013, depth: halfL * 2 },
-        position: new Vector3(x, lineY - 0.001, 0)
-      });
-      line.material = this.courtLineSideMat;
-    }
   }
 
   /**
@@ -608,18 +572,11 @@ export class GymArena {
 
   private updateCourtLines(elapsed: number): void {
     const center = this.courtLineCenterMat;
-    const negative = this.courtLineNegativeMat;
-    const positive = this.courtLinePositiveMat;
-    const side = this.courtLineSideMat;
-    if (!center || !negative || !positive || !side) return;
+    if (!center) return;
 
     const suddenPulse = this.courtLineState.suddenDeath ? 0.82 + 0.18 * Math.sin(elapsed * 7.5) : 0;
     const centerBoost = this.courtLineState.negativeHalfActive || this.courtLineState.positiveHalfActive ? 0.7 : 0;
-    const sideBoost = this.courtLineState.negativeHalfActive || this.courtLineState.positiveHalfActive ? 0.16 : 0;
     this.setLineGlow(center, new Color3(0.045, 0.03, 0.01), new Color3(0.42, 0.26, 0.08), Math.max(suddenPulse, centerBoost));
-    this.setLineGlow(negative, new Color3(0.012, 0.035, 0.06), new Color3(0.08, 0.32, 0.62), Math.max(suddenPulse, this.courtLineState.negativeHalfActive ? 0.75 : 0));
-    this.setLineGlow(positive, new Color3(0.06, 0.02, 0.008), new Color3(0.62, 0.16, 0.06), Math.max(suddenPulse, this.courtLineState.positiveHalfActive ? 0.75 : 0));
-    this.setLineGlow(side, new Color3(0.03, 0.028, 0.012), new Color3(0.18, 0.16, 0.06), Math.max(suddenPulse * 0.78, sideBoost));
   }
 
   private updateHalfCourtCones(elapsed: number): void {
