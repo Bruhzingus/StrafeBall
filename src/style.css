@@ -298,7 +298,8 @@ html, body {
 }
 
 .stamina-pip--full {
-  background: linear-gradient(180deg, #75f7a5 0%, var(--school-green) 100%);
+  background: linear-gradient(180deg, #a9ff8f 0%, #39e75f 100%);
+  box-shadow: 1px 1px 0 var(--ink), 0 0 8px rgba(57, 231, 95, 0.38);
 }
 
 .stamina-recharge {
@@ -781,6 +782,103 @@ html, body {
   100% { opacity: 1; transform: translateY(0) rotate(0deg) scale(1); }
 }
 
+.half-court-warning {
+  position: absolute;
+  left: 50%;
+  top: 22%;
+  transform: translate(-50%, -8px) rotate(-0.8deg);
+  width: min(420px, calc(100vw - 32px));
+  pointer-events: none;
+  z-index: 24;
+  opacity: 0;
+  padding: 12px 18px 14px;
+  border: 4px solid #2a0710;
+  border-radius: 18px;
+  background:
+    radial-gradient(circle at 8% 0%, rgba(255, 255, 255, 0.52), transparent 32%),
+    repeating-linear-gradient(-45deg, rgba(255, 255, 255, 0.08) 0 8px, transparent 8px 16px),
+    linear-gradient(180deg, rgba(255, 69, 56, 0.96), rgba(154, 10, 28, 0.96));
+  color: #fff8e8;
+  text-align: center;
+  box-shadow:
+    0 12px 0 rgba(42, 7, 16, 0.28),
+    0 0 0 2px rgba(255, 235, 186, 0.55) inset,
+    0 0 36px rgba(255, 37, 37, 0.38);
+}
+
+.half-court-warning--visible {
+  opacity: 1;
+  animation: half-court-warning-pop 0.28s cubic-bezier(0.2, 0.9, 0.2, 1) both;
+}
+
+.half-court-warning--urgent {
+  animation:
+    half-court-warning-pop 0.28s cubic-bezier(0.2, 0.9, 0.2, 1) both,
+    half-court-warning-urgent 0.42s steps(2, end) infinite;
+}
+
+.half-court-warning__stamp {
+  display: inline-block;
+  margin-bottom: 4px;
+  padding: 2px 9px;
+  border: 2px solid #fff8e8;
+  border-radius: 999px;
+  background: #2a0710;
+  color: #ffdf65;
+  font-size: 11px;
+  font-weight: 1000;
+  letter-spacing: 0.16em;
+  text-transform: uppercase;
+}
+
+.half-court-warning__title {
+  font-size: clamp(22px, 3vw, 34px);
+  line-height: 0.95;
+  font-weight: 1000;
+  letter-spacing: 0.03em;
+  text-transform: uppercase;
+  text-shadow: 3px 3px 0 #2a0710;
+}
+
+.half-court-warning__body {
+  margin-top: 5px;
+  font-size: 13px;
+  font-weight: 800;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
+.half-court-warning__timer {
+  margin: 8px auto 0;
+  width: max-content;
+  padding: 3px 12px;
+  border-radius: 999px;
+  background: #fff8e8;
+  color: #2a0710;
+  font-size: 15px;
+  font-weight: 1000;
+  box-shadow: 0 3px 0 rgba(42, 7, 16, 0.42);
+}
+
+.half-court-warning__timer strong {
+  display: inline-block;
+  min-width: 1.2em;
+  color: #d60f22;
+  font-size: 24px;
+  line-height: 0.8;
+}
+
+@keyframes half-court-warning-pop {
+  0% { transform: translate(-50%, -18px) rotate(-1.8deg) scale(0.9); opacity: 0; }
+  70% { transform: translate(-50%, 2px) rotate(0.8deg) scale(1.03); opacity: 1; }
+  100% { transform: translate(-50%, 0) rotate(-0.8deg) scale(1); opacity: 1; }
+}
+
+@keyframes half-court-warning-urgent {
+  0%, 100% { filter: brightness(1); }
+  50% { filter: brightness(1.24); }
+}
+
 .qte {
   position: absolute;
   left: 50%;
@@ -899,7 +997,7 @@ html, body {
   opacity: 0.9;
 }
 
-/* === Center stamina segments — one transparent grey block per dash charge === */
+/* === Center stamina segments — dash stamina, grey empty / gold ready === */
 .stamina-widget {
   position: absolute;
   left: 50%;
@@ -909,53 +1007,95 @@ html, body {
   z-index: 11;
   display: flex;
   gap: 8px;
+  padding: 5px 7px;
+  border-radius: 999px;
+  background: rgba(8, 12, 22, 0.28);
+  transition: filter 0.22s ease, opacity 0.22s ease;
+}
+
+.stamina-widget--ready {
+  filter: drop-shadow(0 0 9px rgba(57, 231, 95, 0.3));
+}
+
+.stamina-widget--empty {
+  opacity: 0.86;
 }
 
 .stamina-widget-seg {
   position: relative;
-  width: 52px;
-  height: 9px;
-  border-radius: 4px;
-  background: rgba(22, 22, 22, 0.48);
-  box-shadow: 0 0 0 1px rgba(255, 255, 255, 0.08);
+  width: 58px;
+  height: 11px;
+  border-radius: 999px;
+  background:
+    linear-gradient(180deg, rgba(160, 164, 172, 0.42), rgba(52, 56, 66, 0.6));
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.12),
+    inset 0 -1px 0 rgba(0, 0, 0, 0.32),
+    0 0 0 1px rgba(255, 255, 255, 0.09);
   overflow: hidden;
-  transition: box-shadow 0.25s ease;
+  transition: box-shadow 0.25s ease, background 0.25s ease;
 }
 
-/* Inner fill — sweeps left-to-right as the charge recharges. */
+/* Inner fill sweeps left-to-right as the next charge recharges. */
 .stamina-widget-seg-fill {
   position: absolute;
-  left: 0; top: 0; bottom: 0;
+  left: 0;
+  top: 0;
+  bottom: 0;
   width: 0%;
-  border-radius: 4px;
-  background: rgba(165, 165, 165, 0.65);
-  transition: width 0.13s linear;
+  border-radius: 999px;
+  background:
+    linear-gradient(90deg, rgba(175, 178, 184, 0.72), rgba(218, 221, 226, 0.9));
+  transition: width 0.18s linear, background 0.22s ease, box-shadow 0.22s ease;
 }
 
-/* Leading-edge shimmer while recharging. */
 .stamina-widget-seg--charging .stamina-widget-seg-fill::after {
   content: '';
   position: absolute;
-  right: 0; top: 0; bottom: 0;
-  width: 4px;
-  background: rgba(255, 255, 255, 0.72);
-  border-radius: 2px;
+  right: -1px;
+  top: 1px;
+  bottom: 1px;
+  width: 5px;
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.66);
+  box-shadow: 0 0 8px rgba(255, 255, 255, 0.34);
 }
 
-/* Full: brighter fill, no width transition (snap to 100%). */
+.stamina-widget-seg--full {
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.28),
+    inset 0 -1px 0 rgba(0, 92, 34, 0.28),
+    0 0 0 1px rgba(94, 255, 125, 0.42),
+    0 0 12px rgba(57, 231, 95, 0.24);
+}
+
 .stamina-widget-seg--full .stamina-widget-seg-fill {
-  background: rgba(205, 205, 205, 0.72);
+  background:
+    linear-gradient(90deg, #19c857 0%, #a9ff8f 58%, #39e75f 100%);
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.55),
+    0 0 10px rgba(57, 231, 95, 0.36);
   transition: none;
 }
 
-/* Brief glow burst when a charge finishes recharging. */
 .stamina-widget-seg--glow {
   animation: stamina-seg-glow 0.42s ease-out forwards;
 }
 
 @keyframes stamina-seg-glow {
-  0%   { box-shadow: 0 0 0 2px rgba(240, 240, 240, 0.75), 0 0 10px rgba(200, 200, 200, 0.55); }
-  100% { box-shadow: 0 0 0 1px rgba(255, 255, 255, 0.08); }
+  0% {
+    box-shadow:
+      inset 0 1px 0 rgba(255, 255, 255, 0.35),
+      0 0 0 2px rgba(169, 255, 143, 0.82),
+      0 0 18px rgba(57, 231, 95, 0.72);
+  }
+  100% {
+    box-shadow:
+      inset 0 1px 0 rgba(255, 255, 255, 0.28),
+      inset 0 -1px 0 rgba(0, 92, 34, 0.28),
+      0 0 0 1px rgba(94, 255, 125, 0.42),
+      0 0 12px rgba(57, 231, 95, 0.24);
+  }
 }
 
 @media (max-width: 640px) {

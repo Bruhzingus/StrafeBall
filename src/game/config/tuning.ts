@@ -82,6 +82,7 @@ export const TUNING = {
     jumpAwaySpeed: GAME_CONSTANTS.wall.jumpAwaySpeed,
     jumpUpSpeed: GAME_CONSTANTS.wall.jumpUpSpeed,
     reattachCooldownSeconds: GAME_CONSTANTS.wall.reattachCooldownSeconds,
+    ceilingDetachDistance: GAME_CONSTANTS.wall.ceilingDetachDistance,
     leanAngleRadians: 25 * Math.PI / 180,
     leanSmoothing: 11
   },
@@ -190,6 +191,7 @@ export const TUNING = {
     lastPlayerBuffSeconds: GAME_CONSTANTS.match.lastPlayerBuffSeconds,
     noBoundariesSeconds: GAME_CONSTANTS.match.noBoundariesSeconds,
     halfCourtCountdownSeconds: GAME_CONSTANTS.match.halfCourtCountdownSeconds,
+    illegalCrossDeathCountdownSeconds: GAME_CONSTANTS.match.illegalCrossDeathCountdownSeconds,
     resetVoteSeconds: GAME_CONSTANTS.match.resetVoteSeconds,
     illegalCrossWarningsBeforePenalty: GAME_CONSTANTS.match.illegalCrossWarningsBeforePenalty,
     penaltyHitValue: GAME_CONSTANTS.match.penaltyHitValue

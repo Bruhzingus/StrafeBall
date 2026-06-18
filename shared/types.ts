@@ -196,13 +196,17 @@ export interface HalfCourtViolationState {
   warningsIssued: number;
   penaltiesIssued: number;
   wasAcross: boolean;
+  deathCountdownActive: boolean;
+  countdownSeconds: number;
+  eliminationIssued: boolean;
 }
 
 export type BoundaryEvent =
   | { type: 'none' }
   | { type: 'no-boundaries' }
   | { type: 'half-court-warning'; playerId: string; warningsIssued: number }
-  | { type: 'half-court-penalty'; playerId: string; opponentTeamId: string; value: number };
+  | { type: 'half-court-penalty'; playerId: string; opponentTeamId: string; value: number }
+  | { type: 'half-court-elimination'; playerId: string };
 
 export interface MatchBoundaryState {
   elapsedSeconds: number;

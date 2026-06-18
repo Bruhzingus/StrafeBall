@@ -180,6 +180,28 @@ describe('shared movement simulation', () => {
     expect(state.movement.speed).toBeLessThan(1);
     expect(state.movement.sliding).toBe(false);
   });
+
+  it('drops wall-run before the player can repeatedly boost into the ceiling', () => {
+    const player = createPlayerState('p1', 'blue');
+    const bodyHeight = GAME_CONSTANTS.player.height;
+    const maxPlayerY = GAME_CONSTANTS.map.wallHeight - bodyHeight - GAME_CONSTANTS.player.ceilingClearance;
+    player.movement.position = vec3(
+      GAME_CONSTANTS.map.halfWidth - GAME_CONSTANTS.player.radius,
+      maxPlayerY - GAME_CONSTANTS.wall.ceilingDetachDistance * 0.5,
+      0
+    );
+    player.movement.velocity = vec3(0, 2, GAME_CONSTANTS.wall.minEntrySpeed + 3);
+    player.movement.grounded = false;
+    player.movement.wallRunning = true;
+    player.movementInternal.wallRunTimer = 0.2;
+    player.movementInternal.lastWallNormalX = -1;
+
+    const next = stepMovement(player.movement, player.movementInternal, player.dash, neutralInput(), neutralInput(), 1 / 72, [], false);
+
+    expect(next.movement.position.y).toBeLessThanOrEqual(maxPlayerY);
+    expect(next.movement.wallRunning).toBe(false);
+    expect(next.internal.wallRunTimer).toBe(0);
+  });
 });
 
 describe('shared ball state transitions', () => {
@@ -319,16 +341,39 @@ describe('shared half-court rules', () => {
     expect(match.scoreByTeamId.red).toBe(0);
   });
 
-  it('second illegal cross gives the opponent one hit', () => {
+  it('staying across after the red warning starts a death countdown, then eliminates', () => {
+    let match = createMatchState('m1', ['blue', 'red']);
+
+    match = applyHalfCourtRule(match, 'p1', 'blue', 'negativeZ', vec3(0, 0, GAME_CONSTANTS.match.halfCourtLineZ + 0.1));
+    match = applyHalfCourtRule(
+      match,
+      'p1',
+      'blue',
+      'negativeZ',
+      vec3(0, 0, GAME_CONSTANTS.match.halfCourtLineZ + 0.1),
+      GAME_CONSTANTS.match.illegalCrossDeathCountdownSeconds - 0.1
+    );
+
+    expect(match.boundary.lastEvent.type).toBe('none');
+    expect(match.boundary.illegalCrossByPlayerId.p1.deathCountdownActive).toBe(true);
+    expect(match.boundary.illegalCrossByPlayerId.p1.countdownSeconds).toBeCloseTo(0.1, 5);
+    expect(match.scoreByTeamId.red).toBe(0);
+
+    match = applyHalfCourtRule(match, 'p1', 'blue', 'negativeZ', vec3(0, 0, GAME_CONSTANTS.match.halfCourtLineZ + 0.1), 0.11);
+
+    expect(match.boundary.lastEvent.type).toBe('half-court-elimination');
+    expect(match.boundary.illegalCrossByPlayerId.p1.eliminationIssued).toBe(true);
+    expect(match.scoreByTeamId.red).toBe(0);
+  });
+
+  it('leaving your side before the countdown expires clears the active countdown', () => {
     let match = createMatchState('m1', ['blue', 'red']);
 
     match = applyHalfCourtRule(match, 'p1', 'blue', 'negativeZ', vec3(0, 0, GAME_CONSTANTS.match.halfCourtLineZ + 0.1));
     match = applyHalfCourtRule(match, 'p1', 'blue', 'negativeZ', vec3(0, 0, -1));
-    match = applyHalfCourtRule(match, 'p1', 'blue', 'negativeZ', vec3(0, 0, GAME_CONSTANTS.match.halfCourtLineZ + 0.1));
 
-    expect(match.boundary.lastEvent.type).toBe('half-court-penalty');
-    expect(match.boundary.illegalCrossByPlayerId.p1.penaltiesIssued).toBe(1);
-    expect(match.scoreByTeamId.red).toBe(GAME_CONSTANTS.match.penaltyHitValue);
+    expect(match.boundary.illegalCrossByPlayerId.p1.deathCountdownActive).toBe(false);
+    expect(match.boundary.illegalCrossByPlayerId.p1.countdownSeconds).toBe(GAME_CONSTANTS.match.illegalCrossDeathCountdownSeconds);
   });
 
   it('no-boundaries disables the half-court rule', () => {

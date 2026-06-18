@@ -31,7 +31,7 @@ export class PlayerController {
 
   constructor(scene: Scene, private readonly input: InputManager, ballManager: BallManager, collision: CollisionWorld, effects: Effects) {
     this.root = new TransformNode('playerRoot', scene);
-    this.root.position = new Vector3(0, 0, -12);
+    this.root.position = new Vector3(0, 0, -16);
 
     this.camera = new FreeCamera('playerCamera', new Vector3(0, 1.58, 0), scene);
     this.camera.parent = this.root;
@@ -86,7 +86,7 @@ export class PlayerController {
   }
 
   resetPosition(): void {
-    this.root.position.set(0, 0, -12);
+    this.root.position.set(0, 0, -16);
     this.movement.velocity.setAll(0);
     this.wallLean = 0;
     this.root.rotation.z = 0;

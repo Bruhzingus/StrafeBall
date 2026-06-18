@@ -33,14 +33,16 @@ export const GAME_CONSTANTS = {
     softLimitBleedRate: 1.2,
     gravity: 18.75,
     fallGravityMultiplier: 1.32,
-    // Jump impulse reduced 35% (8.2 → 5.33) — lower hops.
-    jumpSpeed: 6.9,
+    // Tuned for roughly 25% less regular jump height while keeping the arc responsive.
+    jumpSpeed: 5.98,
     bhopGraceSeconds: 0.12,
     bhopSpeedBonus: 1.035,
     crouchHeightMultiplier: 0.62,
     catchStanceSpeedMultiplier: 0.72,
     stepHeight: 0.45,
-    ceilingClearance: 0.12
+    // Keep the full body below the lowest visual roof beams, not just below the invisible gameplay
+    // ceiling plane. Without this, wall-runs can legally reach the roof while the camera/head clips.
+    ceilingClearance: 0.42
   },
 
   slide: {
@@ -68,7 +70,10 @@ export const GAME_CONSTANTS = {
     minEntrySpeed: 2.0,
     jumpAwaySpeed: 9.5,
     jumpUpSpeed: 8.5,
-    reattachCooldownSeconds: 0.2
+    reattachCooldownSeconds: 0.2,
+    // Stop wall-run reattachment before the player reaches the ceiling clamp; otherwise the run
+    // start boost can re-fire every frame at the top of the gym.
+    ceilingDetachDistance: 0.35
   },
 
   backflip: {
@@ -224,8 +229,8 @@ export const GAME_CONSTANTS = {
     // New: the dash impulse itself is weakened when fired opposite to current momentum,
     // further limiting instant direction reversals.
     oppositeDirectionImpulseScale: 0.7,
-    // Double-jump uses a dash charge and behaves like an upward dash.
-    upwardImpulse: 7.15
+    // Double-jump uses a dash charge; tuned roughly 25% lower while preserving its feel.
+    upwardImpulse: 6.19
   },
 
   match: {
@@ -239,6 +244,7 @@ export const GAME_CONSTANTS = {
     scoreLimit: 5,
     noBoundariesSeconds: 120,
     halfCourtCountdownSeconds: 10,
+    illegalCrossDeathCountdownSeconds: 5,
     startVoteSeconds: 20,
     resetVoteSeconds: 20,
     illegalCrossWarningsBeforePenalty: 1,
@@ -255,8 +261,8 @@ export const GAME_CONSTANTS = {
     halfLength: 18,
     // Ceiling height (meters). Used by the ball ceiling clamp + the side-wall/ceiling 1-bounce rule.
     // Mirrored by the client TUNING.map.wallHeight so server and client agree on the bounce surface.
-    // Raised 1.5× (4.5 → 6.75) so the walls are taller and the ceiling sits higher above play.
-    wallHeight: 6.75,
+    // Raised by one player height (6.75 -> 8.5) so wall-runs have more overhead freedom.
+    wallHeight: 8.5,
     ballCount: 6
   }
 } as const;

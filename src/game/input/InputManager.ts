@@ -1,6 +1,7 @@
 export type MouseButton = 0 | 1 | 2;
 
 const LOCK_OVERLAY_SUPPRESSED_ATTR = 'data-suppress-lock-overlay';
+const TRACKED_MOUSE_BUTTONS: MouseButton[] = [0, 1, 2];
 
 // While the cursor is locked (i.e. you're playing) we swallow the browser's default action for
 // every key EXCEPT these, so combos like Ctrl(crouch)+D no longer fire a bookmark, Ctrl+S a
@@ -36,6 +37,7 @@ export class InputManager {
     window.removeEventListener('mouseup', this.onMouseUp);
     window.removeEventListener('pointerdown', this.onPointerDown);
     window.removeEventListener('pointerup', this.onPointerUp);
+    window.removeEventListener('auxclick', this.onAuxClick);
     window.removeEventListener('contextmenu', this.onContextMenu);
     document.removeEventListener('mousemove', this.onMouseMove);
     document.removeEventListener('pointermove', this.onPointerMove);
@@ -112,6 +114,7 @@ export class InputManager {
     window.addEventListener('pointerup', this.onPointerUp);
     window.addEventListener('mousedown', this.onMouseDown);
     window.addEventListener('mouseup', this.onMouseUp);
+    window.addEventListener('auxclick', this.onAuxClick);
     window.addEventListener('contextmenu', this.onContextMenu);
     document.addEventListener('mousemove', this.onMouseMove);
     document.addEventListener('pointermove', this.onPointerMove);
@@ -143,12 +146,14 @@ export class InputManager {
   private onMouseMove = (event: MouseEvent): void => {
     if (!this.pointerLocked) return;
     if ('PointerEvent' in window) return;
+    this.syncMouseButtonsFromMask(event.buttons);
     this.mouseDeltaX += event.movementX;
     this.mouseDeltaY += event.movementY;
   };
 
   private onPointerMove = (event: PointerEvent): void => {
     if (event.pointerType !== 'mouse' || !this.pointerLocked) return;
+    this.syncMouseButtonsFromMask(event.buttons);
     this.mouseDeltaX += event.movementX;
     this.mouseDeltaY += event.movementY;
   };
@@ -159,11 +164,13 @@ export class InputManager {
     event.preventDefault();
     if (!this.pointerLocked) this.requestPointerLock();
     this.recordMouseDown(event.button);
+    this.syncMouseButtonsFromMask(event.buttons);
   };
 
   private onPointerUp = (event: PointerEvent): void => {
     if (event.pointerType !== 'mouse') return;
     this.recordMouseUp(event.button);
+    this.syncMouseButtonsFromMask(event.buttons);
   };
 
   private onMouseDown = (event: MouseEvent): void => {
@@ -171,10 +178,16 @@ export class InputManager {
     event.preventDefault();
     if (!this.pointerLocked) this.requestPointerLock();
     this.recordMouseDown(event.button);
+    this.syncMouseButtonsFromMask(event.buttons);
   };
 
   private onMouseUp = (event: MouseEvent): void => {
     this.recordMouseUp(event.button);
+    this.syncMouseButtonsFromMask(event.buttons);
+  };
+
+  private onAuxClick = (event: MouseEvent): void => {
+    event.preventDefault();
   };
 
   private onContextMenu = (event: MouseEvent): void => {
@@ -229,6 +242,23 @@ export class InputManager {
     this.mouseDown.delete(button);
     this.mouseReleased.add(button);
   }
+
+  private syncMouseButtonsFromMask(buttons: number): void {
+    if (!Number.isFinite(buttons)) return;
+    for (const button of TRACKED_MOUSE_BUTTONS) {
+      const isDown = (buttons & mouseButtonMask(button)) !== 0;
+      const wasDown = this.mouseDown.has(button);
+      if (isDown && !wasDown) this.recordMouseDown(button);
+      else if (!isDown && wasDown) this.recordMouseUp(button);
+    }
+  }
+}
+
+function mouseButtonMask(button: MouseButton): number {
+  // MouseEvent.buttons uses bit 0 for primary, bit 1 for secondary, bit 2 for auxiliary.
+  if (button === 2) return 2;
+  if (button === 1) return 4;
+  return 1;
 }
 
 function isEditableTarget(target: EventTarget | null): boolean {

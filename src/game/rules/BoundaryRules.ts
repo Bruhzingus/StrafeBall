@@ -13,6 +13,8 @@ export class BoundaryRules {
   public noBoundaries = false;
   public illegalCrossWarnings = 0;
   public opponentPenaltyHits = 0;
+  public illegalCountdownActive = false;
+  public illegalCountdownSeconds = 0;
   public lastMessage = 'Half-court active.';
 
   // Edge-trigger guard: a single sustained excursion past the line counts once, not once
@@ -34,15 +36,18 @@ export class BoundaryRules {
       PLAYER_ID,
       PLAYER_TEAM_ID,
       'negativeZ',
-      toSharedVec3(playerPosition)
+      toSharedVec3(playerPosition),
+      dt
     );
     this.syncPublicState();
 
     const event = this.match.boundary.lastEvent;
     if (event.type === 'half-court-warning') {
-      this.lastMessage = 'Warning: crossed half-court. Get back!';
-    } else if (event.type === 'half-court-penalty') {
-      this.lastMessage = `Penalty! Opponent awarded a hit (total ${this.opponentPenaltyHits}).`;
+      this.lastMessage = 'RED WARNING: illegal half-court. Get back now!';
+    } else if (event.type === 'half-court-elimination') {
+      this.lastMessage = 'Out! Half-court violation.';
+    } else if (this.illegalCountdownActive) {
+      this.lastMessage = `Illegal side! Return in ${Math.ceil(this.illegalCountdownSeconds)}s or you are out.`;
     }
   }
 
@@ -52,6 +57,8 @@ export class BoundaryRules {
     this.noBoundaries = false;
     this.illegalCrossWarnings = 0;
     this.opponentPenaltyHits = 0;
+    this.illegalCountdownActive = false;
+    this.illegalCountdownSeconds = 0;
     this.lastMessage = 'Half-court active.';
   }
 
@@ -59,7 +66,9 @@ export class BoundaryRules {
     const violation = this.match.boundary.illegalCrossByPlayerId[PLAYER_ID];
     this.elapsed = this.match.boundary.elapsedSeconds;
     this.noBoundaries = this.match.boundary.noBoundaries;
-    this.illegalCrossWarnings = violation?.illegalCrossCount ?? 0;
+    this.illegalCrossWarnings = violation?.warningsIssued ?? 0;
+    this.illegalCountdownActive = violation?.deathCountdownActive ?? false;
+    this.illegalCountdownSeconds = violation?.countdownSeconds ?? 0;
     this.opponentPenaltyHits = this.match.scoreByTeamId[OPPONENT_TEAM_ID] ?? 0;
   }
 }

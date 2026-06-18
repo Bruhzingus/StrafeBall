@@ -144,65 +144,95 @@ export function applyHalfCourtRule(
   offenderTeamId: string,
   legalHalf: LegalHalf,
   position: Vec3,
+  dt = 0,
   constants: GameConstants = GAME_CONSTANTS
 ): MatchState {
-  const existing = match.boundary.illegalCrossByPlayerId[playerId] ?? createHalfCourtViolationState();
+  const existing = match.boundary.illegalCrossByPlayerId[playerId] ?? createHalfCourtViolationState(constants);
 
   if (match.boundary.noBoundaries) {
-    return setHalfCourtViolation(match, playerId, { ...existing, wasAcross: false }, { type: 'none' });
-  }
-
-  const across = isIllegalHalfCourtPosition(legalHalf, position, constants);
-  if (!across || existing.wasAcross) {
-    return setHalfCourtViolation(match, playerId, { ...existing, wasAcross: across }, { type: 'none' });
-  }
-
-  const illegalCrossCount = existing.illegalCrossCount + 1;
-  const shouldWarn = illegalCrossCount <= constants.match.illegalCrossWarningsBeforePenalty;
-
-  if (shouldWarn) {
     return setHalfCourtViolation(
       match,
       playerId,
       {
         ...existing,
-        illegalCrossCount,
-        warningsIssued: existing.warningsIssued + 1,
-        wasAcross: true
+        wasAcross: false,
+        deathCountdownActive: false,
+        countdownSeconds: constants.match.illegalCrossDeathCountdownSeconds
       },
-      { type: 'half-court-warning', playerId, warningsIssued: existing.warningsIssued + 1 }
+      { type: 'none' }
     );
   }
 
-  const opponentTeamId = getOpponentTeamId(match, offenderTeamId);
-  const penalizedMatch = opponentTeamId
-    ? applyScore(match, opponentTeamId, constants.match.penaltyHitValue)
-    : match;
-
-  return setHalfCourtViolation(
-    penalizedMatch,
-    playerId,
-    {
-      ...existing,
-      illegalCrossCount,
-      penaltiesIssued: existing.penaltiesIssued + 1,
-      wasAcross: true
-    },
-    {
-      type: 'half-court-penalty',
+  const across = isIllegalHalfCourtPosition(legalHalf, position, constants);
+  if (!across) {
+    return setHalfCourtViolation(
+      match,
       playerId,
-      opponentTeamId: opponentTeamId ?? '',
-      value: constants.match.penaltyHitValue
-    }
-  );
+      {
+        ...existing,
+        wasAcross: false,
+        deathCountdownActive: false,
+        countdownSeconds: constants.match.illegalCrossDeathCountdownSeconds
+      },
+      { type: 'none' }
+    );
+  }
+
+  if (existing.eliminationIssued) {
+    return setHalfCourtViolation(match, playerId, { ...existing, wasAcross: true }, { type: 'none' });
+  }
+
+  const illegalCrossCount = existing.wasAcross ? existing.illegalCrossCount : existing.illegalCrossCount + 1;
+  const shouldWarn =
+    !existing.wasAcross &&
+    existing.warningsIssued < constants.match.illegalCrossWarningsBeforePenalty;
+  const warningsIssued = shouldWarn ? existing.warningsIssued + 1 : existing.warningsIssued;
+  const startingCountdown = existing.deathCountdownActive
+    ? existing.countdownSeconds
+    : constants.match.illegalCrossDeathCountdownSeconds;
+  const countdownSeconds = Math.max(0, startingCountdown - Math.max(0, dt));
+  const nextViolation: HalfCourtViolationState = {
+    ...existing,
+    illegalCrossCount,
+    warningsIssued,
+    wasAcross: true,
+    deathCountdownActive: true,
+    countdownSeconds
+  };
+
+  if (shouldWarn) {
+    return setHalfCourtViolation(
+      match,
+      playerId,
+      nextViolation,
+      { type: 'half-court-warning', playerId, warningsIssued }
+    );
+  }
+
+  if (countdownSeconds <= 0) {
+    return setHalfCourtViolation(
+      match,
+      playerId,
+      {
+        ...nextViolation,
+        eliminationIssued: true
+      },
+      { type: 'half-court-elimination', playerId }
+    );
+  }
+
+  return setHalfCourtViolation(match, playerId, nextViolation, { type: 'none' });
 }
 
-function createHalfCourtViolationState(): HalfCourtViolationState {
+function createHalfCourtViolationState(constants: GameConstants = GAME_CONSTANTS): HalfCourtViolationState {
   return {
     illegalCrossCount: 0,
     warningsIssued: 0,
     penaltiesIssued: 0,
-    wasAcross: false
+    wasAcross: false,
+    deathCountdownActive: false,
+    countdownSeconds: constants.match.illegalCrossDeathCountdownSeconds,
+    eliminationIssued: false
   };
 }
 

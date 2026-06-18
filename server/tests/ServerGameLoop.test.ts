@@ -676,6 +676,21 @@ describe('ServerGameLoop', () => {
       expect(loop.state.match.winnerTeamId).toBe('blue');
     });
 
+    it('eliminates and forfeits a duel player who ignores the half-court countdown', () => {
+      const loop = new ServerGameLoop('room');
+      loop.addPlayer('a', 'A');
+      loop.addPlayer('b', 'B');
+      playNow(loop);
+
+      loop.state.players.a.movement.position = vec3(0, 0, GAME_CONSTANTS.match.halfCourtLineZ + 1);
+      const steps = Math.ceil(GAME_CONSTANTS.match.illegalCrossDeathCountdownSeconds * loop.tickRate) + 2;
+      for (let i = 0; i < steps; i += 1) loop.step();
+
+      expect(loop.state.players.a.combatState).toBe('eliminated');
+      expect(loop.state.match.status).toBe('complete');
+      expect(loop.state.match.winnerTeamId).toBe(loop.state.players.b.teamId);
+    });
+
     it('eliminated players become cover that blocks balls but cannot take more damage', () => {
       const loop = create2v2Loop();
       loop.state.players.b.lives = 1;

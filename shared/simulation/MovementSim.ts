@@ -241,7 +241,12 @@ export function stepMovement(
   }
 
   // --- wall-run (automatic) ---
+  const bodyHeightForWallRun = currentBodyHeight(crouching, sliding, c);
+  const wallRunCeilingY = maxPlayerYForBodyHeight(bodyHeightForWallRun, c) - c.wall.ceilingDetachDistance;
   if (grounded || wallReattachCooldown > 0) {
+    wallRunning = false;
+    wallRunTimer = 0;
+  } else if (py >= wallRunCeilingY) {
     wallRunning = false;
     wallRunTimer = 0;
   } else {
@@ -341,12 +346,14 @@ export function stepMovement(
   pz += vz * dt;
   px = clamp(px, -c.map.halfWidth + c.player.radius, c.map.halfWidth - c.player.radius);
   pz = clamp(pz, -c.map.halfLength + c.player.radius, c.map.halfLength - c.player.radius);
-  const bodyHeight = crouching || sliding ? c.player.height * c.player.crouchHeightMultiplier : c.player.height;
-  const maxPlayerY = Math.max(0, c.map.wallHeight - bodyHeight - c.player.ceilingClearance);
+  const bodyHeight = currentBodyHeight(crouching, sliding, c);
+  const maxPlayerY = maxPlayerYForBodyHeight(bodyHeight, c);
   if (py > maxPlayerY) {
     py = maxPlayerY;
     if (vy > 0) vy = 0;
     wallRunning = false;
+    wallRunTimer = 0;
+    wallReattachCooldown = Math.max(wallReattachCooldown, c.wall.reattachCooldownSeconds);
   }
 
   // --- resolve static boxes (ground support + wall push-out) ---
@@ -435,6 +442,14 @@ function wallJumpAwayDirection(px: number, pz: number, yaw: number, c: GameConst
   if (Math.abs(Math.abs(px) - c.map.halfWidth) < 0.8) return { x: -Math.sign(px), z: 0 };
   if (Math.abs(Math.abs(pz) - c.map.halfLength) < 0.8) return { x: 0, z: -Math.sign(pz) };
   return { x: -Math.sin(yaw), z: -Math.cos(yaw) };
+}
+
+function currentBodyHeight(crouching: boolean, sliding: boolean, c: GameConstants): number {
+  return crouching || sliding ? c.player.height * c.player.crouchHeightMultiplier : c.player.height;
+}
+
+function maxPlayerYForBodyHeight(bodyHeight: number, c: GameConstants): number {
+  return Math.max(0, c.map.wallHeight - bodyHeight - c.player.ceilingClearance);
 }
 
 function sanitizeDashDirection(direction: Vec3 | undefined): { x: number; z: number } | null {

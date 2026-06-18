@@ -1,4 +1,4 @@
-import { Color3, DynamicTexture, Mesh, MeshBuilder, Scene, StandardMaterial } from '@babylonjs/core';
+import { Color3, DynamicTexture, Mesh, MeshBuilder, Scene, StandardMaterial, Texture } from '@babylonjs/core';
 import type { ICanvasRenderingContext } from '@babylonjs/core/Engines/ICanvas';
 import { TUNING } from '../config/tuning';
 import { BLEACHER_LAYOUT } from '../../../shared/simulation/MapGeometry';
@@ -40,6 +40,8 @@ const WALL_X = TUNING.map.halfWidth - PANEL_DEPTH / 2 - 0.04;
 const BLEACHER_LENGTH = TUNING.map.halfLength * BLEACHER_LAYOUT.lengthScale;
 const USABLE_SPAN = BLEACHER_LENGTH - EDGE_PADDING * 2;
 const PANEL_WIDTH = (USABLE_SPAN - PANEL_GAP * (PANEL_COUNT - 1)) / PANEL_COUNT;
+const TEXTURE_WIDTH = 2048;
+const TEXTURE_HEIGHT = 1365;
 
 const GUIDE_PANELS: readonly GuidePanelSpec[] = [
   {
@@ -51,21 +53,21 @@ const GUIDE_PANELS: readonly GuidePanelSpec[] = [
       {
         heading: 'Defense',
         items: [
-          { label: 'EMPTY CLICK', text: 'Catch incoming balls with an empty hand.' },
-          { label: 'STAY READY', text: 'Face the ball, stay in range, and do not dash.' },
-          { label: 'HOLD 2 BALLS', text: 'Auto-parry live shots and send them back faster.' }
+          { label: 'EMPTY CLICK', text: 'Catch with an empty hand.' },
+          { label: 'STAY READY', text: 'Face the ball. Stay close. Do not dash.' },
+          { label: 'HOLD 2 BALLS', text: 'Auto-parry live shots back faster.' }
         ]
       },
       {
         heading: 'Practice Room',
         items: [
-          { label: 'WEST WALL', text: 'Use the buttons for balls, bots, resets, and difficulty.' },
-          { label: 'PORTALS', text: 'Queue 1v1 or 2v2 online matches from the practice gym.' },
-          { text: 'Practice goal: hit dummies and live through return fire.' }
+          { label: 'WEST WALL', text: 'Buttons: balls, bots, resets, difficulty.' },
+          { label: 'PORTALS', text: 'Queue 1v1 or 2v2 from the gym.' },
+          { text: 'Hit dummies and live through return fire.' }
         ]
       }
     ],
-    footer: 'Match goal: score with live hits or wipe the other team.'
+    footer: 'Match goal: score live hits or wipe the other team.'
   },
   {
     name: 'guide_ball',
@@ -76,18 +78,18 @@ const GUIDE_PANELS: readonly GuidePanelSpec[] = [
       {
         heading: 'Hands',
         items: [
-          { label: 'LMB / RMB', text: 'Use your left and right hands separately.' },
+          { label: 'LMB / RMB', text: 'Left hand / right hand.' },
           { label: 'E', text: 'Pick up a loose ball.' },
-          { label: 'R', text: 'Drop the ball in your hand.' }
+          { label: 'R', text: 'Drop your held ball.' }
         ]
       },
       {
         heading: 'Throws',
         items: [
-          { label: 'HOLD CLICK', text: 'Charge a fast, straight throw.' },
+          { label: 'HOLD CLICK', text: 'Charge a fast straight throw.' },
           { label: 'TAP + RELEASE', text: 'Quick lob with more arc.' },
           { label: 'CROUCH + THROW', text: 'Curve the ball.' },
-          { label: 'F', text: 'Fake or cancel a charge.' }
+          { label: 'F', text: 'Fake or cancel.' }
         ]
       }
     ],
@@ -103,7 +105,7 @@ const GUIDE_PANELS: readonly GuidePanelSpec[] = [
         heading: 'Core',
         items: [
           { label: 'W A S D', text: 'Move' },
-          { label: 'MOUSE', text: 'Look and aim' },
+          { label: 'MOUSE', text: 'Look / aim' },
           { label: 'SPACE', text: 'Jump and bunnyhop' },
           { label: 'L-SHIFT', text: 'Dash with 2 charges' },
           { label: 'CTRL', text: 'Crouch' },
@@ -113,8 +115,8 @@ const GUIDE_PANELS: readonly GuidePanelSpec[] = [
       {
         heading: 'Advanced',
         items: [
-          { label: 'WALL-RUN', text: 'Sprint beside a wall to stick and carry speed.' },
-          { label: 'WALL-JUMP', text: 'Jump off the wall to redirect momentum.' },
+          { label: 'WALL-RUN', text: 'Sprint beside a wall to carry speed.' },
+          { label: 'WALL-JUMP', text: 'Jump off the wall to redirect.' },
           { label: 'Q', text: 'Backflip to set up the QTE throw.' }
         ]
       }
@@ -134,13 +136,13 @@ export class GuideWall {
   }
 
   private makePanel(scene: Scene, spec: GuidePanelSpec): void {
-    const texWidth = 1536;
-    const texHeight = 1024;
-    const tex = new DynamicTexture(`${spec.name}_tex`, { width: texWidth, height: texHeight }, scene, false);
+    const tex = new DynamicTexture(`${spec.name}_tex`, { width: TEXTURE_WIDTH, height: TEXTURE_HEIGHT }, scene, true);
     tex.hasAlpha = false;
+    tex.anisotropicFilteringLevel = 16;
+    tex.updateSamplingMode(Texture.TRILINEAR_SAMPLINGMODE);
 
     const ctx = tex.getContext() as GuideCanvasContext2D;
-    drawPanelTexture(ctx, texWidth, texHeight, spec);
+    drawPanelTexture(ctx, TEXTURE_WIDTH, TEXTURE_HEIGHT, spec);
     tex.update(true);
 
     const panelMat = new StandardMaterial(`${spec.name}_mat`, scene);
@@ -198,14 +200,24 @@ function drawPanelTexture(
   ctx.clearRect(0, 0, width, height);
 
   const background = ctx.createLinearGradient(0, 0, width, height);
-  background.addColorStop(0, '#0a1730');
-  background.addColorStop(1, '#07111f');
+  background.addColorStop(0, '#102347');
+  background.addColorStop(1, '#09152a');
   ctx.fillStyle = background;
   ctx.fillRect(0, 0, width, height);
 
-  ctx.fillStyle = 'rgba(255,255,255,0.025)';
-  for (let i = -height; i < width; i += 90) {
-    ctx.fillRect(i, 0, 2, height);
+  const glow = ctx.createRadialGradient(width * 0.28, height * 0.22, 0, width * 0.28, height * 0.22, width * 0.82);
+  glow.addColorStop(0, 'rgba(255,255,255,0.06)');
+  glow.addColorStop(1, 'rgba(255,255,255,0)');
+  ctx.fillStyle = glow;
+  ctx.fillRect(0, 0, width, height);
+
+  ctx.strokeStyle = 'rgba(255,255,255,0.035)';
+  ctx.lineWidth = 2;
+  for (let y = 180; y < height - 120; y += 150) {
+    ctx.beginPath();
+    ctx.moveTo(56, y);
+    ctx.lineTo(width - 56, y);
+    ctx.stroke();
   }
 
   drawRoundedRect(ctx, 18, 18, width - 36, height - 36, 26);
@@ -221,23 +233,23 @@ function drawPanelTexture(
   ctx.stroke();
 
   ctx.fillStyle = spec.accent;
-  ctx.font = '700 54px Arial';
+  ctx.font = '700 74px Arial';
   ctx.textAlign = 'center';
   ctx.textBaseline = 'middle';
   ctx.fillText(spec.title, width / 2, 88);
 
-  const marginX = 64;
-  const labelWidth = 380;
-  const gap = 34;
+  const marginX = 76;
+  const labelWidth = 500;
+  const gap = 42;
   const bodyX = marginX + labelWidth + gap;
   const bodyWidth = width - bodyX - marginX;
-  let y = 190;
+  let y = 202;
 
   for (const section of spec.sections) {
     ctx.textAlign = 'left';
     ctx.textBaseline = 'alphabetic';
     ctx.fillStyle = spec.accent;
-    ctx.font = '700 30px Arial';
+    ctx.font = '700 40px Arial';
     ctx.fillText(section.heading.toUpperCase(), marginX, y);
 
     ctx.strokeStyle = hexToRgba(spec.accent, 0.35);
@@ -246,7 +258,7 @@ function drawPanelTexture(
     ctx.moveTo(marginX, y + 12);
     ctx.lineTo(width - marginX, y + 12);
     ctx.stroke();
-    y += 36;
+    y += 48;
 
     for (const item of section.items) {
       y += drawGuideItem(ctx, marginX, y, labelWidth, bodyX, bodyWidth, item, spec.accent);
@@ -255,19 +267,19 @@ function drawPanelTexture(
     y += 18;
   }
 
-  const footerY = height - 170;
-  drawRoundedRect(ctx, 48, footerY, width - 96, 92, 22);
-  ctx.fillStyle = 'rgba(255,255,255,0.045)';
+  const footerY = height - 196;
+  drawRoundedRect(ctx, 54, footerY, width - 108, 112, 24);
+  ctx.fillStyle = 'rgba(255,255,255,0.06)';
   ctx.fill();
   ctx.strokeStyle = hexToRgba(spec.accent, 0.5);
   ctx.lineWidth = 3;
   ctx.stroke();
 
   ctx.fillStyle = '#dfe9ff';
-  ctx.font = '600 28px Arial';
+  ctx.font = '600 34px Arial';
   ctx.textAlign = 'left';
   ctx.textBaseline = 'middle';
-  drawWrappedText(ctx, spec.footer, 74, footerY + 48, width - 148, 34, 2);
+  drawWrappedText(ctx, spec.footer, 88, footerY + 56, width - 176, 40, 2);
 }
 
 function drawGuideItem(
@@ -280,43 +292,43 @@ function drawGuideItem(
   item: GuideItem,
   accent: string
 ): number {
-  const labelLines = item.label ? wrapText(ctx, item.label, labelWidth, '700 25px Arial') : [];
-  const bodyLines = wrapText(ctx, item.text, bodyWidth, item.label ? '500 26px Arial' : '500 28px Arial');
-  const lineHeight = item.label ? 30 : 32;
+  const labelLines = item.label ? wrapText(ctx, item.label, labelWidth, '700 34px Arial') : [];
+  const bodyLines = wrapText(ctx, item.text, bodyWidth, item.label ? '600 34px Arial' : '600 36px Arial');
+  const lineHeight = item.label ? 40 : 42;
   const contentLines = Math.max(labelLines.length || 0, bodyLines.length);
-  const blockHeight = Math.max(48, contentLines * lineHeight + 8);
+  const blockHeight = Math.max(64, contentLines * lineHeight + 16);
 
   if (item.label) {
-    drawRoundedRect(ctx, labelX, y - 22, labelWidth, blockHeight, 16);
-    ctx.fillStyle = hexToRgba(accent, 0.12);
+    drawRoundedRect(ctx, labelX, y - 26, labelWidth, blockHeight, 18);
+    ctx.fillStyle = hexToRgba(accent, 0.17);
     ctx.fill();
-    ctx.strokeStyle = hexToRgba(accent, 0.32);
+    ctx.strokeStyle = hexToRgba(accent, 0.38);
     ctx.lineWidth = 2;
     ctx.stroke();
 
     ctx.fillStyle = '#ffd74a';
-    ctx.font = '700 25px Arial';
+    ctx.font = '700 34px Arial';
     ctx.textAlign = 'left';
     ctx.textBaseline = 'top';
-    drawTextLines(ctx, labelLines, labelX + 18, y - 10, lineHeight);
+    drawTextLines(ctx, labelLines, labelX + 24, y - 12, lineHeight);
 
     ctx.fillStyle = '#eef4ff';
-    ctx.font = '500 26px Arial';
-    drawTextLines(ctx, bodyLines, bodyX, y - 8, lineHeight);
+    ctx.font = '600 34px Arial';
+    drawTextLines(ctx, bodyLines, bodyX, y - 10, lineHeight);
   } else {
     ctx.fillStyle = hexToRgba(accent, 0.88);
     ctx.beginPath();
-    ctx.arc(labelX + 12, y + 8, 5, 0, Math.PI * 2);
+    ctx.arc(labelX + 14, y + 12, 7, 0, Math.PI * 2);
     ctx.fill();
 
     ctx.fillStyle = '#d9e8ff';
-    ctx.font = '500 28px Arial';
+    ctx.font = '600 36px Arial';
     ctx.textAlign = 'left';
     ctx.textBaseline = 'top';
-    drawTextLines(ctx, bodyLines, labelX + 28, y - 8, lineHeight);
+    drawTextLines(ctx, bodyLines, labelX + 34, y - 10, lineHeight);
   }
 
-  return blockHeight + 10;
+  return blockHeight + 16;
 }
 
 function wrapText(

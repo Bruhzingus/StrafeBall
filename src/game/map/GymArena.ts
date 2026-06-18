@@ -49,6 +49,7 @@ export class GymArena {
   }> = [];
   private coneReleaseSeconds = 0;
   private conesReleased = false;
+  private coneReleaseStartedAt = 0;
 
   constructor(private readonly scene: Scene, private readonly loader: ModelLoader) {}
 
@@ -533,6 +534,7 @@ export class GymArena {
   /** Call once per frame with the scene's accumulated elapsed time (seconds). */
   update(elapsed: number): void {
     this.updateCourtLines(elapsed);
+    this.updateHalfCourtCones(elapsed);
     if (!this.movingDummy) return;
     this.movingDummy.position.x = Math.sin((elapsed / this.movingDummyPeriod) * Math.PI * 2) * this.movingDummyAmplitude;
   }
@@ -616,6 +618,53 @@ export class GymArena {
     this.setLineGlow(negative, new Color3(0.012, 0.035, 0.06), new Color3(0.08, 0.32, 0.62), Math.max(suddenPulse, this.courtLineState.negativeHalfActive ? 0.75 : 0));
     this.setLineGlow(positive, new Color3(0.06, 0.02, 0.008), new Color3(0.62, 0.16, 0.06), Math.max(suddenPulse, this.courtLineState.positiveHalfActive ? 0.75 : 0));
     this.setLineGlow(side, new Color3(0.03, 0.028, 0.012), new Color3(0.18, 0.16, 0.06), Math.max(suddenPulse * 0.78, sideBoost));
+  }
+
+  private updateHalfCourtCones(elapsed: number): void {
+    if (this.courtLineState.suddenDeath && !this.conesReleased) {
+      this.conesReleased = true;
+      this.coneReleaseStartedAt = elapsed;
+      this.coneReleaseSeconds = 0;
+    } else if (!this.courtLineState.suddenDeath && this.conesReleased) {
+      this.conesReleased = false;
+      this.coneReleaseSeconds = 0;
+      for (const cone of this.halfCourtCones) {
+        cone.mesh.setEnabled(true);
+        cone.mesh.visibility = 1;
+        cone.mesh.position.copyFrom(cone.basePosition);
+        cone.mesh.rotation.set(0, cone.baseRotationY, 0);
+        cone.mesh.scaling.set(1, 1, 1);
+      }
+    }
+
+    if (!this.conesReleased) {
+      for (const cone of this.halfCourtCones) {
+        cone.mesh.position.y = cone.basePosition.y + Math.sin(elapsed * 2.1 + cone.phase) * 0.018;
+        cone.mesh.rotation.y = cone.baseRotationY + Math.sin(elapsed * 1.4 + cone.phase) * 0.035;
+      }
+      return;
+    }
+
+    this.coneReleaseSeconds = Math.max(0, elapsed - this.coneReleaseStartedAt);
+    for (const cone of this.halfCourtCones) {
+      const t = Math.max(0, Math.min(1, (this.coneReleaseSeconds - cone.releaseDelay) / 2.6));
+      const eased = 1 - Math.pow(1 - t, 3);
+      const bob = Math.sin((elapsed + cone.phase) * 8) * 0.055 * (1 - t);
+      cone.mesh.setEnabled(t < 0.995);
+      cone.mesh.visibility = Math.max(0, 1 - t * 1.08);
+      cone.mesh.position.set(
+        cone.basePosition.x + cone.drift.x * eased,
+        cone.basePosition.y + cone.drift.y * eased + 1.8 * eased * eased + bob,
+        cone.basePosition.z + cone.drift.z * eased
+      );
+      cone.mesh.rotation.set(
+        cone.spin.x * eased,
+        cone.baseRotationY + cone.spin.y * eased,
+        cone.spin.z * eased
+      );
+      const squash = 1 + 0.16 * Math.sin(t * Math.PI);
+      cone.mesh.scaling.set(1 / squash, squash, 1 / squash);
+    }
   }
 
   private setLineGlow(material: StandardMaterial, base: Color3, peak: Color3, amount: number): void {

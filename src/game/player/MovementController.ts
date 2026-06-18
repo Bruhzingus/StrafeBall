@@ -261,6 +261,10 @@ export class MovementController {
       this.endWallRun();
       return;
     }
+    if (this.root.position.y >= this.maxPlayerY() - TUNING.wall.ceilingDetachDistance) {
+      this.endWallRun();
+      return;
+    }
 
     const normal = this.detectWall();
     if (!normal) {
@@ -467,12 +471,17 @@ export class MovementController {
   private clampToGymBounds(): void {
     this.root.position.x = Math.max(-TUNING.map.halfWidth + TUNING.player.radius, Math.min(TUNING.map.halfWidth - TUNING.player.radius, this.root.position.x));
     this.root.position.z = Math.max(-TUNING.map.halfLength + TUNING.player.radius, Math.min(TUNING.map.halfLength - TUNING.player.radius, this.root.position.z));
-    const maxY = Math.max(0, TUNING.map.wallHeight - this.currentBodyHeight() - TUNING.player.ceilingClearance);
+    const maxY = this.maxPlayerY();
     if (this.root.position.y > maxY) {
       this.root.position.y = maxY;
       if (this.velocity.y > 0) this.velocity.y = 0;
-      this.wallRunning = false;
+      this.endWallRun();
+      this.wallReattachCooldown = Math.max(this.wallReattachCooldown, TUNING.wall.reattachCooldownSeconds);
     }
+  }
+
+  private maxPlayerY(): number {
+    return Math.max(0, TUNING.map.wallHeight - this.currentBodyHeight() - TUNING.player.ceilingClearance);
   }
 
   private applyCameraHeight(): void {

@@ -190,6 +190,7 @@ export class ArenaScene {
   private perfReportMaxCorrectionM = 0;
   private footstepTimer = 0;
   private squeakCooldown = 0;
+  private lastBoundaryClockTickSecond: number | null = null;
   private lastGroundMoveDir: Vec3 = { x: 0, y: 0, z: 1 };
   private lastGroundSpeed = 0;
 
@@ -701,6 +702,7 @@ export class ArenaScene {
     }
 
     this.rules.boundary.update(dt, this.player.root.position);
+    this.updateBoundaryClockSound(this.rules.boundary.elapsed, this.rules.boundary.noBoundaries);
     this.updateOfflineCourtLines();
     this.effects.update(dt);
 
@@ -812,6 +814,7 @@ export class ArenaScene {
     }
     this.updatePredictionDebugMetrics(local);
     this.updateDesyncTracker(dt);
+    if (snapshot) this.updateBoundaryClockSound(snapshot.room.match.boundary.elapsedSeconds, snapshot.room.match.boundary.noBoundaries);
 
     // Initialise prediction from the first authoritative player state we receive.
     if (local && !this.predictedMovement) {
@@ -1953,6 +1956,24 @@ export class ArenaScene {
       positiveHalfActive,
       suddenDeath: snapshot.room.match.boundary.noBoundaries
     });
+  }
+
+  private updateBoundaryClockSound(elapsedSeconds: number, noBoundaries: boolean): void {
+    const remainingSeconds = Math.max(0, GAME_CONSTANTS.match.noBoundariesSeconds - elapsedSeconds);
+    const active =
+      !noBoundaries &&
+      remainingSeconds > 0 &&
+      remainingSeconds <= GAME_CONSTANTS.match.halfCourtCountdownSeconds;
+
+    if (!active) {
+      this.lastBoundaryClockTickSecond = null;
+      return;
+    }
+
+    const second = Math.max(1, Math.ceil(remainingSeconds));
+    if (second === this.lastBoundaryClockTickSecond) return;
+    this.lastBoundaryClockTickSecond = second;
+    this.sound.clockTick(second);
   }
 
   private aimedOnlineBallId(local: PlayerState): string | null {

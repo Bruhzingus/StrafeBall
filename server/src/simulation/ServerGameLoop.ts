@@ -1450,7 +1450,7 @@ export class ServerGameLoop {
     targetLive.lives = Math.max(0, targetLive.lives - 1);
     if (targetLive.lives <= 0) this.eliminatePlayer(targetLive.id);
     this.refreshLastPlayerBuffs(this.stepNowMs);
-    this.check2v2Victory();
+    this.checkEliminationVictory();
 
     return {
       kind: 'life',
@@ -1488,8 +1488,8 @@ export class ServerGameLoop {
     this.parryCooldownByPlayerId.set(playerId, 0);
   }
 
-  private check2v2Victory(): void {
-    if (this.state.match.mode !== '2v2' || this.state.match.status === 'complete') return;
+  private checkEliminationVictory(): void {
+    if (this.state.match.status === 'complete') return;
     for (const teamId of this.state.match.teamIds) {
       const teamPlayers = Object.values(this.state.players).filter((player) => player.teamId === teamId);
       if (!this.teamHasNoActiveFighter(teamPlayers)) continue;
@@ -1502,7 +1502,7 @@ export class ServerGameLoop {
         countdownSeconds: 0
       };
       this.refreshLastPlayerBuffs(this.stepNowMs);
-      if (this.debug.NET_DEBUG) this.logger(`2v2 elimination win team=${winnerTeamId}`);
+      if (this.debug.NET_DEBUG) this.logger(`elimination win team=${winnerTeamId}`);
       return;
     }
   }
@@ -1739,8 +1739,14 @@ export class ServerGameLoop {
         player.id,
         player.teamId,
         player.legalHalf,
-        player.movement.position
+        player.movement.position,
+        dt
       );
+      if (this.state.match.boundary.lastEvent.type === 'half-court-elimination') {
+        this.eliminatePlayer(player.id);
+        this.refreshLastPlayerBuffs(this.stepNowMs);
+        this.checkEliminationVictory();
+      }
     }
   }
 

@@ -6,7 +6,7 @@ import { BallState } from '../ball/BallState';
 import { Crosshair } from './Crosshair';
 import { MusicHud } from './MusicHud';
 import type { ServerSnapshot } from '../../../shared/protocol';
-import type { PlayerState, RoomState } from '../../../shared/types';
+import type { HalfCourtViolationState, PlayerState, RoomState } from '../../../shared/types';
 import { SERVER_TICK_RATE, SNAPSHOT_RATE } from '../../../shared/netConfig';
 import type { MusicHudState } from '../audio/MusicManager';
 
@@ -22,6 +22,7 @@ export class Hud {
   private readonly hitMarker: HTMLDivElement;
   private readonly countdown: HTMLDivElement;
   private readonly boundaryClock: HTMLDivElement;
+  private readonly halfCourtWarning: HTMLDivElement;
   private readonly musicHud: MusicHud;
   private lastCountdownLabel = '';
   private lastBoundaryClockLabel = '';
@@ -72,6 +73,9 @@ export class Hud {
     this.boundaryClock = document.createElement('div');
     this.boundaryClock.className = 'boundary-clock';
     this.root.appendChild(this.boundaryClock);
+    this.halfCourtWarning = document.createElement('div');
+    this.halfCourtWarning.className = 'half-court-warning';
+    this.root.appendChild(this.halfCourtWarning);
     this.musicHud = new MusicHud(this.root);
 
     // Center stamina segments — one block + inner fill per charge, pre-built, no per-frame allocations.
@@ -189,6 +193,15 @@ export class Hud {
     this.hearts.style.display = 'none';
     this.bottomLeft.style.display = 'none';
     this.updateBoundaryClock(rules.boundary.elapsed, rules.boundary.noBoundaries);
+    this.updateHalfCourtWarning({
+      deathCountdownActive: rules.boundary.illegalCountdownActive,
+      countdownSeconds: rules.boundary.illegalCountdownSeconds,
+      warningsIssued: rules.boundary.illegalCrossWarnings,
+      illegalCrossCount: rules.boundary.illegalCrossWarnings,
+      penaltiesIssued: 0,
+      wasAcross: rules.boundary.illegalCountdownActive,
+      eliminationIssued: false
+    });
     const movement = player.lastMovementSnapshot;
     const hands = player.hands;
     const v = movement.velocity;
@@ -199,7 +212,10 @@ export class Hud {
         ? 'full'
         : `+1 in ${Math.max(0, TUNING.dash.rechargeSeconds - player.dash.rechargeTimer).toFixed(1)}s`;
     const staminaHtml = this.staminaBar(player.dash.charges, TUNING.dash.maxCharges, dashRecharge);
-    this.updateStaminaWidget(player.dash.charges, TUNING.dash.maxCharges);
+    this.updateStaminaWidget(
+      this.staminaWidgetValue(player.dash.charges, player.dash.rechargeTimer),
+      TUNING.dash.maxCharges
+    );
 
     // Bhop: grace window visible while it's active so you can time re-jumps.
     const bhopHtml = movement.bhopGraceTimer > 0
@@ -299,6 +315,7 @@ export class Hud {
     this.bottomLeft.style.display = 'none';
     const players = Object.values(room.players).sort(compareHudPlayers);
     const local = room.players[localPlayerId];
+    this.updateHalfCourtWarning(local ? room.match.boundary.illegalCrossByPlayerId[localPlayerId] : undefined);
     const localTeamId = local?.teamId ?? room.match.teamIds[0] ?? 'blue';
     const opponentTeamId = room.match.teamIds.find((teamId) => teamId !== localTeamId) ?? room.match.teamIds[1] ?? 'red';
     const localTeam = players.filter((player) => player.teamId === localTeamId);
@@ -390,7 +407,10 @@ export class Hud {
     const staminaHtml = local
       ? this.staminaBar(local.dash.charges, TUNING.dash.maxCharges, local.dash.charges >= TUNING.dash.maxCharges ? 'full' : `+1 in ${Math.max(0, TUNING.dash.rechargeSeconds - local.dash.rechargeTimerSeconds).toFixed(1)}s`)
       : this.staminaBar(0, TUNING.dash.maxCharges, '-');
-    this.updateStaminaWidget(local?.dash.charges ?? 0, TUNING.dash.maxCharges);
+    this.updateStaminaWidget(
+      local ? this.staminaWidgetValue(local.dash.charges, local.dash.rechargeTimerSeconds) : 0,
+      TUNING.dash.maxCharges
+    );
     this.updateCrosshairMode({
       holding: !!left?.heldBallId || !!right?.heldBallId,
       charging: left?.mode === 'charging' || right?.mode === 'charging',
@@ -464,6 +484,25 @@ export class Hud {
     void this.boundaryClock.offsetWidth;
     this.boundaryClock.classList.add('boundary-clock--visible');
     this.lastBoundaryClockLabel = label;
+  }
+
+  private updateHalfCourtWarning(violation: HalfCourtViolationState | undefined): void {
+    const active = !!violation?.deathCountdownActive && !violation.eliminationIssued && violation.countdownSeconds > 0;
+    if (!active) {
+      this.halfCourtWarning.classList.remove('half-court-warning--visible', 'half-court-warning--urgent');
+      this.halfCourtWarning.innerHTML = '';
+      return;
+    }
+
+    const seconds = Math.max(1, Math.ceil(violation.countdownSeconds));
+    this.halfCourtWarning.classList.toggle('half-court-warning--urgent', seconds <= 3);
+    this.halfCourtWarning.innerHTML = `
+      <div class="half-court-warning__stamp">RED WARNING</div>
+      <div class="half-court-warning__title">GET BACK TO YOUR SIDE</div>
+      <div class="half-court-warning__body">Illegal half-court crossing</div>
+      <div class="half-court-warning__timer">OUT IN <strong>${seconds}</strong></div>
+    `;
+    this.halfCourtWarning.classList.add('half-court-warning--visible');
   }
 
   /** Writes markup to a panel only if it changed since last frame (avoids per-frame DOM churn). */
@@ -599,6 +638,8 @@ export class Hud {
     const clamped = Math.min(maxCharges, Math.max(0, charges));
     const full = Math.floor(clamped);
     const partial = clamped - full;
+    this.staminaWidget.classList.toggle('stamina-widget--ready', full > 0);
+    this.staminaWidget.classList.toggle('stamina-widget--empty', full <= 0);
 
     for (let i = 0; i < this.staminaWidgetSegs.length; i++) {
       const seg = this.staminaWidgetSegs[i];
@@ -633,6 +674,13 @@ export class Hud {
         }
       }
     }
+  }
+
+  private staminaWidgetValue(charges: number, rechargeTimerSeconds: number): number {
+    const clampedCharges = Math.min(TUNING.dash.maxCharges, Math.max(0, Math.floor(charges)));
+    if (clampedCharges >= TUNING.dash.maxCharges) return TUNING.dash.maxCharges;
+    const recharge01 = Math.max(0, Math.min(1, rechargeTimerSeconds / TUNING.dash.rechargeSeconds));
+    return clampedCharges + recharge01;
   }
 
   private staminaBar(charges: number, maxCharges: number, rechargeText: string): string {
