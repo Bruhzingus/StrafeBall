@@ -11,6 +11,9 @@ import { ballVariantForState, createBallMesh, getBallMaterial, updateBallBlobSha
 import type { BallVisualEffects } from './BallVisualEffects';
 import { BALL_QTE_TRAIL_SPEED_THRESHOLD, BALL_TRAIL_INTERVAL_SECONDS } from './BallVisualEffects';
 
+const BALL_SQUASH_XZ_SCALE = 0.08;
+const BALL_SQUASH_Y_SCALE = 0.12;
+
 export class BallManager {
   public readonly balls: Ball[] = [];
   private highlightedBallId: number | null = null;
@@ -123,8 +126,8 @@ export class BallManager {
   private updateImpactSquash(ball: Ball, dt: number): void {
     if (ball.impactPulse > 0) {
       const amount = ball.impactPulse;
-      ball.mesh.scaling.set(1 + amount * 0.16, 1 - amount * 0.22, 1 + amount * 0.16);
-      ball.impactPulse = Math.max(0, ball.impactPulse - dt * 5.8);
+      ball.mesh.scaling.set(1 + amount * BALL_SQUASH_XZ_SCALE, 1 - amount * BALL_SQUASH_Y_SCALE, 1 + amount * BALL_SQUASH_XZ_SCALE);
+      ball.impactPulse = Math.max(0, ball.impactPulse - dt * 8.5);
       return;
     }
     if (ball.mesh.scaling.x !== 1 || ball.mesh.scaling.y !== 1 || ball.mesh.scaling.z !== 1) {

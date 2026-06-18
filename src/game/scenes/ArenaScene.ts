@@ -51,6 +51,7 @@ type PendingOnlineScoreEvent = { teamId: string; score: number; delta: number; d
 const BALL_BOUNCE_GAIN = 0.42 * 0.7;
 const BALL_BOUNCE_DECAY = 0.72;
 const MIN_BALL_BOUNCE_GAIN = 0.00001;
+const BALL_IMPACT_FX_MIN_SPEED = 8;
 const AUDIO_UP = { x: 0, y: 1, z: 0 };
 
 export class ArenaScene {
@@ -214,7 +215,7 @@ export class ArenaScene {
 
     // Balls collide with bleachers only (mats are immune to balls — they pass through).
     this.ballManager = new BallManager(loader, this.gym.ballCollision, (speed, bounceCount, position) => {
-      this.ballVisualEffects.spawnImpact(position, speed);
+      if (speed >= BALL_IMPACT_FX_MIN_SPEED) this.ballVisualEffects.spawnImpact(position, speed);
       this.playBallBounceSound(speed, bounceCount, position);
     }, this.ballVisualEffects);
     this.ballManager.spawnCenterLineBalls();
@@ -1515,7 +1516,7 @@ export class ArenaScene {
       if (previous === undefined || ball.bounceCount <= previous) continue;
 
       const speed = Math.max(4, Math.hypot(ball.velocity.x, ball.velocity.y, ball.velocity.z));
-      this.ballVisualEffects.spawnImpact(ball.position, speed);
+      if (speed >= BALL_IMPACT_FX_MIN_SPEED) this.ballVisualEffects.spawnImpact(ball.position, speed);
       this.playBallBounceSound(speed, ball.bounceCount, ball.position);
     }
   }

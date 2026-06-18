@@ -64,6 +64,11 @@ interface BallVisual {
   lastBounceCount: number;
 }
 
+const BALL_IMPACT_VISUAL_MIN_SPEED = 8;
+const BALL_IMPACT_VISUAL_SPEED_RANGE = 22;
+const BALL_SQUASH_XZ_SCALE = 0.08;
+const BALL_SQUASH_Y_SCALE = 0.12;
+
 interface CatchRecoilTrack {
   dirX: number;
   dirZ: number;
@@ -675,7 +680,13 @@ export class NetworkRenderer {
         }
       }
       visual.mesh.position.set(target.x, target.y, target.z);
-      if (ball.bounceCount > visual.lastBounceCount) visual.impactPulse = Math.max(visual.impactPulse, 1);
+      if (ball.bounceCount > visual.lastBounceCount) {
+        const speed = Math.hypot(ball.velocity.x, ball.velocity.y, ball.velocity.z);
+        if (speed >= BALL_IMPACT_VISUAL_MIN_SPEED) {
+          const pulse = Math.min(0.55, (speed - BALL_IMPACT_VISUAL_MIN_SPEED) / BALL_IMPACT_VISUAL_SPEED_RANGE);
+          visual.impactPulse = Math.max(visual.impactPulse, pulse);
+        }
+      }
       visual.lastBounceCount = ball.bounceCount;
       const desiredMaterial = getBallMaterial(
         this.scene,
@@ -1092,8 +1103,8 @@ export class NetworkRenderer {
 
     if (visual.impactPulse > 0) {
       const amount = visual.impactPulse;
-      visual.mesh.scaling.set(1 + amount * 0.16, 1 - amount * 0.22, 1 + amount * 0.16);
-      visual.impactPulse = Math.max(0, visual.impactPulse - dt * 5.8);
+      visual.mesh.scaling.set(1 + amount * BALL_SQUASH_XZ_SCALE, 1 - amount * BALL_SQUASH_Y_SCALE, 1 + amount * BALL_SQUASH_XZ_SCALE);
+      visual.impactPulse = Math.max(0, visual.impactPulse - dt * 8.5);
     } else if (visual.mesh.scaling.x !== 1 || visual.mesh.scaling.y !== 1 || visual.mesh.scaling.z !== 1) {
       visual.mesh.scaling.setAll(1);
     }

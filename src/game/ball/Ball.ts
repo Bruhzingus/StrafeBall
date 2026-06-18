@@ -5,6 +5,8 @@ import { CollisionWorld } from '../map/Collider';
 import { BLEACHER_LAYOUT } from '../../../shared/simulation/MapGeometry';
 
 let nextBallId = 1;
+const IMPACT_SQUASH_MIN_SPEED = 8;
+const IMPACT_SQUASH_SPEED_RANGE = 22;
 
 export class Ball {
   public readonly id = nextBallId++;
@@ -84,6 +86,11 @@ export class Ball {
     if (firstFlight) {
       this.velocity.x += this.curveAccel.x * dt;
       this.velocity.z += this.curveAccel.z * dt;
+    }
+    if ((this.state === BallState.Dead || this.state === BallState.Loose) && this.mesh.position.y <= TUNING.ball.radius + 0.05) {
+      const frictionFactor = Math.max(0, 1 - TUNING.ball.looseFriction * dt);
+      this.velocity.x *= frictionFactor;
+      this.velocity.z *= frictionFactor;
     }
     // Scalar integrate (no temp Vector3 from .scale) — runs for every ball every frame.
     this.mesh.position.x += this.velocity.x * dt;
@@ -203,7 +210,10 @@ export class Ball {
 
   private emitImpact(normalImpactSpeed: number): void {
     if (normalImpactSpeed <= 0) return;
-    this.impactPulse = Math.max(this.impactPulse, Math.min(1, normalImpactSpeed / 18));
+    if (normalImpactSpeed >= IMPACT_SQUASH_MIN_SPEED) {
+      const pulse = Math.min(0.55, (normalImpactSpeed - IMPACT_SQUASH_MIN_SPEED) / IMPACT_SQUASH_SPEED_RANGE);
+      this.impactPulse = Math.max(this.impactPulse, pulse);
+    }
     if (!this.onImpact) return;
     const reboundSpeed = normalImpactSpeed * TUNING.ball.bounceRestitution;
     const reboundHeight = (reboundSpeed * reboundSpeed) / (2 * TUNING.ball.gravity);
