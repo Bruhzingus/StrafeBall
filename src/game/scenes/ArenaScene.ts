@@ -979,8 +979,12 @@ export class ArenaScene {
         ` oldestSnapshotAge=${render.oldestSnapshotAgeMs.toFixed(1)}ms` +
         ` wsBuffered=${snap.socketBufferedAmount}B` +
         ` remoteUnderruns=${render.bufferUnderrunsPerSec.toFixed(1)}/s` +
+        ` remoteOverruns=${render.bufferOverrunsPerSec.toFixed(1)}/s` +
         ` remoteBuffer=${render.remoteInterpolationBufferSize}` +
         ` ballBuffer=${render.ballInterpolationBufferSize}` +
+        ` ballPredictions=${render.ballPredictionCount}` +
+        ` ballPredictionCorrections=${render.ballPredictionCorrections}` +
+        ` ballPredictionMaxCorrections=${render.ballPredictionMaxCorrections}` +
         ` activeMeshes=${activeMeshes}`
       );
 
@@ -1146,6 +1150,7 @@ export class ArenaScene {
     for (const box of this.netCollisionBoxes) this.netCollisionScratch.push(box);
     for (const player of Object.values(snapshot.room.players)) {
       if (player.id === this.multiplayer.localPlayerId) continue;
+      if (player.connected === false) continue;
       if (player.combatState !== 'eliminated') continue;
       const pos = player.movement.position;
       const radius = TUNING.player.radius * 0.95;
@@ -2093,6 +2098,7 @@ function teamLivesFor(snapshot: ServerSnapshot, teamId: string): number {
 
 function hasEliminatedPlayers(snapshot: ServerSnapshot): boolean {
   for (const player of Object.values(snapshot.room.players)) {
+    if (player.connected === false) continue;
     if (player.combatState === 'eliminated') return true;
   }
   return false;

@@ -243,6 +243,13 @@ export interface ResetVoteState {
   resetSerial: number;
 }
 
+export interface StartVoteState {
+  votesByPlayerId: Record<string, true>;
+  voteCount: number;
+  requiredVotes: number;
+  expiresAtMs: number | null;
+}
+
 export interface RoomState {
   id: string;
   tick: number;
@@ -251,6 +258,7 @@ export interface RoomState {
   balls: Record<string, BallState>;
   mats: Record<string, MatState>;
   resetVote: ResetVoteState;
+  startVote: StartVoteState;
 }
 
 export type ValidationResult<Reason extends string = string> =

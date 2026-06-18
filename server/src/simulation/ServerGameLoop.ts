@@ -41,6 +41,7 @@ import {
 import {
   beginCharge,
   cancelCharge,
+  createHands,
   dropBallFromHand,
   heldBallCount,
   sweptCatchFailReason,
@@ -51,8 +52,8 @@ import {
   type SweptCatchFailReason,
   type SweptParryFailReason
 } from '../../../shared/simulation/HandSim';
-import { createResetVoteState, createRoomState, registerPlayerHit } from '../../../shared/simulation/MatchSim';
-import { createPlayerState, grantDashCharge } from '../../../shared/simulation/PlayerSim';
+import { createResetVoteState, createRoomState, createStartVoteState, registerPlayerHit } from '../../../shared/simulation/MatchSim';
+import { createDashState, createMovementInternalState, createPlayerState, grantDashCharge } from '../../../shared/simulation/PlayerSim';
 import { advanceNoBoundariesTimer, applyHalfCourtRule, createMatchState } from '../../../shared/simulation/RuleSim';
 import {
   BLEACHER_LAYOUT,
@@ -194,6 +195,7 @@ const MAX_INPUT_QUEUE = SERVER_INPUT_QUEUE_LIMIT;
 // If no fresh input arrives for this long, the player's input is treated as neutral (so a
 // backgrounded/frozen tab doesn't keep walking or charging on the last-held input).
 const STALE_INPUT_MS = 1000;
+const START_VOTE_TTL_MS = GAME_CONSTANTS.match.startVoteSeconds * 1000;
 const RESET_VOTE_TTL_MS = GAME_CONSTANTS.match.resetVoteSeconds * 1000;
 const LAST_PLAYER_BUFF_MS = GAME_CONSTANTS.match.lastPlayerBuffSeconds * 1000;
 
@@ -228,6 +230,7 @@ export class ServerGameLoop {
   private readonly lastEnqueuedSeqByPlayerId = new Map<string, number>();
   private readonly parryCooldownByPlayerId = new Map<string, number>();
   private readonly lastInputDebugAtByPlayerId = new Map<string, number>();
+  private readonly startVotesByPlayerId = new Map<string, number>();
   private readonly resetVotesByPlayerId = new Map<string, number>();
   // Anti "2-ball technique": tracks each player's most recent throw so a second throw landing
   // within `doubleThrowWindowSeconds` of the first gets BOTH balls slowed (see handleThrow).
@@ -317,12 +320,7 @@ export class ServerGameLoop {
     this.state.players[playerId] = player;
     this.seedInputTracking(playerId, slot.yawRadians);
     this.syncPlayerScores();
-
-    // Warmup → playing once the configured roster is ready; (re)start the match clock fresh.
-    if (this.hasFullRoster() && this.hasEnoughConnectedTeamsToPlay() && this.state.match.status !== 'complete') {
-      this.startMatch();
-    }
-    this.syncResetVoteState();
+    this.reconcilePregameState('join');
     return player;
   }
 
@@ -345,20 +343,20 @@ export class ServerGameLoop {
     this.catchAttemptByKey.delete(`${playerId}:right`);
     this.lastCatchAttemptIdByKey.delete(`${playerId}:left`);
     this.lastCatchAttemptIdByKey.delete(`${playerId}:right`);
+    this.startVotesByPlayerId.delete(playerId);
     this.resetVotesByPlayerId.delete(playerId);
-    this.resolveResetVotesAfterRosterChange();
-    this.refreshLastPlayerBuffs(this.now());
+    this.reconcilePregameState('remove');
   }
 
   /** Mark a player connected/disconnected (drives match pause + the connected flag). */
   setConnected(playerId: string, connected: boolean, reconnectDeadlineAtMs: number | null = null): void {
     const player = this.state.players[playerId];
     if (!player) return;
+    if (!connected) this.dropAllHeldBalls(player);
     player.connected = connected;
     player.reconnectDeadlineAtMs = connected ? null : reconnectDeadlineAtMs;
     if (connected) this.lastInputAtByPlayerId.set(playerId, this.now());
-    this.resolveResetVotesAfterRosterChange();
-    this.refreshLastPlayerBuffs(this.now());
+    this.reconcilePregameState(connected ? 'reconnect' : 'disconnect');
   }
 
   /**
@@ -368,15 +366,8 @@ export class ServerGameLoop {
   abandon(playerId: string): void {
     const player = this.state.players[playerId];
     if (!player) return;
-    // A match "in progress" includes the pre-round countdown — leaving during it still forfeits.
-    const matchInProgress = this.state.match.status === 'playing' || this.state.match.status === 'countdown';
-    const remainingTeams = this.connectedTeamIds(playerId);
-    if (matchInProgress && remainingTeams.length === 1) {
-      const winnerTeamId = remainingTeams[0];
-      this.forfeitTo(winnerTeamId);
-      if (this.debug.NET_DEBUG) this.logger(`forfeit win team=${winnerTeamId} (opponent abandoned)`);
-    }
     this.removePlayer(playerId);
+    this.resolveForfeitIfNeeded('abandon');
   }
 
   dispose(): void {
@@ -393,6 +384,7 @@ export class ServerGameLoop {
     this.catchAttemptByKey.clear();
     this.lastCatchAttemptIdByKey.clear();
     this.recentHitByBallId.clear();
+    this.startVotesByPlayerId.clear();
     this.resetVotesByPlayerId.clear();
   }
 
@@ -632,6 +624,74 @@ export class ServerGameLoop {
     return { ok: true, log: `reset vote pending player=${playerId} votes=${vote.voteCount}/${vote.requiredVotes}` };
   }
 
+  handleStartVote(playerId: string): ActionResult {
+    const player = this.state.players[playerId];
+    if (!player) return { ok: false, reason: 'unknown-player' };
+    if (this.matchMode !== '2v2') return { ok: false, reason: 'unsupported-mode' };
+    if (this.state.match.status !== 'warmup') return { ok: false, reason: 'match-already-started' };
+    if (!this.canVoteStart()) return { ok: false, reason: 'start-not-available' };
+
+    this.pruneStartVotes(this.now());
+    this.startVotesByPlayerId.set(playerId, this.now() + START_VOTE_TTL_MS);
+    this.syncStartVoteState();
+
+    const vote = this.state.startVote;
+    if (this.debug.NET_DEBUG) this.logger(`start vote player=${playerId} votes=${vote.voteCount}/${vote.requiredVotes}`);
+    if (vote.requiredVotes > 0 && vote.voteCount >= vote.requiredVotes) {
+      this.beginPregameCountdown('vote');
+      return { ok: true, log: `start vote approved player=${playerId}` };
+    }
+    return { ok: true, log: `start vote pending player=${playerId} votes=${vote.voteCount}/${vote.requiredVotes}` };
+  }
+
+  handleTeamSwitch(playerId: string, targetTeamId: string, requestedSlotIndex?: number): ActionResult {
+    const player = this.state.players[playerId];
+    if (!player) return { ok: false, reason: 'unknown-player' };
+    if (this.matchMode !== '2v2') return { ok: false, reason: 'unsupported-mode' };
+    if (this.state.match.status !== 'warmup') return { ok: false, reason: 'teams-locked' };
+    if (!this.teamIds.includes(targetTeamId)) return { ok: false, reason: 'invalid-team' };
+
+    const slot = this.resolveRequestedSlot(targetTeamId, requestedSlotIndex);
+    if (!slot) return { ok: false, reason: 'invalid-slot' };
+
+    const occupant = Object.values(this.state.players).find((candidate) =>
+      candidate.id !== playerId &&
+      candidate.teamId === slot.teamId &&
+      candidate.teamSlotIndex === slot.teamSlotIndex
+    );
+    const sourceSlot = this.slotForPlayer(player);
+
+    if (occupant) {
+      this.dropAllHeldBalls(occupant);
+      occupant.teamId = sourceSlot.teamId;
+      occupant.spawnSide = sourceSlot.spawnSide;
+      occupant.legalHalf = sourceSlot.spawnSide;
+      occupant.teamSlotIndex = sourceSlot.teamSlotIndex;
+      occupant.movement = this.spawnMovement(sourceSlot);
+      occupant.movementInternal = createMovementInternalState();
+      occupant.hands = createHands();
+      occupant.dash = createDashState();
+      occupant.lastPlayerBuffUntilMs = null;
+      this.seedInputTracking(occupant.id, sourceSlot.yawRadians);
+    }
+
+    this.dropAllHeldBalls(player);
+    player.teamId = slot.teamId;
+    player.spawnSide = slot.spawnSide;
+    player.legalHalf = slot.spawnSide;
+    player.teamSlotIndex = slot.teamSlotIndex;
+    player.movement = this.spawnMovement(slot);
+    player.movementInternal = createMovementInternalState();
+    player.hands = createHands();
+    player.dash = createDashState();
+    player.lastPlayerBuffUntilMs = null;
+    this.seedInputTracking(player.id, slot.yawRadians);
+
+    this.clearVotesForPregameChange();
+    this.syncPlayerScores();
+    return { ok: true, log: `team switch player=${playerId} team=${slot.teamId} slot=${slot.teamSlotIndex + 1}` };
+  }
+
   step(): ServerSnapshot {
     this.advance();
     return this.snapshot();
@@ -643,6 +703,8 @@ export class ServerGameLoop {
     // One wall-clock read per step, reused for all history timestamps + attempt windows so every
     // sample/attempt in this tick shares a consistent "now".
     this.stepNowMs = this.now();
+    this.pruneExpiredReconnects(this.stepNowMs);
+    this.pruneStartVotes(this.stepNowMs);
     this.pruneResetVotes(this.stepNowMs);
 
     // Advance the pre-round countdown. While counting down, players are frozen (look only) and no
@@ -692,6 +754,7 @@ export class ServerGameLoop {
       this.updateRules(fixedDt);
     }
 
+    this.repairBallHandConsistency();
     this.syncPlayerScores();
   }
 
@@ -791,6 +854,10 @@ export class ServerGameLoop {
 
   getLastSnapshotBuildMs(): number {
     return this.lastSnapshotBuildMs;
+  }
+
+  private historyMaxSamples(): number {
+    return Math.max(16, Math.ceil(this.tickRate * ((GAME_CONSTANTS.combat.defenseHistoryMs / 1000) + 0.25)));
   }
 
   getDebugBufferStats(): {
@@ -1051,11 +1118,17 @@ export class ServerGameLoop {
     if (!canScorePlayerHit(ball)) return null;
     const ownerId = ball.ownerId;
     if (!ownerId) return null;
+    const scorer = this.state.players[ownerId];
+    if (!scorer) return null;
     const radius = playerBallHitRadius();
+    const radiusSq = radius * radius;
 
     for (const targetId in this.state.players) {
       const target = this.state.players[targetId];
-      if (!this.canBallDamagePlayer(ball, target)) continue;
+      if (targetId === ownerId) continue;
+      if (!this.isPlayerActiveFighter(target)) continue;
+      if (!this.isOpponent(scorer, target)) continue;
+      if (horizontalDistanceSqToSegment(target.movement.position, segPrev, segCurr) > radiusSq) continue;
       const hitbox = playerHitCapsule(target);
       if (!sweptBallHitsBody(segPrev, segCurr, hitbox.base, hitbox.top, radius)) continue;
 
@@ -1064,7 +1137,6 @@ export class ServerGameLoop {
         this.scatterHeldBalls(target);
       }
 
-      const scorer = this.state.players[ownerId];
       const previousScore = scorer ? this.state.match.scoreByTeamId[scorer.teamId] ?? 0 : 0;
       const previousWinner = this.state.match.winnerTeamId;
       // Capture the thrower's pre-hit dash so a lag-comp catch that supersedes this hit can restore
@@ -1103,12 +1175,14 @@ export class ServerGameLoop {
     const owner = this.state.players[ball.ownerId];
     if (!owner) return null;
     const radius = playerBallHitRadius();
+    const radiusSq = radius * radius;
 
     for (const targetId in this.state.players) {
       const target = this.state.players[targetId];
       if (target.id === owner.id) continue;
-      if (!this.isPlayerAlive(target)) continue;
+      if (!this.isPlayerActiveFighter(target)) continue;
       if (!this.isSameTeam(owner, target)) continue;
+      if (horizontalDistanceSqToSegment(target.movement.position, segPrev, segCurr) > radiusSq) continue;
       const hitbox = playerHitCapsule(target);
       if (!sweptBallHitsBody(segPrev, segCurr, hitbox.base, hitbox.top, radius)) continue;
 
@@ -1198,8 +1272,7 @@ export class ServerGameLoop {
     if (this.state.match.mode !== '2v2' || this.state.match.status === 'complete') return;
     for (const teamId of this.state.match.teamIds) {
       const teamPlayers = Object.values(this.state.players).filter((player) => player.teamId === teamId);
-      if (teamPlayers.length < this.playersPerTeam) continue;
-      if (!teamPlayers.every((player) => player.combatState === 'eliminated')) continue;
+      if (!this.teamHasNoActiveFighter(teamPlayers)) continue;
       const winnerTeamId = this.state.match.teamIds.find((candidate) => candidate !== teamId) ?? null;
       if (!winnerTeamId) return;
       this.state.match = {
@@ -1222,10 +1295,10 @@ export class ServerGameLoop {
 
     for (const teamId of this.state.match.teamIds) {
       const teamPlayers = Object.values(this.state.players).filter((player) => player.teamId === teamId);
-      const alive = teamPlayers.filter((player) => this.isPlayerAlive(player));
-      const eliminated = teamPlayers.filter((player) => player.combatState === 'eliminated');
-      const buffedPlayer = this.state.match.status !== 'complete' && alive.length === 1 && eliminated.length >= 1
-        ? alive[0]
+      const activeFighters = teamPlayers.filter((player) => this.isPlayerActiveFighter(player));
+      const unavailableCount = Math.max(0, this.playersPerTeam - activeFighters.length);
+      const buffedPlayer = this.state.match.status !== 'complete' && activeFighters.length === 1 && unavailableCount >= 1
+        ? activeFighters[0]
         : null;
 
       for (const player of teamPlayers) {
@@ -1257,7 +1330,7 @@ export class ServerGameLoop {
 
   private canBallDamagePlayer(ball: BallState, target: PlayerState): boolean {
     if (!canScorePlayerHit(ball)) return false;
-    if (!this.isPlayerAlive(target)) return false;
+    if (!this.isPlayerActiveFighter(target)) return false;
     if (!ball.ownerId || target.id === ball.ownerId) return false;
     const owner = this.state.players[ball.ownerId];
     if (!owner) return false;
@@ -1265,20 +1338,24 @@ export class ServerGameLoop {
   }
 
   private canPlayerCatchBall(player: PlayerState, ball: BallState): boolean {
-    if (!this.isPlayerAlive(player)) return false;
+    if (!this.isPlayerActiveFighter(player)) return false;
     if (!isBallCatchableInFlight(ball)) return false;
     if (ball.ownerId !== null && ball.ownerId === player.id && ball.bounceCount <= 0) return false;
     return true;
   }
 
   private canPlayerParryBall(player: PlayerState, ball: BallState): boolean {
-    if (!this.isPlayerAlive(player)) return false;
+    if (!this.isPlayerActiveFighter(player)) return false;
     if (ball.phase !== 'live' || ball.ownerKind !== 'player' || !ball.ownerId) return false;
     return ball.ownerId !== player.id;
   }
 
   private isPlayerAlive(player: PlayerState): boolean {
     return player.combatState !== 'eliminated' && player.lives > 0;
+  }
+
+  private isPlayerActiveFighter(player: PlayerState): boolean {
+    return player.connected !== false && this.isPlayerAlive(player);
   }
 
   private playerMovementScale(player: PlayerState): number {
@@ -1310,6 +1387,7 @@ export class ServerGameLoop {
   private pushEliminatedCoverBoxes(target: AABB[], exceptPlayerId?: string): void {
     for (const player of Object.values(this.state.players)) {
       if (player.id === exceptPlayerId) continue;
+      if (player.connected === false) continue;
       if (player.combatState !== 'eliminated') continue;
       const pos = player.movement.position;
       const radius = GAME_CONSTANTS.player.radius * 0.95;
@@ -1328,6 +1406,7 @@ export class ServerGameLoop {
 
   private hasEliminatedPlayers(): boolean {
     for (const player of Object.values(this.state.players)) {
+      if (player.connected === false) continue;
       if (player.combatState === 'eliminated') return true;
     }
     return false;
@@ -1406,7 +1485,7 @@ export class ServerGameLoop {
   private recordDefenseSample(player: PlayerState): void {
     let ring = this.defenseHistoryByPlayerId.get(player.id);
     if (!ring) {
-      ring = new TimeRing<DefenseSample>(GAME_CONSTANTS.combat.defenseHistoryMs);
+      ring = new TimeRing<DefenseSample>(GAME_CONSTANTS.combat.defenseHistoryMs, this.historyMaxSamples());
       this.defenseHistoryByPlayerId.set(player.id, ring);
     }
     const m = player.movement;
@@ -1440,7 +1519,7 @@ export class ServerGameLoop {
     }
     let ring = this.ballHistoryById.get(ball.id);
     if (!ring) {
-      ring = new TimeRing<BallSample>(GAME_CONSTANTS.combat.defenseHistoryMs);
+      ring = new TimeRing<BallSample>(GAME_CONSTANTS.combat.defenseHistoryMs, this.historyMaxSamples());
       this.ballHistoryById.set(ball.id, ring);
     }
     ring.push({
@@ -1628,6 +1707,7 @@ export class ServerGameLoop {
     const minTime = nowMs - GAME_CONSTANTS.combat.defenseMaxRewindMs - GAME_CONSTANTS.combat.defenseInputGraceMs;
     for (const defenderId in this.state.players) {
       const defender = this.state.players[defenderId];
+      if (defender.connected === false) continue;
       const recentHitForDefender = this.hasRecentHitAgainst(defenderId);
       if (!this.isPlayerAlive(defender) && !recentHitForDefender) continue;
       for (const hand of ['left', 'right'] as const) {
@@ -1882,38 +1962,32 @@ export class ServerGameLoop {
   }
 
   private performRoomReset(triggerPlayerId: string): void {
-    const players = Object.values(this.state.players).map((player) =>
+    const players = Object.values(this.state.players)
+      .filter((player) => player.connected !== false)
+      .map((player) =>
       createPlayerState(player.id, player.teamId, player.legalHalf, {
         name: player.name,
         spawnSide: player.spawnSide,
         teamSlotIndex: player.teamSlotIndex,
         score: 0,
-        connected: player.connected,
-        reconnectDeadlineAtMs: player.reconnectDeadlineAtMs,
+        connected: true,
+        reconnectDeadlineAtMs: null,
         movement: this.spawnMovement(this.slotForPlayer(player))
       })
     );
 
     this.resetSerial += 1;
+    this.startVotesByPlayerId.clear();
     this.resetVotesByPlayerId.clear();
     // Preserve the running tick so it stays monotonic across the reset (see createFreshRoomState).
     this.state = this.createFreshRoomState(players, this.state.tick);
     for (const player of players) {
       this.seedInputTracking(player.id, this.slotForPlayer(player).yawRadians);
     }
-    if (this.hasFullRoster(players) && this.connectedTeamCount(players) >= this.teamsRequiredToPlay) this.startMatch();
+    if (this.matchMode === '1v1' && this.shouldAutoStart(players)) this.beginPregameCountdown('auto');
+    this.syncStartVoteState();
     this.syncResetVoteState();
     if (this.debug.NET_DEBUG) this.logger(`room reset by player=${triggerPlayerId} players=${players.length} serial=${this.resetSerial}`);
-  }
-
-  private resolveResetVotesAfterRosterChange(): void {
-    this.pruneResetVotes(this.now());
-    this.syncResetVoteState();
-    const vote = this.state.resetVote;
-    if (vote.requiredVotes > 0 && vote.voteCount >= vote.requiredVotes && vote.voteCount > 0) {
-      const triggerPlayerId = Object.keys(vote.votesByPlayerId)[0] ?? 'roster-change';
-      this.performRoomReset(triggerPlayerId);
-    }
   }
 
   private pruneResetVotes(now: number): void {
@@ -1945,6 +2019,146 @@ export class ServerGameLoop {
       expiresAtMs,
       resetSerial: this.resetSerial
     });
+  }
+
+  private pruneStartVotes(now: number): void {
+    let changed = false;
+    for (const [playerId, expiresAtMs] of this.startVotesByPlayerId) {
+      const player = this.state.players[playerId];
+      if (!player || player.connected === false || expiresAtMs <= now || this.state.match.status !== 'warmup') {
+        this.startVotesByPlayerId.delete(playerId);
+        changed = true;
+      }
+    }
+    if (changed) this.syncStartVoteState();
+  }
+
+  private syncStartVoteState(): void {
+    const votesByPlayerId: Record<string, true> = {};
+    let expiresAtMs: number | null = null;
+
+    for (const [playerId, expiry] of this.startVotesByPlayerId) {
+      if (!this.state.players[playerId] || this.state.players[playerId].connected === false) continue;
+      votesByPlayerId[playerId] = true;
+      expiresAtMs = expiresAtMs === null ? expiry : Math.min(expiresAtMs, expiry);
+    }
+
+    this.state.startVote = createStartVoteState({
+      votesByPlayerId,
+      voteCount: Object.keys(votesByPlayerId).length,
+      requiredVotes: this.canVoteStart() ? this.connectedCount() : 0,
+      expiresAtMs
+    });
+  }
+
+  private reconcilePregameState(reason: 'join' | 'remove' | 'disconnect' | 'reconnect'): void {
+    this.pruneStartVotes(this.now());
+    this.pruneResetVotes(this.now());
+    this.resolveResetVotesAfterRosterChange();
+    this.startVotesByPlayerId.clear();
+    this.syncStartVoteState();
+    this.refreshLastPlayerBuffs(this.now());
+
+    if (this.state.match.status === 'complete') {
+      this.performRoomReset(`post-complete:${reason}`);
+      return;
+    }
+
+    if (this.state.match.status === 'countdown' || this.state.match.status === 'playing') {
+      this.resolveForfeitIfNeeded(reason);
+    } else if (this.shouldAutoStart()) {
+      this.beginPregameCountdown('auto');
+    } else {
+      this.state.match = { ...this.state.match, status: 'warmup', countdownSeconds: 0, winnerTeamId: null };
+      this.syncStartVoteState();
+      this.syncResetVoteState();
+    }
+  }
+
+  private clearVotesForPregameChange(): void {
+    this.startVotesByPlayerId.clear();
+    this.resetVotesByPlayerId.clear();
+    this.syncStartVoteState();
+    this.syncResetVoteState();
+  }
+
+  private resolveResetVotesAfterRosterChange(): void {
+    this.syncResetVoteState();
+    const vote = this.state.resetVote;
+    if (vote.requiredVotes > 0 && vote.voteCount >= vote.requiredVotes && vote.voteCount > 0) {
+      const triggerPlayerId = Object.keys(vote.votesByPlayerId)[0] ?? 'roster-change';
+      this.performRoomReset(triggerPlayerId);
+    }
+  }
+
+  private pruneExpiredReconnects(nowMs: number): void {
+    const expired: string[] = [];
+    for (const player of Object.values(this.state.players)) {
+      if (player.connected !== false) continue;
+      if ((player.reconnectDeadlineAtMs ?? 0) > nowMs) continue;
+      expired.push(player.id);
+    }
+    for (const playerId of expired) this.abandon(playerId);
+  }
+
+  private canVoteStart(players: PlayerState[] = Object.values(this.state.players)): boolean {
+    if (this.matchMode !== '2v2') return false;
+    const connectedPlayers = players.filter((player) => player.connected !== false);
+    if (connectedPlayers.length < 2) return false;
+    return this.connectedTeamCount(connectedPlayers) >= this.teamsRequiredToPlay;
+  }
+
+  private shouldAutoStart(players: PlayerState[] = Object.values(this.state.players)): boolean {
+    if (!this.hasFullRoster(players)) return false;
+    return this.teamIds.every((teamId) => players.filter((player) => player.connected !== false && player.teamId === teamId).length >= this.playersPerTeam);
+  }
+
+  private beginPregameCountdown(kind: 'auto' | 'vote'): void {
+    this.startVotesByPlayerId.clear();
+    this.syncStartVoteState();
+    this.state.match = {
+      ...this.state.match,
+      status: 'countdown',
+      countdownSeconds: GAME_CONSTANTS.match.countdownSeconds,
+      elapsedSeconds: 0,
+      winnerTeamId: null,
+      boundary: { ...this.state.match.boundary, elapsedSeconds: 0, noBoundaries: false, lastEvent: { type: 'none' } }
+    };
+    if (this.debug.NET_DEBUG) this.logger(`match start ${kind} players=${this.connectedCount()}/${this.maxPlayers}`);
+  }
+
+  private resolveForfeitIfNeeded(reason: string): void {
+    if (this.state.match.status !== 'countdown' && this.state.match.status !== 'playing') return;
+
+    const activeTeams = this.state.match.teamIds.filter((teamId) =>
+      Object.values(this.state.players).some((player) => player.teamId === teamId && this.isPlayerActiveFighter(player))
+    );
+
+    if (activeTeams.length === 1) {
+      this.forfeitTo(activeTeams[0]);
+      if (this.debug.NET_DEBUG) this.logger(`forfeit win team=${activeTeams[0]} reason=${reason}`);
+      return;
+    }
+
+    if (activeTeams.length === 0) {
+      this.state.match = { ...this.state.match, status: 'warmup', countdownSeconds: 0, winnerTeamId: null };
+      this.syncStartVoteState();
+    }
+  }
+
+  private resolveRequestedSlot(teamId: string, requestedSlotIndex?: number): PlayerSlot | null {
+    if (requestedSlotIndex !== undefined) {
+      return this.playerSlots.find((slot) => slot.teamId === teamId && slot.teamSlotIndex === requestedSlotIndex) ?? null;
+    }
+    return this.playerSlots.find((slot) =>
+      slot.teamId === teamId &&
+      !Object.values(this.state.players).some((player) => player.teamId === slot.teamId && player.teamSlotIndex === slot.teamSlotIndex)
+    ) ?? this.playerSlots.find((slot) => slot.teamId === teamId) ?? null;
+  }
+
+  private teamHasNoActiveFighter(players: PlayerState[]): boolean {
+    const activeCount = players.filter((player) => this.isPlayerActiveFighter(player)).length;
+    return activeCount === 0 && players.length >= this.playersPerTeam;
   }
 
   private dropOneHeldBall(player: PlayerState): void {
@@ -1987,6 +2201,96 @@ export class ServerGameLoop {
       const speed = 6 + Math.random() * 4;
       res.ball.velocity = vec3(Math.cos(angle) * speed, 5, Math.sin(angle) * speed);
       this.state.balls[ballId] = res.ball;
+    }
+  }
+
+  /**
+   * Defensive invariant repair: hands and held balls must agree on ownership. Under very spammy
+   * throw/catch races we can otherwise strand a ball in `phase=held` after the hand that owned it
+   * already moved on, which shows up as a persistent visual "ghost" ball. We prefer the player hand
+   * as the source of truth for control, then either realign the ball to that claim or drop orphaned
+   * held balls back into the world.
+   */
+  private repairBallHandConsistency(): void {
+    const claims = new Map<string, { playerId: string; hand: HandSide }>();
+    const duplicateClaims = new Set<string>();
+
+    for (const playerId in this.state.players) {
+      const player = this.state.players[playerId];
+      for (const hand of ['left', 'right'] as const) {
+        const ballId = player.hands[hand].heldBallId;
+        if (!ballId) continue;
+        if (claims.has(ballId)) {
+          duplicateClaims.add(ballId);
+          continue;
+        }
+        claims.set(ballId, { playerId, hand });
+      }
+    }
+
+    for (const playerId in this.state.players) {
+      const player = this.state.players[playerId];
+      let hands = player.hands;
+      let changed = false;
+
+      for (const hand of ['left', 'right'] as const) {
+        const ballId = hands[hand].heldBallId;
+        if (!ballId) continue;
+        const ball = this.state.balls[ballId];
+        const duplicated = duplicateClaims.has(ballId);
+        const valid =
+          !duplicated &&
+          !!ball &&
+          ball.phase === 'held' &&
+          ball.heldByPlayerId === playerId &&
+          ball.heldHand === hand;
+        if (valid) continue;
+        hands = clearHeldHand(hands, hand);
+        changed = true;
+        if (this.debug.NET_DEBUG) {
+          this.logger(
+            `repair cleared hand player=${playerId} hand=${hand} ball=${ballId}` +
+            ` duplicated=${Number(duplicated)} phase=${ball?.phase ?? 'missing'}`
+          );
+        }
+      }
+
+      if (changed) this.state.players[playerId] = { ...player, hands };
+    }
+
+    for (const ballId in this.state.balls) {
+      const ball = this.state.balls[ballId];
+      const claim = claims.get(ballId);
+
+      if (ball.phase !== 'held') {
+        if (claim) {
+          const player = this.state.players[claim.playerId];
+          const hand = player?.hands[claim.hand];
+          if (player && hand?.heldBallId === ballId) {
+            this.state.players[claim.playerId] = { ...player, hands: clearHeldHand(player.hands, claim.hand) };
+            if (this.debug.NET_DEBUG) {
+              this.logger(`repair cleared stale claim player=${claim.playerId} hand=${claim.hand} ball=${ballId} phase=${ball.phase}`);
+            }
+          }
+        }
+        continue;
+      }
+
+      if (!claim || duplicateClaims.has(ballId)) {
+        this.state.balls[ballId] = markBallDead(ball);
+        if (this.debug.NET_DEBUG) {
+          this.logger(
+            `repair dropped orphan held-ball ball=${ballId} owner=${ball.heldByPlayerId ?? '-'} hand=${ball.heldHand ?? '-'} duplicated=${Number(duplicateClaims.has(ballId))}`
+          );
+        }
+        continue;
+      }
+
+      if (ball.heldByPlayerId === claim.playerId && ball.heldHand === claim.hand) continue;
+      this.state.balls[ballId] = catchBall(ball, claim.playerId, claim.hand);
+      if (this.debug.NET_DEBUG) {
+        this.logger(`repair realigned held-ball ball=${ballId} owner=${claim.playerId} hand=${claim.hand}`);
+      }
     }
   }
 
@@ -2127,7 +2431,7 @@ export class ServerGameLoop {
     if (player) player.lastProcessedInputSeq = 0;
     // Fresh defense history + cleared catch-attempt state (reset/respawn/rejoin must not reuse old
     // history across a discontinuity — that would lag-comp against pre-reset positions).
-    this.defenseHistoryByPlayerId.set(playerId, new TimeRing<DefenseSample>(GAME_CONSTANTS.combat.defenseHistoryMs));
+    this.defenseHistoryByPlayerId.set(playerId, new TimeRing<DefenseSample>(GAME_CONSTANTS.combat.defenseHistoryMs, this.historyMaxSamples()));
     this.catchAttemptByKey.delete(`${playerId}:left`);
     this.catchAttemptByKey.delete(`${playerId}:right`);
     this.lastCatchAttemptIdByKey.set(`${playerId}:left`, 0);
@@ -2153,7 +2457,8 @@ export class ServerGameLoop {
       // state). Carry the running tick forward; resetSerial is what signals a reset to the client.
       tick: startTick,
       players,
-      balls: createInitialBalls(),
+      balls: createInitialBalls(this.initialBallCount()),
+      startVote: createStartVoteState(),
       resetVote: createResetVoteState({
         requiredVotes: players.filter((player) => player.connected !== false).length,
         resetSerial: this.resetSerial
@@ -2164,29 +2469,48 @@ export class ServerGameLoop {
       playersPerTeam: this.playersPerTeam,
       maxPlayers: this.maxPlayers
     });
-    // Start in warmup until the configured roster is present (#15). With a full roster we enter the pre-round
-    // COUNTDOWN (startMatch is also called by the reset/join paths and re-affirms this); the match
-    // clock shouldn't run while the creator waits for an opponent.
-    const readyToStart = this.hasFullRoster(players) && this.connectedTeamCount(players) >= this.teamsRequiredToPlay;
+    // Fresh room state always returns to warmup. Joins / explicit start votes / auto-start checks
+    // drive the next countdown transition so resets and post-game roster changes land in a clean
+    // pre-game waiting state instead of silently re-entering the round.
     return {
       ...room,
       match: {
         ...match,
-        status: readyToStart ? 'countdown' : 'warmup',
-        countdownSeconds: readyToStart ? GAME_CONSTANTS.match.countdownSeconds : 0
+        status: 'warmup',
+        countdownSeconds: 0
       }
     };
   }
+
+  private initialBallCount(): number {
+    return this.matchMode === '2v2'
+      ? GAME_CONSTANTS.match.twoVTwoBallCount
+      : GAME_CONSTANTS.map.ballCount;
+  }
 }
 
-function createInitialBalls(): BallState[] {
+function createInitialBalls(ballCount: number = GAME_CONSTANTS.map.ballCount): BallState[] {
   const spacing = 2;
-  const start = -((GAME_CONSTANTS.map.ballCount - 1) * spacing) / 2;
+  const start = -((ballCount - 1) * spacing) / 2;
   const balls: BallState[] = [];
-  for (let i = 0; i < GAME_CONSTANTS.map.ballCount; i += 1) {
+  for (let i = 0; i < ballCount; i += 1) {
     balls.push(createBallState(`ball_${i}`, vec3(start + i * spacing, GAME_CONSTANTS.ball.radius + 0.05, 0)));
   }
   return balls;
+}
+
+function horizontalDistanceSqToSegment(point: Vec3, a: Vec3, b: Vec3): number {
+  const abX = b.x - a.x;
+  const abZ = b.z - a.z;
+  const apX = point.x - a.x;
+  const apZ = point.z - a.z;
+  const lenSq = abX * abX + abZ * abZ;
+  const t = lenSq > 0 ? Math.max(0, Math.min(1, (apX * abX + apZ * abZ) / lenSq)) : 0;
+  const closestX = a.x + abX * t;
+  const closestZ = a.z + abZ * t;
+  const dx = point.x - closestX;
+  const dz = point.z - closestZ;
+  return dx * dx + dz * dz;
 }
 
 function buildPlayerSlots(teamIds: readonly string[], playersPerTeam: number): PlayerSlot[] {
@@ -2529,6 +2853,19 @@ function assignCaughtHand(hands: PlayerState['hands'], hand: HandSide, ballId: s
       mode: 'holding',
       chargeSeconds: 0,
       cooldownSeconds: GAME_CONSTANTS.catch.cooldownSeconds
+    }
+  };
+}
+
+function clearHeldHand(hands: PlayerState['hands'], hand: HandSide): PlayerState['hands'] {
+  return {
+    ...hands,
+    [hand]: {
+      ...hands[hand],
+      heldBallId: null,
+      mode: 'empty',
+      chargeSeconds: 0,
+      catchTrackingSecondsByBallId: {}
     }
   };
 }

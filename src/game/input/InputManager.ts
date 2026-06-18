@@ -97,7 +97,8 @@ export class InputManager {
 
   private onKeyDown = (event: KeyboardEvent): void => {
     // Suppress browser shortcuts during play so in-game key combos can't trigger them.
-    if (this.pointerLocked && !KEY_DEFAULT_ALLOWLIST.has(event.code)) {
+    const preserveGameFocus = event.code === 'Tab' && !isEditableTarget(event.target);
+    if ((this.pointerLocked && !KEY_DEFAULT_ALLOWLIST.has(event.code)) || preserveGameFocus) {
       event.preventDefault();
     }
     if (!this.keysDown.has(event.code)) {
@@ -147,4 +148,12 @@ export class InputManager {
     const suppressOverlay = document.body.getAttribute(LOCK_OVERLAY_SUPPRESSED_ATTR) === '1';
     document.getElementById('lock-overlay')?.classList.toggle('hidden', this.pointerLocked || suppressOverlay);
   };
+}
+
+function isEditableTarget(target: EventTarget | null): boolean {
+  if (!(target instanceof Element)) return false;
+  if (target instanceof HTMLInputElement || target instanceof HTMLTextAreaElement || target instanceof HTMLSelectElement) {
+    return true;
+  }
+  return target.closest('[contenteditable="true"]') !== null;
 }

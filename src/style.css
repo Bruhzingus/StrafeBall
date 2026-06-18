@@ -100,7 +100,7 @@ html, body {
 .hud-top-center { top: 16px; left: 50%; transform: translateX(-50%); text-align: center; }
 .hud-bottom-left { bottom: 16px; left: 16px; transform: rotate(1.1deg); }
 .hud-bottom-right { bottom: 16px; right: 16px; transform: rotate(-1deg); }
-.hud-hearts { top: 166px; right: 16px; min-width: 190px; transform: rotate(0.8deg); z-index: 12; }
+.hud-hearts { bottom: 16px; left: 50%; min-width: 570px; transform: translateX(-50%) rotate(0.8deg); z-index: 12; }
 
 .hud-title {
   font-weight: 900;
@@ -145,12 +145,12 @@ html, body {
 
 .hearts {
   display: inline-flex;
-  gap: 2px;
+  gap: 6px;
   letter-spacing: 0.02em;
 }
 
 .heart {
-  font-size: 18px;
+  font-size: 54px;
   line-height: 1;
   -webkit-text-stroke: 1px var(--ink);
 }
@@ -223,16 +223,52 @@ html, body {
   right: 16px;
   z-index: 11;
   pointer-events: auto;
-  padding: 12px 14px;
-  min-width: 172px;
-  background: var(--paper);
-  border: var(--outline);
-  border-radius: 14px;
-  box-shadow: var(--shadow-hard);
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+  gap: 8px;
   color: var(--ink);
   font-family: var(--font-display);
   font-size: 13px;
   font-weight: 600;
+}
+
+.settings-toggle {
+  border: var(--outline);
+  border-radius: 999px;
+  padding: 7px 12px;
+  background: linear-gradient(180deg, #c78cff 0%, var(--pop-purple) 100%);
+  box-shadow: var(--shadow-hard);
+  color: var(--paper);
+  font: inherit;
+  font-weight: 900;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  cursor: pointer;
+}
+
+.settings-toggle::after {
+  content: "+";
+  display: inline-block;
+  margin-left: 8px;
+}
+
+.settings-panel--expanded .settings-toggle::after {
+  content: "-";
+}
+
+.settings-content {
+  display: none;
+  width: 216px;
+  padding: 12px 14px;
+  background: var(--paper);
+  border: var(--outline);
+  border-radius: 14px;
+  box-shadow: var(--shadow-hard);
+}
+
+.settings-panel--expanded .settings-content {
+  display: block;
 }
 
 .settings-title {
@@ -260,7 +296,7 @@ html, body {
   font-weight: 900;
 }
 
-.settings-panel input[type="range"] {
+.settings-content input[type="range"] {
   width: 100%;
   accent-color: var(--school-red);
   cursor: pointer;
@@ -1071,7 +1107,7 @@ html, body {
   100% { opacity: 0; transform: translate(-50%, -50%) scale(1.22); }
 }
 
-.settings-panel {
+.settings-content {
   background:
     radial-gradient(circle at 12% 0%, rgba(92, 232, 255, 0.22), transparent 36%),
     var(--glass-panel);
@@ -1083,7 +1119,7 @@ html, body {
   margin-top: 8px;
 }
 
-.settings-panel input[type="checkbox"] {
+.settings-content input[type="checkbox"] {
   width: 18px;
   height: 18px;
   accent-color: var(--school-blue);
@@ -1205,6 +1241,79 @@ html, body {
   line-height: 1.45;
 }
 
+.multiplayer-pregame {
+  margin-top: 8px;
+}
+
+.multiplayer-pregame-card {
+  padding: 10px 11px;
+  border: 3px solid var(--ink);
+  border-radius: 14px;
+  background: rgba(16, 27, 52, 0.92);
+  color: var(--paper);
+}
+
+.multiplayer-pregame-title {
+  color: var(--school-gold);
+  font-size: 13px;
+  font-weight: 900;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
+.multiplayer-pregame-slots {
+  display: grid;
+  gap: 6px;
+  margin-top: 8px;
+}
+
+.multiplayer-slot-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+}
+
+.multiplayer-slot-row strong,
+.multiplayer-slot-row span {
+  display: block;
+}
+
+.multiplayer-slot-row span {
+  color: rgba(255, 255, 255, 0.76);
+  font-size: 11px;
+}
+
+.multiplayer-switch,
+.multiplayer-start-vote {
+  border: 2.5px solid var(--ink);
+  border-radius: 10px;
+  padding: 6px 8px;
+  background: linear-gradient(180deg, #ffe481, var(--school-gold));
+  color: var(--ink);
+  font-weight: 900;
+  cursor: pointer;
+  box-shadow: 2px 2px 0 var(--ink);
+}
+
+.multiplayer-switch:disabled,
+.multiplayer-start-vote:disabled {
+  opacity: 0.5;
+  cursor: default;
+  box-shadow: 1px 1px 0 var(--ink);
+}
+
+.multiplayer-pregame-footer {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  margin-top: 10px;
+  color: rgba(255, 255, 255, 0.82);
+  font-size: 11px;
+  font-weight: 800;
+}
+
 .multiplayer-room-summary__line + .multiplayer-room-summary__line {
   margin-top: 3px;
 }
@@ -1248,8 +1357,9 @@ html, body {
   position: fixed;
   top: 18px;
   left: 18px;
-  width: 292px;
-  transform: rotate(-1.2deg);
+  width: 248px;
+  padding: 12px 12px 10px;
+  transform: rotate(-0.6deg);
   pointer-events: auto;
 }
 
@@ -1263,6 +1373,61 @@ html, body {
 .multiplayer-modal--compact .multiplayer-close,
 .multiplayer-modal--compact .multiplayer-join {
   display: none;
+}
+
+.multiplayer-modal--compact .multiplayer-subtitle {
+  display: none;
+}
+
+.multiplayer-modal--compact .multiplayer-kicker {
+  margin-bottom: 2px;
+  font-size: 10px;
+}
+
+.multiplayer-modal--compact .multiplayer-title {
+  font-size: 22px;
+}
+
+.multiplayer-modal--compact .multiplayer-room-card {
+  margin: 8px 0 6px;
+  padding: 8px 9px;
+}
+
+.multiplayer-modal--compact .multiplayer-room {
+  font-size: 14px;
+}
+
+.multiplayer-modal--compact .multiplayer-copy,
+.multiplayer-modal--compact .multiplayer-actions button {
+  padding: 6px 8px;
+}
+
+.multiplayer-modal--compact .multiplayer-line {
+  margin-top: 4px;
+  font-size: 11px;
+}
+
+.multiplayer-modal--compact .multiplayer-room-summary {
+  margin-top: 6px;
+  font-size: 11px;
+  line-height: 1.35;
+}
+
+.multiplayer-modal--compact .multiplayer-pregame {
+  display: none;
+}
+
+.multiplayer-modal--compact .multiplayer-room-notice {
+  min-height: 0;
+  margin-top: 5px;
+}
+
+.multiplayer-modal--compact .multiplayer-error:empty {
+  display: none;
+}
+
+.multiplayer-modal--live.multiplayer-modal--compact .multiplayer-panel--lobby {
+  box-shadow: 6px 6px 0 rgba(21, 33, 59, 0.92);
 }
 
 .multiplayer-modal__shade {
@@ -1506,7 +1671,7 @@ html, body {
   .multiplayer-modal--compact .multiplayer-panel--lobby {
     top: 10px;
     left: 10px;
-    width: min(292px, calc(100vw - 20px));
+    width: min(248px, calc(100vw - 20px));
   }
 
   .hud-debug-panel {
@@ -1519,6 +1684,10 @@ html, body {
     top: auto;
     right: 10px;
     bottom: 10px;
+  }
+
+  .settings-content {
+    width: min(216px, calc(100vw - 20px));
   }
 
   .hud-hearts {

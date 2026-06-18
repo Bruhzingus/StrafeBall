@@ -43,6 +43,12 @@ export interface BallPredictionResult {
   snapReason: string;
 }
 
+export interface BallPredictorStats {
+  activePredictions: number;
+  totalCorrections: number;
+  maxCorrections: number;
+}
+
 export class BallPredictor {
   private readonly balls = new Map<string, PredictedBall>();
 
@@ -106,6 +112,20 @@ export class BallPredictor {
 
   has(ballId: string): boolean {
     return this.balls.has(ballId);
+  }
+
+  getStats(): BallPredictorStats {
+    let totalCorrections = 0;
+    let maxCorrections = 0;
+    for (const entry of this.balls.values()) {
+      totalCorrections += entry.correctionCount;
+      maxCorrections = Math.max(maxCorrections, entry.correctionCount);
+    }
+    return {
+      activePredictions: this.balls.size,
+      totalCorrections,
+      maxCorrections
+    };
   }
 
   /**

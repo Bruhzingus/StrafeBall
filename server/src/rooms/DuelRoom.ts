@@ -3,6 +3,8 @@ import { monitorEventLoopDelay, performance } from 'node:perf_hooks';
 import type {
   ClientMessage,
   InputCommand,
+  StartVoteRequest,
+  SwitchTeamRequest,
   ServerMessage,
   ServerSnapshot
 } from '../../../shared/protocol';
@@ -175,6 +177,18 @@ export class DuelRoom extends Room {
       if (!result.ok) this.reject(client, 'reset', result.reason);
     });
 
+    this.onMessage('start-vote', (client, _message: StartVoteRequest) => {
+      if (!this.allow(client, 'reset')) return;
+      const result = this.game.handleStartVote(client.sessionId);
+      if (!result.ok) this.reject(client, 'start-vote', result.reason);
+    });
+
+    this.onMessage('switch-team', (client, message: SwitchTeamRequest) => {
+      if (!this.allow(client, 'reset')) return;
+      const result = this.game.handleTeamSwitch(client.sessionId, message?.teamId, message?.teamSlotIndex);
+      if (!result.ok) this.reject(client, 'switch-team', result.reason);
+    });
+
     this.onMessage('ping', (client, message: { clientTimeMs?: number }) => {
       if (!this.allow(client, 'ping')) return;
       client.send('pong', {
@@ -345,9 +359,29 @@ export class DuelRoom extends Room {
     const avgSimTickMs = this.simTicksThisWindow > 0 ? this.simTickMsTotal / this.simTicksThisWindow : 0;
 
     const balls = Object.values(this.game.state.balls);
+    const playerStates = Object.values(this.game.state.players);
+    let activePlayers = 0;
+    let alivePlayers = 0;
+    let eliminatedPlayers = 0;
+    let disconnectedPlayers = 0;
+    for (const player of playerStates) {
+      if (player.connected === false) {
+        disconnectedPlayers += 1;
+        continue;
+      }
+      activePlayers += 1;
+      if (player.combatState === 'eliminated' || player.lives <= 0) {
+        eliminatedPlayers += 1;
+      } else {
+        alivePlayers += 1;
+      }
+    }
+    let activeBalls = 0;
     let liveBalls = 0;
-    for (const ball of balls) if (ball.phase === 'live' || ball.phase === 'deflected') liveBalls += 1;
-    const players = Object.keys(this.game.state.players).length;
+    for (const ball of balls) {
+      if (ball.phase !== 'dead') activeBalls += 1;
+      if (ball.phase === 'live' || ball.phase === 'deflected') liveBalls += 1;
+    }
 
     const mem = process.memoryUsage();
     const mb = (bytes: number): string => (bytes / 1048576).toFixed(1);
@@ -375,12 +409,13 @@ export class DuelRoom extends Room {
       `simTickMs avg=${avgSimTickMs.toFixed(2)} max=${this.simTickMsMax.toFixed(2)} ` +
       `snapshotBuildMs avg=${avgSnapshotBuildMs.toFixed(3)} max=${this.snapshotBuildMsMax.toFixed(3)} ` +
       `snapshotBroadcastMs avg=${avgSnapshotBroadcastMs.toFixed(3)} max=${this.snapshotBroadcastMsMax.toFixed(3)} ` +
-      `snapshotLateMs avg=${avgSnapshotLateMs.toFixed(2)} max=${this.snapshotLateMsMax.toFixed(2)} skipped=${this.snapshotDeadlineSkipsThisWindow} ` +
-      `players=${players} balls=${balls.length} liveBalls=${liveBalls} ` +
-      `inputPackets={${inputRates || 'none'}} ` +
+      `snapshotLateMs avg=${avgSnapshotLateMs.toFixed(2)} max=${this.snapshotLateMsMax.toFixed(2)} skippedSnapshots=${this.snapshotDeadlineSkipsThisWindow} noNewTickSkips=${this.snapshotNoNewTickSkipsThisWindow} ` +
+      `players total=${playerStates.length} active=${activePlayers} alive=${alivePlayers} eliminated=${eliminatedPlayers} disconnected=${disconnectedPlayers} ` +
+      `balls total=${balls.length} active=${activeBalls} live=${liveBalls} ` +
+      `inputsProcessed={${inputRates || 'none'}} ` +
       `buffers={input=${buffers.inputQueues} throw=${buffers.pendingThrowEvents} combat=${buffers.pendingCombatEvents} defenseHist=${buffers.defenseHistoryEntries} ballHist=${buffers.ballHistoryEntries} catch=${buffers.catchAttempts} hit=${buffers.recentHits}} ` +
       `combat={catchTry=${c.catchAttemptsOpened} catch=${c.catches} reclaim=${c.reclaimCatches} parry=${c.parries} hit=${c.hits} revert=${c.hitReverts}} ` +
-      `stepCapHits=${this.stepCapHitsThisWindow} ` +
+      `accumulatorCaps=${this.stepCapHitsThisWindow} ` +
       `snapshotBytes avg=${avgPayload} max=${this.snapshotPayloadBytesMax} ` +
       `wsBuffered avg=${socketBuffer.avgBytes}B max=${socketBuffer.maxBytes}B ` +
       `eventLoopMs avg=${eventLoopDelayAvgMs.toFixed(2)} max=${eventLoopDelayMaxMs.toFixed(2)} ` +
@@ -414,7 +449,8 @@ export class DuelRoom extends Room {
     this.snapshotBroadcastMsMax = Math.max(this.snapshotBroadcastMsMax, broadcastMs);
     this.snapshotLateMsTotal += lateMs;
     this.snapshotLateMsMax = Math.max(this.snapshotLateMsMax, lateMs);
-    if (this.debug.PERF_DEBUG && this.snapshotPayloadSamples === 0) {
+    const sampleStride = Math.max(1, Math.floor(SNAPSHOT_RATE / 4));
+    if (this.debug.PERF_DEBUG && this.snapshotPayloadSamples < 8 && this.snapshotsThisWindow % sampleStride === 1) {
       const bytes = JSON.stringify(snapshot).length;
       this.snapshotPayloadBytesTotal += bytes;
       this.snapshotPayloadBytesMax = Math.max(this.snapshotPayloadBytesMax, bytes);

@@ -114,6 +114,9 @@ export interface NetworkRendererDebugStats {
   bufferOverrunsPerSec: number;
   avgSnapshotIntervalMs: number;
   maxSnapshotIntervalMs: number;
+  ballPredictionCount: number;
+  ballPredictionCorrections: number;
+  ballPredictionMaxCorrections: number;
 }
 
 export class NetworkRenderer {
@@ -249,6 +252,10 @@ export class NetworkRenderer {
     const newest = this.snapshotBuffer[this.snapshotBuffer.length - 1];
     this.debugStats.latestSnapshotAgeMs = newest ? Math.max(0, now - newest.serverTimeMs) : 0;
     this.debugStats.oldestSnapshotAgeMs = oldest ? Math.max(0, now - oldest.serverTimeMs) : 0;
+    const ballPredictionStats = this.ballPredictor.getStats();
+    this.debugStats.ballPredictionCount = ballPredictionStats.activePredictions;
+    this.debugStats.ballPredictionCorrections = ballPredictionStats.totalCorrections;
+    this.debugStats.ballPredictionMaxCorrections = ballPredictionStats.maxCorrections;
     return this.debugStats;
   }
 
@@ -483,6 +490,7 @@ export class NetworkRenderer {
 
     for (const player of players) {
       if (player.id === localPlayerId) continue;
+      if (player.connected === false) continue;
       seen.add(player.id);
       const visual = this.ensurePlayer(player);
       this.updateRemoteArmAnimations(player, dt);
@@ -629,7 +637,15 @@ export class NetworkRenderer {
         // Held ball never predicts; forget any stale prediction so a re-throw reseeds cleanly.
         this.ballPredictor.forget(ball.id);
         const holder = findById(players, ball.heldByPlayerId);
-        if (ball.heldByPlayerId === localPlayerId && localPredicted && holder) {
+        const holderClaimsBall = holder?.hands[ball.heldHand].heldBallId === ball.id;
+        if (!holderClaimsBall) {
+          if (isNetworkRenderDebugEnabled()) {
+            console.log(
+              `[net/ball] suppress orphan held-ball id=${ball.id} holder=${ball.heldByPlayerId}` +
+              ` hand=${ball.heldHand} claimed=${holder?.hands[ball.heldHand].heldBallId ?? '-'}`
+            );
+          }
+        } else if (ball.heldByPlayerId === localPlayerId && localPredicted && holder) {
           // Reuse the scratch render-player rather than spreading the holder each frame.
           this.renderPlayerScratch.movement = localPredicted;
           const anchor = computePlayerHandAnchor(this.renderPlayerScratch, ball.heldHand);
@@ -1197,7 +1213,10 @@ function emptyDebugStats(): NetworkRendererDebugStats {
     bufferUnderrunsPerSec: 0,
     bufferOverrunsPerSec: 0,
     avgSnapshotIntervalMs: 0,
-    maxSnapshotIntervalMs: 0
+    maxSnapshotIntervalMs: 0,
+    ballPredictionCount: 0,
+    ballPredictionCorrections: 0,
+    ballPredictionMaxCorrections: 0
   };
 }
 

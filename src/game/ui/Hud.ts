@@ -170,6 +170,7 @@ export class Hud {
     // No countdown in offline practice.
     this.updateCountdown('playing', 0);
     this.hearts.style.display = 'none';
+    this.bottomLeft.style.display = '';
     this.updateBoundaryClock(rules.boundary.elapsed, rules.boundary.noBoundaries);
     const movement = player.lastMovementSnapshot;
     const hands = player.hands;
@@ -274,6 +275,7 @@ export class Hud {
     const room = snapshot.room;
     this.updateCountdown(room.match.status, room.match.countdownSeconds);
     this.updateBoundaryClock(room.match.boundary.elapsedSeconds, room.match.boundary.noBoundaries);
+    this.bottomLeft.style.display = 'none';
     const players = Object.values(room.players).sort(compareHudPlayers);
     const local = room.players[localPlayerId];
     const localTeamId = local?.teamId ?? room.match.teamIds[0] ?? 'blue';
@@ -290,6 +292,9 @@ export class Hud {
     const noBoundariesTime = Math.max(0, TUNING.match.noBoundariesSeconds - room.match.boundary.elapsedSeconds);
     const resetVoteText = room.resetVote.voteCount > 0
       ? `<div class="scoreboard-msg hud-warn">Reset vote: ${room.resetVote.voteCount}/${room.resetVote.requiredVotes}</div>`
+      : '';
+    const startVoteText = room.startVote.voteCount > 0
+      ? `<div class="scoreboard-msg hud-warn">Start vote: ${room.startVote.voteCount}/${room.startVote.requiredVotes}</div>`
       : '';
 
     if (this.debugVisible) {
@@ -336,6 +341,7 @@ export class Hud {
       <div class="${room.match.boundary.noBoundaries ? 'hud-bad' : 'hud-warn'}" style="text-align:center;margin-top:3px">
         ${room.match.boundary.noBoundaries ? 'NO BOUNDARIES' : `Half-court: ${noBoundariesTime.toFixed(0)}s`}
       </div>
+      ${startVoteText}
       ${resetVoteText}
       ${winner}
     `);
@@ -352,25 +358,6 @@ export class Hud {
       catching: left?.mode === 'catching' || right?.mode === 'catching',
       parryReady: !!left?.heldBallId && !!right?.heldBallId
     });
-    const teammateLine = localTeam
-      .filter((player) => player.id !== localPlayerId)
-      .map((player) => `${player.name}${player.connected === false ? ' (DC)' : ''}`)
-      .join(' / ') || (room.match.mode === '2v2' ? 'Open' : '-');
-    const opponentsLine = opponentTeam
-      .map((player) => `${player.name}${player.connected === false ? ' (DC)' : ''}`)
-      .join(' / ') || 'Open';
-    this.setHtml(this.bottomLeft, `
-      <div class="hud-title">Server State</div>
-      <div>M1 L [${escapeHtml(left?.heldBallId ?? '-')}]: ${escapeHtml(left?.mode ?? 'empty')}</div>
-      <div>M2 R [${escapeHtml(right?.heldBallId ?? '-')}]: ${escapeHtml(right?.mode ?? 'empty')}</div>
-      <div>Stamina: ${staminaHtml}</div>
-      <div>Team: ${escapeHtml(localTeamId)} slot ${local ? local.teamSlotIndex + 1 : '-'}</div>
-      <div>Teammate: ${escapeHtml(teammateLine)}</div>
-      <div>Opponents: ${escapeHtml(opponentsLine)}</div>
-      <div>Catch: face ball inside cone</div>
-      <div>Balls - ${this.networkBallTally(snapshot)}</div>
-      <div style="max-width:320px;white-space:normal">${this.networkBallList(snapshot)}</div>
-    `);
   }
 
   /**
@@ -678,6 +665,9 @@ function formatHudRoster(players: PlayerState[], playersPerTeam: number, localPl
 function onlineRoomStatus(room: RoomState): string {
   const playerCount = Object.keys(room.players).length;
   const missingSeats = Math.max(0, room.match.maxPlayers - playerCount);
+  if (room.match.status === 'warmup' && room.match.mode === '2v2' && room.startVote.voteCount > 0) {
+    return `Start vote ${room.startVote.voteCount}/${room.startVote.requiredVotes}.`;
+  }
   if (room.match.status === 'countdown') {
     return `Teams ready. Round starts in ${Math.max(1, Math.ceil(room.match.countdownSeconds))}s.`;
   }

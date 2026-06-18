@@ -21,6 +21,7 @@ export class MultiplayerOverlay {
   private readonly pingValue: HTMLSpanElement;
   private readonly capacityValue: HTMLSpanElement;
   private readonly rosterValue: HTMLDivElement;
+  private readonly pregameValue: HTMLDivElement;
   private readonly noticeValue: HTMLDivElement;
   private readonly errorValue: HTMLDivElement;
   private readonly createButton: HTMLButtonElement;
@@ -101,6 +102,7 @@ export class MultiplayerOverlay {
         <div class="multiplayer-line">Ping <span class="multiplayer-ping">-</span></div>
         <div class="multiplayer-line">Capacity <span class="multiplayer-capacity">0 / 0</span></div>
         <div class="multiplayer-room-summary"></div>
+        <div class="multiplayer-pregame"></div>
         <div class="multiplayer-room-notice"></div>
         <div class="multiplayer-error"></div>
       </div>
@@ -128,6 +130,7 @@ export class MultiplayerOverlay {
     this.pingValue = this.mustQuery<HTMLSpanElement>('.multiplayer-ping');
     this.capacityValue = this.mustQuery<HTMLSpanElement>('.multiplayer-capacity');
     this.rosterValue = this.mustQuery<HTMLDivElement>('.multiplayer-room-summary');
+    this.pregameValue = this.mustQuery<HTMLDivElement>('.multiplayer-pregame');
     this.noticeValue = this.mustQuery<HTMLDivElement>('.multiplayer-room-notice');
     this.errorValue = this.mustQuery<HTMLDivElement>('.multiplayer-error');
     this.createButton = this.mustQuery<HTMLButtonElement>('.multiplayer-create');
@@ -153,6 +156,7 @@ export class MultiplayerOverlay {
     this.fullscreenContinue.addEventListener('click', this.continueAfterFullscreenWarning);
     this.fullscreenRequest.addEventListener('click', this.requestFullscreen);
     this.fullscreenCancel.addEventListener('click', this.cancelFullscreenWarning);
+    this.root.addEventListener('click', this.onRootClick);
     for (const button of this.modeButtons) button.addEventListener('click', this.onModeClick);
     window.addEventListener('keyup', this.onPortalFocusKeyUp);
     document.body.appendChild(this.root);
@@ -169,6 +173,7 @@ export class MultiplayerOverlay {
     this.fullscreenContinue.removeEventListener('click', this.continueAfterFullscreenWarning);
     this.fullscreenRequest.removeEventListener('click', this.requestFullscreen);
     this.fullscreenCancel.removeEventListener('click', this.cancelFullscreenWarning);
+    this.root.removeEventListener('click', this.onRootClick);
     for (const button of this.modeButtons) button.removeEventListener('click', this.onModeClick);
     window.removeEventListener('keyup', this.onPortalFocusKeyUp);
     this.root.remove();
@@ -188,6 +193,10 @@ export class MultiplayerOverlay {
     const snapshot = this.client.latestSnapshot;
     if (this.client.connected && snapshot) {
       this.selectedMode = snapshot.room.match.mode;
+    }
+    const liveMatch = isLiveMatch(snapshot?.room ?? null);
+    if (liveMatch && this.modalOpen) {
+      this.modalOpen = false;
     }
     const connected = this.client.connected;
     const busy = this.client.status === 'connecting';
@@ -226,6 +235,7 @@ export class MultiplayerOverlay {
     this.pingValue.textContent = this.client.pingMs === null ? '-' : `${this.client.pingMs} ms`;
     this.capacityValue.textContent = roomSummary.capacityLabel;
     this.rosterValue.innerHTML = roomSummary.rosterHtml;
+    this.pregameValue.innerHTML = roomSummary.pregameHtml;
     this.noticeValue.textContent = roomSummary.noticeText;
     this.errorValue.textContent = friendlyError(this.client.errorMessage);
 
@@ -249,8 +259,9 @@ export class MultiplayerOverlay {
     this.createButton.textContent = busy ? 'Creating...' : supported ? `Create ${this.selectedMode}` : '2v2 Soon';
     this.joinButton.textContent = busy ? 'Joining...' : supported ? `Join ${this.selectedMode}` : '2v2 Soon';
 
-    const compact = connected && !this.modalOpen && !busy && this.client.status !== 'error';
+    const compact = connected && !busy && this.client.status !== 'error' && (!this.modalOpen || liveMatch);
     this.root.classList.toggle('multiplayer-modal--compact', compact);
+    this.root.classList.toggle('multiplayer-modal--live', liveMatch);
     const shouldShow = this.modalOpen || connected || busy || this.client.status === 'error';
     this.root.classList.toggle('multiplayer-modal--hidden', !shouldShow);
     this.syncLockOverlaySuppression();
@@ -280,16 +291,22 @@ export class MultiplayerOverlay {
     this.update();
   };
 
-  private copyRoomCode = (): void => {
+  private copyRoomCode = (event?: MouseEvent): void => {
+    event?.preventDefault();
+    event?.stopPropagation();
     const code = this.client.roomId;
     if (!code) return;
     if (navigator.clipboard?.writeText) {
       void navigator.clipboard.writeText(code)
         .then(() => this.flashCopied())
-        .catch(() => undefined);
+        .catch(() => {
+          if (copyTextFallback(code)) this.flashCopied();
+          else this.flashCopyFailed();
+        });
       return;
     }
-    this.flashCopied();
+    if (copyTextFallback(code)) this.flashCopied();
+    else this.flashCopyFailed();
   };
 
   private onJoinKeyDown = (event: KeyboardEvent): void => {
@@ -304,6 +321,26 @@ export class MultiplayerOverlay {
     if (mode !== '1v1' && mode !== '2v2') return;
     this.selectedMode = mode;
     this.update();
+  };
+
+  private onRootClick = (event: MouseEvent): void => {
+    const target = event.target instanceof Element ? event.target : null;
+    if (!target) return;
+
+    const voteButton = target.closest<HTMLButtonElement>('.multiplayer-start-vote');
+    if (voteButton) {
+      event.preventDefault();
+      this.client.requestStartVote();
+      return;
+    }
+
+    const switchButton = target.closest<HTMLButtonElement>('.multiplayer-switch');
+    if (!switchButton) return;
+    event.preventDefault();
+    const teamId = switchButton.dataset.teamId;
+    const slotIndex = switchButton.dataset.slotIndex;
+    if (!teamId) return;
+    this.client.requestSwitchTeam(teamId, slotIndex === undefined ? undefined : Number(slotIndex));
   };
 
   private onPortalFocusKeyUp = (event: KeyboardEvent): void => {
@@ -379,11 +416,47 @@ export class MultiplayerOverlay {
     }, 900);
   }
 
+  private flashCopyFailed(): void {
+    this.copyButton.textContent = 'Copy failed';
+    window.setTimeout(() => {
+      if (this.copyButton.isConnected) this.copyButton.textContent = 'Copy';
+    }, 1200);
+  }
+
   private mustQuery<T extends Element>(selector: string): T {
     const el = this.root.querySelector<T>(selector);
     if (!el) throw new Error(`Missing multiplayer overlay element: ${selector}`);
     return el;
   }
+}
+
+function copyTextFallback(text: string): boolean {
+  const textarea = document.createElement('textarea');
+  textarea.value = text;
+  textarea.setAttribute('readonly', 'true');
+  textarea.style.position = 'fixed';
+  textarea.style.left = '-9999px';
+  textarea.style.top = '0';
+  document.body.appendChild(textarea);
+
+  const selection = document.getSelection();
+  const previousRange = selection && selection.rangeCount > 0 ? selection.getRangeAt(0) : null;
+  textarea.focus();
+  textarea.select();
+
+  let copied = false;
+  try {
+    copied = document.execCommand('copy');
+  } catch {
+    copied = false;
+  }
+
+  textarea.remove();
+  if (selection) {
+    selection.removeAllRanges();
+    if (previousRange) selection.addRange(previousRange);
+  }
+  return copied;
 }
 
 function friendlyError(message: string): string {
@@ -406,6 +479,7 @@ function summarizeRoom(room: RoomState | null, localPlayerId: string): {
   statusLabel: string;
   capacityLabel: string;
   rosterHtml: string;
+  pregameHtml: string;
   noticeText: string;
 } {
   if (!room) {
@@ -414,6 +488,7 @@ function summarizeRoom(room: RoomState | null, localPlayerId: string): {
       statusLabel: 'practice',
       capacityLabel: '0 / 0',
       rosterHtml: '',
+      pregameHtml: '',
       noticeText: 'Warm up in the practice court, then create or join a room.'
     };
   }
@@ -451,12 +526,15 @@ function summarizeRoom(room: RoomState | null, localPlayerId: string): {
     <div class="multiplayer-room-summary__line"><strong>${room.match.mode === '2v2' ? 'Your Team' : 'You'}</strong> ${formatRoster(yourTeam, room.match.playersPerTeam, localPlayerId)}</div>
     <div class="multiplayer-room-summary__line"><strong>${room.match.mode === '2v2' ? 'Opponents' : 'Opponent'}</strong> ${formatRoster(opponentTeam, room.match.playersPerTeam, localPlayerId)}</div>
   `;
+  const pregameHtml = buildPregameHtml(room, localPlayerId);
 
   return {
     key: [
       room.match.mode,
       room.match.status,
       room.match.countdownSeconds.toFixed(0),
+      room.startVote.voteCount,
+      room.startVote.requiredVotes,
       players.length,
       maxPlayers,
       disconnected.map((player) => `${player.id}:${formatReconnectSeconds(player.reconnectDeadlineAtMs)}`).join(','),
@@ -465,6 +543,7 @@ function summarizeRoom(room: RoomState | null, localPlayerId: string): {
     statusLabel,
     capacityLabel: `${players.length} / ${maxPlayers}`,
     rosterHtml,
+    pregameHtml,
     noticeText
   };
 }
@@ -487,6 +566,54 @@ function compareRosterPlayers(a: RoomState['players'][string], b: RoomState['pla
   if (a.teamId !== b.teamId) return a.teamId.localeCompare(b.teamId);
   if (a.teamSlotIndex !== b.teamSlotIndex) return a.teamSlotIndex - b.teamSlotIndex;
   return a.id.localeCompare(b.id);
+}
+
+function isLiveMatch(room: RoomState | null): boolean {
+  if (!room) return false;
+  return room.match.status === 'countdown' || room.match.status === 'playing';
+}
+
+function buildPregameHtml(room: RoomState, localPlayerId: string): string {
+  if (room.match.mode !== '2v2' || room.match.status !== 'warmup') return '';
+  const teams = room.match.teamIds.map((teamId) => {
+    const rows: string[] = [];
+    for (let slotIndex = 0; slotIndex < room.match.playersPerTeam; slotIndex += 1) {
+      const occupant = Object.values(room.players).find((player) => player.teamId === teamId && player.teamSlotIndex === slotIndex);
+      const status = occupant
+        ? occupant.connected === false
+          ? 'Disconnected'
+          : occupant.combatState === 'eliminated'
+            ? 'Eliminated'
+            : 'Ready'
+        : 'Open';
+      const buttonLabel = occupant?.id === localPlayerId ? 'You' : occupant ? 'Swap' : 'Join';
+      rows.push(`
+        <div class="multiplayer-slot-row">
+          <div>
+            <strong>${escapeHtml(teamId.toUpperCase())} ${slotIndex + 1}</strong>
+            <span>${occupant ? `${escapeHtml(occupant.name)} · ${status}` : 'Open slot'}</span>
+          </div>
+          <button class="multiplayer-switch" type="button" data-team-id="${escapeHtml(teamId)}" data-slot-index="${slotIndex}">${buttonLabel}</button>
+        </div>
+      `);
+    }
+    return rows.join('');
+  }).join('');
+
+  const voteLine = room.startVote.requiredVotes > 0
+    ? `Vote start: ${room.startVote.voteCount}/${room.startVote.requiredVotes}`
+    : 'Vote start unavailable';
+
+  return `
+    <div class="multiplayer-pregame-card">
+      <div class="multiplayer-pregame-title">Pre-Game Teams</div>
+      <div class="multiplayer-pregame-slots">${teams}</div>
+      <div class="multiplayer-pregame-footer">
+        <span>${voteLine}</span>
+        <button class="multiplayer-start-vote" type="button"${room.startVote.requiredVotes > 0 ? '' : ' disabled'}>Vote Start</button>
+      </div>
+    </div>
+  `;
 }
 
 function escapeHtml(value: string): string {

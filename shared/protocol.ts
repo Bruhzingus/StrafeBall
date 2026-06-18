@@ -114,6 +114,18 @@ export interface ResetRequest {
   playerId: string;
 }
 
+export interface StartVoteRequest {
+  type: 'start-vote';
+  playerId: string;
+}
+
+export interface SwitchTeamRequest {
+  type: 'switch-team';
+  playerId: string;
+  teamId: string;
+  teamSlotIndex?: number;
+}
+
 export type ClientMessage =
   | InputCommand
   | PickupRequest
@@ -121,6 +133,8 @@ export type ClientMessage =
   | ThrowRequest
   | CatchParryRequest
   | ResetRequest
+  | StartVoteRequest
+  | SwitchTeamRequest
   | { type: 'join-room'; roomId: string; playerId: string }
   | { type: 'leave-room'; roomId: string; playerId: string }
   | { type: 'ping'; clientTimeMs: number };

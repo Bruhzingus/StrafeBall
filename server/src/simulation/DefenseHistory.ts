@@ -46,7 +46,7 @@ export interface BallSample {
 export class TimeRing<T extends { serverTimeMs: number }> {
   private readonly samples: T[] = [];
 
-  constructor(private readonly windowMs: number) {}
+  constructor(private readonly windowMs: number, private readonly maxEntries = Number.POSITIVE_INFINITY) {}
 
   push(sample: T): void {
     this.samples.push(sample);
@@ -55,6 +55,8 @@ export class TimeRing<T extends { serverTimeMs: number }> {
     // stale ones are always at the front.
     let drop = 0;
     while (drop < this.samples.length && this.samples[drop].serverTimeMs < cutoff) drop += 1;
+    const overCapacity = Math.max(0, this.samples.length - drop - this.maxEntries);
+    if (overCapacity > 0) drop += overCapacity;
     if (drop > 0) this.samples.splice(0, drop);
   }
 

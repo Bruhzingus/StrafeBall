@@ -51,6 +51,14 @@ describe('ServerGameLoop', () => {
     expect(p3).toBeNull();
   });
 
+  it('keeps 1v1 at the map default ball count and gives 2v2 ten balls', () => {
+    const oneVOne = new ServerGameLoop('room-1v1');
+    const twoVTwo = new ServerGameLoop('room-2v2', { mode: '2v2', playersPerTeam: 2 });
+
+    expect(Object.keys(oneVOne.state.balls)).toHaveLength(GAME_CONSTANTS.map.ballCount);
+    expect(Object.keys(twoVTwo.state.balls)).toHaveLength(GAME_CONSTANTS.match.twoVTwoBallCount);
+  });
+
   it('server decides a contested pickup and does not duplicate the ball', () => {
     const loop = new ServerGameLoop('room');
     loop.addPlayer('a', 'A');
@@ -506,6 +514,112 @@ describe('ServerGameLoop', () => {
 
       expect(loop.state.players.b.lives).toBe(0);
       expect(loop.state.balls.ball_1.bounceCount).toBeGreaterThan(0);
+    });
+  });
+
+  describe('2v2 Phase 4 lifecycle', () => {
+    it('auto-starts a full 2v2 roster into countdown', () => {
+      const loop = new ServerGameLoop('room', { mode: '2v2', playersPerTeam: 2 });
+      loop.addPlayer('a', 'A');
+      loop.addPlayer('b', 'B');
+      loop.addPlayer('c', 'C');
+      loop.addPlayer('d', 'D');
+
+      expect(loop.state.match.status).toBe('countdown');
+      expect(loop.state.match.countdownSeconds).toBe(GAME_CONSTANTS.match.countdownSeconds);
+    });
+
+    it('allows a vote-start for an uneven 2v2 pregame roster', () => {
+      const loop = new ServerGameLoop('room', { mode: '2v2', playersPerTeam: 2 });
+      loop.addPlayer('a', 'A');
+      loop.addPlayer('b', 'B');
+      loop.addPlayer('c', 'C');
+
+      expect(loop.state.match.status).toBe('warmup');
+      expect(loop.handleStartVote('a').ok).toBe(true);
+      expect(loop.handleStartVote('b').ok).toBe(true);
+      expect(loop.handleStartVote('c').ok).toBe(true);
+      expect(loop.state.match.status).toBe('countdown');
+    });
+
+    it('switches teams server-authoritatively without overfilling a side', () => {
+      const loop = new ServerGameLoop('room', { mode: '2v2', playersPerTeam: 2 });
+      loop.addPlayer('a', 'A');
+      loop.addPlayer('b', 'B');
+      loop.addPlayer('c', 'C');
+      loop.removePlayer('c');
+      loop.addPlayer('c', 'C');
+
+      const before = { team: loop.state.players.a.teamId, slot: loop.state.players.a.teamSlotIndex };
+      const target = { team: loop.state.players.b.teamId, slot: loop.state.players.b.teamSlotIndex };
+      const res = loop.handleTeamSwitch('a', target.team, target.slot);
+
+      expect(res.ok).toBe(true);
+      expect(loop.state.players.a.teamId).toBe(target.team);
+      expect(loop.state.players.a.teamSlotIndex).toBe(target.slot);
+      expect(loop.state.players.b.teamId).toBe(before.team);
+      expect(loop.state.players.b.teamSlotIndex).toBe(before.slot);
+    });
+
+    it('preserves team slot, lives, and elimination state across reconnect', () => {
+      const loop = create2v2Loop();
+      loop.state.players.a.lives = 1;
+      loop.state.players.a.combatState = 'eliminated';
+      loop.setConnected('a', false, Date.now() + 30000);
+      loop.setConnected('a', true, null);
+
+      expect(loop.state.players.a.teamId).toBe('blue');
+      expect(loop.state.players.a.teamSlotIndex).toBe(0);
+      expect(loop.state.players.a.lives).toBe(1);
+      expect(loop.state.players.a.combatState).toBe('eliminated');
+      expect(loop.state.players.a.connected).toBe(true);
+    });
+
+    it('starts the last-player buff on teammate disconnect and clears it on reconnect', () => {
+      const loop = create2v2Loop();
+      const now = Date.now();
+      loop.setConnected('a', false, now + 30000);
+
+      expect((loop.state.players.c.lastPlayerBuffUntilMs ?? 0)).toBeGreaterThan(now);
+
+      loop.setConnected('a', true, null);
+      expect(loop.state.players.c.lastPlayerBuffUntilMs).toBeNull();
+    });
+
+    it('resets to warmup and clears disconnected players/countdowns', () => {
+      const loop = create2v2Loop();
+      loop.setConnected('a', false, Date.now() + 30000);
+
+      expect(loop.handleReset('b').ok).toBe(true);
+      expect(loop.handleReset('c').ok).toBe(true);
+      expect(loop.handleReset('d').ok).toBe(true);
+
+      expect(loop.state.match.status).toBe('warmup');
+      expect(loop.state.players.a).toBeUndefined();
+      expect(Object.values(loop.state.players).every((player) => player.reconnectDeadlineAtMs === null)).toBe(true);
+    });
+
+    it('forfeits when a team has no remaining active fighters', () => {
+      const loop = create2v2Loop();
+      loop.state.players.a.lives = 0;
+      loop.state.players.a.combatState = 'eliminated';
+      loop.setConnected('c', false, Date.now() + 30000);
+      loop.state.players.c.lives = 0;
+      loop.state.players.c.combatState = 'eliminated';
+      loop.step();
+
+      expect(loop.state.match.status).toBe('complete');
+      expect(loop.state.match.winnerTeamId).toBe('red');
+    });
+
+    it('keeps 1v1 fallback behavior by rejecting 2v2-only pregame actions', () => {
+      const loop = new ServerGameLoop('room');
+      loop.addPlayer('a', 'A');
+      loop.addPlayer('b', 'B');
+
+      expect(loop.handleStartVote('a').ok).toBe(false);
+      expect(loop.handleTeamSwitch('a', 'red').ok).toBe(false);
+      expect(loop.state.match.status).toBe('countdown');
     });
   });
 

@@ -1,4 +1,4 @@
-import type { BallState, MatState, PlayerState, ResetVoteState, RoomState } from '../types';
+import type { BallState, MatState, PlayerState, ResetVoteState, RoomState, StartVoteState } from '../types';
 import { grantDashCharge } from './PlayerSim';
 import { applyScore, createMatchState } from './RuleSim';
 import { MAT_SPECS } from './MapGeometry';
@@ -25,6 +25,7 @@ export function createRoomState(options: {
   balls?: BallState[];
   mats?: Record<string, MatState>;
   resetVote?: ResetVoteState;
+  startVote?: StartVoteState;
 } = {}): RoomState {
   const players: Record<string, PlayerState> = {};
   const balls: Record<string, BallState> = {};
@@ -46,7 +47,8 @@ export function createRoomState(options: {
     players,
     balls,
     mats: options.mats ?? createMatStates(),
-    resetVote: options.resetVote ?? createResetVoteState()
+    resetVote: options.resetVote ?? createResetVoteState(),
+    startVote: options.startVote ?? createStartVoteState()
   };
 }
 
@@ -57,6 +59,16 @@ export function createResetVoteState(overrides: Partial<ResetVoteState> = {}): R
     requiredVotes: 0,
     expiresAtMs: null,
     resetSerial: 0,
+    ...overrides
+  };
+}
+
+export function createStartVoteState(overrides: Partial<StartVoteState> = {}): StartVoteState {
+  return {
+    votesByPlayerId: {},
+    voteCount: 0,
+    requiredVotes: 0,
+    expiresAtMs: null,
     ...overrides
   };
 }

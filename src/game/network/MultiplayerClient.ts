@@ -9,8 +9,10 @@ import type {
   ParryEvent,
   PickupRequest,
   ResetRequest,
+  StartVoteRequest,
   ServerMessage,
   ServerSnapshot,
+  SwitchTeamRequest,
   ThrowEvent,
   ThrowRequest
 } from '../../../shared/protocol';
@@ -188,6 +190,19 @@ export class MultiplayerClient {
 
   requestReset(): void {
     this.room?.send('reset', { type: 'reset', playerId: this.localPlayerId } satisfies ResetRequest);
+  }
+
+  requestStartVote(): void {
+    this.room?.send('start-vote', { type: 'start-vote', playerId: this.localPlayerId } satisfies StartVoteRequest);
+  }
+
+  requestSwitchTeam(teamId: string, teamSlotIndex?: number): void {
+    this.room?.send('switch-team', {
+      type: 'switch-team',
+      playerId: this.localPlayerId,
+      teamId,
+      teamSlotIndex
+    } satisfies SwitchTeamRequest);
   }
 
   private async connect(join: () => Promise<Room>): Promise<void> {

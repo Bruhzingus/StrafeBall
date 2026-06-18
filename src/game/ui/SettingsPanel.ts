@@ -9,17 +9,29 @@ import { settings, SENSITIVITY_MIN, SENSITIVITY_MAX } from '../config/Settings';
  */
 export class SettingsPanel {
   private readonly root: HTMLDivElement;
+  private readonly toggleButton: HTMLButtonElement;
+  private readonly content: HTMLDivElement;
   private readonly sensitivitySlider: HTMLInputElement;
   private readonly sensitivityReadout: HTMLSpanElement;
   private readonly sfxSlider: HTMLInputElement;
   private readonly sfxReadout: HTMLSpanElement;
   private readonly reducedEffectsToggle: HTMLInputElement;
   private readonly preventKeySteal = (event: KeyboardEvent): void => event.preventDefault();
+  private expanded = false;
 
   constructor(parent: HTMLElement = document.body) {
     this.root = document.createElement('div');
     this.root.className = 'settings-panel';
     this.root.setAttribute('data-no-lock', '');
+
+    this.toggleButton = document.createElement('button');
+    this.toggleButton.type = 'button';
+    this.toggleButton.className = 'settings-toggle';
+    this.toggleButton.textContent = 'Settings';
+    this.toggleButton.addEventListener('click', this.toggleExpanded);
+
+    this.content = document.createElement('div');
+    this.content.className = 'settings-content';
 
     const title = document.createElement('div');
     title.className = 'settings-title';
@@ -46,13 +58,16 @@ export class SettingsPanel {
     this.reducedEffectsToggle.addEventListener('keydown', this.preventKeySteal);
     effectsLabel.append(effectsName, this.reducedEffectsToggle);
 
-    this.root.append(title, sensitivityLabel.label, this.sensitivitySlider, sfxLabel.label, this.sfxSlider, effectsLabel);
+    this.content.append(title, sensitivityLabel.label, this.sensitivitySlider, sfxLabel.label, this.sfxSlider, effectsLabel);
+    this.root.append(this.toggleButton, this.content);
     parent.appendChild(this.root);
 
+    this.syncExpanded();
     this.updateReadout();
   }
 
   dispose(): void {
+    this.toggleButton.removeEventListener('click', this.toggleExpanded);
     this.sensitivitySlider.removeEventListener('input', this.onSensitivityInput);
     this.sfxSlider.removeEventListener('input', this.onSfxInput);
     this.reducedEffectsToggle.removeEventListener('input', this.onReducedEffectsInput);
@@ -76,6 +91,16 @@ export class SettingsPanel {
     settings.setReducedEffects(this.reducedEffectsToggle.checked);
     this.updateReadout();
   };
+
+  private toggleExpanded = (): void => {
+    this.expanded = !this.expanded;
+    this.syncExpanded();
+  };
+
+  private syncExpanded(): void {
+    this.root.classList.toggle('settings-panel--expanded', this.expanded);
+    this.toggleButton.setAttribute('aria-expanded', this.expanded ? 'true' : 'false');
+  }
 
   private updateReadout(): void {
     this.sensitivityReadout.textContent = (settings.mouseSensitivity * 1000).toFixed(2);

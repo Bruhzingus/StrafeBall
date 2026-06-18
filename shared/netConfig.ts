@@ -17,7 +17,7 @@
  *   E. 30 sim / 30 input / 30 snapshots  (baseline — safest for a 1 vCPU box)
  */
 
-export type NetMode = 'A_180_180_96' | 'A_180_180_128' | 'A_144_144_96' | 'A_144_144_100' | 'A_144_144_128' | 'A_128_128_90' | 'A_90_90_60' | 'A_72_72_60' | 'A_60_60_60' | 'B_60_60_30' | 'C_30_30_30';
+export type NetMode = 'A_180_180_96' | 'A_180_180_128' | 'A_144_144_96' | 'A_144_144_100' | 'A_144_144_128' | 'A_128_128_96' | 'A_128_128_90' | 'A_120_120_72' | 'A_90_90_60' | 'A_72_72_60' | 'A_60_60_60' | 'B_60_60_30' | 'C_30_30_30';
 
 export interface NetModeConfig {
   /** Server fixed simulation steps per second. */
@@ -45,11 +45,15 @@ const MODES: Record<NetMode, NetModeConfig> = {
   // 40ms interp delay covers ~5 snapshots of jitter headroom.
   A_144_144_128: { serverTickRate: 144, clientInputRate: 144, snapshotRate: 128, interpolationDelayMs: 40 },
   A_144_144_100: { serverTickRate: 144, clientInputRate: 144, snapshotRate: 100, interpolationDelayMs: 45 },
+  // Phase 5 preferred 2v2 target. Snapshot interval ~10.4ms; 50ms interp covers ~5 snapshots.
+  A_128_128_96: { serverTickRate: 128, clientInputRate: 128, snapshotRate: 96, interpolationDelayMs: 50 },
   // A — 128Hz sim/input with 90Hz snapshots. Sim dt ~7.8ms; snapshot interval ~11.1ms.
   // With LIVE_BALL_COMBAT_SUBSTEPS=2 effective combat checks run at ~256Hz.
   // 50ms interp covers ~4.5 snapshots at the nominal 90Hz rate; adaptive client logic
   // clamps it lower (35ms) when jitter is low for sharper visual response.
   A_128_128_90: { serverTickRate: 128, clientInputRate: 128, snapshotRate: 90, interpolationDelayMs: 50 },
+  // Phase 5 fallback 2v2 target. Snapshot interval ~13.9ms; 60ms interp covers ~4 snapshots.
+  A_120_120_72: { serverTickRate: 120, clientInputRate: 120, snapshotRate: 72, interpolationDelayMs: 60 },
   // A — 90Hz sim/input with 60Hz snapshots. Sim/input dt ~11.1ms; snapshot interval ~16.7ms (interp
   // delay tracks the SNAPSHOT rate, not the sim rate, so 75ms still covers ~4 snapshots of jitter).
   A_90_90_60: { serverTickRate: 90, clientInputRate: 90, snapshotRate: 60, interpolationDelayMs: 75 },
@@ -90,8 +94,8 @@ function resolveProcessMode(): NetMode {
   return DEFAULT_NET_MODE;
 }
 
-/** Compiled default mode. StrafeBall 1.3: 144 sim / 144 input / 96 snapshots. */
-export const DEFAULT_NET_MODE: NetMode = 'A_144_144_96';
+/** Compiled default mode. Phase 5 2v2 target: 128 sim / 128 input / 96 snapshots. */
+export const DEFAULT_NET_MODE: NetMode = 'A_128_128_96';
 
 /**
  * Active mode resolved at module load from process.env (server) or the compiled default (client).
