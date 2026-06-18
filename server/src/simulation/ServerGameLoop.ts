@@ -248,6 +248,14 @@ export class ServerGameLoop {
     hits: 0,
     hitReverts: 0           // hits undone because a lag-comp catch superseded them
   };
+  // Windowed input-drain counters for the throttled [perf] line. These make packet bunching visible
+  // without per-tick logging: healthy steady-state is max/avg near 1, backlog drain shows >1.
+  private readonly inputDrainMetrics = {
+    samples: 0,
+    inputsDrainedTotal: 0,
+    maxInputsDrainedThisTick: 0,
+    maxInputQueueBeforeDrain: 0
+  };
 
   // --- Server-authoritative combat (catch attempts + lag-compensated defense) ---
   // Per-player defensive-state history (eye/aim/hands/dashing per tick), rewound to the click
@@ -869,6 +877,9 @@ export class ServerGameLoop {
   getDebugBufferStats(): {
     inputQueues: number;
     maxInputQueue: number;
+    inputsDrainedAvg: number;
+    inputsDrainedMax: number;
+    maxInputQueueBeforeDrain: number;
     pendingThrowEvents: number;
     pendingCombatEvents: number;
     defenseHistoryEntries: number;
@@ -899,9 +910,22 @@ export class ServerGameLoop {
       if (ring.size > maxBallHistoryEntries) maxBallHistoryEntries = ring.size;
     }
 
+    const inputsDrainedAvg = this.inputDrainMetrics.samples > 0
+      ? this.inputDrainMetrics.inputsDrainedTotal / this.inputDrainMetrics.samples
+      : 0;
+    const inputsDrainedMax = this.inputDrainMetrics.maxInputsDrainedThisTick;
+    const maxInputQueueBeforeDrain = this.inputDrainMetrics.maxInputQueueBeforeDrain;
+    this.inputDrainMetrics.samples = 0;
+    this.inputDrainMetrics.inputsDrainedTotal = 0;
+    this.inputDrainMetrics.maxInputsDrainedThisTick = 0;
+    this.inputDrainMetrics.maxInputQueueBeforeDrain = 0;
+
     return {
       inputQueues,
       maxInputQueue,
+      inputsDrainedAvg,
+      inputsDrainedMax,
+      maxInputQueueBeforeDrain,
       pendingThrowEvents: this.pendingThrowEvents.length,
       pendingCombatEvents: this.pendingCombatEvents.length,
       defenseHistoryEntries,
@@ -2385,15 +2409,25 @@ export class ServerGameLoop {
     this.state.match = { ...this.state.match, status: 'complete', winnerTeamId, scoreByTeamId };
   }
 
-  /** Pull the next input to simulate: queued, else neutral (if stale), else last-held. */
+  /** Pull the next input to simulate: drained queued batch, else neutral (if stale), else last-held. */
   private nextInputCommand(player: PlayerState): QueuedInput {
     const queue = this.inputQueueByPlayerId.get(player.id);
-    if (queue && queue.length > 0) {
-      const command = queue.shift() as QueuedInput;
-      // After consuming a queued input, strip edge-triggered fields from the held-state fallback
-      // so a repeated tick (empty queue) doesn't re-fire jump/dash/pickup/etc.
-      const held = this.lastInputByPlayerId.get(player.id);
-      if (held) this.lastInputByPlayerId.set(player.id, clearEdges(held));
+    const queuedCount = queue?.length ?? 0;
+    this.inputDrainMetrics.samples += 1;
+    if (queuedCount > this.inputDrainMetrics.maxInputQueueBeforeDrain) {
+      this.inputDrainMetrics.maxInputQueueBeforeDrain = queuedCount;
+    }
+
+    if (queue && queuedCount > 0) {
+      const drained = queue.splice(0, queuedCount);
+      const command = coalesceQueuedInputs(drained);
+      this.inputDrainMetrics.inputsDrainedTotal += queuedCount;
+      if (queuedCount > this.inputDrainMetrics.maxInputsDrainedThisTick) {
+        this.inputDrainMetrics.maxInputsDrainedThisTick = queuedCount;
+      }
+      // After consuming queued inputs, strip edge-triggered fields from the coalesced held-state
+      // fallback so empty-queue ticks keep movement/look/held state without re-firing actions.
+      this.lastInputByPlayerId.set(player.id, clearEdges(command.input));
       return command;
     }
 
@@ -2751,6 +2785,80 @@ function canScorePlayerHit(ball: BallState): boolean {
   if (ball.heldByPlayerId || ball.heldHand) return false;
   if (length(ball.velocity) < GAME_CONSTANTS.ball.liveHitMinSpeed) return false;
   return true;
+}
+
+function coalesceQueuedInputs(commands: readonly QueuedInput[]): QueuedInput {
+  const newest = commands[commands.length - 1];
+  const input: PlayerInput = {
+    ...newest.input,
+    sequence: newest.seq,
+    dashDirection: { ...newest.input.dashDirection },
+    jumpPressed: false,
+    dashPressed: false,
+    crouchPressed: false,
+    slidePressed: false,
+    backflipPressed: false,
+    pickupPressed: false,
+    dropPressed: false,
+    fakeThrowPressed: false,
+    leftHandPressed: false,
+    rightHandPressed: false,
+    leftHandReleased: false,
+    rightHandReleased: false,
+    leftCatchAttemptId: 0,
+    rightCatchAttemptId: 0,
+    backflipThrowTier: 0
+  };
+
+  let leftCatchClientTimeMs: number | null = null;
+  let rightCatchClientTimeMs: number | null = null;
+  for (const command of commands) {
+    const next = command.input;
+    input.jumpPressed ||= next.jumpPressed;
+    input.dashPressed ||= next.dashPressed;
+    input.crouchPressed ||= next.crouchPressed;
+    input.slidePressed ||= next.slidePressed;
+    input.backflipPressed ||= next.backflipPressed;
+    input.pickupPressed ||= next.pickupPressed;
+    input.dropPressed ||= next.dropPressed;
+    input.fakeThrowPressed ||= next.fakeThrowPressed;
+    input.leftHandPressed ||= next.leftHandPressed;
+    input.rightHandPressed ||= next.rightHandPressed;
+    input.leftHandReleased ||= next.leftHandReleased;
+    input.rightHandReleased ||= next.rightHandReleased;
+
+    if (next.leftCatchAttemptId > input.leftCatchAttemptId) {
+      input.leftCatchAttemptId = next.leftCatchAttemptId;
+      leftCatchClientTimeMs = next.clientTimeMs;
+    } else if (
+      next.leftCatchAttemptId === input.leftCatchAttemptId &&
+      next.leftCatchAttemptId > 0 &&
+      leftCatchClientTimeMs === 0 &&
+      next.clientTimeMs > 0
+    ) {
+      leftCatchClientTimeMs = next.clientTimeMs;
+    }
+    if (next.rightCatchAttemptId > input.rightCatchAttemptId) {
+      input.rightCatchAttemptId = next.rightCatchAttemptId;
+      rightCatchClientTimeMs = next.clientTimeMs;
+    } else if (
+      next.rightCatchAttemptId === input.rightCatchAttemptId &&
+      next.rightCatchAttemptId > 0 &&
+      rightCatchClientTimeMs === 0 &&
+      next.clientTimeMs > 0
+    ) {
+      rightCatchClientTimeMs = next.clientTimeMs;
+    }
+    if (next.backflipThrowTier > 0) input.backflipThrowTier = next.backflipThrowTier;
+  }
+
+  // `clientTimeMs` is only used server-side to sub-tick anchor catch attempts. If a catch id came
+  // from an earlier packet in the drained batch, keep that earlier click timing rather than the
+  // newest movement packet's timestamp.
+  const catchTimes = [leftCatchClientTimeMs, rightCatchClientTimeMs].filter((time): time is number => time !== null);
+  if (catchTimes.length > 0) input.clientTimeMs = Math.min(...catchTimes);
+
+  return { seq: newest.seq, input };
 }
 
 function defaultInput(yawRadians = 0): PlayerInput {

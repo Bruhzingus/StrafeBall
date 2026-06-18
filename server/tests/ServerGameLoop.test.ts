@@ -44,6 +44,10 @@ function setLiveHitBall(loop: ServerGameLoop, ballId: string, throwerId: string,
   };
 }
 
+function heldBallIds(player: NonNullable<ReturnType<ServerGameLoop['addPlayer']>>): string[] {
+  return [player.hands.left.heldBallId, player.hands.right.heldBallId].filter((id): id is string => Boolean(id));
+}
+
 describe('ServerGameLoop', () => {
   it('assigns two players and rejects a third', () => {
     const loop = new ServerGameLoop('room');
@@ -111,6 +115,103 @@ describe('ServerGameLoop', () => {
     const upward = Object.values(loop.state.balls).find((ball) => ball.phase === 'live');
     expect(upward?.velocity.y).toBeGreaterThan(0);
     expect(upward?.velocity.z).toBeGreaterThan(0);
+  });
+
+  it('drains a queued input burst in one tick, preserving edges and newest held state', () => {
+    const loop = new ServerGameLoop('room');
+    loop.addPlayer('a', 'A');
+    loop.addPlayer('b', 'B');
+    playNow(loop);
+    loop.state.players.a.movement.position = vec3(0, 0, 0);
+    expect(loop.handlePickup('a').ok).toBe(true);
+
+    loop.handleInput('a', {
+      lookYawRadians: 0,
+      lookPitchRadians: 0,
+      leftHandPressed: true,
+      leftHandHeld: true,
+      sequence: 1
+    }, 1);
+    loop.handleInput('a', {
+      lookYawRadians: Math.PI / 4,
+      lookPitchRadians: -0.05,
+      moveX: 1,
+      leftHandHeld: true,
+      sequence: 2
+    }, 2);
+    loop.handleInput('a', {
+      lookYawRadians: Math.PI / 2,
+      lookPitchRadians: -0.1,
+      crouchHeld: true,
+      leftHandHeld: false,
+      leftHandReleased: true,
+      sequence: 3
+    }, 3);
+
+    loop.step();
+
+    const player = loop.state.players.a;
+    expect(player.lastProcessedInputSeq).toBe(3);
+    expect(player.movement.yawRadians).toBeCloseTo(Math.PI / 2);
+    expect(player.movement.pitchRadians).toBeCloseTo(-0.1);
+    expect(player.movement.crouching).toBe(true);
+    const live = Object.values(loop.state.balls).find((ball) => ball.phase === 'live');
+    expect(live).toBeTruthy();
+
+    const stats = loop.getDebugBufferStats();
+    expect(stats.inputQueues).toBe(0);
+    expect(stats.inputsDrainedMax).toBe(3);
+    expect(stats.maxInputQueueBeforeDrain).toBe(3);
+  });
+
+  it('coalesces catch attempt ids from bunched inputs even when the newest packet has zeros', () => {
+    const loop = new ServerGameLoop('room');
+    loop.addPlayer('a', 'A');
+    loop.addPlayer('b', 'B');
+    playNow(loop);
+
+    loop.handleInput('b', {
+      lookYawRadians: Math.PI,
+      leftCatchAttemptId: 7,
+      sequence: 1,
+      clientTimeMs: 100
+    }, 1);
+    loop.handleInput('b', {
+      lookYawRadians: Math.PI,
+      leftCatchAttemptId: 0,
+      rightCatchAttemptId: 9,
+      sequence: 2,
+      clientTimeMs: 111
+    }, 2);
+    loop.handleInput('b', {
+      lookYawRadians: Math.PI,
+      leftCatchAttemptId: 0,
+      rightCatchAttemptId: 0,
+      sequence: 3,
+      clientTimeMs: 122
+    }, 3);
+
+    loop.step();
+
+    expect(loop.state.players.b.lastProcessedInputSeq).toBe(3);
+    expect(loop.state.players.b.hands.left.lastCatchAttemptId).toBe(7);
+    expect(loop.state.players.b.hands.right.lastCatchAttemptId).toBe(9);
+  });
+
+  it('clears drained one-shot edges from fallback ticks', () => {
+    const loop = new ServerGameLoop('room');
+    loop.addPlayer('a', 'A');
+    loop.addPlayer('b', 'B');
+    playNow(loop);
+    loop.state.players.a.movement.position = vec3(0, 0, 0);
+
+    loop.handleInput('a', { pickupPressed: true, sequence: 1 }, 1);
+    loop.step();
+    expect(heldBallIds(loop.state.players.a)).toHaveLength(1);
+
+    loop.step();
+    expect(loop.state.players.a.lastProcessedInputSeq).toBe(1);
+    expect(heldBallIds(loop.state.players.a)).toHaveLength(1);
   });
 
   it('uses yaw and pitch correctly from the opposite spawn side', () => {

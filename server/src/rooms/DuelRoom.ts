@@ -421,7 +421,8 @@ export class DuelRoom extends Room {
       `players total=${playerStates.length} active=${activePlayers} alive=${alivePlayers} eliminated=${eliminatedPlayers} disconnected=${disconnectedPlayers} ` +
       `balls total=${balls.length} active=${activeBalls} live=${liveBalls} ` +
       `inputsProcessed={${inputRates || 'none'}} ` +
-      `buffers={input=${buffers.inputQueues} throw=${buffers.pendingThrowEvents} combat=${buffers.pendingCombatEvents} defenseHist=${buffers.defenseHistoryEntries} ballHist=${buffers.ballHistoryEntries} catch=${buffers.catchAttempts} hit=${buffers.recentHits}} ` +
+      `inputDrain={avg=${buffers.inputsDrainedAvg.toFixed(2)} max=${buffers.inputsDrainedMax} maxQueueBefore=${buffers.maxInputQueueBeforeDrain}} ` +
+      `buffers={input=${buffers.inputQueues} inputMax=${buffers.maxInputQueue} throw=${buffers.pendingThrowEvents} combat=${buffers.pendingCombatEvents} defenseHist=${buffers.defenseHistoryEntries} ballHist=${buffers.ballHistoryEntries} catch=${buffers.catchAttempts} hit=${buffers.recentHits}} ` +
       `combat={catchTry=${c.catchAttemptsOpened} catch=${c.catches} reclaim=${c.reclaimCatches} parry=${c.parries} hit=${c.hits} revert=${c.hitReverts}} ` +
       `accumulatorCaps=${this.stepCapHitsThisWindow} ` +
       `snapshotBytes avg=${avgPayload} max=${this.snapshotPayloadBytesMax} ` +
