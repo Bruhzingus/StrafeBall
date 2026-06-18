@@ -398,9 +398,15 @@ export class MultiplayerOverlay {
   };
 
   private requestFullscreen = (): void => {
-    const result = document.documentElement.requestFullscreen?.();
+    if (typeof document.documentElement.requestFullscreen !== 'function') {
+      this.noticeValue.textContent = 'Fullscreen is not available in this browser. You can still continue.';
+      return;
+    }
+    const result = document.documentElement.requestFullscreen();
     if (result && typeof result.then === 'function') {
-      result.catch(() => undefined);
+      result.catch(() => {
+        this.noticeValue.textContent = 'Fullscreen was blocked. Try again from the browser UI or continue windowed.';
+      });
     }
   };
 

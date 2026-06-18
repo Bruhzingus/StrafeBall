@@ -20,6 +20,7 @@ export class InputManager {
   private mouseDeltaY = 0;
 
   public pointerLocked = false;
+  private pointerLockErrorTimer: number | null = null;
 
   constructor(canvas: HTMLCanvasElement) {
     this.canvas = canvas;
@@ -34,15 +35,23 @@ export class InputManager {
     window.removeEventListener('mouseup', this.onMouseUp);
     window.removeEventListener('contextmenu', this.onContextMenu);
     document.removeEventListener('pointerlockchange', this.onPointerLockChange);
+    document.removeEventListener('pointerlockerror', this.onPointerLockError);
+    if (this.pointerLockErrorTimer !== null) window.clearTimeout(this.pointerLockErrorTimer);
   }
 
   requestPointerLock(): void {
     if (document.pointerLockElement === this.canvas) return;
+    if (typeof this.canvas.requestPointerLock !== 'function') {
+      this.showLockOverlayMessage('Pointer Lock is not available in this browser.');
+      return;
+    }
     // Newer browsers return a promise; swallow rejections (e.g. the brief re-lock cooldown
     // after pressing Esc) so a failed attempt doesn't throw — the next click will retry.
     const result = this.canvas.requestPointerLock() as unknown as Promise<void> | undefined;
     if (result && typeof result.then === 'function') {
-      result.catch(() => undefined);
+      result.catch(() => {
+        this.showLockOverlayMessage('Click the game area again to lock the mouse.');
+      });
     }
   }
 
@@ -93,6 +102,7 @@ export class InputManager {
     window.addEventListener('mouseup', this.onMouseUp);
     window.addEventListener('contextmenu', this.onContextMenu);
     document.addEventListener('pointerlockchange', this.onPointerLockChange);
+    document.addEventListener('pointerlockerror', this.onPointerLockError);
   }
 
   private onKeyDown = (event: KeyboardEvent): void => {
@@ -146,8 +156,36 @@ export class InputManager {
     this.pointerLocked = document.pointerLockElement === this.canvas;
     // Show the "click to play" prompt whenever the cursor isn't locked (start, or after Esc).
     const suppressOverlay = document.body.getAttribute(LOCK_OVERLAY_SUPPRESSED_ATTR) === '1';
-    document.getElementById('lock-overlay')?.classList.toggle('hidden', this.pointerLocked || suppressOverlay);
+    const lockOverlay = document.getElementById('lock-overlay');
+    lockOverlay?.classList.toggle('hidden', this.pointerLocked || suppressOverlay);
+    if (this.pointerLocked && lockOverlay) this.resetLockOverlayMessage(lockOverlay);
   };
+
+  private onPointerLockError = (): void => {
+    this.showLockOverlayMessage('Mouse lock was blocked. Click the canvas directly and try again.');
+  };
+
+  private showLockOverlayMessage(detail: string): void {
+    const lockOverlay = document.getElementById('lock-overlay');
+    if (!lockOverlay) return;
+    this.resetLockOverlayMessage(lockOverlay);
+    const detailNode = lockOverlay.querySelector('span');
+    if (detailNode) detailNode.textContent = detail;
+    lockOverlay.classList.remove('hidden');
+    if (this.pointerLockErrorTimer !== null) window.clearTimeout(this.pointerLockErrorTimer);
+    this.pointerLockErrorTimer = window.setTimeout(() => {
+      this.pointerLockErrorTimer = null;
+      this.resetLockOverlayMessage(lockOverlay);
+      if (document.pointerLockElement === this.canvas) lockOverlay.classList.add('hidden');
+    }, 2500);
+  }
+
+  private resetLockOverlayMessage(lockOverlay: HTMLElement): void {
+    lockOverlay.innerHTML = `
+      Click to play
+      <span>mouse = look &middot; WASD = move &middot; Esc releases the cursor</span>
+    `;
+  }
 }
 
 function isEditableTarget(target: EventTarget | null): boolean {

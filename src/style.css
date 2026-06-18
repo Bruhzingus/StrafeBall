@@ -1380,6 +1380,10 @@ html, body {
   list-style: none;
 }
 
+.multiplayer-settings summary::marker {
+  content: "";
+}
+
 .multiplayer-settings summary::-webkit-details-marker {
   display: none;
 }
@@ -1992,5 +1996,39 @@ html, body {
 
   .hud-bottom-right {
     display: none;
+  }
+}
+
+@supports not (-webkit-text-stroke: 1px #000) {
+  .heart,
+  #lock-overlay,
+  .scoreboard-num,
+  .score-event-title,
+  .qte-event-title,
+  .countdown,
+  .boundary-clock-value,
+  .qte-label {
+    text-shadow:
+      1px 0 0 var(--ink),
+      -1px 0 0 var(--ink),
+      0 1px 0 var(--ink),
+      0 -1px 0 var(--ink),
+      1px 1px 0 var(--ink),
+      -1px 1px 0 var(--ink),
+      1px -1px 0 var(--ink),
+      -1px -1px 0 var(--ink);
+  }
+
+  .countdown {
+    text-shadow:
+      2px 0 0 var(--ink),
+      -2px 0 0 var(--ink),
+      0 2px 0 var(--ink),
+      0 -2px 0 var(--ink),
+      2px 2px 0 var(--ink),
+      -2px 2px 0 var(--ink),
+      2px -2px 0 var(--ink),
+      -2px -2px 0 var(--ink),
+      8px 8px 0 rgba(21, 33, 59, 0.35);
   }
 }

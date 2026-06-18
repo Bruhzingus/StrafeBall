@@ -1,5 +1,10 @@
 import './style.css';
 import { Game } from './game/Game';
+import {
+  describeBrowserCompatibility,
+  detectBrowserCompatibility,
+  installBrowserCompatAttributes
+} from './game/browser/browserCompat';
 import { ACTIVE_NET_MODE, describeNetConfig, netModeConfig } from '../shared/netConfig';
 
 // Netcode mode guard. The active rates (sim/input/snapshot Hz, prediction dt, interpolation delay)
@@ -22,6 +27,21 @@ const canvas = document.getElementById('gameCanvas') as HTMLCanvasElement | null
 
 if (!canvas) {
   throw new Error('Missing canvas element with id="gameCanvas".');
+}
+
+const compat = detectBrowserCompatibility();
+installBrowserCompatAttributes(compat);
+console.info(`[compat] ${describeBrowserCompatibility(compat)}`);
+
+if (compat.missingRequired.length > 0) {
+  const lockOverlay = document.getElementById('lock-overlay');
+  if (lockOverlay) {
+    lockOverlay.innerHTML = `
+      Browser not supported
+      <span>Missing: ${compat.missingRequired.join(', ')}. Firefox and Zen should work when these APIs are enabled.</span>
+    `;
+  }
+  throw new Error(`Missing required browser APIs: ${compat.missingRequired.join(', ')}`);
 }
 
 const game = new Game(canvas);

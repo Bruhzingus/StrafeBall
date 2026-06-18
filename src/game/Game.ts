@@ -7,6 +7,9 @@ export class Game {
   private arena: ArenaScene | null = null;
 
   constructor(private readonly canvas: HTMLCanvasElement) {
+    if (!Engine.isSupported()) {
+      throw new Error('WebGL is not available in this browser.');
+    }
     this.engine = new Engine(canvas, true, {
       preserveDrawingBuffer: false,
       stencil: false,

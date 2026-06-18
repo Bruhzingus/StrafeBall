@@ -205,6 +205,7 @@ export class SoundManager {
     if (this.unlockBound) return;
     this.unlockBound = true;
     window.addEventListener('pointerdown', this.resume);
+    window.addEventListener('touchend', this.resume);
     window.addEventListener('keydown', this.resume);
   }
 
@@ -215,7 +216,7 @@ export class SoundManager {
       this.removeUnlock();
       return;
     }
-    if (ctx.state === 'suspended') {
+    if (ctx.state === 'suspended' || ctx.state === 'interrupted') {
       ctx.resume()
         .then(() => this.removeUnlock())
         .catch((e) => console.error('[audio] failed to resume context:', e));
@@ -225,6 +226,7 @@ export class SoundManager {
   private removeUnlock(): void {
     if (!this.unlockBound) return;
     window.removeEventListener('pointerdown', this.resume);
+    window.removeEventListener('touchend', this.resume);
     window.removeEventListener('keydown', this.resume);
     this.unlockBound = false;
   }
