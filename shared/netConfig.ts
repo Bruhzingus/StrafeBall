@@ -165,6 +165,24 @@ export const EXTRAPOLATION_LIMIT_MS = 120;
 /** Position error (m) above which interpolation snaps instead of lerping (reset/teleport/glitch). */
 export const HUGE_ERROR_SNAP_METERS = 5;
 
+export type SnapshotEncoding = 'compact' | 'full';
+
+function resolveSnapshotEncoding(env: Record<string, string | undefined> = processEnv()): SnapshotEncoding {
+  const explicit = env.SNAPSHOT_ENCODING?.toLowerCase();
+  if (explicit === 'compact' || explicit === 'full') return explicit;
+
+  const compactFlag = env.USE_COMPACT_SNAPSHOTS?.toLowerCase();
+  if (compactFlag === '0' || compactFlag === 'false') return 'full';
+  if (compactFlag === '1' || compactFlag === 'true') return 'compact';
+
+  return 'compact';
+}
+
+/** Server-side snapshot payload encoding. Override with SNAPSHOT_ENCODING=full for debugging. */
+export const SNAPSHOT_ENCODING: SnapshotEncoding = resolveSnapshotEncoding();
+export const USE_COMPACT_SNAPSHOTS = SNAPSHOT_ENCODING === 'compact';
+export const SNAPSHOT_BACKPRESSURE_BYTES = 64 * 1024;
+
 /**
  * Debug flags — ALL OFF by default. These gate per-tick/per-frame logging that must never run
  * during a real playtest (it dominates CPU and GC). Each may be enabled out-of-band:

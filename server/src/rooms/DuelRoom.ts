@@ -6,7 +6,8 @@ import type {
   StartVoteRequest,
   SwitchTeamRequest,
   ServerMessage,
-  ServerSnapshot
+  ServerSnapshot,
+  SnapshotPayload
 } from '../../../shared/protocol';
 import type { PlayerInput } from '../../../shared/types';
 import { GAME_CONSTANTS } from '../../../shared/constants';
@@ -18,13 +19,16 @@ import {
   ROOM_LOOP_WAKE_INTERVAL_MS,
   SERVER_STEP_MS,
   SERVER_TICK_RATE,
+  SNAPSHOT_BACKPRESSURE_BYTES,
+  SNAPSHOT_ENCODING,
   SNAPSHOT_INTERVAL_MS,
   SNAPSHOT_RATE,
+  USE_COMPACT_SNAPSHOTS,
   describeNetConfig,
   resolveServerDebugFlags,
   type DebugFlags
 } from '../../../shared/netConfig';
-import { rosterFromRoom } from '../../../shared/snapshotCodec';
+import { makeCompactSnapshot, rosterFromRoom } from '../../../shared/snapshotCodec';
 import { ServerGameLoop } from '../simulation/ServerGameLoop';
 import { advanceSnapshotDeadline } from './snapshotScheduler';
 
@@ -87,10 +91,14 @@ export class DuelRoom extends Room {
   private snapshotNoNewTickSkipsThisWindow = 0;
   private snapshotBackpressureSkipsThisWindow = 0;
   private snapshotAllBackpressureSkipsThisWindow = 0;
+  private snapshotClientSendsThisWindow = 0;
   // Approximate snapshot payload size, sampled cheaply (only when PERF_DEBUG is on) once per window.
   private snapshotPayloadBytesTotal = 0;
   private snapshotPayloadBytesMax = 0;
   private snapshotPayloadSamples = 0;
+  private snapshotWsBufferedBytesTotal = 0;
+  private snapshotWsBufferedBytesMax = 0;
+  private snapshotWsBufferedSamples = 0;
   private simulationAccumulatorMs = 0;
   private lastLoopWakeAtMs = 0;
   private nextSnapshotDueAtMs = 0;
@@ -121,6 +129,7 @@ export class DuelRoom extends Room {
     // One-time room-created line describing the active net config + the manual-snapshot patch mode.
     this.log(
       `room created mode=${this.roomMode} playersPerTeam=${this.playersPerTeam} ${describeNetConfig()} ` +
+      `snapshotEncoding=${SNAPSHOT_ENCODING} snapshotBackpressure=${SNAPSHOT_BACKPRESSURE_BYTES}B ` +
       `colyseusPatchRate=${formatPatchRate(COLYSEUS_PATCH_RATE_MS)}`
     );
 
@@ -352,9 +361,13 @@ export class DuelRoom extends Room {
     this.snapshotNoNewTickSkipsThisWindow = 0;
     this.snapshotBackpressureSkipsThisWindow = 0;
     this.snapshotAllBackpressureSkipsThisWindow = 0;
+    this.snapshotClientSendsThisWindow = 0;
     this.snapshotPayloadBytesTotal = 0;
     this.snapshotPayloadBytesMax = 0;
     this.snapshotPayloadSamples = 0;
+    this.snapshotWsBufferedBytesTotal = 0;
+    this.snapshotWsBufferedBytesMax = 0;
+    this.snapshotWsBufferedSamples = 0;
     this.inputPacketsThisWindowByPlayerId.clear();
   }
 
@@ -403,6 +416,10 @@ export class DuelRoom extends Room {
     const eventLoopDelayAvgMs = this.eventLoopDelay.mean > 0 ? this.eventLoopDelay.mean / 1e6 : 0;
     const eventLoopDelayMaxMs = this.eventLoopDelay.max > 0 ? this.eventLoopDelay.max / 1e6 : 0;
     const socketBuffer = this.socketBufferStats();
+    const wsBufferedAvg = this.snapshotWsBufferedSamples > 0
+      ? Math.round(this.snapshotWsBufferedBytesTotal / this.snapshotWsBufferedSamples)
+      : socketBuffer.avgBytes;
+    const wsBufferedMax = Math.max(this.snapshotWsBufferedBytesMax, socketBuffer.maxBytes);
     const buffers = this.game.getDebugBufferStats();
     const roomAgeSec = Math.max(0, (Date.now() - this.createdAtMs) / 1000);
 
@@ -413,7 +430,7 @@ export class DuelRoom extends Room {
       `[perf] roomAgeSec=${roomAgeSec.toFixed(1)} ` +
       `sim=${SERVER_TICK_RATE}Hz input=${CLIENT_INPUT_RATE}Hz snapshots=${SNAPSHOT_RATE}Hz ` +
       `simTicks=${(this.simTicksThisWindow / elapsedSeconds).toFixed(1)}/s ` +
-      `snapshotsSent=${(this.snapshotsThisWindow / elapsedSeconds).toFixed(1)}/s ` +
+      `snapshotsSent=${(this.snapshotsThisWindow / elapsedSeconds).toFixed(1)}/s snapshotClientSends=${(this.snapshotClientSendsThisWindow / elapsedSeconds).toFixed(1)}/s ` +
       `simTickMs avg=${avgSimTickMs.toFixed(2)} max=${this.simTickMsMax.toFixed(2)} ` +
       `snapshotBuildMs avg=${avgSnapshotBuildMs.toFixed(3)} max=${this.snapshotBuildMsMax.toFixed(3)} ` +
       `snapshotBroadcastMs avg=${avgSnapshotBroadcastMs.toFixed(3)} max=${this.snapshotBroadcastMsMax.toFixed(3)} ` +
@@ -426,7 +443,7 @@ export class DuelRoom extends Room {
       `combat={catchTry=${c.catchAttemptsOpened} catch=${c.catches} reclaim=${c.reclaimCatches} parry=${c.parries} hit=${c.hits} revert=${c.hitReverts}} ` +
       `accumulatorCaps=${this.stepCapHitsThisWindow} ` +
       `snapshotBytes avg=${avgPayload} max=${this.snapshotPayloadBytesMax} ` +
-      `wsBuffered avg=${socketBuffer.avgBytes}B max=${socketBuffer.maxBytes}B ` +
+      `wsBuffered avg=${wsBufferedAvg}B max=${wsBufferedMax}B ` +
       `eventLoopMs avg=${eventLoopDelayAvgMs.toFixed(2)} max=${eventLoopDelayMaxMs.toFixed(2)} ` +
       `mem heapUsed=${mb(mem.heapUsed)}MB heapTotal=${mb(mem.heapTotal)}MB rss=${mb(mem.rss)}MB`
     );
@@ -450,8 +467,9 @@ export class DuelRoom extends Room {
    * The payload-size sample uses JSON.stringify, which is expensive — so it runs at most ONCE per
    * report window, and only when PERF_DEBUG is on. Real playtests with PERF_DEBUG off pay nothing.
    */
-  private recordSnapshot(snapshot: ServerSnapshot, buildMs: number, broadcastMs: number, lateMs: number): void {
+  private recordSnapshot(payload: SnapshotPayload, buildMs: number, broadcastMs: number, lateMs: number, sentClients: number): void {
     this.snapshotsThisWindow += 1;
+    this.snapshotClientSendsThisWindow += sentClients;
     this.snapshotBuildMsTotal += buildMs;
     this.snapshotBuildMsMax = Math.max(this.snapshotBuildMsMax, buildMs);
     this.snapshotBroadcastMsTotal += broadcastMs;
@@ -460,7 +478,7 @@ export class DuelRoom extends Room {
     this.snapshotLateMsMax = Math.max(this.snapshotLateMsMax, lateMs);
     const sampleStride = Math.max(1, Math.floor(SNAPSHOT_RATE / 4));
     if (this.debug.PERF_DEBUG && this.snapshotPayloadSamples < 8 && this.snapshotsThisWindow % sampleStride === 1) {
-      const bytes = JSON.stringify(snapshot).length;
+      const bytes = JSON.stringify(payload).length;
       this.snapshotPayloadBytesTotal += bytes;
       this.snapshotPayloadBytesMax = Math.max(this.snapshotPayloadBytesMax, bytes);
       this.snapshotPayloadSamples += 1;
@@ -493,13 +511,53 @@ export class DuelRoom extends Room {
   }
 
   private broadcastSnapshot(dueAtMs: number, actualNowMs: number): void {
+    const sendableClients = this.snapshotSendableClients();
+    if (sendableClients.length === 0) return;
+
     const snapshot = this.game.snapshot();
-    const buildMs = this.game.getLastSnapshotBuildMs();
+    const snapshotBuildMs = this.game.getLastSnapshotBuildMs();
+    const encodeStartedAt = performance.now();
+    const payload = this.encodeSnapshot(snapshot);
+    const buildMs = snapshotBuildMs + (performance.now() - encodeStartedAt);
     const broadcastStartedAt = performance.now();
-    this.broadcast('snapshot', snapshot);
+    for (const client of sendableClients) {
+      client.send('snapshot', payload);
+    }
     const broadcastMs = performance.now() - broadcastStartedAt;
     this.lastSnapshotTickSent = snapshot.tick;
-    this.recordSnapshot(snapshot, buildMs, broadcastMs, Math.max(0, actualNowMs - dueAtMs));
+    this.recordSnapshot(payload, buildMs, broadcastMs, Math.max(0, actualNowMs - dueAtMs), sendableClients.length);
+  }
+
+  private snapshotSendableClients(): Client[] {
+    const sendable: Client[] = [];
+    let skipped = 0;
+
+    for (const client of this.clients) {
+      const buffered = readClientBufferedAmount(client);
+      if (buffered !== null) this.recordSnapshotBufferedAmount(buffered);
+      if (buffered !== null && buffered > SNAPSHOT_BACKPRESSURE_BYTES) {
+        skipped += 1;
+        continue;
+      }
+      sendable.push(client);
+    }
+
+    if (skipped > 0) {
+      this.snapshotBackpressureSkipsThisWindow += skipped;
+      if (skipped === this.clients.length) this.snapshotAllBackpressureSkipsThisWindow += 1;
+    }
+
+    return sendable;
+  }
+
+  private encodeSnapshot(snapshot: ServerSnapshot): SnapshotPayload {
+    return USE_COMPACT_SNAPSHOTS ? makeCompactSnapshot(snapshot) : snapshot;
+  }
+
+  private recordSnapshotBufferedAmount(buffered: number): void {
+    this.snapshotWsBufferedBytesTotal += buffered;
+    this.snapshotWsBufferedBytesMax = Math.max(this.snapshotWsBufferedBytesMax, buffered);
+    this.snapshotWsBufferedSamples += 1;
   }
 
   private broadcastRosterUpdate(): void {
@@ -570,9 +628,16 @@ function formatPatchRate(patchRateMs: number | null): string {
 
 function readClientBufferedAmount(client: Client): number | null {
   const raw = client as Client & {
-    ref?: { bufferedAmount?: number; ws?: { getBufferedAmount?: () => number } };
+    ref?: {
+      bufferedAmount?: number;
+      getBufferedAmount?: () => number;
+      ws?: { bufferedAmount?: number; getBufferedAmount?: () => number };
+    };
   };
   if (typeof raw.ref?.bufferedAmount === 'number') return raw.ref.bufferedAmount;
+  if (typeof raw.ref?.ws?.bufferedAmount === 'number') return raw.ref.ws.bufferedAmount;
+  const directAmount = raw.ref?.getBufferedAmount?.();
+  if (typeof directAmount === 'number') return directAmount;
   const uwsAmount = raw.ref?.ws?.getBufferedAmount?.();
   return typeof uwsAmount === 'number' ? uwsAmount : null;
 }

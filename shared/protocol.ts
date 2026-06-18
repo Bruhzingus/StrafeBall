@@ -16,6 +16,8 @@ export interface ServerSnapshot {
   room: RoomState;
 }
 
+export type SnapshotPayload = ServerSnapshot | CompactServerSnapshot;
+
 /**
  * Authoritative throw event (Phase 4). Broadcast the instant the server accepts a throw, BEFORE the
  * next snapshot, so the client can start deterministic visual prediction of the live ball from the
@@ -141,8 +143,7 @@ export type ClientMessage =
   | { type: 'ping'; clientTimeMs: number };
 
 export type ServerMessage =
-  | ServerSnapshot
-  | CompactServerSnapshot
+  | SnapshotPayload
   | ThrowEvent
   | CatchEvent
   | ParryEvent

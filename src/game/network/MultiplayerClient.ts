@@ -12,6 +12,7 @@ import type {
   StartVoteRequest,
   ServerMessage,
   ServerSnapshot,
+  SnapshotPayload,
   SwitchTeamRequest,
   ThrowEvent,
   ThrowRequest
@@ -23,7 +24,6 @@ import {
   inflateCompactSnapshot,
   isCompactSnapshot,
   rosterFromRoom,
-  type CompactServerSnapshot,
   type PlayerRoster
 } from '../../../shared/snapshotCodec';
 
@@ -247,7 +247,7 @@ export class MultiplayerClient {
   }
 
   private bindRoom(room: Room): void {
-    room.onMessage('snapshot', (message: ServerSnapshot | CompactServerSnapshot) => {
+    room.onMessage('snapshot', (message: SnapshotPayload) => {
       if (this.room !== room) return;
       const unpacked = isCompactSnapshot(message) ? inflateCompactSnapshot(message) : message;
       this.recordSnapshotReceived(unpacked);
