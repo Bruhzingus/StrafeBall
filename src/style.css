@@ -1354,6 +1354,12 @@ html, body {
   display: none;
 }
 
+.multiplayer-modal:not(.multiplayer-modal--connected) .multiplayer-panel--lobby[data-mode="2v2"] .multiplayer-room-card,
+.multiplayer-modal:not(.multiplayer-modal--connected) .multiplayer-panel--lobby[data-mode="2v2"] .multiplayer-actions--leave,
+.multiplayer-modal:not(.multiplayer-modal--connected) .multiplayer-panel--lobby[data-mode="2v2"] .multiplayer-line--capacity {
+  display: none;
+}
+
 .multiplayer-settings {
   margin-top: 10px;
 }
@@ -1420,6 +1426,10 @@ html, body {
 }
 
 .multiplayer-reset-card {
+  display: grid;
+  grid-template-columns: 1fr auto;
+  align-items: center;
+  gap: 10px;
   padding: 10px 11px;
   border: 3px solid var(--ink);
   border-radius: 14px;
@@ -1433,6 +1443,13 @@ html, body {
   font-weight: 900;
   letter-spacing: 0.08em;
   text-transform: uppercase;
+}
+
+.multiplayer-reset-status {
+  margin-top: 3px;
+  color: rgba(255, 255, 255, 0.78);
+  font-size: 11px;
+  font-weight: 900;
 }
 
 .multiplayer-pregame-slots {
@@ -1479,16 +1496,18 @@ html, body {
 
 .multiplayer-reset-actions {
   display: grid;
-  gap: 8px;
-  margin-top: 10px;
+  justify-items: end;
+  gap: 6px;
 }
 
 .multiplayer-reset-action {
+  width: 124px;
   border: 2.5px solid var(--ink);
   border-radius: 10px;
-  padding: 10px 8px;
+  padding: 7px 8px;
   background: linear-gradient(180deg, #ffe481, var(--school-gold));
   color: var(--ink);
+  font-size: 11px;
   font-weight: 900;
   cursor: pointer;
   box-shadow: 2px 2px 0 var(--ink);

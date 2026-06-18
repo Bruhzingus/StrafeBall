@@ -112,12 +112,34 @@ interface QueuedInput {
   input: PlayerInput;
 }
 
+export interface PlayerNetworkDebugStats {
+  playerId: string;
+  lastProcessedInputSeq: number;
+  lastEnqueuedInputSeq: number;
+  inputQueueDepthCurrent: number;
+  inputQueueDepthAvg: number;
+  inputQueueDepthMax: number;
+  inputsDrainedAvg: number;
+  inputsDrainedMax: number;
+  lastInputAgeMs: number;
+  ackAgeEstimateMs: number | null;
+}
+
 interface PlayerSlot {
   teamId: string;
   spawnSide: SpawnSide;
   teamSlotIndex: number;
   position: Vec3;
   yawRadians: number;
+}
+
+interface PlayerNetWindowStats {
+  inputQueueDepthTotal: number;
+  inputQueueDepthSamples: number;
+  inputQueueDepthMax: number;
+  inputsDrainedTotal: number;
+  inputsDrainedSamples: number;
+  inputsDrainedMax: number;
 }
 
 const EMPTY_THROW_EVENTS: ReadonlyArray<ThrowEvent> = [];
@@ -227,10 +249,12 @@ export class ServerGameLoop {
   private readonly lastInputByPlayerId = new Map<string, PlayerInput>();
   private readonly previousInputByPlayerId = new Map<string, PlayerInput>();
   private readonly lastInputAtByPlayerId = new Map<string, number>();
+  private readonly lastProcessedInputAtByPlayerId = new Map<string, number>();
   private readonly lastEnqueuedSeqByPlayerId = new Map<string, number>();
   private readonly inputRttMsByPlayerId = new Map<string, number>();
   private readonly parryCooldownByPlayerId = new Map<string, number>();
   private readonly lastInputDebugAtByPlayerId = new Map<string, number>();
+  private readonly playerNetWindowStatsByPlayerId = new Map<string, PlayerNetWindowStats>();
   private readonly teamChoicesByPlayerId = new Set<string>();
   private readonly startVotesByPlayerId = new Map<string, number>();
   private readonly resetVotesByPlayerId = new Map<string, number>();
@@ -347,10 +371,12 @@ export class ServerGameLoop {
     this.lastInputByPlayerId.delete(playerId);
     this.previousInputByPlayerId.delete(playerId);
     this.lastInputAtByPlayerId.delete(playerId);
+    this.lastProcessedInputAtByPlayerId.delete(playerId);
     this.lastEnqueuedSeqByPlayerId.delete(playerId);
     this.inputRttMsByPlayerId.delete(playerId);
     this.parryCooldownByPlayerId.delete(playerId);
     this.lastInputDebugAtByPlayerId.delete(playerId);
+    this.playerNetWindowStatsByPlayerId.delete(playerId);
     this.defenseHistoryByPlayerId.delete(playerId);
     this.lastThrowByPlayerId.delete(playerId);
     this.catchAttemptByKey.delete(`${playerId}:left`);
@@ -390,10 +416,12 @@ export class ServerGameLoop {
     this.lastInputByPlayerId.clear();
     this.previousInputByPlayerId.clear();
     this.lastInputAtByPlayerId.clear();
+    this.lastProcessedInputAtByPlayerId.clear();
     this.lastEnqueuedSeqByPlayerId.clear();
     this.inputRttMsByPlayerId.clear();
     this.parryCooldownByPlayerId.clear();
     this.lastInputDebugAtByPlayerId.clear();
+    this.playerNetWindowStatsByPlayerId.clear();
     this.defenseHistoryByPlayerId.clear();
     this.lastThrowByPlayerId.clear();
     this.ballHistoryById.clear();
@@ -883,7 +911,7 @@ export class ServerGameLoop {
       dashingThisFrame: false,
       speed: 0
     };
-    player.lastProcessedInputSeq = seq;
+    this.recordProcessedInputSeq(player, seq);
     this.previousInputByPlayerId.set(player.id, input);
   }
 
@@ -902,7 +930,7 @@ export class ServerGameLoop {
       dashingThisFrame: false,
       speed: 0
     };
-    player.lastProcessedInputSeq = seq;
+    this.recordProcessedInputSeq(player, seq);
     this.previousInputByPlayerId.set(player.id, input);
   }
 
@@ -1009,6 +1037,35 @@ export class ServerGameLoop {
     };
   }
 
+  drainPlayerNetworkStats(nowMs = this.now()): PlayerNetworkDebugStats[] {
+    const players = Object.values(this.state.players);
+    const stats = players.map((player) => {
+      const window = this.playerNetWindowStatsByPlayerId.get(player.id);
+      const queueDepthCurrent = this.inputQueueByPlayerId.get(player.id)?.length ?? 0;
+      const lastInputAt = this.lastInputAtByPlayerId.get(player.id) ?? nowMs;
+      const lastProcessedAt = this.lastProcessedInputAtByPlayerId.get(player.id);
+      return {
+        playerId: player.id,
+        lastProcessedInputSeq: player.lastProcessedInputSeq,
+        lastEnqueuedInputSeq: this.lastEnqueuedSeqByPlayerId.get(player.id) ?? 0,
+        inputQueueDepthCurrent: queueDepthCurrent,
+        inputQueueDepthAvg: window && window.inputQueueDepthSamples > 0
+          ? window.inputQueueDepthTotal / window.inputQueueDepthSamples
+          : queueDepthCurrent,
+        inputQueueDepthMax: window?.inputQueueDepthMax ?? queueDepthCurrent,
+        inputsDrainedAvg: window && window.inputsDrainedSamples > 0
+          ? window.inputsDrainedTotal / window.inputsDrainedSamples
+          : 0,
+        inputsDrainedMax: window?.inputsDrainedMax ?? 0,
+        lastInputAgeMs: Math.max(0, nowMs - lastInputAt),
+        ackAgeEstimateMs: lastProcessedAt === undefined ? null : Math.max(0, nowMs - lastProcessedAt)
+      } satisfies PlayerNetworkDebugStats;
+    });
+
+    this.playerNetWindowStatsByPlayerId.clear();
+    return stats;
+  }
+
   snapshot(): ServerSnapshot {
     const startedAt = performance.now();
     // No deep clone (#17): Colyseus serializes the message when broadcasting, so each client
@@ -1021,6 +1078,27 @@ export class ServerGameLoop {
     };
     this.lastSnapshotBuildMs = performance.now() - startedAt;
     return snapshot;
+  }
+
+  private playerNetWindowStats(playerId: string): PlayerNetWindowStats {
+    let stats = this.playerNetWindowStatsByPlayerId.get(playerId);
+    if (!stats) {
+      stats = {
+        inputQueueDepthTotal: 0,
+        inputQueueDepthSamples: 0,
+        inputQueueDepthMax: 0,
+        inputsDrainedTotal: 0,
+        inputsDrainedSamples: 0,
+        inputsDrainedMax: 0
+      };
+      this.playerNetWindowStatsByPlayerId.set(playerId, stats);
+    }
+    return stats;
+  }
+
+  private recordProcessedInputSeq(player: PlayerState, seq: number): void {
+    if (seq !== player.lastProcessedInputSeq) this.lastProcessedInputAtByPlayerId.set(player.id, this.stepNowMs || this.now());
+    player.lastProcessedInputSeq = seq;
   }
 
   private updatePlayer(player: PlayerState, dt: number, input: PlayerInput, seq: number): void {
@@ -1048,7 +1126,7 @@ export class ServerGameLoop {
 
     player.hands = updateHandCharging(player.hands, input, prevInput);
     player.hands = tickHands(player.hands, dt);
-    player.lastProcessedInputSeq = seq;
+    this.recordProcessedInputSeq(player, seq);
 
     // Open any fresh catch attempts carried by this input (latched ids; dedup by last-processed).
     this.ingestCatchAttempts(player, input);
@@ -2597,10 +2675,14 @@ export class ServerGameLoop {
   private nextInputCommand(player: PlayerState): QueuedInput {
     const queue = this.inputQueueByPlayerId.get(player.id);
     const queuedCount = queue?.length ?? 0;
+    const playerWindow = this.playerNetWindowStats(player.id);
     this.inputDrainMetrics.samples += 1;
     if (queuedCount > this.inputDrainMetrics.maxInputQueueBeforeDrain) {
       this.inputDrainMetrics.maxInputQueueBeforeDrain = queuedCount;
     }
+    playerWindow.inputQueueDepthTotal += queuedCount;
+    playerWindow.inputQueueDepthSamples += 1;
+    if (queuedCount > playerWindow.inputQueueDepthMax) playerWindow.inputQueueDepthMax = queuedCount;
 
     if (queue && queuedCount > 0) {
       const drained = queue.splice(0, queuedCount);
@@ -2622,6 +2704,9 @@ export class ServerGameLoop {
       if (queuedCount > this.inputDrainMetrics.maxInputsDrainedThisTick) {
         this.inputDrainMetrics.maxInputsDrainedThisTick = queuedCount;
       }
+      playerWindow.inputsDrainedTotal += queuedCount;
+      playerWindow.inputsDrainedSamples += 1;
+      if (queuedCount > playerWindow.inputsDrainedMax) playerWindow.inputsDrainedMax = queuedCount;
       // After consuming queued inputs, strip edge-triggered fields from the coalesced held-state
       // fallback so empty-queue ticks keep movement/look/held state without re-firing actions.
       this.lastInputByPlayerId.set(player.id, clearEdges(command.input));
@@ -2684,9 +2769,12 @@ export class ServerGameLoop {
     this.inputQueueByPlayerId.set(playerId, []);
     this.lastInputByPlayerId.set(playerId, defaultInput(yawRadians));
     this.previousInputByPlayerId.set(playerId, defaultInput(yawRadians));
-    this.lastInputAtByPlayerId.set(playerId, this.now());
+    const now = this.now();
+    this.lastInputAtByPlayerId.set(playerId, now);
+    this.lastProcessedInputAtByPlayerId.set(playerId, now);
     this.lastEnqueuedSeqByPlayerId.set(playerId, 0);
     this.parryCooldownByPlayerId.set(playerId, 0);
+    this.playerNetWindowStatsByPlayerId.delete(playerId);
     // CRITICAL: the client restarts its input sequence at 0 on a reset (resetPrediction). The player
     // object is REUSED across a room reset, so its lastProcessedInputSeq still holds the pre-reset
     // (high) value. If we don't clear it, the server acks that stale-high seq, the client's

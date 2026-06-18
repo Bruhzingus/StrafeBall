@@ -182,6 +182,7 @@ export class ArenaScene {
   private perfReportFrameCount = 0;
   private perfReportInputCount = 0;
   private perfReportFrameMsTotal = 0;
+  private perfReportFrameMsMax = 0;
   private perfReportCorrectionCount = 0;
   private perfReportSnapCount = 0;
   private perfReportMaxCorrectionM = 0;
@@ -266,6 +267,7 @@ export class ArenaScene {
       this.enterOnlineMode();
       this.stepOnline(dt);
       if (this.multiplayer.latestSnapshot) {
+        const connectionDebug = this.multiplayer.getConnectionDebug();
         this.hud.updateNetwork(
           this.multiplayer.latestSnapshot,
           this.multiplayer.localPlayerId,
@@ -285,6 +287,10 @@ export class ArenaScene {
             desyncRecentMaxM: this.desyncRecentMaxM,
             desyncPeakM: this.desyncPeakM,
             ackAgeMs: this.ackAgeMs(),
+            pingJitterMs: connectionDebug.pingJitterMs,
+            lastPongAgeMs: connectionDebug.lastPongAgeMs,
+            missedPongs: connectionDebug.missedPongs,
+            socketBufferedAmount: connectionDebug.socketBufferedAmount,
             predictionActive: this.predictedMovement !== null,
           }
         );
@@ -715,6 +721,7 @@ export class ArenaScene {
     this.onlineRateLogFrameCount += 1;
     this.perfReportFrameCount += 1;
     this.perfReportFrameMsTotal += dt * 1000;
+    this.perfReportFrameMsMax = Math.max(this.perfReportFrameMsMax, dt * 1000);
 
     // --- Latch edge-triggered inputs every render frame so none are lost between fixed ticks ---
     this.latchJumpPressed ||= this.input.wasKeyPressed(CONTROL_KEYS.jump);
@@ -995,6 +1002,7 @@ export class ArenaScene {
     if (isPerfDebugEnabled()) {
       const elapsed = this.perfReportTimer;
       const snap = this.multiplayer.snapshotDebug;
+      const connectionDebug = this.multiplayer.getConnectionDebug();
       const render = this.networkRenderer.getDebugStats();
       const avgFrameMs = this.perfReportFrameCount > 0 ? this.perfReportFrameMsTotal / this.perfReportFrameCount : 0;
       const fps = avgFrameMs > 0 ? 1000 / avgFrameMs : 0;
@@ -1003,13 +1011,14 @@ export class ArenaScene {
       console.log(
         `[perf] roomAgeSec=${roomAgeSec.toFixed(1)}` +
         ` input=${CLIENT_INPUT_RATE}Hz snapshots=${SNAPSHOT_RATE}Hz` +
-        ` fps=${fps.toFixed(1)} avgFrameMs=${avgFrameMs.toFixed(2)}` +
+        ` fps=${fps.toFixed(1)} avgFrameMs=${avgFrameMs.toFixed(2)} maxFrameMs=${this.perfReportFrameMsMax.toFixed(2)}` +
         ` inputSent=${(this.perfReportInputCount / elapsed).toFixed(1)}/s` +
         ` snapshotsRecv=${snap.receivedPerSecond.toFixed(1)}/s` +
         ` uniqueSnapshots=${snap.uniqueTicksPerSecond.toFixed(1)}/s` +
         ` renderSnapshots=${this.snapshotRateHz.toFixed(1)}/s` +
         ` snapMs avg=${snap.averageMsBetweenSnapshots.toFixed(1)} max=${snap.maxMsBetweenSnapshots.toFixed(1)}` +
         ` dupSnapshots=${snap.duplicateOrOutOfOrder} staleDropped=${snap.staleDropped}` +
+        ` ping=${this.multiplayer.pingMs ?? -1}ms jitter=${connectionDebug.pingJitterMs.toFixed(1)}ms lastPongAge=${connectionDebug.lastPongAgeMs ?? -1}ms missedPongs=${connectionDebug.missedPongs}` +
         ` pendingInputs=${this.pendingInputs.length}` +
         ` rawServerLeadError=${this.predictionErrorM.toFixed(3)}m` +
         ` residualAfterReplay=${this.residualAfterReplayM.toFixed(3)}m` +
@@ -1019,7 +1028,7 @@ export class ArenaScene {
         ` corrections=${this.perfReportCorrectionCount} snaps=${this.perfReportSnapCount}` +
         ` oldestSnapshotAge=${render.oldestSnapshotAgeMs.toFixed(1)}ms` +
         ` renderDelay=${render.renderDelayMs.toFixed(1)}ms` +
-        ` wsBuffered=${snap.socketBufferedAmount}B` +
+        ` wsBuffered=${connectionDebug.socketBufferedAmount}B snapshotAge=${connectionDebug.lastSnapshotAgeMs ?? -1}ms` +
         ` remoteUnderruns=${render.bufferUnderrunsPerSec.toFixed(1)}/s` +
         ` remoteOverruns=${render.bufferOverrunsPerSec.toFixed(1)}/s` +
         ` remoteSnaps=${render.remoteSnapCount}` +
@@ -1044,6 +1053,7 @@ export class ArenaScene {
         console.log(
           `[soak] roomAgeSec=${roomAgeSec.toFixed(1)}` +
           ` ackAgeMs=${this.ackAgeMs() ?? -1}` +
+          ` pongAgeMs=${connectionDebug.lastPongAgeMs ?? -1}` +
           ` expectedLead=${this.expectedLeadM.toFixed(3)}m` +
           ` correctionsMax=${this.perfReportMaxCorrectionM.toFixed(3)}m` +
           ` interp={avgMs=${render.avgSnapshotIntervalMs.toFixed(1)} maxMs=${render.maxSnapshotIntervalMs.toFixed(1)} underruns=${render.bufferUnderrunsPerSec.toFixed(1)}/s overruns=${render.bufferOverrunsPerSec.toFixed(1)}/s}` +
@@ -1056,6 +1066,7 @@ export class ArenaScene {
     this.perfReportFrameCount = 0;
     this.perfReportInputCount = 0;
     this.perfReportFrameMsTotal = 0;
+    this.perfReportFrameMsMax = 0;
     this.perfReportCorrectionCount = 0;
     this.perfReportSnapCount = 0;
     this.perfReportMaxCorrectionM = 0;
@@ -1318,6 +1329,7 @@ export class ArenaScene {
     if (isNetDebugEnabled()) {
       const elapsed = this.onlineRateLogTimer;
       const snapshotDebug = this.multiplayer.snapshotDebug;
+      const connectionDebug = this.multiplayer.getConnectionDebug();
       const renderStats = this.networkRenderer.getDebugStats();
       const snapshotRate = snapshotDebug.receivedPerSecond;
       console.log(
@@ -1328,6 +1340,7 @@ export class ArenaScene {
         ` maxMs=${snapshotDebug.maxMsBetweenSnapshots.toFixed(1)}` +
         ` dup=${snapshotDebug.duplicateOrOutOfOrder}` +
         ` staleDropped=${snapshotDebug.staleDropped}` +
+        ` ping=${this.multiplayer.pingMs ?? -1}ms jitter=${connectionDebug.pingJitterMs.toFixed(1)}ms pongAge=${connectionDebug.lastPongAgeMs ?? -1}ms missed=${connectionDebug.missedPongs}` +
         ` inputPackets=${(this.onlineRateLogInputCount / elapsed).toFixed(1)}/s` +
         ` renderFps=${(this.onlineRateLogFrameCount / elapsed).toFixed(1)}` +
         ` remoteBuffer=${renderStats.remoteInterpolationBufferSize}` +
@@ -1335,7 +1348,7 @@ export class ArenaScene {
         ` renderDelay=${renderStats.renderDelayMs}ms` +
         ` latestSnapshotAge=${renderStats.latestSnapshotAgeMs}ms` +
         ` oldestSnapshotAge=${renderStats.oldestSnapshotAgeMs}ms` +
-        ` wsBuffered=${snapshotDebug.socketBufferedAmount}B` +
+        ` wsBuffered=${connectionDebug.socketBufferedAmount}B` +
         ` underruns=${renderStats.bufferUnderrunsPerSec.toFixed(1)}/s` +
         ` overruns=${renderStats.bufferOverrunsPerSec.toFixed(1)}/s` +
         ` interpAvgMs=${renderStats.avgSnapshotIntervalMs.toFixed(1)}` +
@@ -1457,6 +1470,7 @@ export class ArenaScene {
     this.perfReportFrameCount = 0;
     this.perfReportInputCount = 0;
     this.perfReportFrameMsTotal = 0;
+    this.perfReportFrameMsMax = 0;
     this.perfReportCorrectionCount = 0;
     this.perfReportSnapCount = 0;
     this.perfReportMaxCorrectionM = 0;

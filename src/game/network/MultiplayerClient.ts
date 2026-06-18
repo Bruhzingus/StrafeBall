@@ -66,6 +66,11 @@ export class MultiplayerClient {
   private room: Room | null = null;
   private pingTimer: number | null = null;
   private lastPingClientTime = 0;
+  private lastPongReceivedAtMs = 0;
+  private pingJitterMs = 0;
+  private missedPongs = 0;
+  private consecutiveMissedPongs = 0;
+  private awaitingPong = false;
   private snapshotWindowStartedAtMs = 0;
   private snapshotWindowCount = 0;
   private snapshotWindowUniqueCount = 0;
@@ -88,6 +93,25 @@ export class MultiplayerClient {
 
   get connected(): boolean {
     return this.status === 'connected' && this.room !== null;
+  }
+
+  getConnectionDebug(): {
+    pingJitterMs: number;
+    lastPongAgeMs: number | null;
+    missedPongs: number;
+    consecutiveMissedPongs: number;
+    socketBufferedAmount: number;
+    lastSnapshotAgeMs: number | null;
+  } {
+    const now = Date.now();
+    return {
+      pingJitterMs: this.pingJitterMs,
+      lastPongAgeMs: this.lastPongReceivedAtMs > 0 ? Math.max(0, now - this.lastPongReceivedAtMs) : null,
+      missedPongs: this.missedPongs,
+      consecutiveMissedPongs: this.consecutiveMissedPongs,
+      socketBufferedAmount: this.socketBufferedAmount(),
+      lastSnapshotAgeMs: this.lastSnapshotReceivedAtMs > 0 ? Math.max(0, now - this.lastSnapshotReceivedAtMs) : null
+    };
   }
 
   async createRoom(name: string, mode: MatchMode = '1v1'): Promise<void> {
@@ -119,6 +143,7 @@ export class MultiplayerClient {
     this.hitRevertEventQueue = [];
     clearRoster(this.roster);
     this.resetSnapshotDebug();
+    this.resetConnectionDebug();
   }
 
   dispose(): void {
@@ -316,7 +341,15 @@ export class MultiplayerClient {
 
     room.onMessage('pong', (message: Extract<ServerMessage, { type: 'pong' }>) => {
       if (this.room !== room) return;
+      const previousPing = this.pingMs;
       this.pingMs = Math.max(0, Date.now() - message.clientTimeMs);
+      if (previousPing !== null) {
+        const delta = Math.abs(this.pingMs - previousPing);
+        this.pingJitterMs = this.pingJitterMs === 0 ? delta : this.pingJitterMs * 0.8 + delta * 0.2;
+      }
+      this.awaitingPong = false;
+      this.lastPongReceivedAtMs = Date.now();
+      this.consecutiveMissedPongs = 0;
     });
 
     room.onError((code, message) => {
@@ -340,6 +373,7 @@ export class MultiplayerClient {
       this.hitRevertEventQueue = [];
       clearRoster(this.roster);
       this.resetSnapshotDebug();
+      this.resetConnectionDebug();
     });
   }
 
@@ -417,7 +451,12 @@ export class MultiplayerClient {
 
   private sendPing(): void {
     if (!this.room) return;
+    if (this.awaitingPong) {
+      this.missedPongs += 1;
+      this.consecutiveMissedPongs += 1;
+    }
     this.lastPingClientTime = Date.now();
+    this.awaitingPong = true;
     this.room.send('ping', { clientTimeMs: this.lastPingClientTime });
   }
 
@@ -437,6 +476,15 @@ export class MultiplayerClient {
     return room.connection?.ws?.bufferedAmount
       ?? room.connection?.transport?.ws?.bufferedAmount
       ?? 0;
+  }
+
+  private resetConnectionDebug(): void {
+    this.lastPingClientTime = 0;
+    this.lastPongReceivedAtMs = 0;
+    this.pingJitterMs = 0;
+    this.missedPongs = 0;
+    this.consecutiveMissedPongs = 0;
+    this.awaitingPong = false;
   }
 }
 

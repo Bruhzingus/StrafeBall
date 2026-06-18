@@ -277,6 +277,10 @@ export class Hud {
       desyncRecentMaxM: number;
       desyncPeakM: number;
       ackAgeMs: number | null;
+      pingJitterMs: number;
+      lastPongAgeMs: number | null;
+      missedPongs: number;
+      socketBufferedAmount: number;
       predictionActive: boolean;
     }
   ): void {
@@ -319,6 +323,7 @@ export class Hud {
         <div>Room: <span class="hud-good">${escapeHtml(room.id)}</span> · Players: ${Object.keys(room.players).length}/${room.match.maxPlayers}</div>
         <div>Ping: <span class="hud-good">${pingMs === null ? '-' : `${pingMs} ms`}</span> · Tick: ${snapshot.tick}</div>
         <div>Snap recv/render: <span class="hud-good">${netDebug.snapshotRateHz.toFixed(1)}</span> / ${netDebug.renderSnapshotRateHz.toFixed(1)} Hz | Ack age: ${netDebug.ackAgeMs === null ? '-' : `${netDebug.ackAgeMs} ms`}</div>
+        <div>Jitter: ${netDebug.pingJitterMs.toFixed(1)} ms | Pong age: ${netDebug.lastPongAgeMs === null ? '-' : `${netDebug.lastPongAgeMs} ms`} | Missed: ${netDebug.missedPongs} | WS: ${netDebug.socketBufferedAmount} B</div>
         <div>Tick rate: <span class="hud-good">${SERVER_TICK_RATE} Hz</span> &middot; Snap ${SNAPSHOT_RATE} Hz</div>
         <div>Raw lead: ${netDebug.predictionErrorM.toFixed(3)} m / ~${netDebug.expectedLeadM.toFixed(3)} m</div>
         <div>Desync: <span class="${desyncColor}">${netDebug.residualAfterReplayM.toFixed(3)} m</span> avg ${netDebug.desyncAverageM.toFixed(3)} max ${netDebug.desyncRecentMaxM.toFixed(3)} peak ${netDebug.desyncPeakM.toFixed(3)}</div>

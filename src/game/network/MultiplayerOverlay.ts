@@ -108,7 +108,7 @@ export class MultiplayerOverlay {
         </div>
         <div class="multiplayer-line multiplayer-line--status">Status <span class="multiplayer-status">practice</span></div>
         <div class="multiplayer-line multiplayer-line--ping">Ping <span class="multiplayer-ping">-</span></div>
-        <div class="multiplayer-line">Capacity <span class="multiplayer-capacity">0 / 0</span></div>
+        <div class="multiplayer-line multiplayer-line--capacity">Capacity <span class="multiplayer-capacity">0 / 0</span></div>
         <div class="multiplayer-room-summary"></div>
         <div class="multiplayer-pregame"></div>
         <div class="multiplayer-reset"></div>
@@ -674,12 +674,18 @@ function buildResetControlsHtml(room: RoomState, localPlayerId: string): string 
   if (room.match.mode !== '2v2') return '';
   const sameTeamsVoted = room.resetVote.mode === 'same-teams' && room.resetVote.votesByPlayerId[localPlayerId] === true;
   const resetTeamsVoted = room.resetVote.mode === 'reset-teams' && room.resetVote.votesByPlayerId[localPlayerId] === true;
+  const voteLabel = room.resetVote.requiredVotes > 0
+    ? `Vote ${room.resetVote.voteCount}/${room.resetVote.requiredVotes}`
+    : 'Vote to reset';
   return `
     <div class="multiplayer-reset-card">
-      <div class="multiplayer-pregame-title">Match Reset</div>
+      <div class="multiplayer-reset-copy">
+        <div class="multiplayer-pregame-title">Reset Vote</div>
+        <div class="multiplayer-reset-status">${voteLabel}</div>
+      </div>
       <div class="multiplayer-reset-actions">
-        <button class="multiplayer-reset-action" type="button" data-reset-mode="same-teams"${sameTeamsVoted ? ' disabled' : ''}>${sameTeamsVoted ? 'Voted Same Teams' : 'Reset Match'}</button>
-        <button class="multiplayer-reset-action multiplayer-reset-action--alt" type="button" data-reset-mode="reset-teams"${resetTeamsVoted ? ' disabled' : ''}>${resetTeamsVoted ? 'Voted Reset Teams' : 'Reset Teams'}</button>
+        <button class="multiplayer-reset-action" type="button" data-reset-mode="same-teams"${sameTeamsVoted ? ' disabled' : ''}>${sameTeamsVoted ? 'Voted Match' : 'Vote Reset Match'}</button>
+        <button class="multiplayer-reset-action multiplayer-reset-action--alt" type="button" data-reset-mode="reset-teams"${resetTeamsVoted ? ' disabled' : ''}>${resetTeamsVoted ? 'Voted Teams' : 'Vote Reset Teams'}</button>
       </div>
     </div>
   `;
