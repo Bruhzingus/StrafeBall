@@ -28,6 +28,7 @@ import { settings } from '../config/Settings';
 import { MultiplayerClient } from '../network/MultiplayerClient';
 import { MultiplayerOverlay } from '../network/MultiplayerOverlay';
 import { NetworkRenderer } from '../network/NetworkRenderer';
+import { OnlineTeamSelectorPads } from '../network/OnlineTeamSelectorPads';
 import {
   onlineHandInputLooksEmpty,
   shouldClearPendingOnlineThrowRelease,
@@ -82,6 +83,7 @@ export class ArenaScene {
   private readonly multiplayer = new MultiplayerClient();
   private readonly multiplayerOverlay: MultiplayerOverlay;
   private readonly networkRenderer: NetworkRenderer;
+  private readonly onlineTeamSelector: OnlineTeamSelectorPads;
   // Backflip landing quick-time event: armed when the local player lands from a backflip holding a
   // ball; resolving it throws (tiered speed). Owned here so it works in both offline and online.
   private readonly backflipQte = new BackflipQteController();
@@ -242,6 +244,7 @@ export class ArenaScene {
     this.settingsPanel = new SettingsPanel();
     this.multiplayerOverlay = new MultiplayerOverlay(this.multiplayer);
     this.networkRenderer = new NetworkRenderer(this.scene, this.ballVisualEffects);
+    this.onlineTeamSelector = new OnlineTeamSelectorPads(this.scene);
   }
 
   update(): void {
@@ -299,6 +302,7 @@ export class ArenaScene {
     this.multiplayerOverlay.dispose();
     this.multiplayer.dispose();
     this.networkRenderer.dispose();
+    this.onlineTeamSelector.dispose();
     this.settingsPanel.dispose();
     this.ballManager.clear();
     this.ballVisualEffects.dispose();
@@ -734,6 +738,22 @@ export class ArenaScene {
     // Pre-round countdown gate: while the authoritative match is counting down, local input is
     // frozen to look-only (built in buildNetworkInput) so the player can't move/throw until GO.
     this.countdownActive = snapshot?.room.match.status === 'countdown';
+    const teamSelectorConsumesInteract = this.onlineTeamSelector.update(
+      dt,
+      this.player.root.position,
+      this.input.isKeyDown(CONTROL_KEYS.interact),
+      snapshot?.room ?? null,
+      this.multiplayer.localPlayerId,
+      {
+        chooseTeam: (teamId) => this.multiplayer.requestSwitchTeam(teamId),
+        voteStart: () => this.multiplayer.requestStartVote()
+      }
+    );
+    if (teamSelectorConsumesInteract) {
+      this.latchPickupPressed = false;
+      this.recentCatchAttemptBySide.left = null;
+      this.recentCatchAttemptBySide.right = null;
+    }
 
     // Backflip landing QTE (online): runs client-side; on a hit it latches a release + tier onto the
     // input stream (handled below) and suppresses the normal hand action so the click doesn't charge.
@@ -1370,6 +1390,7 @@ export class ArenaScene {
     this.lastOnlineBallBounceCount.clear();
     this.lastResetSerial = -1;
     this.lastResetVoteKey = '';
+    this.onlineTeamSelector.setEnabled(false);
   }
 
   private exitOnlineMode(): void {
@@ -1389,6 +1410,7 @@ export class ArenaScene {
     this.lastOnlineBallBounceCount.clear();
     this.lastResetSerial = -1;
     this.lastResetVoteKey = '';
+    this.onlineTeamSelector.setEnabled(false);
     this.player.hands.clearHands();
     this.player.resetPosition();
     this.quickBot.reset();

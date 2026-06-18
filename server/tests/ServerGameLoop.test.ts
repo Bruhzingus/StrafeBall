@@ -746,6 +746,36 @@ describe('ServerGameLoop', () => {
       expect(loop.state.match.status).toBe('countdown');
     });
 
+    it('confirms the current team without moving slots or clearing an existing start vote', () => {
+      const loop = new ServerGameLoop('room', { mode: '2v2', playersPerTeam: 2 });
+      loop.addPlayer('a', 'A');
+      loop.addPlayer('b', 'B');
+      loop.addPlayer('c', 'C');
+
+      const player = loop.state.players.a;
+      const original = {
+        teamId: player.teamId,
+        slot: player.teamSlotIndex,
+        position: vec3(2.25, 0, -4.5)
+      };
+      player.movement = { ...player.movement, position: { ...original.position } };
+
+      expect(loop.handleTeamSwitch('a', original.teamId).ok).toBe(true);
+      expect(loop.state.players.a.teamId).toBe(original.teamId);
+      expect(loop.state.players.a.teamSlotIndex).toBe(original.slot);
+      expect(loop.state.players.a.movement.position).toEqual(original.position);
+      expect(loop.state.startVote.teamChoicesByPlayerId.a).toBe(true);
+
+      chooseCurrentTeam(loop, 'b');
+      chooseCurrentTeam(loop, 'c');
+      expect(loop.handleStartVote('a').ok).toBe(true);
+      expect(loop.state.startVote.voteCount).toBe(1);
+
+      expect(loop.handleTeamSwitch('a', original.teamId).ok).toBe(true);
+      expect(loop.state.startVote.voteCount).toBe(1);
+      expect(loop.state.match.status).toBe('warmup');
+    });
+
     it('switches teams server-authoritatively without overfilling a side', () => {
       const loop = new ServerGameLoop('room', { mode: '2v2', playersPerTeam: 2 });
       loop.addPlayer('a', 'A');

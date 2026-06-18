@@ -716,6 +716,21 @@ export class ServerGameLoop {
     if (this.state.match.status !== 'warmup') return { ok: false, reason: 'teams-locked' };
     if (!this.teamIds.includes(targetTeamId)) return { ok: false, reason: 'invalid-team' };
 
+    const currentSlot = this.slotForPlayer(player);
+    if (
+      currentSlot.teamId === targetTeamId &&
+      (requestedSlotIndex === undefined || requestedSlotIndex === currentSlot.teamSlotIndex)
+    ) {
+      const wasChosen = this.teamChoicesByPlayerId.has(player.id);
+      this.teamChoicesByPlayerId.add(player.id);
+      if (wasChosen) {
+        this.syncStartVoteState();
+      } else {
+        this.clearVotesForPregameChange();
+      }
+      return { ok: true, log: `team confirmed player=${playerId} team=${currentSlot.teamId} slot=${currentSlot.teamSlotIndex + 1}` };
+    }
+
     const slot = this.resolveRequestedSlot(targetTeamId, requestedSlotIndex);
     if (!slot) return { ok: false, reason: 'invalid-slot' };
 
@@ -724,7 +739,7 @@ export class ServerGameLoop {
       candidate.teamId === slot.teamId &&
       candidate.teamSlotIndex === slot.teamSlotIndex
     );
-    const sourceSlot = this.slotForPlayer(player);
+    const sourceSlot = currentSlot;
 
     if (occupant) {
       this.dropAllHeldBalls(occupant);

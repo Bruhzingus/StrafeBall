@@ -243,7 +243,7 @@ export class MultiplayerOverlay {
     this.modeTitle.textContent = MODE_LABEL[this.selectedMode];
     this.modeSubtitle.textContent = this.selectedMode === '1v1'
       ? 'Classic private duel. Create a code or join a friend.'
-      : 'Two players per side. Fill both seats on each team before the match starts.';
+      : 'Team warmup. Choose a side in the pre-game, then vote start when ready.';
     this.modeNotice.textContent = supported
       ? 'Tip: use F11 fullscreen before the match starts.'
       : '2v2 is disabled in the active build configuration.';
@@ -516,6 +516,12 @@ function summarizeRoom(room: RoomState | null, localPlayerId: string): {
     noticeText = disconnected
       .map((player) => `${player.name} ${formatReconnectSeconds(player.reconnectDeadlineAtMs)}s`)
       .join(' · ');
+  } else if (room.match.mode === '2v2' && room.match.status === 'warmup') {
+    const choicesReady = room.startVote.requiredTeamChoices > 0 &&
+      room.startVote.teamChoiceCount >= room.startVote.requiredTeamChoices;
+    noticeText = choicesReady && room.startVote.requiredVotes > 0
+      ? `Start vote ${room.startVote.voteCount}/${room.startVote.requiredVotes}.`
+      : `Choose teams ${room.startVote.teamChoiceCount}/${room.startVote.requiredTeamChoices}.`;
   } else if (missingSeats > 0) {
     noticeText = `Waiting for ${missingSeats} more player${missingSeats === 1 ? '' : 's'}.`;
   } else if (room.match.status === 'countdown') {
@@ -615,6 +621,11 @@ function buildPregameHtml(room: RoomState, localPlayerId: string): string {
   const voteLine = choicesReady && room.startVote.requiredVotes > 0
     ? `Vote start: ${room.startVote.voteCount}/${room.startVote.requiredVotes}`
     : choiceLine;
+  const localVoted = room.startVote.votesByPlayerId[localPlayerId] === true;
+  const startEnabled = choicesReady && room.startVote.requiredVotes > 0 && !localVoted;
+  const startLabel = choicesReady
+    ? localVoted ? 'Voted' : 'Start Vote'
+    : 'Choose Teams First';
 
   return `
     <div class="multiplayer-pregame-card">
@@ -622,8 +633,8 @@ function buildPregameHtml(room: RoomState, localPlayerId: string): string {
       <div class="multiplayer-pregame-slots">${teams}</div>
       <div class="multiplayer-pregame-footer">
         <span>${voteLine}</span>
-        <button class="multiplayer-start-vote" type="button"${choicesReady && room.startVote.requiredVotes > 0 ? '' : ' disabled'}>Vote Start</button>
       </div>
+      <button class="multiplayer-start-vote multiplayer-start-vote--big" type="button"${startEnabled ? '' : ' disabled'}>${startLabel}</button>
     </div>
   `;
 }

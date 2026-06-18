@@ -1332,6 +1332,23 @@ html, body {
   font-weight: 800;
 }
 
+.multiplayer-start-vote--big {
+  display: block;
+  width: 100%;
+  min-height: 46px;
+  margin-top: 10px;
+  border-width: 3px;
+  border-radius: 12px;
+  font-size: 17px;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  box-shadow: 3px 3px 0 var(--ink);
+}
+
+.multiplayer-start-vote--big:disabled {
+  box-shadow: 1px 1px 0 var(--ink);
+}
+
 .multiplayer-room-summary__line + .multiplayer-room-summary__line {
   margin-top: 3px;
 }
@@ -1627,6 +1644,24 @@ html, body {
 .lobby-mode-prompt[data-mode="2v2"] {
   background:
     radial-gradient(circle at 10% 0%, rgba(255, 207, 46, 0.34), transparent 38%),
+    var(--paper);
+}
+
+.online-team-prompt[data-pad="blue"] {
+  background:
+    radial-gradient(circle at 10% 0%, rgba(92, 232, 255, 0.34), transparent 38%),
+    var(--paper);
+}
+
+.online-team-prompt[data-pad="red"] {
+  background:
+    radial-gradient(circle at 10% 0%, rgba(255, 88, 76, 0.28), transparent 38%),
+    var(--paper);
+}
+
+.online-team-prompt[data-pad="start"] {
+  background:
+    radial-gradient(circle at 10% 0%, rgba(255, 207, 46, 0.38), transparent 38%),
     var(--paper);
 }
 
