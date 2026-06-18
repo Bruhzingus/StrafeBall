@@ -4,6 +4,7 @@ import { MatObstacle, MAT_DIMENSIONS } from './MatObstacle';
 import { AABB, CollisionWorld } from './Collider';
 import { ModelLoader } from '../assets/ModelLoader';
 import { Scoreboard3D, createSideScoreboards } from './Scoreboard3D';
+import { applyGymVisualRevamp } from './GymVisualRevamp';
 import {
   MAT_SPECS,
   createBleacherCollisionBoxes,
@@ -65,6 +66,7 @@ export class GymArena {
     this.createTargetDummies();
     this.createCeiling();
     this.createCeilingLights();
+    applyGymVisualRevamp(this.scene);
     this.scoreboards.push(...createSideScoreboards(this.scene));
 
     // The gym is a fixed stage: every mesh built above is static except the moving dummy and the
