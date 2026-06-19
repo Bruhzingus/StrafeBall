@@ -241,15 +241,13 @@ export class GymArena {
     }
   }
 
-  /** Lower 1.5 m of every wall gets a navy foam-pad layer (visual only, no collision change). */
+  /** Front/back walls only get a tall navy foam-pad layer, like mats stood against the wall (visual only, no collision). */
   private createWallPads(): void {
-    const padH = 1.5;
+    const padH = 2.3;
     const padT = 0.06;
     const pads = [
       { name: 'pad_north', pos: new Vector3(0, padH / 2, TUNING.map.halfLength - padT / 2), size: { width: TUNING.map.halfWidth * 2, height: padH, depth: padT } },
-      { name: 'pad_south', pos: new Vector3(0, padH / 2, -TUNING.map.halfLength + padT / 2), size: { width: TUNING.map.halfWidth * 2, height: padH, depth: padT } },
-      { name: 'pad_east', pos: new Vector3(TUNING.map.halfWidth - padT / 2, padH / 2, 0), size: { width: padT, height: padH, depth: TUNING.map.halfLength * 2 } },
-      { name: 'pad_west', pos: new Vector3(-TUNING.map.halfWidth + padT / 2, padH / 2, 0), size: { width: padT, height: padH, depth: TUNING.map.halfLength * 2 } }
+      { name: 'pad_south', pos: new Vector3(0, padH / 2, -TUNING.map.halfLength + padT / 2), size: { width: TUNING.map.halfWidth * 2, height: padH, depth: padT } }
     ];
     for (const pad of pads) {
       this.loader.createVisual('wallPad', { name: pad.name, size: pad.size, position: pad.pos });

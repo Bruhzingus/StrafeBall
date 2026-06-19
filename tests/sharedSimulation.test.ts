@@ -247,6 +247,67 @@ describe('shared movement simulation', () => {
     expect(next.movement.wallRunning).toBe(false);
     expect(next.internal.wallRunTimer).toBe(0);
   });
+
+  it('lets you descend during a wall-run by looking down while holding forward', () => {
+    const dt = 1 / 72;
+    const player = createPlayerState('p1', 'blue');
+    // Hug the +X wall, mid-height, moving parallel (along +Z) above the entry speed so the run holds.
+    player.movement.position = vec3(GAME_CONSTANTS.map.halfWidth - GAME_CONSTANTS.player.radius, 4, 0);
+    player.movement.velocity = vec3(0, 0, GAME_CONSTANTS.wall.minEntrySpeed + 3);
+    player.movement.grounded = false;
+    player.movement.wallRunning = true;
+    player.movementInternal.lastWallNormalX = -1;
+
+    // Look DOWN (positive pitch) and hold W: vertical velocity should drive downward and the
+    // player should actually lose height over a few ticks (the old clamp/re-boost prevented this).
+    const lookDown = { ...neutralInput(), moveZ: 1, lookPitchRadians: 0.9 };
+    let state = stepMovement(player.movement, player.movementInternal, player.dash, lookDown, neutralInput(), dt, [], false);
+    const startY = state.movement.position.y;
+    for (let i = 0; i < 20; i += 1) {
+      state = stepMovement(state.movement, state.internal, state.dash, lookDown, lookDown, dt, [], false);
+    }
+
+    expect(state.movement.wallRunning).toBe(true);
+    expect(state.movement.velocity.y).toBeLessThan(0);
+    expect(state.movement.position.y).toBeLessThan(startY);
+  });
+
+  it('climbs during a wall-run by looking up while holding forward', () => {
+    const dt = 1 / 72;
+    const player = createPlayerState('p1', 'blue');
+    player.movement.position = vec3(GAME_CONSTANTS.map.halfWidth - GAME_CONSTANTS.player.radius, 2, 0);
+    player.movement.velocity = vec3(0, 0, GAME_CONSTANTS.wall.minEntrySpeed + 3);
+    player.movement.grounded = false;
+    player.movement.wallRunning = true;
+    player.movementInternal.lastWallNormalX = -1;
+
+    // Look UP (negative pitch) and hold W.
+    const lookUp = { ...neutralInput(), moveZ: 1, lookPitchRadians: -0.9 };
+    let state = stepMovement(player.movement, player.movementInternal, player.dash, lookUp, neutralInput(), dt, [], false);
+    const startY = state.movement.position.y;
+    for (let i = 0; i < 10; i += 1) {
+      state = stepMovement(state.movement, state.internal, state.dash, lookUp, lookUp, dt, [], false);
+    }
+
+    expect(state.movement.velocity.y).toBeGreaterThan(0);
+    expect(state.movement.position.y).toBeGreaterThan(startY);
+  });
+
+  it('does not shrink the body or sap momentum when crouch is held in the air', () => {
+    const dt = 1 / 72;
+    const player = createPlayerState('p1', 'blue');
+    player.movement.position = vec3(0, 3, 0);
+    player.movement.velocity = vec3(0, 1, 9);
+    player.movement.grounded = false;
+
+    const heldCrouch = { ...neutralInput(), crouchHeld: true };
+    const next = stepMovement(player.movement, player.movementInternal, player.dash, heldCrouch, neutralInput(), dt, [], false);
+
+    // Crouch in the air must not register as crouching (which would shrink the hitbox and perturb
+    // air-strafe momentum); the horizontal speed must be preserved.
+    expect(next.movement.crouching).toBe(false);
+    expect(Math.hypot(next.movement.velocity.x, next.movement.velocity.z)).toBeCloseTo(9, 5);
+  });
 });
 
 describe('shared ball state transitions', () => {

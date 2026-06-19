@@ -369,9 +369,9 @@ function createWallPaddingDetails(scene: Scene): void {
     emissive: new Color3(0.012, 0.032, 0.088)
   });
 
-  for (const side of wallSides()) {
+  for (const side of frontBackWallSides()) {
     const span = wallSpan(side);
-    createWallPlane(scene, `decor_wall_padding_top_${side}`, side, span, 0.085, 1.52, 0, topCapMaterial, WALL_PAD_DECAL_INSET);
+    createWallPlane(scene, `decor_wall_padding_top_${side}`, side, span, 0.085, 2.27, 0, topCapMaterial, WALL_PAD_DECAL_INSET);
 
     const start = -span / 2 + 1.4;
     const end = span / 2 - 1.4;
@@ -382,8 +382,8 @@ function createWallPaddingDetails(scene: Scene): void {
         `decor_wall_padding_blue_${side}_${String(index).padStart(2, '0')}`,
         side,
         0.035,
-        1.32,
-        0.76,
+        2.08,
+        1.13,
         offset,
         seamMaterial,
         WALL_PAD_DECAL_INSET
@@ -391,7 +391,7 @@ function createWallPaddingDetails(scene: Scene): void {
       index += 1;
     }
 
-    for (const y of [0.38, 1.1]) {
+    for (const y of [0.42, 1.1, 1.78]) {
       createWallPlane(
         scene,
         `decor_wall_padding_stitch_${side}_${Math.round(y * 100)}`,
@@ -425,9 +425,10 @@ function createRaisedWallPadPanels(scene: Scene): void {
     specular: new Color3(0.1, 0.13, 0.18)
   });
 
-  for (const side of wallSides()) {
+  for (const side of frontBackWallSides()) {
     const span = wallSpan(side);
     const panelWidth = 1.78;
+    const panelHeight = 2.2;
     const gap = 0.08;
     const count = Math.floor((span - 1.0) / (panelWidth + gap));
     const used = count * panelWidth + (count - 1) * gap;
@@ -441,8 +442,8 @@ function createRaisedWallPadPanels(scene: Scene): void {
         `decor_wall_pad_raised_panel_${side}_${String(i).padStart(2, '0')}`,
         side,
         panelWidth,
-        1.18,
-        0.76,
+        panelHeight,
+        panelHeight / 2,
         offset,
         0.026,
         mat,
@@ -455,7 +456,7 @@ function createRaisedWallPadPanels(scene: Scene): void {
         side,
         panelWidth - 0.12,
         0.026,
-        1.31,
+        panelHeight + 0.13,
         offset,
         0.032,
         bevelMat,
@@ -2118,6 +2119,11 @@ function markDecorative(mesh: Mesh): void {
 
 function wallSides(): WallSide[] {
   return ['north', 'south', 'east', 'west'];
+}
+
+/** Front/back walls only — mats stood against the wall live here, never on the side walls. */
+function frontBackWallSides(): WallSide[] {
+  return ['north', 'south'];
 }
 
 function wallSpan(side: WallSide): number {

@@ -145,6 +145,9 @@ export class NetworkRenderer {
   private readonly balls = new Map<string, BallVisual>();
   private readonly remoteArmAnimations = new Map<string, RemoteArmAnimations>();
   private readonly catchRecoilByPlayerId = new Map<string, CatchRecoilTrack>();
+  // Smoothed wall-run body lean (radians) per remote player, so the avatar visibly tilts away from
+  // the wall during a wall-run — mirroring the local player's first-person camera/body lean.
+  private readonly wallLeanByPlayerId = new Map<string, number>();
   // Deterministic visual prediction for live thrown balls (seeded by throw events). Visual only.
   private readonly ballPredictor = new BallPredictor();
   private readonly materials = new Map<string, PBRMaterial>();
@@ -289,6 +292,7 @@ export class NetworkRenderer {
     this.players.clear();
     this.playerDebug.clear();
     this.remoteArmAnimations.clear();
+    this.wallLeanByPlayerId.clear();
     this.balls.clear();
     this.seenPlayers.clear();
     this.seenBalls.clear();
@@ -312,6 +316,7 @@ export class NetworkRenderer {
     this.playerDebug.clear();
     this.remoteArmAnimations.clear();
     this.catchRecoilByPlayerId.clear();
+    this.wallLeanByPlayerId.clear();
   }
 
   private bufferSnapshot(snapshot: ServerSnapshot): void {
@@ -542,6 +547,10 @@ export class NetworkRenderer {
       }
       visual.root.position.set(target.x + recoilX, target.y, target.z + recoilZ);
       visual.root.rotation.y = 0;
+      // Wall-run body lean: tilt the avatar away from the wall (roll about Z), smoothed, so the
+      // remote reads the same as the local first-person lean. Backflip (rotation.x) and wall-run
+      // are mutually exclusive states, so the two never fight over the rig.
+      visual.root.rotation.z = this.advanceWallLean(player, dt);
       // Backflip body tumble: rotate the whole rig backward about its mid-height so the remote
       // avatar visibly flips. Pivot at body center (not the feet) by lifting the root by the
       // rotated half-height offset, so the body spins in place instead of swinging from the floor.
@@ -580,7 +589,35 @@ export class NetworkRenderer {
       this.playerDebug.delete(id);
       this.remoteArmAnimations.delete(id);
       this.catchRecoilByPlayerId.delete(id);
+      this.wallLeanByPlayerId.delete(id);
     }
+  }
+
+  /**
+   * Smoothed wall-run lean (radians) for a remote avatar. Targets a roll AWAY from the wall when
+   * wall-running (sign from wallNormal · yawRight, magnitude TUNING.wall.leanAngleRadians), else 0.
+   * Same shape as PlayerController.wallLeanTarget so local and remote tilt identically.
+   */
+  private advanceWallLean(player: PlayerState, dt: number): number {
+    const current = this.wallLeanByPlayerId.get(player.id) ?? 0;
+    let target = 0;
+    if (player.movement.wallRunning) {
+      const nx = player.movementInternal.lastWallNormalX;
+      const nz = player.movementInternal.lastWallNormalZ;
+      const len = Math.hypot(nx, nz);
+      if (len >= 0.001) {
+        const yaw = player.movement.yawRadians;
+        const rightX = Math.cos(yaw);
+        const rightZ = -Math.sin(yaw);
+        const side = (nx * rightX + nz * rightZ) / len;
+        if (Math.abs(side) >= 0.05) target = -Math.sign(side) * TUNING.wall.leanAngleRadians;
+      }
+    }
+    const alpha = 1 - Math.exp(-TUNING.wall.leanSmoothing * Math.max(0, dt));
+    let next = current + (target - current) * alpha;
+    if (Math.abs(next) < 0.0005) next = 0;
+    this.wallLeanByPlayerId.set(player.id, next);
+    return next;
   }
 
   private advanceCatchRecoil(playerId: string, dt: number): CatchRecoilTrack | null {
@@ -989,6 +1026,10 @@ export class NetworkRenderer {
     Quaternion.FromUnitVectorsToRef(SCRATCH_UP, scratchA, visual.body.rotationQuaternion);
     visual.hitbox.position.y = bodyHeight * 0.5;
     visual.hitbox.scaling.set(1, bodyScale, 1);
+    // The wall-run lean is a VISUAL body tilt only — the authoritative hit capsule (PlayerHitbox)
+    // stays an upright vertical capsule. Counter-rotate the debug hitbox by the root's roll so it
+    // keeps showing the true (vertical) collision shape rather than the leaned avatar's silhouette.
+    visual.hitbox.rotation.z = -visual.root.rotation.z;
     visual.hitbox.setEnabled(isHitboxDebugEnabled());
 
     // torso = flatForward*0.02 + (0, max(0.58, h*0.53), 0)

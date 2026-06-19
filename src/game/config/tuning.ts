@@ -77,8 +77,6 @@ export const TUNING = {
     runTriggerAngleDegrees: GAME_CONSTANTS.wall.runTriggerAngleDegrees,
     runMaxSeconds: GAME_CONSTANTS.wall.runMaxSeconds,
     runGravityScale: GAME_CONSTANTS.wall.runGravityScale,
-    // Vertical velocity is clamped to this floor while wall-running (gentle, controlled slide).
-    runMaxFallSpeed: GAME_CONSTANTS.wall.runMaxFallSpeed,
     // Small upward kick when a wall-run starts so you climb a little.
     runStartUpBoost: GAME_CONSTANTS.wall.runStartUpBoost,
     minEntrySpeed: GAME_CONSTANTS.wall.minEntrySpeed,
@@ -86,6 +84,10 @@ export const TUNING = {
     jumpUpSpeed: GAME_CONSTANTS.wall.jumpUpSpeed,
     reattachCooldownSeconds: GAME_CONSTANTS.wall.reattachCooldownSeconds,
     ceilingDetachDistance: GAME_CONSTANTS.wall.ceilingDetachDistance,
+    // Look-driven wall-run climb (see shared/constants.ts wall.* for the full description).
+    runClimbSpeed: GAME_CONSTANTS.wall.runClimbSpeed,
+    runClimbSmoothing: GAME_CONSTANTS.wall.runClimbSmoothing,
+    ceilingDetachPushDown: GAME_CONSTANTS.wall.ceilingDetachPushDown,
     leanAngleRadians: 25 * Math.PI / 180,
     leanSmoothing: 11
   },

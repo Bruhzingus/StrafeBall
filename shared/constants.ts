@@ -67,16 +67,31 @@ export const GAME_CONSTANTS = {
   wall: {
     runTriggerAngleDegrees: 55,
     runMaxSeconds: 1.1,
+    // Residual gravity while wall-running. Kept small so the look-driven climb (below) is the
+    // dominant vertical input; when you let go of the climb (release W) this pulls you off the arc.
     runGravityScale: 0.15,
-    runMaxFallSpeed: -2.0,
     runStartUpBoost: 2.2,
     minEntrySpeed: 2.0,
     jumpAwaySpeed: 9.5,
-    jumpUpSpeed: 6.8,
+    // Upward kick of a wall-jump. Reduced 15% (6.8 -> 5.78) so the "hump" off the wall is lower.
+    jumpUpSpeed: 5.78,
     reattachCooldownSeconds: 0.2,
     // Stop wall-run reattachment before the player reaches the ceiling clamp; otherwise the run
     // start boost can re-fire every frame at the top of the gym.
-    ceilingDetachDistance: 0.35
+    ceilingDetachDistance: 0.35,
+    // --- look-driven vertical control ---
+    // While wall-running AND holding forward (W), your look pitch sets vertical speed directly:
+    //   vy = sin(pitch) * runClimbSpeed   (look up = climb, level = hold height, look down = descend)
+    // This replaces the old "near-zero gravity + hard fall clamp + per-frame up-boost" model that
+    // made descending impossible (it teleported you back up). W is the engage key; release it and
+    // runGravityScale takes over so you gently slide off the wall.
+    runClimbSpeed: 5.0,
+    // Smoothing rate (per second) for the look-driven vertical velocity so flicking the mouse
+    // up/down eases the climb rather than snapping vy, keeping the arc readable.
+    runClimbSmoothing: 14,
+    // When the player reaches the ceiling clamp while wall-running, push them this far down (m/s)
+    // so the head unsticks from the roof instead of pinning fully vertical in a corner.
+    ceilingDetachPushDown: 3.0
   },
 
   backflip: {

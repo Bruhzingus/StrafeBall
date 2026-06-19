@@ -37,6 +37,9 @@ export class MovementController {
   private slideBufferTimer = 0;
   private jumpGraceTimer = 0;
   private wallRunTimer = 0;
+  // True on ticks where the player is wall-running AND steering vertically with their look (W held).
+  // Gates the look-driven climb applied in applyGravity. Mirrors MovementSim's wallRunClimbing.
+  private wallRunClimbing = false;
   private wallReattachCooldown = 0;
   private doubleJumpAvailable = true;
   private catchBoostTimer = 0;
@@ -60,8 +63,13 @@ export class MovementController {
 
   update(dt: number, input: InputManager, catchStanceActive: boolean): MovementSnapshot {
     this.dashingThisFrame = false;
-    this.crouching = input.isKeyDown(CONTROL_KEYS.crouch) || input.isKeyDown(CONTROL_KEYS.crouchAlt);
-    this.slideHoldActive = input.isKeyDown(CONTROL_KEYS.slide) || this.crouching;
+    // Crouch only takes physical effect on the ground (body height, speed cap). Holding crouch in
+    // the air must NOT shrink the hitbox/body height — that perturbs air-strafe momentum and feels
+    // sluggish when prepping a slide — but it still arms the instant slide-on-landing via
+    // slideHoldActive. Mirrors MovementSim.ts (the authoritative online sim).
+    this.crouching = this.grounded && (input.isKeyDown(CONTROL_KEYS.crouch) || input.isKeyDown(CONTROL_KEYS.crouchAlt));
+    this.slideHoldActive =
+      input.isKeyDown(CONTROL_KEYS.slide) || input.isKeyDown(CONTROL_KEYS.crouch) || input.isKeyDown(CONTROL_KEYS.crouchAlt);
     this.tickVisualFeedback(dt);
 
     const moveX = (input.isKeyDown(CONTROL_KEYS.right) ? 1 : 0) - (input.isKeyDown(CONTROL_KEYS.left) ? 1 : 0);
@@ -78,7 +86,7 @@ export class MovementController {
     this.tryJump(input, wishDir);
     this.tryDash(input, wishDir);
     this.tryBackflip(input);
-    this.tryWallRun(dt);
+    this.tryWallRun(dt, moveZ > 0);
 
     // Friction first (Quake/Source order), then acceleration toward the wish direction, so
     // friction doesn't immediately eat the speed we just added.
@@ -271,13 +279,19 @@ export class MovementController {
    * (too head-on) or away from it does not attach. Lasts runMaxSeconds, then drops off and
    * needs a reattach cooldown so you can't ride the same wall forever.
    */
-  private tryWallRun(dt: number): void {
+  private tryWallRun(dt: number, forwardHeld: boolean): void {
+    this.wallRunClimbing = false;
     if (this.grounded || this.wallReattachCooldown > 0) {
       this.endWallRun();
       return;
     }
     if (this.root.position.y >= this.maxPlayerY() - TUNING.wall.ceilingDetachDistance) {
+      // Reached the top of the runnable wall: detach and nudge downward so the head unsticks from
+      // the roof instead of pinning fully vertical (and getting stuck in a corner).
       this.endWallRun();
+      if (this.velocity.y > -TUNING.wall.ceilingDetachPushDown) {
+        this.velocity.y = -TUNING.wall.ceilingDetachPushDown;
+      }
       return;
     }
 
@@ -305,7 +319,7 @@ export class MovementController {
     if (!this.wallRunning) {
       this.wallRunning = true;
       this.wallRunTimer = 0;
-      // A little upward kick on attach so you climb the wall rather than just slide along it.
+      // A little upward kick on attach so you start climbing rather than just slide along.
       if (this.velocity.y < TUNING.wall.runStartUpBoost) {
         this.velocity.y = TUNING.wall.runStartUpBoost;
       }
@@ -314,12 +328,16 @@ export class MovementController {
     this.wallRunTimer += dt;
     if (this.wallRunTimer > TUNING.wall.runMaxSeconds) {
       this.endWallRun();
+    } else {
+      // Hold W to engage look-driven vertical steering this tick (see applyGravity).
+      this.wallRunClimbing = forwardHeld;
     }
   }
 
   private endWallRun(): void {
     this.wallRunning = false;
     this.wallRunTimer = 0;
+    this.wallRunClimbing = false;
   }
 
   /**
@@ -371,14 +389,24 @@ export class MovementController {
 
   private applyGravity(dt: number): void {
     if (this.grounded) return;
+    if (this.wallRunClimbing) {
+      // Look-driven climb: pitch sets the target vertical speed (look up = climb, level = hold,
+      // look down = descend), eased so mouse flicks read as a smooth arc. Pitch is negative when
+      // looking up (camera.rotation.x), so negate to map look-up -> +vy. Matches MovementSim.
+      const pitch = this.camera.rotation.x;
+      const targetVy = -Math.sin(pitch) * TUNING.wall.runClimbSpeed;
+      const alpha = 1 - Math.exp(-TUNING.wall.runClimbSmoothing * dt);
+      this.velocity.y += (targetVy - this.velocity.y) * alpha;
+      return;
+    }
+    if (this.wallRunning) {
+      // Not steering (W released): residual wall gravity peels you off the arc and down the wall.
+      this.velocity.y -= TUNING.player.gravity * TUNING.wall.runGravityScale * dt;
+      return;
+    }
     // Snappier (non-floaty) jumps: gravity is stronger on the way down than the way up.
     const fallScale = this.velocity.y < 0 ? TUNING.player.fallGravityMultiplier : 1;
-    const wallScale = this.wallRunning ? TUNING.wall.runGravityScale : 1;
-    this.velocity.y -= TUNING.player.gravity * fallScale * wallScale * dt;
-    // Wall-run: hold a gentle, controlled descent rather than free-falling.
-    if (this.wallRunning && this.velocity.y < TUNING.wall.runMaxFallSpeed) {
-      this.velocity.y = TUNING.wall.runMaxFallSpeed;
-    }
+    this.velocity.y -= TUNING.player.gravity * fallScale * dt;
   }
 
   private applySoftSpeedLimit(dt: number): void {

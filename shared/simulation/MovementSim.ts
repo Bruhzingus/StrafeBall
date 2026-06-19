@@ -260,15 +260,21 @@ export function stepMovement(
     grounded = false;
   }
 
-  // --- wall-run (automatic) ---
+  // --- wall-run (automatic attach; look-driven vertical) ---
+  // `wallRunClimbing` is true on the ticks the player is wall-running AND steering vertically with
+  // their look (holding W). It gates the look-driven vertical control applied in the gravity block.
+  let wallRunClimbing = false;
   const bodyHeightForWallRun = currentBodyHeight(crouching, sliding, c);
   const wallRunCeilingY = maxPlayerYForBodyHeight(bodyHeightForWallRun, c) - c.wall.ceilingDetachDistance;
   if (grounded || wallReattachCooldown > 0) {
     wallRunning = false;
     wallRunTimer = 0;
   } else if (py >= wallRunCeilingY) {
+    // Reached the top of the runnable wall. Detach and nudge the player downward so the head
+    // unsticks from the roof instead of pinning fully vertical (and getting stuck in a corner).
     wallRunning = false;
     wallRunTimer = 0;
+    if (vy > -c.wall.ceilingDetachPushDown) vy = -c.wall.ceilingDetachPushDown;
   } else {
     const normal = detectWall(px, pz, c);
     const horizSpeed = Math.hypot(vx, vz);
@@ -285,6 +291,7 @@ export function stepMovement(
         if (!wallRunning) {
           wallRunning = true;
           wallRunTimer = 0;
+          // Small one-time kick on attach so you start climbing rather than just sliding along.
           if (vy < c.wall.runStartUpBoost) vy = c.wall.runStartUpBoost;
         }
         lastWallNormalX = normal.x;
@@ -293,6 +300,9 @@ export function stepMovement(
         if (wallRunTimer > c.wall.runMaxSeconds) {
           wallRunning = false;
           wallRunTimer = 0;
+        } else {
+          // Hold W to engage look-driven vertical steering this tick.
+          wallRunClimbing = moveZ > EPS;
         }
       }
     }
@@ -326,12 +336,22 @@ export function stepMovement(
     vz = accelerated.vz;
   }
 
-  // --- gravity ---
+  // --- gravity / wall-run vertical ---
   if (!grounded) {
-    const fallScale = vy < 0 ? c.player.fallGravityMultiplier : 1;
-    const wallScale = wallRunning ? c.wall.runGravityScale : 1;
-    vy -= c.player.gravity * fallScale * wallScale * dt;
-    if (wallRunning && vy < c.wall.runMaxFallSpeed) vy = c.wall.runMaxFallSpeed;
+    if (wallRunClimbing) {
+      // Look-driven climb: pitch sets the target vertical speed (look up = climb, level = hold,
+      // look down = descend). Ease vy toward it so mouse flicks read as a smooth arc, not a snap.
+      // Negated because pitch is positive looking DOWN (see clampLookPitch / aim convention).
+      const targetVy = -Math.sin(pitch) * c.wall.runClimbSpeed * speedScale;
+      const alpha = 1 - Math.exp(-c.wall.runClimbSmoothing * dt);
+      vy += (targetVy - vy) * alpha;
+    } else if (wallRunning) {
+      // Not steering (W released): residual wall gravity peels you off the arc and down the wall.
+      vy -= c.player.gravity * c.wall.runGravityScale * dt;
+    } else {
+      const fallScale = vy < 0 ? c.player.fallGravityMultiplier : 1;
+      vy -= c.player.gravity * fallScale * dt;
+    }
   }
 
   // --- soft speed limit ---
