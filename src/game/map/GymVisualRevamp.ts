@@ -7,12 +7,13 @@ import {
   Mesh,
   MeshBuilder,
   PBRMaterial,
+  PointLight,
   Scene,
   StandardMaterial,
   Texture
 } from '@babylonjs/core';
 import { TUNING } from '../config/tuning';
-import { createBleacherTierSpecs } from '../../../shared/simulation/MapGeometry';
+import { MAT_SPECS, createBleacherTierSpecs } from '../../../shared/simulation/MapGeometry';
 
 type WallSide = 'north' | 'south' | 'east' | 'west';
 type BannerShape = 'rectangle' | 'vertical' | 'pennant';
@@ -48,13 +49,14 @@ interface BannerSpec {
 const WALL_DECAL_INSET = 0.048;
 const WALL_PAD_DECAL_INSET = 0.085;
 const DECOR_META = { decorative: true, noGameplay: true };
+const WALL_PAD_HEIGHT = 2.46;
 const GYM_TEXTURES = {
   // Tuned copies: desaturated/recolored stand-ins for the raw source art so the blue vinyl isn't
   // neon. Floor keeps the original art (preferred look) — only its material/lighting is tuned.
   // Originals are kept untouched.
   floor: '/assets/textures/gym/floor/Wood-Floor.png',
   wall: '/assets/textures/gym/walls/Wall_Stones.png',
-  wallPad: '/assets/textures/gym/walls/gym_wall_padding_blue_tuned.png',
+  wallPad: '/assets/textures/gym/walls/WallMat.png',
   coverMat: '/assets/textures/gym/Obstacles/gym_cover_mat_blue_tuned.png',
   banners: {
     championshipCourt: '/assets/textures/gym/banners/ChampionshipCourt.png',
@@ -116,18 +118,28 @@ export function applyGymVisualRevamp(scene: Scene): void {
   enhanceExistingMaterials(scene);
   brightenExistingLighting(scene);
   createWallColorBlocking(scene);
+  createWallBounceGlow(scene);
   createWallPaddingDetails(scene);
   createRaisedWallPadPanels(scene);
   createScoreboardWallAccents(scene);
   createScoreboardHardware(scene);
   createUpperWallDetails(scene);
   createGymBanners(scene);
+  createBannerLightCatches(scene);
   createBleacherAccents(scene);
   createBleacherUnderframes(scene);
   createCourtLineShadows(scene);
+  createContactDepthDecals(scene);
+  createPropContactShadows(scene);
+  createCourtAmbientWash(scene);
+  createFloorWaxSheen(scene);
+  createWideFloorGlints(scene);
   createFloorDetailDecals(scene);
+  createFloorLightReflections(scene);
+  createFixtureFalloffPools(scene);
   createOverheadLightLenses(scene);
   createOverheadLightFrames(scene);
+  createCeilingRimHighlights(scene);
   createCeilingConduits(scene);
 }
 
@@ -138,12 +150,12 @@ function enhanceExistingMaterials(scene: Scene): void {
     // more readable plank width than the earlier 2.2m tile.
     const floorTexture = createImageTexture(scene, 'gym_floor_polished_maple_png', GYM_TEXTURES.floor, 10, 13);
     floorMaterial.albedoTexture = floorTexture;
-    floorMaterial.albedoColor = new Color3(0.97, 0.95, 0.9);
+    floorMaterial.albedoColor = new Color3(0.78, 0.6, 0.36);
     floorMaterial.metallic = 0;
     // Glossy polished maple, not a mirror: roughness in the requested 0.28-0.45 band.
-    floorMaterial.roughness = 0.32;
-    floorMaterial.environmentIntensity = 0.55;
-    floorMaterial.specularIntensity = 1.0;
+    floorMaterial.roughness = 0.23;
+    floorMaterial.environmentIntensity = 0.86;
+    floorMaterial.specularIntensity = 1.55;
   }
 
   setZoneMaterial(scene, 'zone_player_mat', 'blue');
@@ -156,11 +168,11 @@ function enhanceExistingMaterials(scene: Scene): void {
   if (wallPadMaterial instanceof PBRMaterial) {
     const padTexture = createImageTexture(scene, 'gym_wall_pad_vinyl_png', GYM_TEXTURES.wallPad, 8, 1);
     wallPadMaterial.albedoTexture = padTexture;
-    wallPadMaterial.albedoColor = new Color3(0.82, 0.85, 0.92);
-    wallPadMaterial.emissiveColor = new Color3(0.004, 0.012, 0.04);
+    wallPadMaterial.albedoColor = new Color3(0.6, 0.66, 0.82);
+    wallPadMaterial.emissiveColor = new Color3(0.002, 0.008, 0.03);
     wallPadMaterial.metallic = 0;
     wallPadMaterial.roughness = 0.55;
-    wallPadMaterial.environmentIntensity = 0.32;
+    wallPadMaterial.environmentIntensity = 0.24;
   }
 
   // Cover mats/blockers: padded vinyl, slightly brighter and glossier than the wall pads.
@@ -168,27 +180,27 @@ function enhanceExistingMaterials(scene: Scene): void {
   if (coverMatMaterial instanceof PBRMaterial) {
     const coverTexture = createImageTexture(scene, 'gym_cover_mat_png', GYM_TEXTURES.coverMat, 1, 1);
     coverMatMaterial.albedoTexture = coverTexture;
-    coverMatMaterial.albedoColor = new Color3(0.94, 0.95, 1);
-    coverMatMaterial.emissiveColor = new Color3(0.006, 0.016, 0.05);
+    coverMatMaterial.albedoColor = new Color3(0.66, 0.73, 0.9);
+    coverMatMaterial.emissiveColor = new Color3(0.003, 0.01, 0.035);
     coverMatMaterial.metallic = 0;
     coverMatMaterial.roughness = 0.42;
-    coverMatMaterial.environmentIntensity = 0.42;
+    coverMatMaterial.environmentIntensity = 0.3;
   }
 
   // Bleachers: painted blue metal/plastic frame — less glossy than vinyl, slightly metallic sheen.
   const bleacherMaterial = scene.getMaterialByName('bleacher_material');
   if (bleacherMaterial instanceof PBRMaterial) {
-    bleacherMaterial.albedoColor = new Color3(0.56, 0.6, 0.64);
-    bleacherMaterial.metallic = 0.16;
-    bleacherMaterial.roughness = 0.36;
+    bleacherMaterial.albedoColor = new Color3(0.44, 0.5, 0.58);
+    bleacherMaterial.metallic = 0.08;
+    bleacherMaterial.roughness = 0.48;
   }
 
   const seatMaterial = scene.getMaterialByName('bleacher_seat_mat');
   if (seatMaterial instanceof StandardMaterial) {
-    seatMaterial.diffuseColor = new Color3(0.14, 0.27, 0.58);
-    seatMaterial.emissiveColor = new Color3(0.006, 0.016, 0.05);
-    seatMaterial.specularColor = new Color3(0.12, 0.14, 0.16);
-    seatMaterial.specularPower = 38;
+    seatMaterial.diffuseColor = new Color3(0.075, 0.16, 0.38);
+    seatMaterial.emissiveColor = new Color3(0.002, 0.007, 0.026);
+    seatMaterial.specularColor = new Color3(0.08, 0.095, 0.12);
+    seatMaterial.specularPower = 28;
   }
 
   const panelMaterial = scene.getMaterialByName('bleacher_panel_mat');
@@ -203,6 +215,8 @@ function enhanceExistingMaterials(scene: Scene): void {
     railMaterial.specularColor = new Color3(0.22, 0.24, 0.25);
     railMaterial.specularPower = 48;
   }
+
+  tuneCeilingMaterials(scene);
 }
 
 /**
@@ -218,10 +232,11 @@ function createCheapEnvironmentReflection(scene: Scene): void {
   texture.name = 'gym_env_gradient_tex';
   const ctx = texture.getContext() as CanvasRenderingContext2D;
   const gradient = ctx.createLinearGradient(0, 0, 0, 64);
-  gradient.addColorStop(0, '#fff2cf');
-  gradient.addColorStop(0.35, '#cfd6e0');
-  gradient.addColorStop(0.75, '#9aa0a6');
-  gradient.addColorStop(1, '#2a2a28');
+  gradient.addColorStop(0, '#fff6dc');
+  gradient.addColorStop(0.28, '#e8edf3');
+  gradient.addColorStop(0.58, '#aeb6c0');
+  gradient.addColorStop(0.82, '#60666d');
+  gradient.addColorStop(1, '#22252a');
   ctx.fillStyle = gradient;
   ctx.fillRect(0, 0, 4, 64);
   texture.update(false);
@@ -277,13 +292,13 @@ function applyWallStoneTexture(scene: Scene): void {
 
     if (material instanceof PBRMaterial) {
       material.albedoTexture = wallTexture;
-      material.albedoColor = new Color3(0.98, 0.96, 0.9);
+      material.albedoColor = new Color3(0.93, 0.9, 0.83);
       material.metallic = 0;
       material.roughness = 0.62;
     } else if (material instanceof StandardMaterial) {
       material.diffuseTexture = wallTexture;
-      material.diffuseColor = new Color3(0.98, 0.96, 0.9);
-      material.specularColor = new Color3(0.08, 0.08, 0.07);
+      material.diffuseColor = new Color3(0.93, 0.9, 0.83);
+      material.specularColor = new Color3(0.06, 0.055, 0.048);
       material.specularPower = 20;
     }
 
@@ -295,15 +310,17 @@ function setZoneMaterial(scene: Scene, name: string, tone: 'blue' | 'red'): void
   const material = scene.getMaterialByName(name);
   if (!(material instanceof StandardMaterial)) return;
 
-  // Match the floor's ~2.7m tile scale (see enhanceExistingMaterials) so the tinted half-court
-  // overlay's plank pattern lines up with the main floor instead of looking stretched.
-  const texture = createImageTexture(scene, `${name}_polished_court_png`, GYM_TEXTURES.floor, 10, 7);
-  material.diffuseTexture = texture;
-  material.diffuseColor = tone === 'blue'
-    ? new Color3(0.78, 0.84, 0.98)
-    : new Color3(0.98, 0.8, 0.7);
-  material.specularColor = tone === 'blue' ? new Color3(0.42, 0.5, 0.65) : new Color3(0.62, 0.4, 0.28);
-  material.specularPower = 92;
+  // These are broad gameplay-read floor halves, but the wood should come from the single base
+  // floor mesh so the court does not look like two different surfaces.
+  material.diffuseTexture = null;
+  material.opacityTexture = null;
+  material.diffuseColor = new Color3(0.64, 0.42, 0.2);
+  material.emissiveColor = new Color3(0.008, 0.004, 0.001);
+  material.specularColor = new Color3(1.0, 0.88, 0.64);
+  material.specularPower = 180;
+  material.alpha = 0.07;
+  material.transparencyMode = Material.MATERIAL_ALPHABLEND;
+  void tone;
 }
 
 function brightenExistingLighting(scene: Scene): void {
@@ -311,21 +328,50 @@ function brightenExistingLighting(scene: Scene): void {
   // read as more "rendered" without any extra draw calls or render targets.
   scene.imageProcessingConfiguration.toneMappingEnabled = true;
   scene.imageProcessingConfiguration.toneMappingType = ImageProcessingConfiguration.TONEMAPPING_ACES;
-  scene.imageProcessingConfiguration.exposure = 1.08;
-  scene.imageProcessingConfiguration.contrast = 1.12;
+  scene.imageProcessingConfiguration.exposure = 1.12;
+  scene.imageProcessingConfiguration.contrast = 1.08;
 
   for (const light of scene.lights) {
     if (light instanceof HemisphericLight) {
-      light.intensity = Math.max(light.intensity, 1.32);
+      light.intensity = Math.max(light.intensity, 1.24);
+      light.diffuse = new Color3(1.0, 0.97, 0.9);
       // A non-black ground color stops the underside of geometry (and the ceiling read) from
       // looking like a flat void — cheap because it's a single extra constant in the same light.
-      light.groundColor = new Color3(0.16, 0.16, 0.2);
-      light.specular = new Color3(0.35, 0.34, 0.3);
+      light.groundColor = new Color3(0.22, 0.22, 0.25);
+      light.specular = new Color3(0.42, 0.4, 0.34);
     }
-    if (light.name.startsWith('ceil_pt_')) {
-      light.intensity = 0.62;
-      light.range = 15.5;
+    if (light instanceof PointLight && light.name.startsWith('ceil_pt_')) {
+      light.diffuse = new Color3(1.0, 0.955, 0.84);
+      light.specular = new Color3(0.54, 0.5, 0.42);
+      light.intensity = 0.78;
+      light.range = 16.5;
     }
+  }
+}
+
+function tuneCeilingMaterials(scene: Scene): void {
+  const ceilingMaterial = scene.getMaterialByName('gym_ceiling_mat');
+  if (ceilingMaterial instanceof StandardMaterial) {
+    ceilingMaterial.diffuseColor = new Color3(0.18, 0.17, 0.16);
+    ceilingMaterial.emissiveColor = new Color3(0.012, 0.011, 0.01);
+    ceilingMaterial.specularColor = new Color3(0.045, 0.042, 0.038);
+    ceilingMaterial.specularPower = 22;
+  }
+
+  const panelMaterial = scene.getMaterialByName('gym_roof_panel_mat');
+  if (panelMaterial instanceof StandardMaterial) {
+    panelMaterial.diffuseColor = new Color3(0.23, 0.22, 0.2);
+    panelMaterial.emissiveColor = new Color3(0.015, 0.014, 0.013);
+    panelMaterial.specularColor = new Color3(0.05, 0.048, 0.044);
+    panelMaterial.specularPower = 24;
+  }
+
+  const beamMaterial = scene.getMaterialByName('gym_roof_beam_mat');
+  if (beamMaterial instanceof StandardMaterial) {
+    beamMaterial.diffuseColor = new Color3(0.1, 0.13, 0.18);
+    beamMaterial.emissiveColor = new Color3(0.006, 0.009, 0.014);
+    beamMaterial.specularColor = new Color3(0.07, 0.08, 0.09);
+    beamMaterial.specularPower = 28;
   }
 }
 
@@ -346,12 +392,31 @@ function createWallColorBlocking(scene: Scene): void {
 
   for (const side of wallSides()) {
     const span = wallSpan(side);
-    // Each stripe gets its own depth offset from the wall so coplanar planes don't z-fight
-    // (without this, two planes at the exact same depth flicker in and out depending on view angle).
-    createWallPlane(scene, `decor_wall_blue_band_${side}`, side, span, 0.28, 2.04, 0, royalBlue, WALL_DECAL_INSET);
-    createWallPlane(scene, `decor_wall_orange_trim_${side}`, side, span, 0.055, 1.82, 0, orange, WALL_DECAL_INSET + 0.004);
-    createWallPlane(scene, `decor_wall_gold_trim_${side}`, side, span, 0.052, 2.24, 0, gold, WALL_DECAL_INSET + 0.008);
-    createWallPlane(scene, `decor_wall_white_pinstripe_${side}`, side, span, 0.032, 1.93, 0, white, WALL_DECAL_INSET + 0.012);
+    // Keep the color band clearly above the wall pads so it reads like painted trim, not lines
+    // tangled through the mats.
+    createWallPlane(scene, `decor_wall_blue_band_${side}`, side, span, 0.34, 2.88, 0, royalBlue, WALL_DECAL_INSET);
+    createWallPlane(scene, `decor_wall_gold_trim_${side}`, side, span, 0.055, 3.09, 0, gold, WALL_DECAL_INSET + 0.004);
+    createWallPlane(scene, `decor_wall_white_pinstripe_${side}`, side, span, 0.03, 2.67, 0, white, WALL_DECAL_INSET + 0.008);
+    createWallPlane(scene, `decor_wall_orange_trim_${side}`, side, span, 0.05, 2.58, 0, orange, WALL_DECAL_INSET + 0.012);
+  }
+}
+
+function createWallBounceGlow(scene: Scene): void {
+  const warmBounce = solidMaterial(scene, 'decor_wall_warm_bounce_glow_mat', new Color3(1.0, 0.78, 0.42), {
+    alpha: 0.075,
+    emissive: new Color3(0.26, 0.16, 0.055),
+    specular: new Color3(0.02, 0.015, 0.008)
+  });
+  const coolCeilingLift = solidMaterial(scene, 'decor_wall_cool_ceiling_lift_mat', new Color3(0.38, 0.52, 0.78), {
+    alpha: 0.055,
+    emissive: new Color3(0.055, 0.075, 0.12),
+    specular: new Color3(0.01, 0.012, 0.016)
+  });
+
+  for (const side of wallSides()) {
+    const span = wallSpan(side);
+    createWallPlane(scene, `decor_wall_floor_bounce_${side}`, side, span, 0.42, 3.38, 0, warmBounce, WALL_DECAL_INSET + 0.02);
+    createWallPlane(scene, `decor_wall_ceiling_lift_${side}`, side, span, 0.5, 7.55, 0, coolCeilingLift, WALL_DECAL_INSET + 0.018);
   }
 }
 
@@ -371,39 +436,36 @@ function createWallPaddingDetails(scene: Scene): void {
 
   for (const side of frontBackWallSides()) {
     const span = wallSpan(side);
-    createWallPlane(scene, `decor_wall_padding_top_${side}`, side, span, 0.085, 2.27, 0, topCapMaterial, WALL_PAD_DECAL_INSET);
+    const layout = wallPadLayout(span);
+    createWallPlane(scene, `decor_wall_padding_top_${side}`, side, layout.usedWidth, 0.06, WALL_PAD_HEIGHT, 0, topCapMaterial, WALL_PAD_DECAL_INSET - 0.008);
 
-    const start = -span / 2 + 1.4;
-    const end = span / 2 - 1.4;
-    let index = 0;
-    for (let offset = start; offset <= end + 0.001; offset += 2.3) {
+    for (let i = 0; i <= layout.count; i += 1) {
+      const offset = layout.start - layout.panelWidth * 0.5 - layout.gap * 0.5 + i * (layout.panelWidth + layout.gap);
+      if (i === 0 || i === layout.count) continue;
       createWallPlane(
         scene,
-        `decor_wall_padding_blue_${side}_${String(index).padStart(2, '0')}`,
+        `decor_wall_padding_seam_${side}_${String(i).padStart(2, '0')}`,
         side,
-        0.035,
-        2.08,
-        1.13,
+        0.018,
+        WALL_PAD_HEIGHT - 0.08,
+        (WALL_PAD_HEIGHT - 0.08) * 0.5,
         offset,
         seamMaterial,
-        WALL_PAD_DECAL_INSET
+        WALL_PAD_DECAL_INSET - 0.006
       );
-      index += 1;
     }
 
-    for (const y of [0.42, 1.1, 1.78]) {
-      createWallPlane(
-        scene,
-        `decor_wall_padding_stitch_${side}_${Math.round(y * 100)}`,
-        side,
-        span - 1.0,
-        0.028,
-        y,
-        0,
-        stitchMaterial,
-        WALL_PAD_DECAL_INSET + 0.004
-      );
-    }
+    createWallPlane(
+      scene,
+      `decor_wall_padding_stitch_${side}`,
+      side,
+      layout.usedWidth - 0.12,
+      0.024,
+      WALL_PAD_HEIGHT - 0.24,
+      0,
+      stitchMaterial,
+      WALL_PAD_DECAL_INSET - 0.002
+    );
   }
 }
 
@@ -427,43 +489,51 @@ function createRaisedWallPadPanels(scene: Scene): void {
 
   for (const side of frontBackWallSides()) {
     const span = wallSpan(side);
-    const panelWidth = 1.78;
-    const panelHeight = 2.2;
-    const gap = 0.08;
-    const count = Math.floor((span - 1.0) / (panelWidth + gap));
-    const used = count * panelWidth + (count - 1) * gap;
-    const start = -used / 2 + panelWidth / 2;
+    const layout = wallPadLayout(span);
+    const panelHeight = WALL_PAD_HEIGHT - 0.02;
 
-    for (let i = 0; i < count; i += 1) {
-      const offset = start + i * (panelWidth + gap);
-      const mat = i % 2 === 0 ? cushionA : cushionB;
+    for (let i = 0; i < layout.count; i += 1) {
+      const offset = layout.start + i * (layout.panelWidth + layout.gap);
+      const mat = cushionA;
       createWallBox(
         scene,
         `decor_wall_pad_raised_panel_${side}_${String(i).padStart(2, '0')}`,
         side,
-        panelWidth,
+        layout.panelWidth,
         panelHeight,
         panelHeight / 2,
         offset,
-        0.026,
+        0.022,
         mat,
-        WALL_PAD_DECAL_INSET + 0.016
+        WALL_PAD_DECAL_INSET + 0.004
       );
 
       createWallBox(
         scene,
         `decor_wall_pad_panel_top_bevel_${side}_${String(i).padStart(2, '0')}`,
         side,
-        panelWidth - 0.12,
-        0.026,
-        panelHeight + 0.13,
+        layout.panelWidth - 0.06,
+        0.016,
+        panelHeight + 0.03,
         offset,
-        0.032,
+        0.016,
         bevelMat,
-        WALL_PAD_DECAL_INSET + 0.026
+        WALL_PAD_DECAL_INSET + 0.01
       );
     }
   }
+}
+
+function wallPadLayout(span: number): { count: number; gap: number; panelWidth: number; start: number; usedWidth: number } {
+  const sideInset = 0.24;
+  const gap = 0.006;
+  const targetPanelWidth = 1.64;
+  const usableWidth = span - sideInset * 2;
+  const count = Math.max(1, Math.floor((usableWidth + gap) / (targetPanelWidth + gap)));
+  const panelWidth = (usableWidth - gap * (count - 1)) / count;
+  const usedWidth = panelWidth * count + gap * (count - 1);
+  const start = -usedWidth / 2 + panelWidth / 2;
+  return { count, gap, panelWidth, start, usedWidth };
 }
 
 function createScoreboardWallAccents(scene: Scene): void {
@@ -513,20 +583,10 @@ function createScoreboardHardware(scene: Scene): void {
 }
 
 function createUpperWallDetails(scene: Scene): void {
-  const speakerMat = solidMaterial(scene, 'decor_wall_speaker_mat', new Color3(0.025, 0.03, 0.04), {
-    emissive: new Color3(0.002, 0.002, 0.003),
-    specular: new Color3(0.08, 0.08, 0.08)
-  });
-  const speakerGrilleMat = createSpeakerGrilleMaterial(scene);
   const ventMat = createVentMaterial(scene);
   const clockMat = createClockMaterial(scene);
 
   for (const side of ['north', 'south'] as WallSide[]) {
-    for (const x of [-11.85, 11.85]) {
-      createWallBox(scene, `decor_wall_speaker_body_${side}_${x}`, side, 0.48, 0.64, 6.9, x, 0.18, speakerMat, WALL_DECAL_INSET + 0.09);
-      createWallPlane(scene, `decor_wall_speaker_grille_${side}_${x}`, side, 0.36, 0.48, 6.9, x, speakerGrilleMat, WALL_DECAL_INSET + 0.19);
-    }
-
     createWallPlane(scene, `decor_wall_clock_${side}`, side, 0.68, 0.68, 6.94, side === 'north' ? -4.42 : 4.42, clockMat, WALL_DECAL_INSET + 0.012);
     createWallPlane(scene, `decor_wall_vent_${side}`, side, 1.15, 0.38, 6.92, side === 'north' ? 4.5 : -4.5, ventMat, WALL_DECAL_INSET + 0.012);
     createGymSign(scene, {
@@ -629,6 +689,37 @@ function createGymBanners(scene: Scene): void {
     textureUrl: GYM_TEXTURES.banners.sponsor2,
     alphaTexture: true
   });
+}
+
+function createBannerLightCatches(scene: Scene): void {
+  const catchMat = solidMaterial(scene, 'decor_banner_top_light_catch_mat', new Color3(1.0, 0.82, 0.42), {
+    alpha: 0.34,
+    emissive: new Color3(0.18, 0.105, 0.02),
+    specular: new Color3(0.08, 0.055, 0.02)
+  });
+  const catches = [
+    { side: 'north', offset: 0, y: 7.95, width: 5.2 },
+    { side: 'south', offset: -4.55, y: 6.18, width: 3.5 },
+    { side: 'south', offset: 4.62, y: 6.18, width: 3.5 },
+    { side: 'north', offset: -7.95, y: 6.52, width: 1.25 },
+    { side: 'north', offset: 7.95, y: 6.52, width: 1.25 },
+    { side: 'south', offset: -7.9, y: 6.54, width: 1.15 },
+    { side: 'south', offset: 7.9, y: 6.54, width: 1.15 }
+  ] as const;
+
+  for (const spec of catches) {
+    createWallPlane(
+      scene,
+      `decor_banner_light_catch_${spec.side}_${spec.offset}`,
+      spec.side,
+      spec.width,
+      0.035,
+      spec.y,
+      spec.offset,
+      catchMat,
+      WALL_DECAL_INSET + 0.024
+    );
+  }
 }
 
 function createRectBanner(scene: Scene, spec: Omit<BannerSpec, 'template' | 'shape'>): void {
@@ -797,6 +888,88 @@ function createCourtLineShadows(scene: Scene): void {
   }
 }
 
+function createContactDepthDecals(scene: Scene): void {
+  const contactMat = createSoftFloorDecalMaterial(scene, 'decor_floor_contact_depth_mat', {
+    color: '#1a1209',
+    alpha: 0.2,
+    width: 256,
+    height: 128
+  });
+  const y = 0.021;
+  const decals = [
+    { name: 'bleacher_west', x: -11.45, z: 0, width: 2.0, depth: 28.5 },
+    { name: 'bleacher_east', x: 11.45, z: 0, width: 2.0, depth: 28.5 },
+    { name: 'bleacher_inner_west', x: -9.9, z: 0, width: 1.2, depth: 24.0 },
+    { name: 'bleacher_inner_east', x: 9.9, z: 0, width: 1.2, depth: 24.0 },
+    { name: 'wall_pad_north', x: 0, z: TUNING.map.halfLength - 0.42, width: 25.3, depth: 0.72 },
+    { name: 'wall_pad_south', x: 0, z: -TUNING.map.halfLength + 0.42, width: 25.3, depth: 0.72 }
+  ];
+
+  for (const decal of decals) {
+    const plane = MeshBuilder.CreatePlane(`decor_contact_depth_${decal.name}`, { width: decal.width, height: decal.depth }, scene);
+    plane.position.set(decal.x, y, decal.z);
+    plane.rotation.x = Math.PI / 2;
+    plane.material = contactMat;
+    markDecorative(plane);
+  }
+}
+
+function createPropContactShadows(scene: Scene): void {
+  const matShadow = createSoftFloorDecalMaterial(scene, 'decor_floor_mat_contact_shadow_mat', {
+    color: '#130b05',
+    alpha: 0.28,
+    width: 256,
+    height: 128
+  });
+  const dummyShadow = createSoftFloorDecalMaterial(scene, 'decor_floor_dummy_contact_shadow_mat', {
+    color: '#160c05',
+    alpha: 0.22,
+    width: 160,
+    height: 128
+  });
+  const coneShadow = createSoftFloorDecalMaterial(scene, 'decor_floor_cone_contact_shadow_mat', {
+    color: '#1a0f07',
+    alpha: 0.16,
+    width: 128,
+    height: 96
+  });
+
+  for (const spec of MAT_SPECS) {
+    createFloorDecalPlane(scene, `decor_contact_mat_${spec.id}`, spec.x, spec.z, 3.1, 0.72, 0.041, matShadow, spec.yawRadians);
+  }
+
+  for (const [index, x, z] of [
+    [0, -3, 8],
+    [1, 0, 9.5],
+    [2, 3, 8],
+    [3, 0, 7.5]
+  ] as const) {
+    createFloorDecalPlane(scene, `decor_contact_dummy_${index}`, x, z, 0.95, 0.72, 0.042, dummyShadow, 0);
+  }
+
+  const coneXs = [-11.2, -8.4, -5.6, -2.8, 0, 2.8, 5.6, 8.4, 11.2];
+  for (const side of [-1, 1] as const) {
+    for (let i = 0; i < coneXs.length; i += 1) {
+      createFloorDecalPlane(scene, `decor_contact_cone_${side}_${i}`, coneXs[i], side * 0.62, 0.52, 0.42, 0.043, coneShadow, 0);
+    }
+  }
+}
+
+function createCourtAmbientWash(scene: Scene): void {
+  const material = createCourtAmbientWashMaterial(scene);
+  createFloorDecalPlane(
+    scene,
+    'decor_floor_full_court_ambient_wash',
+    0,
+    0,
+    TUNING.map.halfWidth * 2 - 0.18,
+    TUNING.map.halfLength * 2 - 0.22,
+    0.025,
+    material,
+    0
+  );
+}
+
 function createFloorDetailDecals(scene: Scene): void {
   const blueLogoMat = createFloorLogoMaterial(scene, 'decor_floor_blue_crest_tex', '#174baf', '#ffd24a', 'BLUE COURT');
   const redLogoMat = createFloorLogoMaterial(scene, 'decor_floor_red_crest_tex', '#b82d2a', '#ffe27a', 'RED COURT');
@@ -804,14 +977,97 @@ function createFloorDetailDecals(scene: Scene): void {
   createFloorLogo(scene, 'decor_floor_red_crest', 5.9, 2.65, redLogoMat);
 }
 
+function createFloorWaxSheen(scene: Scene): void {
+  const material = createWaxSheenMaterial(scene);
+  const sheen = MeshBuilder.CreatePlane('decor_floor_waxed_clearcoat_sheen', {
+    width: TUNING.map.halfWidth * 2 - 0.35,
+    height: TUNING.map.halfLength * 2 - 0.5
+  }, scene);
+  sheen.position.set(0, 0.034, 0);
+  sheen.rotation.x = Math.PI / 2;
+  sheen.material = material;
+  markDecorative(sheen);
+}
+
+function createWideFloorGlints(scene: Scene): void {
+  const glintMat = createSoftFloorDecalMaterial(scene, 'decor_floor_wide_glint_mat', {
+    color: '#fff8df',
+    alpha: 0.24,
+    width: 512,
+    height: 192
+  });
+  const glints = [
+    { name: 'near', x: -2.8, z: -8.6, width: 21.0, depth: 3.2, yaw: 0.18 },
+    { name: 'mid', x: 2.4, z: -0.6, width: 22.5, depth: 2.8, yaw: -0.12 },
+    { name: 'far', x: -1.5, z: 8.0, width: 20.0, depth: 3.0, yaw: 0.14 },
+    { name: 'left_sweep', x: -6.8, z: -1.5, width: 14.0, depth: 2.4, yaw: -0.28 },
+    { name: 'right_sweep', x: 7.2, z: 3.5, width: 14.5, depth: 2.4, yaw: 0.24 }
+  ];
+
+  for (const glint of glints) {
+    const plane = MeshBuilder.CreatePlane(`decor_floor_wide_glint_${glint.name}`, { width: glint.width, height: glint.depth }, scene);
+    plane.position.set(glint.x, 0.037, glint.z);
+    plane.rotation.x = Math.PI / 2;
+    plane.rotation.y = glint.yaw;
+    plane.material = glintMat;
+    markDecorative(plane);
+  }
+}
+
+function createFloorLightReflections(scene: Scene): void {
+  const reflectionMat = createSoftFloorDecalMaterial(scene, 'decor_floor_light_reflection_mat', {
+    color: '#fff4cf',
+    alpha: 0.52,
+    width: 384,
+    height: 512
+  });
+  const positions: [number, number][] = [
+    [-5, -8], [5, -8],
+    [-5, 0], [5, 0],
+    [-5, 8], [5, 8]
+  ];
+
+  positions.forEach(([x, z], index) => {
+    const glow = MeshBuilder.CreatePlane(`decor_floor_light_reflection_${index}`, { width: 2.1, height: 7.2 }, scene);
+    glow.position.set(x, 0.039, z);
+    glow.rotation.x = Math.PI / 2;
+    glow.rotation.y = index % 2 === 0 ? 0.035 : -0.035;
+    glow.material = reflectionMat;
+    markDecorative(glow);
+  });
+}
+
+function createFixtureFalloffPools(scene: Scene): void {
+  const poolMat = createSoftFloorDecalMaterial(scene, 'decor_fixture_warm_falloff_pool_mat', {
+    color: '#ffe6aa',
+    alpha: 0.18,
+    width: 256,
+    height: 384
+  });
+  const positions: [number, number][] = [
+    [-5, -8], [5, -8],
+    [-5, 0], [5, 0],
+    [-5, 8], [5, 8]
+  ];
+
+  positions.forEach(([x, z], index) => {
+    const pool = MeshBuilder.CreatePlane(`decor_fixture_falloff_pool_${index}`, { width: 5.4, height: 8.6 }, scene);
+    pool.position.set(x, 0.028, z);
+    pool.rotation.x = Math.PI / 2;
+    pool.rotation.y = index % 2 === 0 ? 0.08 : -0.08;
+    pool.material = poolMat;
+    markDecorative(pool);
+  });
+}
+
 function createOverheadLightLenses(scene: Scene): void {
   const lensMat = solidMaterial(scene, 'decor_overhead_light_lens_mat', new Color3(1.0, 0.96, 0.82), {
-    emissive: new Color3(0.78, 0.72, 0.52),
-    specular: new Color3(0.16, 0.16, 0.14)
+    emissive: new Color3(0.96, 0.88, 0.62),
+    specular: new Color3(0.22, 0.21, 0.18)
   });
   const glowMat = solidMaterial(scene, 'decor_overhead_light_soft_glow_mat', new Color3(1.0, 0.9, 0.58), {
-    alpha: 0.12,
-    emissive: new Color3(0.52, 0.42, 0.24)
+    alpha: 0.16,
+    emissive: new Color3(0.7, 0.56, 0.32)
   });
 
   const fixtureY = TUNING.map.wallHeight - 0.19;
@@ -824,15 +1080,15 @@ function createOverheadLightLenses(scene: Scene): void {
 
   positions.forEach(([x, z], index) => {
     const lens = MeshBuilder.CreateBox(`decor_overhead_light_lens_${index}`, {
-      width: 0.22,
+      width: 0.28,
       height: 0.018,
-      depth: 0.98
+      depth: 1.14
     }, scene);
     lens.position.set(x, fixtureY, z);
     lens.material = lensMat;
     markDecorative(lens);
 
-    const glow = MeshBuilder.CreatePlane(`decor_overhead_light_glow_${index}`, { width: 1.15, height: 1.85 }, scene);
+    const glow = MeshBuilder.CreatePlane(`decor_overhead_light_glow_${index}`, { width: 1.35, height: 2.1 }, scene);
     glow.position.set(x, glowY, z);
     glow.rotation.x = Math.PI / 2;
     glow.material = glowMat;
@@ -872,6 +1128,37 @@ function createOverheadLightFrames(scene: Scene): void {
       markDecorative(endCap);
     }
   });
+}
+
+function createCeilingRimHighlights(scene: Scene): void {
+  const rimMat = solidMaterial(scene, 'decor_ceiling_beam_rim_light_mat', new Color3(0.2, 0.34, 0.58), {
+    alpha: 0.46,
+    emissive: new Color3(0.035, 0.055, 0.09),
+    specular: new Color3(0.08, 0.09, 0.1)
+  });
+  const y = TUNING.map.wallHeight - 0.34;
+
+  for (const z of [-15, -9, -3, 3, 9, 15]) {
+    const rim = MeshBuilder.CreateBox(`decor_ceiling_rafter_rim_${z}`, {
+      width: TUNING.map.halfWidth * 2 - 0.8,
+      height: 0.018,
+      depth: 0.026
+    }, scene);
+    rim.position.set(0, y, z - 0.092);
+    rim.material = rimMat;
+    markDecorative(rim);
+  }
+
+  for (const x of [-9, -4.5, 0, 4.5, 9]) {
+    const rim = MeshBuilder.CreateBox(`decor_ceiling_purlin_rim_${x}`, {
+      width: 0.026,
+      height: 0.018,
+      depth: TUNING.map.halfLength * 2 - 1.0
+    }, scene);
+    rim.position.set(x - 0.072, y + 0.08, 0);
+    rim.material = rimMat;
+    markDecorative(rim);
+  }
 }
 
 function createCeilingConduits(scene: Scene): void {
@@ -975,6 +1262,174 @@ function texturedStandardMaterial(
     material.opacityTexture = texture;
     material.useAlphaFromDiffuseTexture = true;
   }
+  return material;
+}
+
+function createFloorDecalPlane(
+  scene: Scene,
+  name: string,
+  x: number,
+  z: number,
+  width: number,
+  depth: number,
+  y: number,
+  material: StandardMaterial,
+  yaw = 0
+): Mesh {
+  const plane = MeshBuilder.CreatePlane(name, { width, height: depth }, scene);
+  plane.position.set(x, y, z);
+  plane.rotation.x = Math.PI / 2;
+  plane.rotation.y = yaw;
+  plane.material = material;
+  markDecorative(plane);
+  return plane;
+}
+
+function createSoftFloorDecalMaterial(
+  scene: Scene,
+  name: string,
+  options: { color: string; alpha: number; width: number; height: number }
+): StandardMaterial {
+  const existing = scene.getMaterialByName(name);
+  if (existing instanceof StandardMaterial) return existing;
+
+  const texture = new DynamicTexture(`${name}_tex`, { width: options.width, height: options.height }, scene, false);
+  texture.hasAlpha = true;
+  const ctx = texture.getContext() as CanvasRenderingContext2D;
+  ctx.clearRect(0, 0, options.width, options.height);
+  ctx.fillStyle = options.color;
+
+  for (let y = 0; y < options.height; y += 1) {
+    const ny = Math.abs((y + 0.5) / options.height - 0.5) * 2;
+    for (let x = 0; x < options.width; x += 1) {
+      const nx = Math.abs((x + 0.5) / options.width - 0.5) * 2;
+      const falloff = Math.max(nx, ny);
+      const alpha = options.alpha * Math.max(0, 1 - Math.pow(falloff, 2.4));
+      if (alpha <= 0.002) continue;
+      ctx.globalAlpha = alpha;
+      ctx.fillRect(x, y, 1, 1);
+    }
+  }
+  ctx.globalAlpha = 1;
+  texture.update(false);
+  texture.updateSamplingMode(Texture.TRILINEAR_SAMPLINGMODE);
+
+  const material = new StandardMaterial(name, scene);
+  material.diffuseTexture = texture;
+  material.opacityTexture = texture;
+  material.useAlphaFromDiffuseTexture = true;
+  material.diffuseColor = new Color3(1, 1, 1);
+  material.emissiveTexture = texture;
+  material.emissiveColor = new Color3(1, 1, 1);
+  material.specularColor = new Color3(0, 0, 0);
+  material.alpha = 1;
+  material.transparencyMode = Material.MATERIAL_ALPHABLEND;
+  material.backFaceCulling = false;
+  return material;
+}
+
+function createCourtAmbientWashMaterial(scene: Scene): StandardMaterial {
+  const existing = scene.getMaterialByName('decor_floor_full_court_ambient_wash_mat');
+  if (existing instanceof StandardMaterial) return existing;
+
+  const width = 512;
+  const height = 512;
+  const texture = new DynamicTexture('decor_floor_full_court_ambient_wash_tex', { width, height }, scene, false);
+  texture.hasAlpha = true;
+  texture.updateSamplingMode(Texture.TRILINEAR_SAMPLINGMODE);
+  const ctx = texture.getContext() as CanvasRenderingContext2D;
+  ctx.clearRect(0, 0, width, height);
+
+  for (let y = 0; y < height; y += 1) {
+    const py = y / height;
+    for (let x = 0; x < width; x += 1) {
+      const px = x / width;
+      const dx = Math.abs(px - 0.5) * 2;
+      const dy = Math.abs(py - 0.5) * 2;
+      const vignette = Math.max(dx, dy);
+      const centerLift = Math.max(0, 1 - Math.hypot(px - 0.5, py - 0.45) / 0.62);
+      const sidelineWarmth = Math.max(0, 1 - Math.abs(py - 0.52) / 0.48);
+      ctx.globalAlpha = 0.035 + centerLift * 0.085 + sidelineWarmth * 0.03;
+      ctx.fillStyle = '#ffd186';
+      ctx.fillRect(x, y, 1, 1);
+
+      const edgeAlpha = Math.max(0, (vignette - 0.72) / 0.28) * 0.11;
+      if (edgeAlpha > 0.002) {
+        ctx.globalAlpha = edgeAlpha;
+        ctx.fillStyle = '#241006';
+        ctx.fillRect(x, y, 1, 1);
+      }
+    }
+  }
+  ctx.globalAlpha = 1;
+  texture.update(false);
+
+  const material = new StandardMaterial('decor_floor_full_court_ambient_wash_mat', scene);
+  material.diffuseTexture = texture;
+  material.opacityTexture = texture;
+  material.emissiveTexture = texture;
+  material.useAlphaFromDiffuseTexture = true;
+  material.diffuseColor = new Color3(1, 0.86, 0.58);
+  material.emissiveColor = new Color3(0.5, 0.32, 0.12);
+  material.specularColor = new Color3(0, 0, 0);
+  material.alpha = 1;
+  material.transparencyMode = Material.MATERIAL_ALPHABLEND;
+  material.backFaceCulling = false;
+  return material;
+}
+
+function createWaxSheenMaterial(scene: Scene): StandardMaterial {
+  const existing = scene.getMaterialByName('decor_floor_waxed_clearcoat_mat');
+  if (existing instanceof StandardMaterial) return existing;
+
+  const width = 512;
+  const height = 512;
+  const texture = new DynamicTexture('decor_floor_waxed_clearcoat_tex', { width, height }, scene, false);
+  texture.hasAlpha = true;
+  texture.wrapU = Texture.WRAP_ADDRESSMODE;
+  texture.wrapV = Texture.WRAP_ADDRESSMODE;
+  texture.uScale = 2.2;
+  texture.vScale = 3.0;
+  texture.updateSamplingMode(Texture.TRILINEAR_SAMPLINGMODE);
+
+  const ctx = texture.getContext() as CanvasRenderingContext2D;
+  ctx.clearRect(0, 0, width, height);
+
+  for (let y = 0; y < height; y += 1) {
+    const py = y / height;
+    for (let x = 0; x < width; x += 1) {
+      const px = x / width;
+      const diagonal = (px * 0.58 + py * 0.42) % 1;
+      const broadSweep = Math.max(0, 1 - Math.abs(diagonal - 0.54) / 0.16);
+      const secondarySweep = Math.max(0, 1 - Math.abs(((px * 0.7 + py * 0.3 + 0.38) % 1) - 0.52) / 0.24);
+      const lengthFade = 0.72 + 0.28 * Math.sin((px * 2.1 + py * 1.2) * Math.PI * 2);
+      const alpha = 0.055 + broadSweep * 0.22 * lengthFade + secondarySweep * 0.09;
+      ctx.globalAlpha = Math.min(0.34, alpha);
+      ctx.fillStyle = '#fff6d8';
+      ctx.fillRect(x, y, 1, 1);
+    }
+  }
+
+  const softGradient = ctx.createLinearGradient(0, 0, width, height);
+  softGradient.addColorStop(0, 'rgba(255, 255, 255, 0.045)');
+  softGradient.addColorStop(0.5, 'rgba(255, 243, 205, 0.12)');
+  softGradient.addColorStop(1, 'rgba(255, 255, 255, 0.04)');
+  ctx.globalAlpha = 1;
+  ctx.fillStyle = softGradient;
+  ctx.fillRect(0, 0, width, height);
+  texture.update(false);
+
+  const material = new StandardMaterial('decor_floor_waxed_clearcoat_mat', scene);
+  material.diffuseTexture = texture;
+  material.opacityTexture = texture;
+  material.emissiveTexture = texture;
+  material.useAlphaFromDiffuseTexture = true;
+  material.diffuseColor = new Color3(1, 0.96, 0.82);
+  material.emissiveColor = new Color3(0.72, 0.62, 0.38);
+  material.specularColor = new Color3(0, 0, 0);
+  material.alpha = 1;
+  material.transparencyMode = Material.MATERIAL_ALPHABLEND;
+  material.backFaceCulling = false;
   return material;
 }
 
@@ -1950,34 +2405,6 @@ function createGymSignMaterial(
   material.emissiveTexture = texture;
   material.emissiveColor = new Color3(0.22, 0.22, 0.2);
   material.specularColor = new Color3(0.05, 0.05, 0.045);
-  material.backFaceCulling = false;
-  return material;
-}
-
-function createSpeakerGrilleMaterial(scene: Scene): StandardMaterial {
-  const texture = new DynamicTexture('decor_speaker_grille_tex', { width: 256, height: 320 }, scene, false);
-  texture.hasAlpha = false;
-  const ctx = texture.getContext() as CanvasRenderingContext2D;
-  ctx.fillStyle = '#0b0d12';
-  ctx.fillRect(0, 0, 256, 320);
-  ctx.fillStyle = '#31343a';
-  for (let y = 18; y < 306; y += 18) {
-    for (let x = 18; x < 240; x += 18) {
-      ctx.beginPath();
-      ctx.arc(x, y, 3.1, 0, Math.PI * 2);
-      ctx.fill();
-    }
-  }
-  ctx.strokeStyle = '#151923';
-  ctx.lineWidth = 14;
-  ctx.strokeRect(7, 7, 242, 306);
-  texture.update(true);
-
-  const material = new StandardMaterial('decor_speaker_grille_mat', scene);
-  material.diffuseTexture = texture;
-  material.emissiveTexture = texture;
-  material.emissiveColor = new Color3(0.04, 0.04, 0.045);
-  material.specularColor = new Color3(0.02, 0.02, 0.02);
   material.backFaceCulling = false;
   return material;
 }

@@ -587,6 +587,49 @@ describe('ServerGameLoop', () => {
       // knockDirection points the way the player pushed (toward +Z here), normalized.
       expect(after.knockDirection.z).toBeGreaterThan(0.5);
     });
+
+    it('restores mats from a more forgiving hold-E range and keeps them upright for 2 seconds', () => {
+      const loop = new ServerGameLoop('room');
+      loop.addPlayer('a', 'A');
+      loop.addPlayer('b', 'B');
+      playNow(loop);
+      const mat = firstMat(loop);
+
+      loop.state.players.a.movement.position = vec3(mat.position.x, 0, mat.position.z - 0.6);
+      loop.state.players.a.movement.velocity = vec3(0, 0, 4);
+      loop.step();
+      expect(loop.state.mats[mat.id].knockedOver).toBe(true);
+
+      // Stand a little farther back than the old restore radius allowed and hold E to reset.
+      loop.state.players.a.movement.position = vec3(mat.position.x, 0, mat.position.z - 1.8);
+      loop.state.players.a.movement.velocity = vec3();
+      let seq = 1;
+      const restoreSteps = Math.ceil(GAME_CONSTANTS.mat.restoreHoldSeconds * loop.tickRate);
+      for (let i = 0; i < restoreSteps; i += 1) {
+        loop.handleInput('a', { interactHeld: true, sequence: seq }, seq);
+        loop.step();
+        seq += 1;
+      }
+      expect(loop.state.mats[mat.id].knockedOver).toBe(false);
+
+      // During the post-reset grace, repeated walk-into contact should NOT immediately flop it.
+      const protectedSteps = Math.max(1, Math.floor(GAME_CONSTANTS.mat.postResetKnockImmunitySeconds * loop.tickRate) - 1);
+      for (let i = 0; i < protectedSteps; i += 1) {
+        loop.state.players.a.movement.position = vec3(mat.position.x, 0, mat.position.z - 0.6);
+        loop.state.players.a.movement.velocity = vec3(0, 0, 4);
+        loop.handleInput('a', { interactHeld: false, sequence: seq }, seq);
+        loop.step();
+        seq += 1;
+      }
+      expect(loop.state.mats[mat.id].knockedOver).toBe(false);
+
+      // Once the 2-second grace expires, the same contact knocks it back over again.
+      loop.state.players.a.movement.position = vec3(mat.position.x, 0, mat.position.z - 0.6);
+      loop.state.players.a.movement.velocity = vec3(0, 0, 4);
+      loop.handleInput('a', { interactHeld: false, sequence: seq }, seq);
+      loop.step();
+      expect(loop.state.mats[mat.id].knockedOver).toBe(true);
+    });
   });
 
   it('server-side hit validation grants score and dash charge', () => {
@@ -674,6 +717,43 @@ describe('ServerGameLoop', () => {
       expect(loop.state.players.d.combatState).toBe('eliminated');
       expect(loop.state.match.status).toBe('complete');
       expect(loop.state.match.winnerTeamId).toBe('blue');
+    });
+
+    it('ends a 2v1 match when the lone player on the understaffed team is eliminated', () => {
+      const loop = new ServerGameLoop('room', { mode: '2v2', playersPerTeam: 2 });
+      loop.addPlayer('a', 'A');
+      loop.addPlayer('b', 'B');
+      loop.addPlayer('c', 'C');
+      playNow(loop);
+
+      expect(loop.state.players.a.teamId).toBe(loop.state.players.c.teamId);
+      expect(loop.state.players.b.teamId).not.toBe(loop.state.players.a.teamId);
+
+      loop.state.players.b.lives = 1;
+      setLiveHitBall(loop, 'ball_0', 'a', 'b');
+      loop.step();
+
+      expect(loop.state.players.b.combatState).toBe('eliminated');
+      expect(loop.state.match.status).toBe('complete');
+      expect(loop.state.match.winnerTeamId).toBe(loop.state.players.a.teamId);
+    });
+
+    it('grants the clutched player faster dash/backflip cooldown recovery, not just speed', () => {
+      const loop = create2v2Loop();
+      loop.state.players.b.lives = 1;
+      setLiveHitBall(loop, 'ball_0', 'a', 'b');
+      loop.step();
+      expect(loop.state.players.b.combatState).toBe('eliminated');
+      expect(loop.state.players.d.lastPlayerBuffUntilMs ?? 0).toBeGreaterThan(0);
+
+      const buffed = loop.state.players.d;
+      const unbuffed = loop.state.players.c;
+      buffed.dash.cooldownSeconds = 1;
+      unbuffed.dash.cooldownSeconds = 1;
+
+      loop.step();
+
+      expect(buffed.dash.cooldownSeconds).toBeLessThan(unbuffed.dash.cooldownSeconds);
     });
 
     it('awards one duel penalty hit per second after the half-court warning is spent', () => {
@@ -2054,6 +2134,25 @@ describe('ServerGameLoop', () => {
       // Top tier = quick × 2.2 (10% above the legacy super); movement velocity is ~0 here.
       expect(length(live!.velocity)).toBeCloseTo(backflipQteSpeed(5), 1);
       expect(loop.state.players.a.dash.charges).toBe(GAME_CONSTANTS.dash.maxCharges);
+    });
+
+    it('ignores a backflip tier when airborne, even wall-running (the QTE is landing-only)', () => {
+      const loop = new ServerGameLoop('room');
+      loop.addPlayer('a', 'A');
+      loop.state.players.a.movement.position = vec3(0, 0, 0);
+      loop.handleInput('a', { lookYawRadians: 0, lookPitchRadians: 0, sequence: 1 }, 1);
+      loop.step();
+      expect(loop.handlePickup('a').ok).toBe(true);
+      // Recent backflip but airborne (mid wall-run) → the tier must be rejected: the backflip QTE
+      // only arms on landing, so a wall-running player can never legitimately release a tier here.
+      loop.state.players.a.movement.grounded = false;
+      loop.state.players.a.movement.wallRunning = true;
+      loop.state.players.a.movementInternal.backflipCooldown = GAME_CONSTANTS.backflip.cooldownSeconds;
+
+      expect(loop.handleThrow('a', { hand: 'left', backflipTier: 5 }).ok).toBe(true);
+      const live = Object.values(loop.state.balls).find((b) => b.phase === 'live');
+      expect(live!.isSuper).toBe(false);
+      expect(length(live!.velocity)).toBeCloseTo(GAME_CONSTANTS.ball.quickThrowSpeed, 1);
     });
 
     it('ignores a spoofed backflip tier when no recent backflip (normal throw, not super)', () => {

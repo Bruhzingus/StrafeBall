@@ -41,7 +41,8 @@ export function stepMovement(
   boxes: AABB[],
   catchStanceActive: boolean,
   c: GameConstants = GAME_CONSTANTS,
-  movementScale = 1
+  movementScale = 1,
+  cooldownRateScale = 1
 ): MovementStepResult {
   let vx = movementIn.velocity.x;
   let vy = movementIn.velocity.y;
@@ -76,6 +77,7 @@ export function stepMovement(
 
   let dash = dashIn;
   const speedScale = Number.isFinite(movementScale) ? Math.max(0.05, movementScale) : 1;
+  const cdRateScale = Number.isFinite(cooldownRateScale) ? Math.max(0.05, cooldownRateScale) : 1;
   const wasGrounded = grounded;
 
   const yaw = input.lookYawRadians;
@@ -124,8 +126,8 @@ export function stepMovement(
   }
 
   // --- timers ---
-  dash = advanceDashState(dash, dt, c);
-  if (backflipCooldown > 0) backflipCooldown = Math.max(0, backflipCooldown - dt);
+  dash = advanceDashState(dash, dt, c, cdRateScale);
+  if (backflipCooldown > 0) backflipCooldown = Math.max(0, backflipCooldown - dt * cdRateScale);
   if (backflipActive) {
     backflipTimer += dt;
     if (backflipTimer >= c.backflip.durationSeconds) {
@@ -260,10 +262,13 @@ export function stepMovement(
     grounded = false;
   }
 
-  // --- wall-run (automatic attach; look-driven vertical) ---
-  // `wallRunClimbing` is true on the ticks the player is wall-running AND steering vertically with
-  // their look (holding W). It gates the look-driven vertical control applied in the gravity block.
+  // --- wall-run (automatic attach; A/D-while-W vertical control) ---
+  // `wallRunClimbing` is true on the ticks the player is wall-running AND steering vertically (holding
+  // W plus a strafe key). `wallRunVerticalInput` is the signed climb amount in [-1, 1] for that tick:
+  // +1 = steering fully INTO the wall (climb), -1 = fully AWAY (descend). Both gate/scale the vertical
+  // control applied in the gravity block. Holding A/D WITHOUT W does nothing (W is the engage key).
   let wallRunClimbing = false;
+  let wallRunVerticalInput = 0;
   const bodyHeightForWallRun = currentBodyHeight(crouching, sliding, c);
   const wallRunCeilingY = maxPlayerYForBodyHeight(bodyHeightForWallRun, c) - c.wall.ceilingDetachDistance;
   if (grounded || wallReattachCooldown > 0) {
@@ -300,9 +305,22 @@ export function stepMovement(
         if (wallRunTimer > c.wall.runMaxSeconds) {
           wallRunning = false;
           wallRunTimer = 0;
-        } else {
-          // Hold W to engage look-driven vertical steering this tick.
-          wallRunClimbing = moveZ > EPS;
+        } else if (moveZ > EPS) {
+          // W is the engage key: while holding forward you run STRAIGHT (hold height), and A/D adjust
+          // height. Steering INTO the wall climbs, AWAY descends — side-relative to which wall you're
+          // on / which way you face. input = -(moveX) * (right · normal): with right=(cos yaw, -sin
+          // yaw) and normal pointing into the court, this is +1 when the held strafe key pushes toward
+          // the wall, 0 with no strafe key (straight). A/D WITHOUT W does nothing (this branch is gated
+          // on W).
+          const rxn = rightX * normal.x + rightZ * normal.z;
+          wallRunClimbing = true;
+          wallRunVerticalInput = clampUnit(-moveX * rxn);
+          // Past the gravity-delay threshold, gravity takes over: climbing (steering up) is disabled,
+          // descending still works. Timer resets whenever the run re-engages (see `!wallRunning` above).
+          if (wallRunTimer >= c.wall.runGravityDelaySeconds && wallRunVerticalInput > 0) {
+            wallRunClimbing = false;
+            wallRunVerticalInput = 0;
+          }
         }
       }
     }
@@ -328,9 +346,11 @@ export function stepMovement(
     const accelerated = accelerate(vx, vz, wishX, wishZ, hasWish, groundWishSpeed, c.player.groundAcceleration, dt);
     vx = accelerated.vx;
     vz = accelerated.vz;
-  } else {
+  } else if (!wallRunClimbing) {
     // CS-style air-strafe: A/D are the air-control keys. W/S conserves momentum in air but does
     // not add forward/back acceleration, so speed comes from side input plus mouse steering.
+    // Suppressed while wall-run climbing: there A/D are repurposed to VERTICAL height control, so
+    // they must not also push you laterally off the wall.
     const accelerated = accelerate(vx, vz, airWishX, airWishZ, hasAirWish, c.player.airStrafeMaxSpeed * speedScale, c.player.airAcceleration, dt);
     vx = accelerated.vx;
     vz = accelerated.vz;
@@ -339,15 +359,17 @@ export function stepMovement(
   // --- gravity / wall-run vertical ---
   if (!grounded) {
     if (wallRunClimbing) {
-      // Look-driven climb: pitch sets the target vertical speed (look up = climb, level = hold,
-      // look down = descend). Ease vy toward it so mouse flicks read as a smooth arc, not a snap.
-      // Negated because pitch is positive looking DOWN (see clampLookPitch / aim convention).
-      const targetVy = -Math.sin(pitch) * c.wall.runClimbSpeed * speedScale;
+      // A/D-while-W climb: the signed steer-into-wall input sets the target vertical speed (into the
+      // wall = climb, away = descend). Ease vy toward it so it reads as a smooth arc, not a snap.
+      const targetVy = wallRunVerticalInput * c.wall.runClimbSpeed * speedScale;
       const alpha = 1 - Math.exp(-c.wall.runClimbSmoothing * dt);
       vy += (targetVy - vy) * alpha;
     } else if (wallRunning) {
       // Not steering (W released): residual wall gravity peels you off the arc and down the wall.
-      vy -= c.player.gravity * c.wall.runGravityScale * dt;
+      // Past the gravity-delay threshold this ramps up to runLateGravityScale so the run can't be
+      // sustained forever.
+      const lateGravity = wallRunTimer >= c.wall.runGravityDelaySeconds;
+      vy -= c.player.gravity * (lateGravity ? c.wall.runLateGravityScale : c.wall.runGravityScale) * dt;
     } else {
       const fallScale = vy < 0 ? c.player.fallGravityMultiplier : 1;
       vy -= c.player.gravity * fallScale * dt;

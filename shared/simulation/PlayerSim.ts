@@ -107,8 +107,14 @@ export function createMovementInternalState(overrides: Partial<MovementInternalS
   };
 }
 
-export function advanceDashState(dash: DashState, dt: number, constants: GameConstants = GAME_CONSTANTS): DashState {
-  const cooldownSeconds = Math.max(0, dash.cooldownSeconds - dt);
+export function advanceDashState(
+  dash: DashState,
+  dt: number,
+  constants: GameConstants = GAME_CONSTANTS,
+  cooldownRateScale = 1
+): DashState {
+  const scaledDt = dt * cooldownRateScale;
+  const cooldownSeconds = Math.max(0, dash.cooldownSeconds - scaledDt);
   if (dash.charges >= constants.dash.maxCharges) {
     return {
       ...dash,
@@ -119,7 +125,7 @@ export function advanceDashState(dash: DashState, dt: number, constants: GameCon
   }
 
   let charges = dash.charges;
-  let rechargeTimerSeconds = dash.rechargeTimerSeconds + dt;
+  let rechargeTimerSeconds = dash.rechargeTimerSeconds + scaledDt;
   while (charges < constants.dash.maxCharges && rechargeTimerSeconds >= constants.dash.rechargeSeconds) {
     charges += 1;
     rechargeTimerSeconds -= constants.dash.rechargeSeconds;

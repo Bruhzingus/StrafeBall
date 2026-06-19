@@ -55,7 +55,6 @@ export class GymArena {
     this.createFloor();
     this.createHalfCourtZones();
     this.createWalls();
-    this.createWallPads();
     this.createCourtLines();
     this.createHalfCourtCones();
     this.createBleachers();
@@ -238,19 +237,6 @@ export class GymArena {
 
     for (const wall of walls) {
       this.loader.createVisual('wall', { name: wall.name, size: wall.size, position: wall.position });
-    }
-  }
-
-  /** Front/back walls only get a tall navy foam-pad layer, like mats stood against the wall (visual only, no collision). */
-  private createWallPads(): void {
-    const padH = 2.3;
-    const padT = 0.06;
-    const pads = [
-      { name: 'pad_north', pos: new Vector3(0, padH / 2, TUNING.map.halfLength - padT / 2), size: { width: TUNING.map.halfWidth * 2, height: padH, depth: padT } },
-      { name: 'pad_south', pos: new Vector3(0, padH / 2, -TUNING.map.halfLength + padT / 2), size: { width: TUNING.map.halfWidth * 2, height: padH, depth: padT } }
-    ];
-    for (const pad of pads) {
-      this.loader.createVisual('wallPad', { name: pad.name, size: pad.size, position: pad.pos });
     }
   }
 

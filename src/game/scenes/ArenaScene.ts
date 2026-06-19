@@ -148,7 +148,9 @@ export class ArenaScene {
   // Offline practice: hold-E progress (seconds) toward standing the nearest knocked-over mat back
   // up. Resets whenever E is released or the player leaves the mat's reach.
   private matRestoreHold = 0;
-  private static readonly MAT_RESTORE_HOLD_SECONDS = 0.6;
+  // Freshly reset practice mats get a short grace period before player contact can knock them down.
+  private readonly matPostResetKnockImmunityById = new Map<string, number>();
+  private static readonly MAT_RESTORE_HOLD_SECONDS = TUNING.mat.restoreHoldSeconds;
   // Fixed timestep for input send + prediction + reconciliation replay. Driven entirely by the
   // shared net config (must equal the server's fixed dt for reconciliation residual ≈ 0). The
   // fixed-step loop below sends at the active CLIENT_INPUT_RATE.
@@ -398,6 +400,7 @@ export class ArenaScene {
     this.prevBackflipActiveForQte = active;
 
     // Landing: a pending backflip jump just touched the ground → arm the QTE if holding a ball.
+    // The QTE is intentionally landing-only — it never arms mid-air (e.g. during a wall-run).
     if (this.backflipJumpPending && grounded && !active) {
       this.backflipJumpPending = false;
       if (this.player.hands.backflipThrowHand() && !this.backflipQte.isActive()) {
@@ -496,6 +499,7 @@ export class ArenaScene {
     const active = internal.backflipActive;
 
     // Latch on the backflip's rising edge; arm on the landing that follows (active clears mid-air).
+    // The QTE is intentionally landing-only — it never arms mid-air (e.g. during a wall-run).
     if (active && !this.prevBackflipActiveForQte) this.backflipJumpPending = true;
     this.prevBackflipActiveForQte = active;
 
@@ -555,6 +559,8 @@ export class ArenaScene {
    * walkable and balls pass over it. Holding E next to a downed mat stands it back up.
    */
   private updateOfflineMats(dt: number): void {
+    this.tickMatPostResetKnockImmunity(dt);
+
     const p = this.player.root.position;
     const v = this.player.movement.velocity;
     const r = TUNING.player.radius;
@@ -562,6 +568,7 @@ export class ArenaScene {
 
     for (const mat of this.gym.mats) {
       if (mat.knockedOver) continue;
+      if ((this.matPostResetKnockImmunityById.get(mat.id) ?? 0) > 0) continue;
       const box = mat.getAABB();
       if (p.y > box.maxY || p.y + TUNING.player.height < box.minY) continue;
       const cx = Math.max(box.minX, Math.min(p.x, box.maxX));
@@ -596,7 +603,7 @@ export class ArenaScene {
     }
 
     const p = this.player.root.position;
-    const restoreReach = TUNING.player.radius + 1.0; // generous: a flattened mat sits on the floor
+    const restoreReach = TUNING.mat.restoreReach;
     let nearest: typeof this.gym.mats[number] | null = null;
     let nearestDist = Infinity;
     for (const mat of this.gym.mats) {
@@ -618,6 +625,15 @@ export class ArenaScene {
       this.matRestoreHold = 0;
       nearest.reset();
       this.gym.addMatCollision(nearest);
+      this.matPostResetKnockImmunityById.set(nearest.id, TUNING.mat.postResetKnockImmunitySeconds);
+    }
+  }
+
+  private tickMatPostResetKnockImmunity(dt: number): void {
+    for (const [matId, remaining] of this.matPostResetKnockImmunityById) {
+      const next = remaining - dt;
+      if (next > 0) this.matPostResetKnockImmunityById.set(matId, next);
+      else this.matPostResetKnockImmunityById.delete(matId);
     }
   }
 
@@ -861,7 +877,8 @@ export class ArenaScene {
         input, prev, ArenaScene.NET_FIXED_DT, this.predictionCollisionBoxes(),
         this.deriveCatchStance(local, input),
         undefined,
-        this.deriveOnlineMovementScale(local)
+        this.deriveOnlineMovementScale(local),
+        this.deriveOnlineCooldownRateScale(local)
       );
       this.predictedMovement = res.movement;
       this.predictedInternal = res.internal;
@@ -1148,7 +1165,8 @@ export class ArenaScene {
         this.predictionCollisionBoxes(),
         this.deriveCatchStance(local, entry.input),
         undefined,
-        this.deriveOnlineMovementScale(local)
+        this.deriveOnlineMovementScale(local),
+        this.deriveOnlineCooldownRateScale(local)
       );
       movement = res.movement;
       internal = res.internal;
@@ -1199,7 +1217,8 @@ export class ArenaScene {
         this.predictionCollisionBoxes(),
         this.deriveCatchStance(local, entry.input),
         undefined,
-        this.deriveOnlineMovementScale(local)
+        this.deriveOnlineMovementScale(local),
+        this.deriveOnlineCooldownRateScale(local)
       );
       this.predictedMovement = res.movement;
       this.predictedInternal = res.internal;
@@ -1220,6 +1239,15 @@ export class ArenaScene {
     if (snapshot?.room.match.mode !== '2v2') return 1;
     return (local.lastPlayerBuffUntilMs ?? 0) > Date.now()
       ? TUNING.match.lastPlayerBuffMultiplier
+      : 1;
+  }
+
+  private deriveOnlineCooldownRateScale(local: PlayerState | null): number {
+    if (!local || local.combatState === 'eliminated') return 1;
+    const snapshot = this.multiplayer.latestSnapshot;
+    if (snapshot?.room.match.mode !== '2v2') return 1;
+    return (local.lastPlayerBuffUntilMs ?? 0) > Date.now()
+      ? TUNING.match.lastPlayerBuffCooldownRateMultiplier
       : 1;
   }
 

@@ -84,9 +84,11 @@ export const TUNING = {
     jumpUpSpeed: GAME_CONSTANTS.wall.jumpUpSpeed,
     reattachCooldownSeconds: GAME_CONSTANTS.wall.reattachCooldownSeconds,
     ceilingDetachDistance: GAME_CONSTANTS.wall.ceilingDetachDistance,
-    // Look-driven wall-run climb (see shared/constants.ts wall.* for the full description).
+    // A/D-while-W wall-run climb (see shared/constants.ts wall.* for the full description).
     runClimbSpeed: GAME_CONSTANTS.wall.runClimbSpeed,
     runClimbSmoothing: GAME_CONSTANTS.wall.runClimbSmoothing,
+    runGravityDelaySeconds: GAME_CONSTANTS.wall.runGravityDelaySeconds,
+    runLateGravityScale: GAME_CONSTANTS.wall.runLateGravityScale,
     ceilingDetachPushDown: GAME_CONSTANTS.wall.ceilingDetachPushDown,
     leanAngleRadians: 25 * Math.PI / 180,
     leanSmoothing: 11
@@ -129,6 +131,12 @@ export const TUNING = {
     liveHitMinSpeed: GAME_CONSTANTS.ball.liveHitMinSpeed,
     looseFriction: GAME_CONSTANTS.ball.looseFriction,
     pickupVerticalTolerance: GAME_CONSTANTS.ball.pickupVerticalTolerance
+  },
+
+  mat: {
+    restoreHoldSeconds: GAME_CONSTANTS.mat.restoreHoldSeconds,
+    restoreReach: GAME_CONSTANTS.mat.restoreReach,
+    postResetKnockImmunitySeconds: GAME_CONSTANTS.mat.postResetKnockImmunitySeconds
   },
 
   // Held-ball viewmodel placement (camera-space, visual only — does not affect aim).
@@ -193,6 +201,7 @@ export const TUNING = {
     scoreLimit: GAME_CONSTANTS.match.scoreLimit,
     playerLives: GAME_CONSTANTS.match.playerLives,
     lastPlayerBuffMultiplier: GAME_CONSTANTS.match.lastPlayerBuffMultiplier,
+    lastPlayerBuffCooldownRateMultiplier: GAME_CONSTANTS.match.lastPlayerBuffCooldownRateMultiplier,
     lastPlayerBuffSeconds: GAME_CONSTANTS.match.lastPlayerBuffSeconds,
     noBoundariesSeconds: GAME_CONSTANTS.match.noBoundariesSeconds,
     halfCourtCountdownSeconds: GAME_CONSTANTS.match.halfCourtCountdownSeconds,

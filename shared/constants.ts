@@ -79,16 +79,23 @@ export const GAME_CONSTANTS = {
     // Stop wall-run reattachment before the player reaches the ceiling clamp; otherwise the run
     // start boost can re-fire every frame at the top of the gym.
     ceilingDetachDistance: 0.35,
-    // --- look-driven vertical control ---
-    // While wall-running AND holding forward (W), your look pitch sets vertical speed directly:
-    //   vy = sin(pitch) * runClimbSpeed   (look up = climb, level = hold height, look down = descend)
-    // This replaces the old "near-zero gravity + hard fall clamp + per-frame up-boost" model that
-    // made descending impossible (it teleported you back up). W is the engage key; release it and
-    // runGravityScale takes over so you gently slide off the wall.
-    runClimbSpeed: 5.0,
-    // Smoothing rate (per second) for the look-driven vertical velocity so flicking the mouse
-    // up/down eases the climb rather than snapping vy, keeping the arc readable.
+    // --- A/D-while-W vertical control ---
+    // While wall-running, W (forward) is the engage key: hold it to run STRAIGHT (hold height), and
+    // A/D adjust height — steering INTO the wall climbs, AWAY descends (side-relative to which wall
+    // you're on / which way you face). Holding A/D WITHOUT W does nothing. The target vertical speed
+    // is `verticalInput * runClimbSpeed`, where verticalInput is the signed steer-into-wall amount
+    // in [-1, 1]. This replaced the old "near-zero gravity + hard fall clamp + per-frame up-boost"
+    // model that made descending impossible. Release W and runGravityScale slides you off the wall.
+    runClimbSpeed: 3.0,
+    // Smoothing rate (per second) for the vertical velocity so engaging/changing A/D eases the climb
+    // rather than snapping vy, keeping the arc readable.
     runClimbSmoothing: 14,
+    // After this long on the wall, real gravity takes over and climbing (steering up) stops working —
+    // only descending is still allowed. Resets whenever the run re-engages (new wall, or jump/dash
+    // back into a wall), since wallRunTimer itself resets on re-engage.
+    runGravityDelaySeconds: 1.5,
+    // Gravity scale applied once runGravityDelaySeconds has elapsed (pulls the player down the wall).
+    runLateGravityScale: 0.6,
     // When the player reaches the ceiling clamp while wall-running, push them this far down (m/s)
     // so the head unsticks from the roof instead of pinning fully vertical in a corner.
     ceilingDetachPushDown: 3.0
@@ -158,6 +165,15 @@ export const GAME_CONSTANTS = {
     liveHitMinSpeed: 2.5,
     looseFriction: 3.5,
     pickupVerticalTolerance: 1.2
+  },
+
+  mat: {
+    // Hold E this long to stand a knocked-over mat back up.
+    restoreHoldSeconds: 0.6,
+    // Slightly generous so players can reset a flat mat without needing to stand exactly on it.
+    restoreReach: 2.0,
+    // Freshly reset mats ignore player knock-over contact briefly so they do not immediately flop.
+    postResetKnockImmunitySeconds: 2
   },
 
   catch: {
@@ -257,6 +273,9 @@ export const GAME_CONSTANTS = {
     playerLives: 3,
     twoVTwoBallCount: 10,
     lastPlayerBuffMultiplier: 1.2,
+    // Dash/backflip cooldowns count down at this rate while the last-player buff is active, so the
+    // clutched player also gets their dash and backflip back faster (not just a movement-speed boost).
+    lastPlayerBuffCooldownRateMultiplier: 1.2,
     lastPlayerBuffSeconds: 60,
     disconnectForfeitSeconds: 30,
     scoreLimit: 5,

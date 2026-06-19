@@ -18,6 +18,7 @@ export class Hud {
   private readonly bottomRight: HTMLDivElement;
   private readonly hearts: HTMLDivElement;
   private readonly scoreEvent: HTMLDivElement;
+  private readonly clutchEvent: HTMLDivElement;
   private readonly qteEvent: HTMLDivElement;
   private readonly hitMarker: HTMLDivElement;
   private readonly countdown: HTMLDivElement;
@@ -31,6 +32,8 @@ export class Hud {
   // so the HUD doesn't thrash innerHTML 60+ times a second while values are static.
   private readonly lastHtml = new Map<HTMLDivElement, string>();
   private scoreEventTimer: number | null = null;
+  private clutchEventTimer: number | null = null;
+  private clutchBuffWasActive = false;
   private qteEventTimer: number | null = null;
   private hitMarkerTimer: number | null = null;
   private debugVisible = false;
@@ -56,6 +59,10 @@ export class Hud {
     this.scoreEvent = document.createElement('div');
     this.scoreEvent.className = 'score-event';
     this.root.appendChild(this.scoreEvent);
+
+    this.clutchEvent = document.createElement('div');
+    this.clutchEvent.className = 'clutch-event';
+    this.root.appendChild(this.clutchEvent);
 
     // Backflip-QTE result callout — its own popup, placed off to the right of center so it doesn't
     // collide with the top-center hit callout.
@@ -98,7 +105,7 @@ export class Hud {
     this.bottomRight.innerHTML = `
       <div class="hud-title">Quick Start</div>
       <div><span class="key">M1</span><span class="key">M2</span> hands / catch / throw</div>
-      <div><span class="key">E</span> pickup or stand mat <span class="key">R</span> drop</div>
+      <div><span class="key">E</span> pickup ball / hold reset mat <span class="key">R</span> drop</div>
       <div><span class="key">Shift</span> dash <span class="key">Ctrl</span> slide / crouch <span class="key">Q</span> backflip</div>
       <div><span class="key">F</span> fake <span class="key">K</span> reset <span class="key">Tab</span> debug</div>
     `;
@@ -115,6 +122,32 @@ export class Hud {
 
   showTeamJoinEvent(message: string, teamId: string): void {
     this.showTimedScoreEvent(message, '', teamId === 'red' ? 'team-red' : 'team-blue', 2000);
+  }
+
+  showClutchBuffEvent(): void {
+    if (this.clutchEventTimer !== null) {
+      window.clearTimeout(this.clutchEventTimer);
+      this.clutchEventTimer = null;
+    }
+
+    const speedPct = Math.round((TUNING.match.lastPlayerBuffMultiplier - 1) * 100);
+    const cooldownPct = Math.round((TUNING.match.lastPlayerBuffCooldownRateMultiplier - 1) * 100);
+
+    this.clutchEvent.className = 'clutch-event';
+    this.clutchEvent.innerHTML = `
+      <div class="clutch-event-title">Clutch!</div>
+      <div class="clutch-event-subtitle">Last one standing</div>
+      <div class="clutch-event-bonuses">
+        <span>+${speedPct}% Speed</span><span class="clutch-event-dot">&middot;</span><span>+${cooldownPct}% Cooldowns</span>
+      </div>
+    `;
+
+    void this.clutchEvent.offsetWidth;
+    this.clutchEvent.classList.add('clutch-event--visible');
+    this.clutchEventTimer = window.setTimeout(() => {
+      this.clutchEvent.classList.remove('clutch-event--visible');
+      this.clutchEventTimer = null;
+    }, 1800);
   }
 
   private showTimedScoreEvent(title: string, subtitle: string, variant: string, ms: number): void {
@@ -573,6 +606,10 @@ export class Hud {
       window.clearTimeout(this.scoreEventTimer);
       this.scoreEventTimer = null;
     }
+    if (this.clutchEventTimer !== null) {
+      window.clearTimeout(this.clutchEventTimer);
+      this.clutchEventTimer = null;
+    }
     if (this.qteEventTimer !== null) {
       window.clearTimeout(this.qteEventTimer);
       this.qteEventTimer = null;
@@ -596,19 +633,25 @@ export class Hud {
   private updateLivesPanel(room: RoomState, localPlayerId: string): void {
     if (room.match.mode !== '2v2') {
       this.hearts.style.display = 'none';
+      this.clutchBuffWasActive = false;
       return;
     }
     const local = room.players[localPlayerId];
     if (!local) {
       this.hearts.style.display = 'none';
+      this.clutchBuffWasActive = false;
       return;
     }
 
     this.hearts.style.display = '';
     const buffSeconds = Math.max(0, Math.ceil(((local.lastPlayerBuffUntilMs ?? 0) - Date.now()) / 1000));
-    const buffLine = buffSeconds > 0
+    const buffActive = buffSeconds > 0;
+    const buffLine = buffActive
       ? `<div class="hearts-warning">Last player alive, finish the mission <span>${buffSeconds}s</span></div>`
       : '';
+
+    if (buffActive && !this.clutchBuffWasActive) this.showClutchBuffEvent();
+    this.clutchBuffWasActive = buffActive;
 
     this.setHtml(this.hearts, `
       <div class="hearts-row hearts-row--local">

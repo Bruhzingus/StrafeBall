@@ -248,23 +248,24 @@ describe('shared movement simulation', () => {
     expect(next.internal.wallRunTimer).toBe(0);
   });
 
-  it('lets you descend during a wall-run by looking down while holding forward', () => {
+  // Wall-run vertical is controlled by A/D while holding W. Player hugs the +X wall (normal = -X),
+  // facing +Z (yaw 0), so right = +X points INTO the wall: D (moveX +1) steers into the wall (climb),
+  // A (moveX -1) steers away (descend). W alone runs straight (holds height). A/D without W: nothing.
+  it('descends during a wall-run when steering away from the wall (W + away strafe)', () => {
     const dt = 1 / 72;
     const player = createPlayerState('p1', 'blue');
-    // Hug the +X wall, mid-height, moving parallel (along +Z) above the entry speed so the run holds.
     player.movement.position = vec3(GAME_CONSTANTS.map.halfWidth - GAME_CONSTANTS.player.radius, 4, 0);
     player.movement.velocity = vec3(0, 0, GAME_CONSTANTS.wall.minEntrySpeed + 3);
     player.movement.grounded = false;
     player.movement.wallRunning = true;
     player.movementInternal.lastWallNormalX = -1;
 
-    // Look DOWN (positive pitch) and hold W: vertical velocity should drive downward and the
-    // player should actually lose height over a few ticks (the old clamp/re-boost prevented this).
-    const lookDown = { ...neutralInput(), moveZ: 1, lookPitchRadians: 0.9 };
-    let state = stepMovement(player.movement, player.movementInternal, player.dash, lookDown, neutralInput(), dt, [], false);
+    // W + A (moveX -1) = steer away from the wall = descend.
+    const wPlusAway = { ...neutralInput(), moveZ: 1, moveX: -1 };
+    let state = stepMovement(player.movement, player.movementInternal, player.dash, wPlusAway, neutralInput(), dt, [], false);
     const startY = state.movement.position.y;
     for (let i = 0; i < 20; i += 1) {
-      state = stepMovement(state.movement, state.internal, state.dash, lookDown, lookDown, dt, [], false);
+      state = stepMovement(state.movement, state.internal, state.dash, wPlusAway, wPlusAway, dt, [], false);
     }
 
     expect(state.movement.wallRunning).toBe(true);
@@ -272,7 +273,7 @@ describe('shared movement simulation', () => {
     expect(state.movement.position.y).toBeLessThan(startY);
   });
 
-  it('climbs during a wall-run by looking up while holding forward', () => {
+  it('climbs during a wall-run when steering into the wall (W + into strafe)', () => {
     const dt = 1 / 72;
     const player = createPlayerState('p1', 'blue');
     player.movement.position = vec3(GAME_CONSTANTS.map.halfWidth - GAME_CONSTANTS.player.radius, 2, 0);
@@ -281,16 +282,38 @@ describe('shared movement simulation', () => {
     player.movement.wallRunning = true;
     player.movementInternal.lastWallNormalX = -1;
 
-    // Look UP (negative pitch) and hold W.
-    const lookUp = { ...neutralInput(), moveZ: 1, lookPitchRadians: -0.9 };
-    let state = stepMovement(player.movement, player.movementInternal, player.dash, lookUp, neutralInput(), dt, [], false);
+    // W + D (moveX +1) = steer into the wall = climb.
+    const wPlusInto = { ...neutralInput(), moveZ: 1, moveX: 1 };
+    let state = stepMovement(player.movement, player.movementInternal, player.dash, wPlusInto, neutralInput(), dt, [], false);
     const startY = state.movement.position.y;
     for (let i = 0; i < 10; i += 1) {
-      state = stepMovement(state.movement, state.internal, state.dash, lookUp, lookUp, dt, [], false);
+      state = stepMovement(state.movement, state.internal, state.dash, wPlusInto, wPlusInto, dt, [], false);
     }
 
     expect(state.movement.velocity.y).toBeGreaterThan(0);
     expect(state.movement.position.y).toBeGreaterThan(startY);
+  });
+
+  it('does not adjust wall-run height from A/D without holding W', () => {
+    const dt = 1 / 72;
+    const player = createPlayerState('p1', 'blue');
+    player.movement.position = vec3(GAME_CONSTANTS.map.halfWidth - GAME_CONSTANTS.player.radius, 3, 0);
+    player.movement.velocity = vec3(0, 0, GAME_CONSTANTS.wall.minEntrySpeed + 3);
+    player.movement.grounded = false;
+    player.movement.wallRunning = true;
+    player.movementInternal.lastWallNormalX = -1;
+
+    // D (into the wall) WITHOUT W: must NOT climb. Vertical should follow residual wall gravity
+    // (drift down), never rise from the A/D input.
+    const intoNoForward = { ...neutralInput(), moveZ: 0, moveX: 1 };
+    let state = stepMovement(player.movement, player.movementInternal, player.dash, intoNoForward, neutralInput(), dt, [], false);
+    const startY = state.movement.position.y;
+    for (let i = 0; i < 12; i += 1) {
+      state = stepMovement(state.movement, state.internal, state.dash, intoNoForward, intoNoForward, dt, [], false);
+    }
+
+    expect(state.movement.velocity.y).toBeLessThanOrEqual(0);
+    expect(state.movement.position.y).toBeLessThan(startY);
   });
 
   it('does not shrink the body or sap momentum when crouch is held in the air', () => {

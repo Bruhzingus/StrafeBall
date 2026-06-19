@@ -256,8 +256,12 @@ export class ServerGameLoop {
   // Hold-E mat restore: per-player progress (seconds) toward standing the nearest knocked-over mat
   // back up. Resets when E is released or the player moves out of reach.
   private readonly matRestoreHoldByPlayerId = new Map<string, number>();
-  private static readonly MAT_RESTORE_HOLD_SECONDS = 0.6;
-  private static readonly MAT_RESTORE_REACH = GAME_CONSTANTS.player.radius + 1.0;
+  // Brief per-mat grace after a reset so the restoring player can step clear before contact
+  // knock-over is allowed again.
+  private readonly matPostResetKnockImmunityById = new Map<string, number>();
+  private static readonly MAT_RESTORE_HOLD_SECONDS = GAME_CONSTANTS.mat.restoreHoldSeconds;
+  private static readonly MAT_RESTORE_REACH = GAME_CONSTANTS.mat.restoreReach;
+  private static readonly MAT_POST_RESET_KNOCK_IMMUNITY_SECONDS = GAME_CONSTANTS.mat.postResetKnockImmunitySeconds;
 
   private readonly inputQueueByPlayerId = new Map<string, QueuedInput[]>();
   private readonly lastInputByPlayerId = new Map<string, PlayerInput>();
@@ -615,6 +619,7 @@ export class ServerGameLoop {
     // it when the throw genuinely follows a backflip — the player must be grounded AND have flipped
     // recently (cooldown still high). This bounds abuse: a client can't claim a backflip throw it
     // didn't earn. A valid tier sets the speed (tier 1 = quick, top tier = fastest) and marks super.
+    // The QTE is landing-only, so a wall-running player can never be mid-QTE here.
     const backflipTier = clamp(Math.trunc(request.backflipTier ?? 0), 0, GAME_CONSTANTS.backflip.qte.tierCount);
     const backflipRecent = player.movementInternal.backflipCooldown >
       GAME_CONSTANTS.backflip.cooldownSeconds - (GAME_CONSTANTS.backflip.durationSeconds + GAME_CONSTANTS.backflip.qte.durationSeconds + 0.3);
@@ -839,6 +844,7 @@ export class ServerGameLoop {
     this.pruneExpiredReconnects(this.stepNowMs);
     this.pruneStartVotes(this.stepNowMs);
     this.pruneResetVotes(this.stepNowMs);
+    this.tickMatPostResetKnockImmunity(fixedDt);
 
     // Advance the pre-round countdown. While counting down, players are frozen (look only) and no
     // combat resolves; when it elapses, flip to 'playing' so this tick already runs live.
@@ -1149,7 +1155,8 @@ export class ServerGameLoop {
       this.collisionBoxesForPlayer(player.id),
       catchStanceActive,
       GAME_CONSTANTS,
-      this.playerMovementScale(player)
+      this.playerMovementScale(player),
+      this.playerCooldownRateScale(player)
     );
     player.movement = result.movement;
     player.movementInternal = result.internal;
@@ -1595,6 +1602,17 @@ export class ServerGameLoop {
     return 1;
   }
 
+  private playerCooldownRateScale(player: PlayerState): number {
+    if (
+      this.state.match.mode === '2v2' &&
+      this.isPlayerAlive(player) &&
+      (player.lastPlayerBuffUntilMs ?? 0) > this.stepNowMs
+    ) {
+      return GAME_CONSTANTS.match.lastPlayerBuffCooldownRateMultiplier;
+    }
+    return 1;
+  }
+
   private collisionBoxesForPlayer(playerId: string): AABB[] {
     this.playerCollisionScratch.length = 0;
     for (const box of this.playerCollisionBoxes) this.playerCollisionScratch.push(box);
@@ -1660,6 +1678,7 @@ export class ServerGameLoop {
 
     for (const spec of MAT_SPECS) {
       if (this.knockedOverMatIds.has(spec.id)) continue;
+      if ((this.matPostResetKnockImmunityById.get(spec.id) ?? 0) > 0) continue;
       const box = matCollisionBox(spec);
       // Vertical band: the player's body must overlap the mat height (feet below top, head above base).
       if (pos.y > box.maxY || pos.y + GAME_CONSTANTS.player.height < box.minY) continue;
@@ -1730,9 +1749,18 @@ export class ServerGameLoop {
     this.matRestoreHoldByPlayerId.delete(player.id);
     this.state.mats[nearestId] = { ...this.state.mats[nearestId], knockedOver: false, knockDirection: vec3() };
     this.knockedOverMatIds.delete(nearestId);
+    this.matPostResetKnockImmunityById.set(nearestId, ServerGameLoop.MAT_POST_RESET_KNOCK_IMMUNITY_SECONDS);
     this.playerCollisionBoxes = createPlayerCollisionBoxes(this.knockedOverMatIds);
     this.ballCollisionBoxes = createBallCollisionBoxes(this.knockedOverMatIds);
     if (this.debug.COLLISION_DEBUG) this.logger(`mat restored id=${nearestId} by player=${player.id}`);
+  }
+
+  private tickMatPostResetKnockImmunity(dt: number): void {
+    for (const [matId, remaining] of this.matPostResetKnockImmunityById) {
+      const next = remaining - dt;
+      if (next > 0) this.matPostResetKnockImmunityById.set(matId, next);
+      else this.matPostResetKnockImmunityById.delete(matId);
+    }
   }
 
   private updateRules(dt: number): void {
@@ -2654,7 +2682,7 @@ export class ServerGameLoop {
 
   private teamHasNoActiveFighter(players: PlayerState[]): boolean {
     const activeCount = players.filter((player) => this.isPlayerActiveFighter(player)).length;
-    return activeCount === 0 && players.length >= this.playersPerTeam;
+    return activeCount === 0 && players.length > 0;
   }
 
   private dropOneHeldBall(player: PlayerState): void {
@@ -2971,6 +2999,7 @@ export class ServerGameLoop {
     // All mats stand again on a fresh state / reset; rebuild both collision sets to include them.
     this.knockedOverMatIds.clear();
     this.matRestoreHoldByPlayerId.clear();
+    this.matPostResetKnockImmunityById.clear();
     this.playerCollisionBoxes = createPlayerCollisionBoxes();
     this.ballCollisionBoxes = createBallCollisionBoxes();
     // Combat history is timeline-specific: a reset is a discontinuity, so drop ball history, any

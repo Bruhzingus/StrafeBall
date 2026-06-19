@@ -701,6 +701,93 @@ html, body {
 .qte-event--good    { background: #fff2c9; color: #c98800; }
 .qte-event--perfect { background: #fff0bf; color: #b8860b; }
 
+/* === Clutch buff callout — last player alive on a team, fired once on activation === */
+.clutch-event {
+  position: absolute;
+  left: 50%;
+  top: 22%;
+  z-index: 11;
+  min-width: 280px;
+  padding: 16px 26px;
+  transform: translate(-50%, -50%) scale(0.85) rotate(-3deg);
+  opacity: 0;
+  pointer-events: none;
+  text-align: center;
+  background: #fff0bf;
+  color: #b8860b;
+  border: 4px solid var(--ink);
+  border-radius: 20px;
+  box-shadow: 8px 8px 0 var(--ink), 0 0 0 0 rgba(255, 200, 0, 0.6);
+}
+
+.clutch-event--visible {
+  animation: clutch-event-pop 1.8s cubic-bezier(0.18, 0.86, 0.24, 1) both;
+}
+
+.clutch-event-title {
+  font-size: 44px;
+  line-height: 1;
+  font-weight: 900;
+  letter-spacing: 0;
+  text-transform: uppercase;
+  -webkit-text-stroke: 2px var(--ink);
+}
+
+.clutch-event-subtitle {
+  margin-top: 8px;
+  font-size: 13px;
+  font-weight: 900;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--ink);
+}
+
+.clutch-event-bonuses {
+  margin-top: 6px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  font-size: 14px;
+  font-weight: 900;
+  letter-spacing: 0.02em;
+  color: var(--ink);
+}
+
+.clutch-event-dot {
+  opacity: 0.5;
+}
+
+@keyframes clutch-event-pop {
+  0% {
+    opacity: 0;
+    transform: translate(-50%, -44%) scale(0.7) rotate(-10deg);
+    box-shadow: 8px 8px 0 var(--ink), 0 0 0 0 rgba(255, 200, 0, 0.6);
+  }
+  14% {
+    opacity: 1;
+    transform: translate(-50%, -50%) scale(1.15) rotate(3deg);
+    box-shadow: 8px 8px 0 var(--ink), 0 0 28px 10px rgba(255, 200, 0, 0.55);
+  }
+  26% {
+    transform: translate(-50%, -50%) scale(0.97) rotate(-2deg);
+  }
+  36% {
+    transform: translate(-50%, -50%) scale(1.03) rotate(1deg);
+    box-shadow: 8px 8px 0 var(--ink), 0 0 18px 6px rgba(255, 200, 0, 0.4);
+  }
+  85% {
+    opacity: 1;
+    transform: translate(-50%, -50%) scale(1) rotate(0deg);
+    box-shadow: 8px 8px 0 var(--ink), 0 0 12px 3px rgba(255, 200, 0, 0.25);
+  }
+  100% {
+    opacity: 0;
+    transform: translate(-50%, -58%) scale(0.94) rotate(0deg);
+    box-shadow: 8px 8px 0 var(--ink), 0 0 0 0 rgba(255, 200, 0, 0);
+  }
+}
+
 @keyframes qte-event-pop {
   0%   { opacity: 0; transform: translate(-50%, -44%) scale(0.7) rotate(8deg); }
   12%  { opacity: 1; transform: translate(-50%, -50%) scale(1.14) rotate(-3deg); }
