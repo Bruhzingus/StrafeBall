@@ -313,13 +313,17 @@ export function stepMovement(
           // the wall, 0 with no strafe key (straight). A/D WITHOUT W does nothing (this branch is gated
           // on W).
           const rxn = rightX * normal.x + rightZ * normal.z;
-          wallRunClimbing = true;
-          wallRunVerticalInput = clampUnit(-moveX * rxn);
-          // Past the gravity-delay threshold, gravity takes over: climbing (steering up) is disabled,
-          // descending still works. Timer resets whenever the run re-engages (see `!wallRunning` above).
-          if (wallRunTimer >= c.wall.runGravityDelaySeconds && wallRunVerticalInput > 0) {
+          const verticalInput = clampUnit(-moveX * rxn);
+          // Past the gravity-delay threshold, gravity takes over: climbing (steering up) AND holding
+          // height (no strafe) are disabled — only actively steering away (descend) still uses the
+          // eased climb control. Timer resets whenever the run re-engages (see `!wallRunning` above).
+          const pastGravityDelay = wallRunTimer >= c.wall.runGravityDelaySeconds;
+          if (pastGravityDelay && verticalInput >= 0) {
             wallRunClimbing = false;
             wallRunVerticalInput = 0;
+          } else {
+            wallRunClimbing = true;
+            wallRunVerticalInput = verticalInput;
           }
         }
       }

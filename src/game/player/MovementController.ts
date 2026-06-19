@@ -342,13 +342,17 @@ export class MovementController {
       const rightX = Math.cos(yaw);
       const rightZ = -Math.sin(yaw);
       const rxn = rightX * normal.x + rightZ * normal.z;
-      this.wallRunClimbing = true;
-      this.wallRunVerticalInput = Math.max(-1, Math.min(1, -moveX * rxn));
-      // Past the gravity-delay threshold, gravity takes over: climbing (steering up) is disabled,
-      // descending still works. Matches MovementSim.
-      if (this.wallRunTimer >= TUNING.wall.runGravityDelaySeconds && this.wallRunVerticalInput > 0) {
+      const verticalInput = Math.max(-1, Math.min(1, -moveX * rxn));
+      // Past the gravity-delay threshold, gravity takes over: climbing (steering up) AND holding
+      // height (no strafe) are disabled — only actively steering away (descend) still uses the
+      // eased climb control. Matches MovementSim.
+      const pastGravityDelay = this.wallRunTimer >= TUNING.wall.runGravityDelaySeconds;
+      if (pastGravityDelay && verticalInput >= 0) {
         this.wallRunClimbing = false;
         this.wallRunVerticalInput = 0;
+      } else {
+        this.wallRunClimbing = true;
+        this.wallRunVerticalInput = verticalInput;
       }
     }
   }

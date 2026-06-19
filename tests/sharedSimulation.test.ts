@@ -294,6 +294,28 @@ describe('shared movement simulation', () => {
     expect(state.movement.position.y).toBeGreaterThan(startY);
   });
 
+  it('applies real gravity once a wall-run held straight (W only) passes the gravity delay', () => {
+    const dt = 1 / 72;
+    const player = createPlayerState('p1', 'blue');
+    player.movement.position = vec3(GAME_CONSTANTS.map.halfWidth - GAME_CONSTANTS.player.radius, 4, 0);
+    player.movement.velocity = vec3(0, 0, GAME_CONSTANTS.wall.minEntrySpeed + 3);
+    player.movement.grounded = false;
+    player.movement.wallRunning = true;
+    player.movementInternal.lastWallNormalX = -1;
+
+    // W only (moveX 0) = hold straight, no strafe.
+    const straight = { ...neutralInput(), moveZ: 1 };
+    let state = stepMovement(player.movement, player.movementInternal, player.dash, straight, neutralInput(), dt, [], false);
+    const ticksPastDelay = Math.ceil(GAME_CONSTANTS.wall.runGravityDelaySeconds / dt) + 5;
+    for (let i = 0; i < ticksPastDelay; i += 1) {
+      state = stepMovement(state.movement, state.internal, state.dash, straight, straight, dt, [], false);
+    }
+
+    expect(state.internal.wallRunTimer).toBeGreaterThanOrEqual(GAME_CONSTANTS.wall.runGravityDelaySeconds);
+    expect(state.movement.wallRunning).toBe(true);
+    expect(state.movement.velocity.y).toBeLessThan(0);
+  });
+
   it('does not adjust wall-run height from A/D without holding W', () => {
     const dt = 1 / 72;
     const player = createPlayerState('p1', 'blue');

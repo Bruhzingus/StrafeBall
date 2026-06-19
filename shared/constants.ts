@@ -66,7 +66,7 @@ export const GAME_CONSTANTS = {
 
   wall: {
     runTriggerAngleDegrees: 55,
-    runMaxSeconds: 1.1,
+    runMaxSeconds: 2.5,
     // Residual gravity while wall-running. Kept small so the look-driven climb (below) is the
     // dominant vertical input; when you let go of the climb (release W) this pulls you off the arc.
     runGravityScale: 0.15,
@@ -93,7 +93,7 @@ export const GAME_CONSTANTS = {
     // After this long on the wall, real gravity takes over and climbing (steering up) stops working —
     // only descending is still allowed. Resets whenever the run re-engages (new wall, or jump/dash
     // back into a wall), since wallRunTimer itself resets on re-engage.
-    runGravityDelaySeconds: 1.5,
+    runGravityDelaySeconds: 1.25,
     // Gravity scale applied once runGravityDelaySeconds has elapsed (pulls the player down the wall).
     runLateGravityScale: 0.6,
     // When the player reaches the ceiling clamp while wall-running, push them this far down (m/s)

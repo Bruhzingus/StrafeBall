@@ -127,6 +127,7 @@ export function applyGymVisualRevamp(scene: Scene): void {
   createGymBanners(scene);
   createBannerLightCatches(scene);
   createBleacherAccents(scene);
+  createBleacherSeatDetails(scene);
   createBleacherUnderframes(scene);
   createCourtLineShadows(scene);
   createContactDepthDecals(scene);
@@ -153,9 +154,9 @@ function enhanceExistingMaterials(scene: Scene): void {
     floorMaterial.albedoColor = new Color3(0.78, 0.6, 0.36);
     floorMaterial.metallic = 0;
     // Glossy polished maple, not a mirror: roughness in the requested 0.28-0.45 band.
-    floorMaterial.roughness = 0.23;
+    floorMaterial.roughness = 0.34;
     floorMaterial.environmentIntensity = 0.86;
-    floorMaterial.specularIntensity = 1.55;
+    floorMaterial.specularIntensity = 0.98;
   }
 
   setZoneMaterial(scene, 'zone_player_mat', 'blue');
@@ -190,29 +191,29 @@ function enhanceExistingMaterials(scene: Scene): void {
   // Bleachers: painted blue metal/plastic frame — less glossy than vinyl, slightly metallic sheen.
   const bleacherMaterial = scene.getMaterialByName('bleacher_material');
   if (bleacherMaterial instanceof PBRMaterial) {
-    bleacherMaterial.albedoColor = new Color3(0.44, 0.5, 0.58);
+    bleacherMaterial.albedoColor = new Color3(0.32, 0.39, 0.5);
     bleacherMaterial.metallic = 0.08;
-    bleacherMaterial.roughness = 0.48;
+    bleacherMaterial.roughness = 0.44;
   }
 
   const seatMaterial = scene.getMaterialByName('bleacher_seat_mat');
   if (seatMaterial instanceof StandardMaterial) {
-    seatMaterial.diffuseColor = new Color3(0.075, 0.16, 0.38);
-    seatMaterial.emissiveColor = new Color3(0.002, 0.007, 0.026);
-    seatMaterial.specularColor = new Color3(0.08, 0.095, 0.12);
-    seatMaterial.specularPower = 28;
+    seatMaterial.diffuseColor = new Color3(0.045, 0.15, 0.44);
+    seatMaterial.emissiveColor = new Color3(0.003, 0.01, 0.034);
+    seatMaterial.specularColor = new Color3(0.16, 0.2, 0.28);
+    seatMaterial.specularPower = 52;
   }
 
   const panelMaterial = scene.getMaterialByName('bleacher_panel_mat');
   if (panelMaterial instanceof StandardMaterial) {
-    panelMaterial.diffuseColor = new Color3(0.25, 0.29, 0.34);
-    panelMaterial.specularColor = new Color3(0.11, 0.12, 0.13);
+    panelMaterial.diffuseColor = new Color3(0.18, 0.21, 0.27);
+    panelMaterial.specularColor = new Color3(0.14, 0.15, 0.17);
   }
 
   const railMaterial = scene.getMaterialByName('bleacher_rail_mat');
   if (railMaterial instanceof StandardMaterial) {
-    railMaterial.diffuseColor = new Color3(0.82, 0.86, 0.9);
-    railMaterial.specularColor = new Color3(0.22, 0.24, 0.25);
+    railMaterial.diffuseColor = new Color3(0.74, 0.78, 0.83);
+    railMaterial.specularColor = new Color3(0.24, 0.26, 0.28);
     railMaterial.specularPower = 48;
   }
 
@@ -316,8 +317,8 @@ function setZoneMaterial(scene: Scene, name: string, tone: 'blue' | 'red'): void
   material.opacityTexture = null;
   material.diffuseColor = new Color3(0.64, 0.42, 0.2);
   material.emissiveColor = new Color3(0.008, 0.004, 0.001);
-  material.specularColor = new Color3(1.0, 0.88, 0.64);
-  material.specularPower = 180;
+  material.specularColor = new Color3(0.42, 0.34, 0.2);
+  material.specularPower = 46;
   material.alpha = 0.07;
   material.transparencyMode = Material.MATERIAL_ALPHABLEND;
   void tone;
@@ -338,11 +339,11 @@ function brightenExistingLighting(scene: Scene): void {
       // A non-black ground color stops the underside of geometry (and the ceiling read) from
       // looking like a flat void — cheap because it's a single extra constant in the same light.
       light.groundColor = new Color3(0.22, 0.22, 0.25);
-      light.specular = new Color3(0.42, 0.4, 0.34);
+      light.specular = new Color3(0.25, 0.235, 0.19);
     }
     if (light instanceof PointLight && light.name.startsWith('ceil_pt_')) {
       light.diffuse = new Color3(1.0, 0.955, 0.84);
-      light.specular = new Color3(0.54, 0.5, 0.42);
+      light.specular = new Color3(0.24, 0.22, 0.18);
       light.intensity = 0.78;
       light.range = 16.5;
     }
@@ -774,12 +775,13 @@ function createBannerRod(scene: Scene, spec: BannerSpec): void {
 }
 
 function createBleacherAccents(scene: Scene): void {
-  const blueLip = solidMaterial(scene, 'decor_bleacher_blue_lip_mat', new Color3(0.06, 0.22, 0.62), {
-    emissive: new Color3(0.004, 0.016, 0.06),
+  const blueLip = solidMaterial(scene, 'decor_bleacher_blue_lip_mat', new Color3(0.035, 0.15, 0.46), {
+    emissive: new Color3(0.002, 0.01, 0.038),
     specular: new Color3(0.15, 0.18, 0.22)
   });
-  const goldLip = solidMaterial(scene, 'decor_bleacher_gold_endcap_mat', new Color3(1.0, 0.72, 0.15), {
-    emissive: new Color3(0.07, 0.04, 0.0)
+  const goldLip = solidMaterial(scene, 'decor_bleacher_gold_endcap_mat', new Color3(0.22, 0.28, 0.36), {
+    emissive: new Color3(0.004, 0.006, 0.01),
+    specular: new Color3(0.12, 0.13, 0.14)
   });
 
   for (const tier of createBleacherTierSpecs()) {
@@ -804,6 +806,86 @@ function createBleacherAccents(scene: Scene): void {
       cap.position.set(lipX, lipY + 0.006, zSign * (tier.size.depth * 0.5 - 0.14));
       cap.material = goldLip;
       markDecorative(cap);
+    }
+  }
+}
+
+function createBleacherSeatDetails(scene: Scene): void {
+  for (const mesh of scene.meshes.slice()) {
+    if (mesh.name.startsWith('decor_bleacher_riser_face_') || mesh.name.startsWith('decor_bleacher_plank_gap_')) {
+      mesh.dispose(false, true);
+    }
+  }
+
+  const seatTopMat = solidMaterial(scene, 'decor_bleacher_satin_seat_top_mat', new Color3(0.045, 0.17, 0.52), {
+    emissive: new Color3(0.002, 0.012, 0.042),
+    specular: new Color3(0.16, 0.2, 0.27)
+  });
+  const frontRollMat = solidMaterial(scene, 'decor_bleacher_front_roll_mat', new Color3(0.026, 0.105, 0.34), {
+    emissive: new Color3(0.001, 0.008, 0.03),
+    specular: new Color3(0.13, 0.16, 0.22)
+  });
+  const edgeHighlightMat = solidMaterial(scene, 'decor_bleacher_soft_edge_highlight_mat', new Color3(0.2, 0.36, 0.68), {
+    alpha: 0.18,
+    emissive: new Color3(0.012, 0.026, 0.055),
+    specular: new Color3(0.12, 0.16, 0.22)
+  });
+  const endTrimMat = solidMaterial(scene, 'decor_bleacher_end_trim_blue_mat', new Color3(0.14, 0.2, 0.29), {
+    emissive: new Color3(0.002, 0.004, 0.008),
+    specular: new Color3(0.1, 0.12, 0.15)
+  });
+
+  for (const tier of createBleacherTierSpecs()) {
+    const topY = tier.center.y + tier.size.height * 0.5;
+    const innerX = tier.center.x - tier.side * tier.size.width * 0.5;
+    const outerX = tier.center.x + tier.side * tier.size.width * 0.5;
+    const seatDepth = tier.size.depth - 0.34;
+
+    const seatTop = MeshBuilder.CreateBox(`decor_bleacher_seat_top_${tier.side}_${tier.step}`, {
+      width: tier.size.width - 0.1,
+      height: 0.018,
+      depth: seatDepth
+    }, scene);
+    seatTop.position.set(tier.center.x, topY + 0.058, tier.center.z);
+    seatTop.material = seatTopMat;
+    markDecorative(seatTop);
+
+    const frontRoll = MeshBuilder.CreateBox(`decor_bleacher_front_roll_${tier.side}_${tier.step}`, {
+      width: 0.09,
+      height: 0.082,
+      depth: seatDepth
+    }, scene);
+    frontRoll.position.set(innerX - tier.side * 0.026, topY + 0.028, tier.center.z);
+    frontRoll.material = frontRollMat;
+    markDecorative(frontRoll);
+
+    const frontHighlight = MeshBuilder.CreateBox(`decor_bleacher_front_soft_highlight_${tier.side}_${tier.step}`, {
+      width: 0.016,
+      height: 0.02,
+      depth: seatDepth - 0.08
+    }, scene);
+    frontHighlight.position.set(innerX - tier.side * 0.071, topY + 0.076, tier.center.z);
+    frontHighlight.material = edgeHighlightMat;
+    markDecorative(frontHighlight);
+
+    const rearHighlight = MeshBuilder.CreateBox(`decor_bleacher_rear_soft_highlight_${tier.side}_${tier.step}`, {
+      width: 0.014,
+      height: 0.014,
+      depth: seatDepth - 0.16
+    }, scene);
+    rearHighlight.position.set(outerX - tier.side * 0.08, topY + 0.071, tier.center.z);
+    rearHighlight.material = edgeHighlightMat;
+    markDecorative(rearHighlight);
+
+    for (const zSign of [-1, 1] as const) {
+      const endTrim = MeshBuilder.CreateBox(`decor_bleacher_seat_end_trim_${tier.side}_${tier.step}_${zSign}`, {
+        width: tier.size.width - 0.08,
+        height: 0.026,
+        depth: 0.038
+      }, scene);
+      endTrim.position.set(tier.center.x, topY + 0.064, zSign * (tier.size.depth * 0.5 - 0.17));
+      endTrim.material = endTrimMat;
+      markDecorative(endTrim);
     }
   }
 }
@@ -992,7 +1074,7 @@ function createFloorWaxSheen(scene: Scene): void {
 function createWideFloorGlints(scene: Scene): void {
   const glintMat = createSoftFloorDecalMaterial(scene, 'decor_floor_wide_glint_mat', {
     color: '#fff8df',
-    alpha: 0.24,
+    alpha: 0.15,
     width: 512,
     height: 192
   });
@@ -1017,7 +1099,7 @@ function createWideFloorGlints(scene: Scene): void {
 function createFloorLightReflections(scene: Scene): void {
   const reflectionMat = createSoftFloorDecalMaterial(scene, 'decor_floor_light_reflection_mat', {
     color: '#fff4cf',
-    alpha: 0.52,
+    alpha: 0.26,
     width: 384,
     height: 512
   });
@@ -1028,7 +1110,7 @@ function createFloorLightReflections(scene: Scene): void {
   ];
 
   positions.forEach(([x, z], index) => {
-    const glow = MeshBuilder.CreatePlane(`decor_floor_light_reflection_${index}`, { width: 2.1, height: 7.2 }, scene);
+    const glow = MeshBuilder.CreatePlane(`decor_floor_light_reflection_${index}`, { width: 1.45, height: 9.2 }, scene);
     glow.position.set(x, 0.039, z);
     glow.rotation.x = Math.PI / 2;
     glow.rotation.y = index % 2 === 0 ? 0.035 : -0.035;
@@ -1040,7 +1122,7 @@ function createFloorLightReflections(scene: Scene): void {
 function createFixtureFalloffPools(scene: Scene): void {
   const poolMat = createSoftFloorDecalMaterial(scene, 'decor_fixture_warm_falloff_pool_mat', {
     color: '#ffe6aa',
-    alpha: 0.18,
+    alpha: 0.12,
     width: 256,
     height: 384
   });
@@ -1403,17 +1485,17 @@ function createWaxSheenMaterial(scene: Scene): StandardMaterial {
       const broadSweep = Math.max(0, 1 - Math.abs(diagonal - 0.54) / 0.16);
       const secondarySweep = Math.max(0, 1 - Math.abs(((px * 0.7 + py * 0.3 + 0.38) % 1) - 0.52) / 0.24);
       const lengthFade = 0.72 + 0.28 * Math.sin((px * 2.1 + py * 1.2) * Math.PI * 2);
-      const alpha = 0.055 + broadSweep * 0.22 * lengthFade + secondarySweep * 0.09;
-      ctx.globalAlpha = Math.min(0.34, alpha);
+      const alpha = 0.028 + broadSweep * 0.095 * lengthFade + secondarySweep * 0.045;
+      ctx.globalAlpha = Math.min(0.16, alpha);
       ctx.fillStyle = '#fff6d8';
       ctx.fillRect(x, y, 1, 1);
     }
   }
 
   const softGradient = ctx.createLinearGradient(0, 0, width, height);
-  softGradient.addColorStop(0, 'rgba(255, 255, 255, 0.045)');
-  softGradient.addColorStop(0.5, 'rgba(255, 243, 205, 0.12)');
-  softGradient.addColorStop(1, 'rgba(255, 255, 255, 0.04)');
+  softGradient.addColorStop(0, 'rgba(255, 255, 255, 0.018)');
+  softGradient.addColorStop(0.5, 'rgba(255, 243, 205, 0.05)');
+  softGradient.addColorStop(1, 'rgba(255, 255, 255, 0.015)');
   ctx.globalAlpha = 1;
   ctx.fillStyle = softGradient;
   ctx.fillRect(0, 0, width, height);
@@ -1425,7 +1507,7 @@ function createWaxSheenMaterial(scene: Scene): StandardMaterial {
   material.emissiveTexture = texture;
   material.useAlphaFromDiffuseTexture = true;
   material.diffuseColor = new Color3(1, 0.96, 0.82);
-  material.emissiveColor = new Color3(0.72, 0.62, 0.38);
+  material.emissiveColor = new Color3(0.38, 0.32, 0.18);
   material.specularColor = new Color3(0, 0, 0);
   material.alpha = 1;
   material.transparencyMode = Material.MATERIAL_ALPHABLEND;

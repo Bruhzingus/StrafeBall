@@ -47,15 +47,24 @@ const GUIDE_PANELS: readonly GuidePanelSpec[] = [
   {
     name: 'guide_defense',
     z: -(PANEL_WIDTH + PANEL_GAP),
-    title: 'Defense + Practice',
+    title: 'How To Play',
     accent: '#5fb0ff',
     sections: [
       {
+        heading: 'The Match',
+        items: [
+          { label: '1v1', text: 'First team to 5 points wins.' },
+          { label: '2v2', text: 'Each player has 3 lives. Last team standing wins.' },
+          { label: 'GET HIT', text: 'Lose a life (2v2) or give up a point (1v1).' },
+          { label: 'OUT', text: 'Eliminated players switch to free-cam and spectate.' }
+        ]
+      },
+      {
         heading: 'Defense',
         items: [
-          { label: 'EMPTY CLICK', text: 'Catch with an empty hand.' },
+          { label: 'EMPTY CLICK', text: 'Catch with an empty hand. Negates the hit.' },
           { label: 'STAY READY', text: 'Face the ball. Stay close. Do not dash.' },
-          { label: 'HOLD 2 BALLS', text: 'Auto-parry live shots back faster.' }
+          { label: 'HOLD 2 BALLS', text: 'Auto-parries live shots back, no click needed.' }
         ]
       },
       {
@@ -67,7 +76,7 @@ const GUIDE_PANELS: readonly GuidePanelSpec[] = [
         ]
       }
     ],
-    footer: 'Match goal: score live hits or wipe the other team.'
+    footer: 'A caught or parried ball never scores. Land clean hits before the other side lands theirs.'
   },
   {
     name: 'guide_ball',
@@ -90,6 +99,13 @@ const GUIDE_PANELS: readonly GuidePanelSpec[] = [
           { label: 'TAP + RELEASE', text: 'Quick lob with more arc.' },
           { label: 'CROUCH + THROW', text: 'Curve the ball.' },
           { label: 'F', text: 'Fake or cancel.' }
+        ]
+      },
+      {
+        heading: 'Holding 2 Balls',
+        items: [
+          { text: 'Slows you slightly but arms the auto-parry.' },
+          { text: 'Landing a hit refills a dash charge — keep throwing.' }
         ]
       }
     ],
@@ -116,12 +132,13 @@ const GUIDE_PANELS: readonly GuidePanelSpec[] = [
         heading: 'Advanced',
         items: [
           { label: 'WALL-RUN', text: 'Sprint beside a wall to carry speed.' },
+          { label: 'A / D', text: 'While wall-running: steer toward the wall to climb, away to descend.' },
           { label: 'WALL-JUMP', text: 'Jump off the wall to redirect.' },
           { label: 'Q', text: 'Backflip to set up the QTE throw.' }
         ]
       }
     ],
-    footer: 'Keep momentum up with hops, slides, wall-runs, and quick redirects.'
+    footer: 'A wall-run can only climb for the first 1.5s — after that gravity takes over and only descending still works. Jumping to a new wall resets it.'
   }
 ] as const;
 
