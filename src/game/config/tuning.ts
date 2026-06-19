@@ -208,6 +208,15 @@ export const TUNING = {
     ballCount: GAME_CONSTANTS.map.ballCount
   },
 
+  // Spectator fly-cam shown to a player while downed (eliminated but the 2v2 match is still
+  // live). Detached from the body, no collision — purely a viewing aid.
+  freeCam: {
+    moveSpeed: 9,
+    sprintMultiplier: 2.2,
+    verticalCeiling: 22,
+    verticalFloor: 0.4
+  },
+
   // Practice bot: an always-on thrower for catch/block practice. It never spawns balls — it
   // grabs the nearest free (loose/dead) ball on the map and lobs it at the player.
   bot: {

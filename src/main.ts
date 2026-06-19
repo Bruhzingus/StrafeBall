@@ -1,5 +1,6 @@
 import './style.css';
 import { Game } from './game/Game';
+import { LoadingScreen } from './game/ui/LoadingScreen';
 import {
   describeBrowserCompatibility,
   detectBrowserCompatibility,
@@ -34,6 +35,8 @@ installBrowserCompatAttributes(compat);
 console.info(`[compat] ${describeBrowserCompatibility(compat)}`);
 
 if (compat.missingRequired.length > 0) {
+  // Tear down the loading splash so the "browser not supported" message is visible underneath.
+  document.getElementById('loading-screen')?.remove();
   const lockOverlay = document.getElementById('lock-overlay');
   if (lockOverlay) {
     lockOverlay.innerHTML = `
@@ -44,8 +47,12 @@ if (compat.missingRequired.length > 0) {
   throw new Error(`Missing required browser APIs: ${compat.missingRequired.join(', ')}`);
 }
 
+const loadingScreen = new LoadingScreen();
 const game = new Game(canvas);
 game.start();
+if (game.activeScene) {
+  loadingScreen.track(game.activeScene);
+}
 
 window.addEventListener('beforeunload', () => {
   game.dispose();

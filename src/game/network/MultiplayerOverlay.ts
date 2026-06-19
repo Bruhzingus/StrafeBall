@@ -16,10 +16,8 @@ export class MultiplayerOverlay {
   private readonly panel: HTMLDivElement;
   private readonly nameInput: HTMLInputElement;
   private readonly joinInput: HTMLInputElement;
-  private readonly statusValue: HTMLSpanElement;
   private readonly roomValue: HTMLSpanElement;
   private readonly pingValue: HTMLSpanElement;
-  private readonly capacityValue: HTMLSpanElement;
   private readonly rosterValue: HTMLDivElement;
   private readonly pregameValue: HTMLDivElement;
   private readonly resetValue: HTMLDivElement;
@@ -31,7 +29,7 @@ export class MultiplayerOverlay {
   private readonly leaveButton: HTMLButtonElement;
   private readonly copyButton: HTMLButtonElement;
   private readonly closeButton: HTMLButtonElement;
-  private readonly settingsDetails: HTMLDetailsElement;
+  private readonly toggleButtons: NodeListOf<HTMLButtonElement>;
   private readonly modeButtons: NodeListOf<HTMLButtonElement>;
   private readonly modeTitle: HTMLDivElement;
   private readonly modeSubtitle: HTMLDivElement;
@@ -41,6 +39,8 @@ export class MultiplayerOverlay {
   private readonly fullscreenRequest: HTMLButtonElement;
   private readonly fullscreenCancel: HTMLButtonElement;
   private selectedMode: LobbyMode = '1v1';
+  /** Which launch drawer (create/join) is expanded in the lobby, or null when both are collapsed. */
+  private openDrawer: 'create' | 'join' | null = null;
   private modalOpen = false;
   private pendingAction: PendingAction = null;
   private awaitingInteractReleaseFocus = false;
@@ -67,10 +67,8 @@ export class MultiplayerOverlay {
         <button class="multiplayer-close" type="button" aria-label="Close match menu">x</button>
         <div class="multiplayer-kicker">StrafeBall Lobby</div>
         <div class="multiplayer-title">Choose Match</div>
-        <div class="multiplayer-subtitle">Use the practice court portals, then create a room or paste a code.</div>
 
-        <details class="multiplayer-settings" open>
-          <summary>Match settings</summary>
+        <div class="multiplayer-setup">
           <div class="multiplayer-mode-tabs">
             <button class="multiplayer-mode-tab" data-mode="1v1" type="button">1v1</button>
             <button class="multiplayer-mode-tab" data-mode="2v2" type="button">2v2</button>
@@ -81,36 +79,45 @@ export class MultiplayerOverlay {
             <div class="multiplayer-mode-subtitle"></div>
             <div class="multiplayer-mode-notice"></div>
           </div>
+        </div>
 
-          <label class="multiplayer-field">
-            <span>Player</span>
-            <input class="multiplayer-name" maxlength="24" value="Player" />
-          </label>
-          <div class="multiplayer-actions multiplayer-actions--create">
+        <label class="multiplayer-field">
+          <span>Player</span>
+          <input class="multiplayer-name" maxlength="24" value="Player" />
+        </label>
+
+        <div class="multiplayer-launch">
+          <div class="multiplayer-launch-row">
+            <button class="multiplayer-toggle multiplayer-toggle--create" type="button" data-panel="create" aria-expanded="false">Create</button>
+            <button class="multiplayer-toggle multiplayer-toggle--join" type="button" data-panel="join" aria-expanded="false">Join</button>
+          </div>
+
+          <div class="multiplayer-drawer multiplayer-drawer--create" data-drawer="create">
+            <div class="multiplayer-drawer-hint">Spin up a fresh room and share the code.</div>
             <button class="multiplayer-create">Create Room</button>
           </div>
-          <label class="multiplayer-field multiplayer-field--join-code">
-            <span>Room Code</span>
-            <input class="multiplayer-join-code" placeholder="Paste code" />
-          </label>
-          <div class="multiplayer-actions multiplayer-actions--join">
-            <button class="multiplayer-join">Join</button>
+
+          <div class="multiplayer-drawer multiplayer-drawer--join" data-drawer="join">
+            <label class="multiplayer-field multiplayer-field--join-code">
+              <span>Room Code</span>
+              <input class="multiplayer-join-code" placeholder="Paste code" />
+            </label>
+            <button class="multiplayer-join">Join Room</button>
           </div>
-          <div class="multiplayer-room-card">
-            <div>
-              <div class="multiplayer-card-label">Room Key</div>
-              <div class="multiplayer-room">Practice</div>
-            </div>
-            <button class="multiplayer-copy" type="button">Copy</button>
+        </div>
+
+        <div class="multiplayer-room-card">
+          <div>
+            <div class="multiplayer-card-label">Room Code</div>
+            <div class="multiplayer-room">Practice</div>
           </div>
-        </details>
+          <button class="multiplayer-copy" type="button">Copy</button>
+        </div>
 
         <div class="multiplayer-actions multiplayer-actions--leave">
           <button class="multiplayer-leave">Leave</button>
         </div>
-        <div class="multiplayer-line multiplayer-line--status">Status <span class="multiplayer-status">practice</span></div>
         <div class="multiplayer-line multiplayer-line--ping">Ping <span class="multiplayer-ping">-</span></div>
-        <div class="multiplayer-line multiplayer-line--capacity">Capacity <span class="multiplayer-capacity">0 / 0</span></div>
         <div class="multiplayer-room-summary"></div>
         <div class="multiplayer-pregame"></div>
         <div class="multiplayer-reset"></div>
@@ -137,10 +144,8 @@ export class MultiplayerOverlay {
     this.panel = this.mustQuery<HTMLDivElement>('.multiplayer-panel');
     this.nameInput = this.mustQuery<HTMLInputElement>('.multiplayer-name');
     this.joinInput = this.mustQuery<HTMLInputElement>('.multiplayer-join-code');
-    this.statusValue = this.mustQuery<HTMLSpanElement>('.multiplayer-status');
     this.roomValue = this.mustQuery<HTMLSpanElement>('.multiplayer-room');
     this.pingValue = this.mustQuery<HTMLSpanElement>('.multiplayer-ping');
-    this.capacityValue = this.mustQuery<HTMLSpanElement>('.multiplayer-capacity');
     this.rosterValue = this.mustQuery<HTMLDivElement>('.multiplayer-room-summary');
     this.pregameValue = this.mustQuery<HTMLDivElement>('.multiplayer-pregame');
     this.resetValue = this.mustQuery<HTMLDivElement>('.multiplayer-reset');
@@ -152,7 +157,7 @@ export class MultiplayerOverlay {
     this.leaveButton = this.mustQuery<HTMLButtonElement>('.multiplayer-leave');
     this.copyButton = this.mustQuery<HTMLButtonElement>('.multiplayer-copy');
     this.closeButton = this.mustQuery<HTMLButtonElement>('.multiplayer-close');
-    this.settingsDetails = this.mustQuery<HTMLDetailsElement>('.multiplayer-settings');
+    this.toggleButtons = this.root.querySelectorAll<HTMLButtonElement>('.multiplayer-toggle');
     this.modeButtons = this.root.querySelectorAll<HTMLButtonElement>('.multiplayer-mode-tab');
     this.modeTitle = this.mustQuery<HTMLDivElement>('.multiplayer-mode-title');
     this.modeSubtitle = this.mustQuery<HTMLDivElement>('.multiplayer-mode-subtitle');
@@ -173,6 +178,7 @@ export class MultiplayerOverlay {
     this.fullscreenCancel.addEventListener('click', this.cancelFullscreenWarning);
     this.root.addEventListener('click', this.onRootClick);
     for (const button of this.modeButtons) button.addEventListener('click', this.onModeClick);
+    for (const button of this.toggleButtons) button.addEventListener('click', this.onToggleClick);
     window.addEventListener('keyup', this.onPortalFocusKeyUp);
     document.body.appendChild(this.root);
     this.update();
@@ -190,6 +196,7 @@ export class MultiplayerOverlay {
     this.fullscreenCancel.removeEventListener('click', this.cancelFullscreenWarning);
     this.root.removeEventListener('click', this.onRootClick);
     for (const button of this.modeButtons) button.removeEventListener('click', this.onModeClick);
+    for (const button of this.toggleButtons) button.removeEventListener('click', this.onToggleClick);
     window.removeEventListener('keyup', this.onPortalFocusKeyUp);
     this.root.remove();
   }
@@ -247,14 +254,8 @@ export class MultiplayerOverlay {
       roomSummaryKey: roomSummary.key
     };
 
-    const statusLabel = busy
-      ? 'connecting...'
-      : connected ? roomSummary.statusLabel : this.client.status === 'error' ? 'needs attention' : 'practice';
-    this.statusValue.textContent = statusLabel;
-    this.statusValue.dataset.status = this.client.status;
     this.roomValue.textContent = this.client.roomId || 'Practice';
     this.pingValue.textContent = this.client.pingMs === null ? '-' : `${this.client.pingMs} ms`;
-    this.capacityValue.textContent = roomSummary.capacityLabel;
     this.rosterValue.innerHTML = roomSummary.rosterHtml;
     this.pregameValue.innerHTML = roomSummary.pregameHtml;
     this.resetValue.innerHTML = roomSummary.resetHtml;
@@ -281,12 +282,16 @@ export class MultiplayerOverlay {
     this.copyButton.disabled = !connected || !this.client.roomId;
     this.createButton.textContent = busy ? 'Creating...' : supported ? `Create ${this.selectedMode}` : '2v2 Soon';
     this.joinButton.textContent = busy ? 'Joining...' : supported ? `Join ${this.selectedMode}` : '2v2 Soon';
+    for (const button of this.toggleButtons) button.disabled = connected || busy || !supported;
 
     const compact = connected && !busy && this.client.status !== 'error' && (!this.modalOpen || liveMatch);
     this.root.classList.toggle('multiplayer-modal--compact', compact);
     this.root.classList.toggle('multiplayer-modal--live', liveMatch);
     this.root.classList.toggle('multiplayer-modal--connected', connected);
-    if (connected && !wasConnected) this.settingsDetails.open = false;
+    // Once connected the launch drawers are hidden anyway; collapse them so reopening the lobby
+    // (after leaving) starts clean with both buttons closed.
+    if (connected && !wasConnected) this.openDrawer = null;
+    this.syncDrawers();
     const shouldShow = this.modalOpen || connected || busy || this.client.status === 'error';
     this.root.classList.toggle('multiplayer-modal--hidden', !shouldShow);
     this.syncLockOverlaySuppression();
@@ -349,6 +354,33 @@ export class MultiplayerOverlay {
     this.selectedMode = mode;
     this.update();
   };
+
+  private onToggleClick = (event: Event): void => {
+    const target = event.currentTarget as HTMLButtonElement;
+    const panel = target.dataset.panel;
+    if (panel !== 'create' && panel !== 'join') return;
+    // Tapping an open drawer closes it; tapping the other one switches.
+    this.openDrawer = this.openDrawer === panel ? null : panel;
+    this.syncDrawers();
+    if (this.openDrawer === 'join') {
+      this.joinInput.focus();
+      this.joinInput.select();
+    }
+  };
+
+  /** Reflect `openDrawer` onto the DOM: expand the chosen drawer, collapse the rest. */
+  private syncDrawers(): void {
+    for (const button of this.toggleButtons) {
+      const panel = button.dataset.panel;
+      const active = panel === this.openDrawer;
+      button.classList.toggle('multiplayer-toggle--active', active);
+      button.setAttribute('aria-expanded', active ? 'true' : 'false');
+    }
+    const drawers = this.root.querySelectorAll<HTMLDivElement>('.multiplayer-drawer');
+    for (const drawer of drawers) {
+      drawer.classList.toggle('multiplayer-drawer--open', drawer.dataset.drawer === this.openDrawer);
+    }
+  }
 
   private onRootClick = (event: MouseEvent): void => {
     const target = event.target instanceof Element ? event.target : null;
@@ -658,6 +690,14 @@ function formatRoster(players: RoomState['players'][string][], slotsPerTeam: num
   return names.join(' / ');
 }
 
+/** Names of the players who cast a vote, for showing who picked which option in the vote counter. */
+function votersLabel(room: RoomState, votesByPlayerId: Record<string, true>): string {
+  const names = Object.keys(votesByPlayerId)
+    .map((playerId) => room.players[playerId]?.name)
+    .filter((name): name is string => !!name);
+  return names.length > 0 ? escapeHtml(names.join(', ')) : '';
+}
+
 function formatReconnectSeconds(deadlineAtMs: number | null): number {
   if (!deadlineAtMs) return 0;
   return Math.max(0, Math.ceil((deadlineAtMs - Date.now()) / 1000));
@@ -708,11 +748,13 @@ function buildPregameHtml(room: RoomState, localPlayerId: string): string {
 
   const choicesReady = room.startVote.requiredTeamChoices > 0 &&
     room.startVote.teamChoiceCount >= room.startVote.requiredTeamChoices;
+  const choiceVoters = votersLabel(room, room.startVote.teamChoicesByPlayerId);
   const choiceLine = room.startVote.requiredTeamChoices > 0
-    ? `Teams chosen: ${room.startVote.teamChoiceCount}/${room.startVote.requiredTeamChoices}`
+    ? `Teams chosen: ${room.startVote.teamChoiceCount}/${room.startVote.requiredTeamChoices}${choiceVoters ? ` (${choiceVoters})` : ''}`
     : 'Choose teams to unlock start vote';
+  const startVoters = votersLabel(room, room.startVote.votesByPlayerId);
   const voteLine = choicesReady && room.startVote.requiredVotes > 0
-    ? `Vote start: ${room.startVote.voteCount}/${room.startVote.requiredVotes}`
+    ? `Vote start: ${room.startVote.voteCount}/${room.startVote.requiredVotes}${startVoters ? ` (${startVoters})` : ''}`
     : choiceLine;
   const localVoted = room.startVote.votesByPlayerId[localPlayerId] === true;
   const startEnabled = choicesReady && room.startVote.requiredVotes > 0 && !localVoted;
@@ -736,8 +778,9 @@ function buildResetControlsHtml(room: RoomState, localPlayerId: string): string 
   if (room.match.mode !== '2v2' || room.match.status === 'complete') return '';
   const sameTeamsVoted = room.resetVote.mode === 'same-teams' && room.resetVote.votesByPlayerId[localPlayerId] === true;
   const resetTeamsVoted = room.resetVote.mode === 'reset-teams' && room.resetVote.votesByPlayerId[localPlayerId] === true;
+  const resetVoters = votersLabel(room, room.resetVote.votesByPlayerId);
   const voteLabel = room.resetVote.requiredVotes > 0
-    ? `Vote ${room.resetVote.voteCount}/${room.resetVote.requiredVotes}`
+    ? `Vote ${room.resetVote.voteCount}/${room.resetVote.requiredVotes} for ${room.resetVote.mode === 'reset-teams' ? 'reset teams' : 'reset match'}${resetVoters ? ` (${resetVoters})` : ''}`
     : 'Vote to reset';
   return `
     <div class="multiplayer-reset-card">
@@ -763,7 +806,7 @@ function buildPostmatchHtml(room: RoomState, localPlayerId: string): string {
   const localWon = local ? local.teamId === winnerTeamId : winnerTeamId === localTeamId;
   const grade = localWon ? 'A+' : 'F';
   const verdict = localWon ? 'Victory' : 'Defeat';
-  const reportVoteLabel = describeResetVote(room.resetVote);
+  const reportVoteLabel = describeResetVote(room);
   const rematchVoted = room.resetVote.mode === 'same-teams' && room.resetVote.votesByPlayerId[localPlayerId] === true;
   const reshuffleVoted = room.resetVote.mode === 'reset-teams' && room.resetVote.votesByPlayerId[localPlayerId] === true;
   const orderedTeamIds = [
@@ -878,11 +921,13 @@ function buildReportPlayerHtml(mode: MatchMode, player: PlayerState, localPlayer
   `;
 }
 
-function describeResetVote(vote: RoomState['resetVote']): string {
+function describeResetVote(room: RoomState): string {
+  const vote = room.resetVote;
   if (vote.requiredVotes <= 0 || vote.voteCount <= 0) {
     return 'All connected players need to agree before the next match begins.';
   }
-  return `${vote.mode === 'reset-teams' ? 'Change teams' : 'Rematch'} vote: ${vote.voteCount}/${vote.requiredVotes}.`;
+  const voters = votersLabel(room, vote.votesByPlayerId);
+  return `${vote.mode === 'reset-teams' ? 'Change teams' : 'Rematch'} vote: ${vote.voteCount}/${vote.requiredVotes}${voters ? ` (${voters})` : ''}.`;
 }
 
 function formatScoreLine(room: RoomState): string {

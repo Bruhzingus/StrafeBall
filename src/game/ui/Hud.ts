@@ -328,13 +328,13 @@ export class Hud {
     const disconnectStatus = onlineDisconnectStatus(players);
     const noBoundariesTime = Math.max(0, TUNING.match.noBoundariesSeconds - room.match.boundary.elapsedSeconds);
     const resetVoteText = room.resetVote.voteCount > 0
-      ? `<div class="scoreboard-msg hud-warn">${room.resetVote.mode === 'reset-teams' ? 'Reset teams' : 'Reset match'}: ${room.resetVote.voteCount}/${room.resetVote.requiredVotes}</div>`
+      ? `<div class="scoreboard-msg hud-warn">${room.resetVote.mode === 'reset-teams' ? 'Reset teams' : 'Reset match'}: ${room.resetVote.voteCount}/${room.resetVote.requiredVotes} (${votersLabel(room, room.resetVote.votesByPlayerId)})</div>`
       : '';
     const startVoteText = room.match.mode === '2v2' && room.match.status === 'warmup'
       ? room.startVote.requiredTeamChoices > 0 && room.startVote.teamChoiceCount < room.startVote.requiredTeamChoices
-        ? `<div class="scoreboard-msg hud-warn">Choose teams: ${room.startVote.teamChoiceCount}/${room.startVote.requiredTeamChoices}</div>`
+        ? `<div class="scoreboard-msg hud-warn">Choose teams: ${room.startVote.teamChoiceCount}/${room.startVote.requiredTeamChoices} (${votersLabel(room, room.startVote.teamChoicesByPlayerId)})</div>`
         : room.startVote.voteCount > 0
-          ? `<div class="scoreboard-msg hud-warn">Start vote: ${room.startVote.voteCount}/${room.startVote.requiredVotes}</div>`
+          ? `<div class="scoreboard-msg hud-warn">Start vote: ${room.startVote.voteCount}/${room.startVote.requiredVotes} (${votersLabel(room, room.startVote.votesByPlayerId)})</div>`
           : ''
       : '';
 
@@ -366,6 +366,10 @@ export class Hud {
       : '';
     this.updateLivesPanel(room, localPlayerId);
 
+    const downedBanner = isTeamElimination && local?.combatState === 'eliminated' && room.match.status !== 'complete'
+      ? '<div class="scoreboard-msg hud-warn">DOWNED &middot; Free Cam — WASD + mouse to fly, Space/Ctrl up/down</div>'
+      : '';
+
     if (isTeamElimination) {
       this.setHtml(this.topCenter, `
         <div class="team-match-strip">
@@ -378,6 +382,7 @@ export class Hud {
         </div>
         ${roomStatus ? `<div class="scoreboard-msg hud-warn">${escapeHtml(roomStatus)}</div>` : ''}
         ${disconnectStatus ? `<div class="scoreboard-msg hud-bad">${escapeHtml(disconnectStatus)}</div>` : ''}
+        ${downedBanner}
         ${startVoteText}
         ${resetVoteText}
         ${winner}
@@ -762,6 +767,14 @@ function onlineRoomStatus(room: RoomState): string {
     return 'Match complete.';
   }
   return '';
+}
+
+/** Names of the players who cast a vote, for showing who picked which option in the vote counter. */
+function votersLabel(room: RoomState, votesByPlayerId: Record<string, true>): string {
+  const names = Object.keys(votesByPlayerId)
+    .map((playerId) => room.players[playerId]?.name)
+    .filter((name): name is string => !!name);
+  return names.length > 0 ? escapeHtml(names.join(', ')) : '';
 }
 
 function onlineDisconnectStatus(players: PlayerState[]): string {

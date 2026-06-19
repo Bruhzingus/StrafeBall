@@ -130,6 +130,11 @@ export class ArenaScene {
   private lastResetSerial = -1;
   private lastResetVoteKey = '';
 
+  // Spectator fly-cam while downed online (eliminated in a still-live 2v2 match). The camera is
+  // detached from the player root so it can move independently; reparented back on respawn/reset.
+  private freeCamActive = false;
+  private readonly freeCamPosition = Vector3.Zero();
+
   // --- Client-side prediction & reconciliation ---
   // The local player is simulated via the SAME shared movement sim the server runs, at a fixed
   // timestep with sequence-numbered inputs. Each snapshot reconciles: adopt the authoritative
@@ -964,6 +969,8 @@ export class ArenaScene {
       );
     }
 
+    this.updateFreeCam(dt, snapshot, local);
+
     // Server-side actions outside the movement input stream. Reset votes are always allowed.
     if (this.input.wasKeyPressed(CONTROL_KEYS.reset)) {
       this.multiplayer.requestReset('same-teams');
@@ -1214,6 +1221,59 @@ export class ArenaScene {
     return (local.lastPlayerBuffUntilMs ?? 0) > Date.now()
       ? TUNING.match.lastPlayerBuffMultiplier
       : 1;
+  }
+
+  /**
+   * Downed-spectator fly-cam: while the local player is eliminated in a still-live 2v2 match,
+   * detach the camera from the (frozen) body and let them fly around with WASD + mouse to watch
+   * teammates. Reparents back onto the root the moment they're no longer eliminated (respawned by
+   * a round reset), so normal first-person view resumes with no manual cleanup needed elsewhere.
+   */
+  private updateFreeCam(dt: number, snapshot: ServerSnapshot | null, local: PlayerState | null): void {
+    const shouldBeActive = !!local
+      && local.combatState === 'eliminated'
+      && snapshot?.room.match.mode === '2v2'
+      && snapshot.room.match.status !== 'complete';
+
+    if (shouldBeActive && !this.freeCamActive) {
+      this.freeCamActive = true;
+      this.freeCamPosition.copyFrom(this.player.camera.globalPosition);
+      this.player.camera.parent = null;
+      this.player.camera.position.copyFrom(this.freeCamPosition);
+    } else if (!shouldBeActive && this.freeCamActive) {
+      this.freeCamActive = false;
+      this.player.camera.parent = this.player.root;
+      this.player.camera.position.set(0, TUNING.player.eyeHeight, 0);
+    }
+
+    if (!this.freeCamActive) return;
+
+    const moveX = (this.input.isKeyDown(CONTROL_KEYS.right) ? 1 : 0) - (this.input.isKeyDown(CONTROL_KEYS.left) ? 1 : 0);
+    const moveZ = (this.input.isKeyDown(CONTROL_KEYS.forward) ? 1 : 0) - (this.input.isKeyDown(CONTROL_KEYS.backward) ? 1 : 0);
+    const moveY = (this.input.isKeyDown(CONTROL_KEYS.jump) ? 1 : 0) - (this.input.isKeyDown(CONTROL_KEYS.crouch) ? 1 : 0);
+    const speed = TUNING.freeCam.moveSpeed * (this.input.isKeyDown(CONTROL_KEYS.dash) ? TUNING.freeCam.sprintMultiplier : 1);
+
+    const yaw = this.networkYaw;
+    const sin = Math.sin(yaw), cos = Math.cos(yaw);
+    const pitch = this.player.camera.rotation.x;
+    const cosPitch = Math.cos(pitch);
+    const forwardX = sin * cosPitch, forwardZ = cos * cosPitch, forwardY = -Math.sin(pitch);
+    const rightX = cos, rightZ = -sin;
+
+    const dirX = forwardX * moveZ + rightX * moveX;
+    const dirZ = forwardZ * moveZ + rightZ * moveX;
+    const dirY = forwardY * moveZ + moveY;
+    const len = Math.hypot(dirX, dirY, dirZ);
+    if (len > 0.0001) {
+      const scale = (speed * dt) / len;
+      this.freeCamPosition.x += dirX * scale;
+      this.freeCamPosition.y += dirY * scale;
+      this.freeCamPosition.z += dirZ * scale;
+    }
+    this.freeCamPosition.y = Math.min(TUNING.freeCam.verticalCeiling, Math.max(TUNING.freeCam.verticalFloor, this.freeCamPosition.y));
+
+    this.player.camera.position.copyFrom(this.freeCamPosition);
+    this.player.camera.getViewMatrix(true);
   }
 
   private isLocalOnlineEliminated(): boolean {

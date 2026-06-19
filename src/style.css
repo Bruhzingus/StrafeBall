@@ -103,10 +103,20 @@ html, body {
   top: 300px;
   left: 18px;
   z-index: 40;
-  width: min(340px, calc(100vw - 36px));
+  /* Fixed width sized for the widest line (e.g. the Jitter/Pong/Missed/WS row at full values)
+     so a growing value (jitter 0 → 12 ms, WS 0 → 573 B) never wraps onto a second row and
+     shoves every line below it down. Lines that somehow exceed it scroll, never wrap. */
+  width: min(360px, calc(100vw - 36px));
   max-height: calc(100vh - 332px);
   overflow: auto;
   transform: rotate(0.8deg);
+}
+
+/* Each debug line stays a single row; constant height regardless of value width. Tabular
+   figures keep numbers from changing width digit-to-digit, so values update in place. */
+.hud-debug-panel > div {
+  white-space: nowrap;
+  font-variant-numeric: tabular-nums;
 }
 .hud-top-center { top: 16px; left: 50%; transform: translateX(-50%); text-align: center; }
 .hud-bottom-left { bottom: 16px; left: 16px; transform: rotate(1.1deg); }
@@ -1459,15 +1469,6 @@ html, body {
   text-transform: none;
 }
 
-.multiplayer-subtitle {
-  margin: 7px 0 13px;
-  max-width: 250px;
-  color: rgba(21, 33, 59, 0.72);
-  font-size: 12px;
-  font-weight: 800;
-  line-height: 1.35;
-}
-
 .multiplayer-actions button,
 .multiplayer-copy {
   border-radius: 11px;
@@ -1538,60 +1539,20 @@ html, body {
   line-height: 1.45;
 }
 
-.multiplayer-modal--connected .multiplayer-room-summary,
-.multiplayer-line--status,
-.multiplayer-line--ping {
+/* Lobby (not yet in a room): hide everything that only makes sense once connected. The room
+   code card, Leave button, ping, and roster are meaningless in the practice lobby, so they
+   stay out of the way until you've actually joined a room. */
+.multiplayer-modal:not(.multiplayer-modal--connected) .multiplayer-room-card,
+.multiplayer-modal:not(.multiplayer-modal--connected) .multiplayer-actions--leave,
+.multiplayer-modal:not(.multiplayer-modal--connected) .multiplayer-line--ping,
+.multiplayer-modal:not(.multiplayer-modal--connected) .multiplayer-room-notice,
+.multiplayer-modal:not(.multiplayer-modal--connected) .multiplayer-room-summary {
   display: none;
 }
 
-.multiplayer-modal:not(.multiplayer-modal--connected) .multiplayer-panel--lobby[data-mode="2v2"] .multiplayer-room-card,
-.multiplayer-modal:not(.multiplayer-modal--connected) .multiplayer-panel--lobby[data-mode="2v2"] .multiplayer-actions--leave,
-.multiplayer-modal:not(.multiplayer-modal--connected) .multiplayer-panel--lobby[data-mode="2v2"] .multiplayer-line--capacity {
-  display: none;
-}
-
-.multiplayer-settings {
-  margin-top: 10px;
-}
-
-.multiplayer-settings summary {
-  display: block;
-  padding: 9px 11px;
-  border: 3px solid var(--ink);
-  border-radius: 12px;
-  background: #101b34;
-  color: var(--school-gold);
-  font-size: 12px;
-  font-weight: 900;
-  letter-spacing: 0.08em;
-  text-transform: uppercase;
-  cursor: pointer;
-  box-shadow: 2px 2px 0 var(--ink);
-  list-style: none;
-}
-
-.multiplayer-settings summary::marker {
-  content: "";
-}
-
-.multiplayer-settings summary::-webkit-details-marker {
-  display: none;
-}
-
-.multiplayer-settings summary::after {
-  content: "+";
-  float: right;
-}
-
-.multiplayer-settings[open] summary::after {
-  content: "-";
-}
-
-.multiplayer-modal--connected .multiplayer-actions--create,
-.multiplayer-modal--connected .multiplayer-actions--join,
-.multiplayer-modal--connected .multiplayer-field--join-code,
-.multiplayer-modal--connected .multiplayer-mode-card,
-.multiplayer-modal--connected .multiplayer-mode-tabs {
+/* Connected: the lobby setup + launch controls are done with; show the room status instead. */
+.multiplayer-modal--connected .multiplayer-setup,
+.multiplayer-modal--connected .multiplayer-launch {
   display: none;
 }
 
@@ -1601,6 +1562,123 @@ html, body {
 
 .multiplayer-actions--leave {
   margin-top: 10px;
+}
+
+/* === Create / Join launch: two toggle buttons that expand a drawer === */
+.multiplayer-launch {
+  margin-top: 4px;
+}
+
+.multiplayer-launch-row {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 10px;
+}
+
+.multiplayer-toggle {
+  border: 3px solid var(--ink);
+  border-radius: 12px;
+  padding: 11px 12px;
+  color: var(--ink);
+  font-weight: 900;
+  font-size: 15px;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  cursor: pointer;
+  box-shadow: 2px 2px 0 var(--ink);
+  transition: transform 0.05s ease, box-shadow 0.05s ease;
+}
+
+.multiplayer-toggle--create {
+  background: linear-gradient(180deg, #79f5ff, var(--electric-cyan));
+}
+
+.multiplayer-toggle--join {
+  background: linear-gradient(180deg, #ffe481, var(--school-gold));
+}
+
+.multiplayer-toggle:hover:not(:disabled) {
+  transform: translate(-1px, -1px);
+  box-shadow: 3px 3px 0 var(--ink);
+}
+
+.multiplayer-toggle--active {
+  transform: translate(1px, 1px);
+  box-shadow: 0 0 0 var(--ink);
+}
+
+.multiplayer-toggle:disabled {
+  cursor: default;
+  opacity: 0.5;
+  box-shadow: 1px 1px 0 var(--ink);
+}
+
+/* Drawer is collapsed by default; the --open modifier reveals it under the toggle row. */
+.multiplayer-drawer {
+  display: none;
+  margin-top: 10px;
+  padding: 12px;
+  border: 3px solid var(--ink);
+  border-radius: 13px;
+  background: rgba(16, 27, 52, 0.06);
+}
+
+.multiplayer-drawer--open {
+  display: block;
+}
+
+.multiplayer-drawer-hint {
+  margin-bottom: 9px;
+  color: rgba(21, 33, 59, 0.78);
+  font-size: 12px;
+  font-weight: 800;
+  line-height: 1.35;
+}
+
+.multiplayer-drawer .multiplayer-field {
+  margin-bottom: 9px;
+}
+
+.multiplayer-drawer .multiplayer-create,
+.multiplayer-drawer .multiplayer-join {
+  width: 100%;
+  border: 3px solid var(--ink);
+  border-radius: 11px;
+  padding: 9px 10px;
+  color: var(--ink);
+  font-weight: 900;
+  text-transform: uppercase;
+  letter-spacing: 0.02em;
+  cursor: pointer;
+  box-shadow: 2px 2px 0 var(--ink);
+  transition: transform 0.05s ease, box-shadow 0.05s ease;
+}
+
+.multiplayer-drawer .multiplayer-create {
+  background: linear-gradient(180deg, #79f5ff, var(--electric-cyan));
+}
+
+.multiplayer-drawer .multiplayer-join {
+  background: linear-gradient(180deg, #ffe481, var(--school-gold));
+}
+
+.multiplayer-drawer .multiplayer-create:hover:not(:disabled),
+.multiplayer-drawer .multiplayer-join:hover:not(:disabled) {
+  transform: translate(-1px, -1px);
+  box-shadow: 3px 3px 0 var(--ink);
+}
+
+.multiplayer-drawer .multiplayer-create:active:not(:disabled),
+.multiplayer-drawer .multiplayer-join:active:not(:disabled) {
+  transform: translate(2px, 2px);
+  box-shadow: 0 0 0 var(--ink);
+}
+
+.multiplayer-drawer .multiplayer-create:disabled,
+.multiplayer-drawer .multiplayer-join:disabled {
+  cursor: default;
+  opacity: 0.5;
+  box-shadow: 1px 1px 0 var(--ink);
 }
 
 .multiplayer-pregame {
@@ -2051,19 +2129,13 @@ html, body {
   pointer-events: auto;
 }
 
-.multiplayer-modal--compact .multiplayer-mode-tabs,
-.multiplayer-modal--compact .multiplayer-mode-card,
-.multiplayer-modal--compact .multiplayer-field,
-.multiplayer-modal--compact .multiplayer-actions:first-of-type {
+.multiplayer-modal--compact .multiplayer-setup,
+.multiplayer-modal--compact .multiplayer-launch,
+.multiplayer-modal--compact .multiplayer-field {
   display: none;
 }
 
-.multiplayer-modal--compact .multiplayer-close,
-.multiplayer-modal--compact .multiplayer-join {
-  display: none;
-}
-
-.multiplayer-modal--compact .multiplayer-subtitle {
+.multiplayer-modal--compact .multiplayer-close {
   display: none;
 }
 
@@ -2134,7 +2206,7 @@ html, body {
   position: relative;
   top: auto;
   left: auto;
-  width: min(440px, calc(100vw - 32px));
+  width: min(560px, calc(100vw - 32px));
   transform: rotate(-0.6deg);
   z-index: 1;
 }
@@ -2156,23 +2228,33 @@ html, body {
   box-shadow: 2px 2px 0 var(--ink);
 }
 
-.multiplayer-mode-tabs {
+/* Mode tabs (left) sit beside the mode description card (right) so the panel reads wide. */
+.multiplayer-setup {
   display: grid;
-  grid-template-columns: 1fr 1fr;
+  grid-template-columns: 116px 1fr;
+  gap: 12px;
+  margin: 12px 0;
+  align-items: stretch;
+}
+
+.multiplayer-mode-tabs {
+  display: flex;
+  flex-direction: column;
   gap: 8px;
-  margin: 10px 0;
+  margin: 0;
 }
 
 .multiplayer-mode-tab {
   border: 3px solid var(--ink);
   border-radius: 12px;
-  padding: 9px 10px;
+  padding: 11px 10px;
   background: #fff8d8;
   color: var(--ink);
   font-weight: 900;
   letter-spacing: 0.08em;
   cursor: pointer;
   box-shadow: 2px 2px 0 var(--ink);
+  flex: 1;
 }
 
 .multiplayer-mode-tab--active {
@@ -2186,12 +2268,15 @@ html, body {
 }
 
 .multiplayer-mode-card {
-  margin: 10px 0 12px;
-  padding: 11px 12px;
+  margin: 0;
+  padding: 11px 13px;
   border: 3px solid var(--ink);
   border-radius: 14px;
   background: #101b34;
   color: var(--paper);
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
 }
 
 .multiplayer-mode-title {
@@ -2375,7 +2460,15 @@ html, body {
   .multiplayer-panel--lobby {
     top: auto;
     left: auto;
-    width: min(440px, calc(100vw - 20px));
+    width: min(560px, calc(100vw - 20px));
+  }
+
+  .multiplayer-setup {
+    grid-template-columns: 1fr;
+  }
+
+  .multiplayer-mode-tabs {
+    flex-direction: row;
   }
 
   .multiplayer-modal--compact .multiplayer-panel--lobby {
@@ -2475,4 +2568,89 @@ html, body {
       -2px -2px 0 var(--ink),
       8px 8px 0 rgba(21, 33, 59, 0.35);
   }
+}
+
+/* ============================================================================================
+   Loading screen — shown on first load while textures/assets download. On theme with the
+   pep-rally banner: navy "gym" backdrop, gold accents, chunky cream progress bar.
+   ============================================================================================ */
+#loading-screen {
+  position: fixed;
+  inset: 0;
+  z-index: 100;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background:
+    radial-gradient(120% 90% at 50% 0%, #1c2c4f 0%, #0c1326 70%);
+  opacity: 1;
+  transition: opacity 0.45s ease;
+}
+
+#loading-screen.hidden {
+  opacity: 0;
+  pointer-events: none;
+}
+
+.loading-card {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 26px;
+  width: min(560px, calc(100vw - 48px));
+  padding: 30px 30px 34px;
+}
+
+.loading-banner {
+  width: 100%;
+  height: auto;
+  border: 4px solid var(--ink);
+  border-radius: 16px;
+  box-shadow: 6px 6px 0 var(--ink), 0 0 0 4px var(--school-gold) inset;
+  transform: rotate(-1.4deg);
+  animation: loading-banner-bob 2.6s ease-in-out infinite;
+}
+
+@keyframes loading-banner-bob {
+  0%, 100% { transform: rotate(-1.4deg) translateY(0); }
+  50%      { transform: rotate(-1.4deg) translateY(-6px); }
+}
+
+.loading-bar-track {
+  position: relative;
+  width: 100%;
+  height: 26px;
+  background: var(--paper);
+  border: 3px solid var(--ink);
+  border-radius: 999px;
+  box-shadow: var(--shadow-hard);
+  overflow: hidden;
+}
+
+.loading-bar-fill {
+  height: 100%;
+  width: 0%;
+  border-radius: 999px;
+  background: repeating-linear-gradient(
+    -45deg,
+    var(--school-gold) 0 14px,
+    #ffe07a 14px 28px
+  );
+  background-size: 200% 100%;
+  transition: width 0.3s ease;
+  animation: loading-bar-stripes 0.9s linear infinite;
+}
+
+@keyframes loading-bar-stripes {
+  from { background-position: 0 0; }
+  to   { background-position: 40px 0; }
+}
+
+.loading-status {
+  font-size: 17px;
+  font-weight: 800;
+  letter-spacing: 0.02em;
+  text-transform: uppercase;
+  color: var(--paper);
+  text-shadow: 2px 2px 0 var(--ink);
 }

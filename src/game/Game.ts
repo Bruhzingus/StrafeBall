@@ -17,6 +17,11 @@ export class Game {
     });
   }
 
+  /** The active Babylon scene, available after `start()`. Used by the loading screen. */
+  get activeScene(): Scene | null {
+    return this.scene;
+  }
+
   start(): void {
     this.arena = new ArenaScene(this.engine, this.canvas);
     this.scene = this.arena.scene;
