@@ -31,6 +31,21 @@ import {
 
 export type ConnectionStatus = 'offline' | 'connecting' | 'connected' | 'error';
 
+/**
+ * Resolves the Colyseus endpoint. `VITE_SERVER_URL` (set at build time) is an explicit override
+ * for local dev against a standalone server. Otherwise, derive a same-origin URL from the page
+ * so production builds work through the Nginx `/colyseus` proxy regardless of domain/IP, matching
+ * the page's protocol (wss for https, ws for http) to avoid mixed-content/origin failures.
+ */
+function resolveServerUrl(): string {
+  const override = import.meta.env.VITE_SERVER_URL;
+  if (override) return override;
+  if (typeof window === 'undefined') return 'ws://localhost:2567';
+
+  const protocol = window.location.protocol === 'https:' ? 'wss' : 'ws';
+  return `${protocol}://${window.location.host}/colyseus`;
+}
+
 /** Shared empty array returned by drainThrowEvents when nothing is queued (no per-call allocation). */
 const EMPTY_THROW_EVENTS: readonly ThrowEvent[] = [];
 const EMPTY_CATCH_EVENTS: readonly CatchEvent[] = [];
@@ -91,8 +106,9 @@ export class MultiplayerClient {
   private lastServerTimeSampleMs: number | null = null;
   private lastServerTimeSampleReceivedAtMs = 0;
 
-  constructor(serverUrl = import.meta.env.VITE_SERVER_URL ?? 'ws://localhost:2567') {
+  constructor(serverUrl = resolveServerUrl()) {
     this.serverUrl = serverUrl;
+    console.log(`[MultiplayerClient] Connecting to Colyseus endpoint: ${serverUrl}`);
     this.client = new Client(serverUrl);
   }
 
@@ -275,6 +291,10 @@ export class MultiplayerClient {
       this.room = null;
       this.status = 'error';
       this.errorMessage = error instanceof Error ? error.message : String(error);
+      console.error(
+        `[MultiplayerClient] Matchmaking failed against ${this.serverUrl}:`,
+        error
+      );
     }
   }
 
