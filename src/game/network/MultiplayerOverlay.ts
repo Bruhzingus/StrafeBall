@@ -311,6 +311,7 @@ export class MultiplayerOverlay {
 
   private close = (): void => {
     if (this.client.status === 'connecting') return;
+    if (this.client.status === 'error') this.client.leave();
     this.modalOpen = false;
     this.awaitingInteractReleaseFocus = false;
     this.hideFullscreenPrompt();

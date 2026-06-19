@@ -233,29 +233,61 @@ function createCheapEnvironmentReflection(scene: Scene): void {
   scene.environmentTexture = texture;
 }
 
-function applyWallStoneTexture(scene: Scene): void {
-  const wallTexture = createImageTexture(scene, 'gym_wall_cinderblock_png', GYM_TEXTURES.wall, 5.2, 2.2);
+// World size (metres) covered by one repeat of the wall brick texture. All four walls shared one
+// material with a fixed uScale, but they have different lengths AND the walls run along different
+// axes (north/south along X, east/west along Z). On a Babylon box the texture U/V axes land on
+// different physical dimensions per face, so the long walls showed the brick rotated 90° and at a
+// different scale — they read as a completely different texture. We give each wall its own
+// material+texture and pick uScale/vScale (with a 90° rotation on the side walls) from that wall's
+// real horizontal length so the brick courses run horizontally at the same physical size everywhere.
+const WALL_BRICK_TILE_METERS_HORIZONTAL = 5.0;
+const WALL_BRICK_TILE_METERS_VERTICAL = 3.9;
 
-  for (const material of scene.materials) {
-    const name = material?.name?.toLowerCase?.() ?? '';
-    if (!name.includes('wall')) continue;
-    if (name.includes('wallpad')) continue;
-    if (name.startsWith('decor_')) continue;
+function applyWallStoneTexture(scene: Scene): void {
+  const h = TUNING.map.wallHeight;
+  // `length` = the wall's visible horizontal extent; `rotate` = whether the box's visible face maps
+  // the texture U along height instead of along the wall length (true for the thin side walls), in
+  // which case we rotate the texture 90° and swap which scale feeds U vs V.
+  const walls: { name: string; length: number; rotate: boolean }[] = [
+    { name: 'north_wall', length: TUNING.map.halfWidth * 2, rotate: false },
+    { name: 'south_wall', length: TUNING.map.halfWidth * 2, rotate: false },
+    { name: 'east_wall', length: TUNING.map.halfLength * 2, rotate: true },
+    { name: 'west_wall', length: TUNING.map.halfLength * 2, rotate: true }
+  ];
+
+  const horizontalRepeats = (length: number) => length / WALL_BRICK_TILE_METERS_HORIZONTAL;
+  const verticalRepeats = h / WALL_BRICK_TILE_METERS_VERTICAL;
+
+  for (const wall of walls) {
+    const mesh = scene.getMeshByName(wall.name);
+    const shared = mesh?.material;
+    if (!shared) continue;
+
+    // Clone so each wall can carry its own correctly-scaled texture instance without affecting the
+    // others (the meshes start out sharing one `wall_material`).
+    const material = shared.clone(`${wall.name}_brick_mat`);
+    if (!material) continue;
+
+    // Pick scale so the texture's horizontal axis always covers the wall length and the vertical
+    // axis always covers the wall height, regardless of which box-face axis that ends up being.
+    const uScale = wall.rotate ? verticalRepeats : horizontalRepeats(wall.length);
+    const vScale = wall.rotate ? horizontalRepeats(wall.length) : verticalRepeats;
+    const wallTexture = createImageTexture(scene, `${wall.name}_brick_tex`, GYM_TEXTURES.wall, uScale, vScale);
+    if (wall.rotate) wallTexture.wAng = Math.PI / 2;
 
     if (material instanceof PBRMaterial) {
       material.albedoTexture = wallTexture;
       material.albedoColor = new Color3(0.98, 0.96, 0.9);
       material.metallic = 0;
       material.roughness = 0.62;
-      continue;
-    }
-
-    if (material instanceof StandardMaterial) {
+    } else if (material instanceof StandardMaterial) {
       material.diffuseTexture = wallTexture;
       material.diffuseColor = new Color3(0.98, 0.96, 0.9);
       material.specularColor = new Color3(0.08, 0.08, 0.07);
       material.specularPower = 20;
     }
+
+    mesh.material = material;
   }
 }
 
