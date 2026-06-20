@@ -37,7 +37,7 @@ import {
   type PendingOnlineThrowRelease
 } from '../network/OnlineHandIntent';
 import type { CatchEvent, HitEvent, HitRevertEvent, ParryEvent, ServerSnapshot } from '../../../shared/protocol';
-import type { DashState, MovementInternalState, PlayerInput, PlayerMovementState, PlayerState, Vec3 } from '../../../shared/types';
+import type { DashState, MatchStatus, MovementInternalState, PlayerInput, PlayerMovementState, PlayerState, Vec3 } from '../../../shared/types';
 import { stepMovement, facingFromAngles } from '../../../shared/simulation/MovementSim';
 import { grantDashCharge } from '../../../shared/simulation/PlayerSim';
 import { backflipPitchOffset } from '../../../shared/simulation/AimMath';
@@ -126,6 +126,7 @@ export class ArenaScene {
   private lastOnlineScoreByTeamId: Record<string, number> = {};
   private pendingOnlineScoreEvents: PendingOnlineScoreEvent[] = [];
   private lastOnlineWinnerTeamId: string | null = null;
+  private lastOnlineMatchStatus: MatchStatus | null = null;
   private readonly lastOnlineBallBounceCount = new Map<string, number>();
   private readonly lastTeamChoiceAnnouncementKeyByPlayerId = new Map<string, string>();
   private lastResetSerial = -1;
@@ -817,9 +818,14 @@ export class ArenaScene {
 
     const snapshot = this.multiplayer.latestSnapshot;
     const local = snapshot?.room.players[this.multiplayer.localPlayerId] ?? null;
+    const matchStatus = snapshot?.room.match.status ?? null;
+    if (matchStatus === 'countdown' && this.lastOnlineMatchStatus !== 'countdown') {
+      this.tryRequestMatchFullscreen();
+    }
+    this.lastOnlineMatchStatus = matchStatus;
     // Pre-round countdown gate: while the authoritative match is counting down, local input is
     // frozen to look-only (built in buildNetworkInput) so the player can't move/throw until GO.
-    this.countdownActive = snapshot?.room.match.status === 'countdown';
+    this.countdownActive = matchStatus === 'countdown';
     const teamSelectorConsumesInteract = this.onlineTeamSelector.update(
       dt,
       this.player.root.position,
@@ -828,7 +834,10 @@ export class ArenaScene {
       this.multiplayer.localPlayerId,
       {
         chooseTeam: (teamId) => this.multiplayer.requestSwitchTeam(teamId),
-        voteStart: () => this.multiplayer.requestStartVote()
+        voteStart: () => {
+          this.tryRequestMatchFullscreen();
+          this.multiplayer.requestStartVote();
+        }
       }
     );
     if (teamSelectorConsumesInteract) {
@@ -1529,6 +1538,18 @@ export class ArenaScene {
     this.pendingOnlineThrowRelease.right = null;
   }
 
+  private tryRequestMatchFullscreen(): void {
+    if (document.fullscreenElement) return;
+    const requestFullscreen = document.documentElement.requestFullscreen;
+    if (typeof requestFullscreen !== 'function') return;
+    const result = requestFullscreen.call(document.documentElement);
+    if (result && typeof result.catch === 'function') {
+      // Browsers usually require a user gesture for fullscreen. Countdown snapshots are async, so
+      // this is best-effort; the start-vote interaction path above gives it a real click/hold event.
+      result.catch(() => {});
+    }
+  }
+
   private enterOnlineMode(): void {
     if (this.onlineModeActive) return;
     this.onlineModeActive = true;
@@ -1553,6 +1574,7 @@ export class ArenaScene {
     this.lastOnlineScoreByTeamId = {};
     this.pendingOnlineScoreEvents = [];
     this.lastOnlineWinnerTeamId = null;
+    this.lastOnlineMatchStatus = null;
     this.lastOnlineBallBounceCount.clear();
     this.lastTeamChoiceAnnouncementKeyByPlayerId.clear();
     this.lastResetSerial = -1;
@@ -1574,6 +1596,7 @@ export class ArenaScene {
     this.lastOnlineScoreByTeamId = {};
     this.pendingOnlineScoreEvents = [];
     this.lastOnlineWinnerTeamId = null;
+    this.lastOnlineMatchStatus = null;
     this.lastOnlineBallBounceCount.clear();
     this.lastTeamChoiceAnnouncementKeyByPlayerId.clear();
     this.lastResetSerial = -1;

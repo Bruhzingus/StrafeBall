@@ -5,6 +5,7 @@ import { BallManager } from '../ball/BallManager';
 import { BallState } from '../ball/BallState';
 import { Crosshair } from './Crosshair';
 import { MusicHud } from './MusicHud';
+import { TeamScoreboard, type MatchScoreboardData } from './TeamScoreboard';
 import type { ServerSnapshot } from '../../../shared/protocol';
 import type { HalfCourtViolationState, PlayerState, RoomState } from '../../../shared/types';
 import { SERVER_TICK_RATE, SNAPSHOT_RATE } from '../../../shared/netConfig';
@@ -39,6 +40,7 @@ export class Hud {
   private readonly boundaryClock: HTMLDivElement;
   private readonly halfCourtWarning: HTMLDivElement;
   private readonly musicHud: MusicHud;
+  private readonly teamScoreboard: TeamScoreboard;
   private lastCountdownLabel = '';
   private lastBoundaryClockLabel = '';
   private readonly crosshair: Crosshair;
@@ -168,6 +170,10 @@ export class Hud {
     this.halfCourtWarning.className = 'half-court-warning';
     this.root.appendChild(this.halfCourtWarning);
     this.musicHud = new MusicHud(this.root);
+    // Top-center classroom-whiteboard scoreboard (Blue/Red teams, scores, half-drop timer).
+    // Hidden until a team match drives it via updateNetwork(); the legacy hud-top-center panel
+    // still carries votes/messages and is suppressed while the whiteboard is up.
+    this.teamScoreboard = new TeamScoreboard(this.root);
 
     // Center stamina segments — one block + inner fill per charge, pre-built, no per-frame allocations.
     this.staminaWidget = document.createElement('div');
@@ -383,23 +389,17 @@ export class Hud {
       `);
     }
 
-    // The old "★ SUPER THROW ★" timed-window indicator is gone — the backflip throw is now the
-    // landing quick-time event (its own on-screen timing bar), so no HUD prompt is needed here.
-    this.setHtml(this.topCenter, `
-      <div class="scoreboard-title">StrafeBall</div>
-      <div class="scoreboard-digits">
-        <span class="scoreboard-team">YOU</span>
-        <span class="scoreboard-num scoreboard-num--red">${rules.scoring.playerHits}</span>
-        <span class="scoreboard-sep">—</span>
-        <span class="scoreboard-num scoreboard-num--blue">${rules.boundary.opponentPenaltyHits}</span>
-        <span class="scoreboard-team">OPP</span>
-      </div>
-      <div class="scoreboard-sub">First to ${TUNING.match.scoreLimit}</div>
-      <div class="${rules.boundary.noBoundaries ? 'hud-bad' : 'hud-warn'}" style="text-align:center;margin-top:3px">
-        ${rules.boundary.noBoundaries ? 'NO BOUNDARIES' : `Half-court: ${noBoundariesTime.toFixed(0)}s`}
-      </div>
-      ${rules.boundary.lastMessage ? `<div class="scoreboard-msg">${rules.boundary.lastMessage}</div>` : ''}
-    `);
+    // Practice uses the same whiteboard scoreboard as real matches (consistent UI everywhere).
+    // It's a 1v1: Blue = You, Red = opponent. The old dark STRAFEBALL panel is retired here and
+    // now only carries the boundary status/message line beneath the board.
+    this.teamScoreboard.update({
+      mode: '1v1',
+      halfDropSecondsRemaining: rules.boundary.noBoundaries ? 0 : noBoundariesTime,
+      blueTeam: { name: 'BLUE TEAM', color: 'blue', score: rules.scoring.playerHits, players: ['You'] },
+      redTeam: { name: 'RED TEAM', color: 'red', score: rules.boundary.opponentPenaltyHits, players: ['Player 2'] }
+    });
+    // The whiteboard is the only scoreboard now — the old dark top-center strip is retired.
+    this.topCenter.style.display = 'none';
 
     const parryReady = hands.hasTwoBalls() && player.catching.getParryCooldown() <= 0;
     this.updateCrosshairMode({
@@ -465,8 +465,6 @@ export class Hud {
     const localTeam = players.filter((player) => player.teamId === localTeamId);
     const opponentTeam = players.filter((player) => player.teamId === opponentTeamId);
     const isTeamElimination = room.match.mode === '2v2';
-    const localScore = room.match.scoreByTeamId[localTeamId] ?? 0;
-    const opponentScore = room.match.scoreByTeamId[opponentTeamId] ?? 0;
     const roomStatus = onlineRoomStatus(room);
     const disconnectStatus = onlineDisconnectStatus(players);
     const noBoundariesTime = Math.max(0, TUNING.match.noBoundariesSeconds - room.match.boundary.elapsedSeconds);
@@ -514,7 +512,39 @@ export class Hud {
       ? '<div class="scoreboard-msg hud-warn">DOWNED &middot; Free Cam — WASD + mouse to fly, Space/Ctrl up/down</div>'
       : '';
 
+    // Every online mode (2v2, 1v1 team match, private duel) uses the same whiteboard scoreboard,
+    // so the UI is identical to practice. Colors key off the real teamIds ('blue'/'red') so each
+    // side keeps its accent regardless of which is local.
+    const blueTeamId = room.match.teamIds.includes('blue') ? 'blue' : room.match.teamIds[0];
+    const redTeamId = room.match.teamIds.find((id) => id !== blueTeamId) ?? room.match.teamIds[1] ?? 'red';
+    const teamPlayers = (teamId: string) =>
+      players
+        .filter((player) => player.teamId === teamId)
+        .map((player) => `${player.name}${player.id === localPlayerId ? ' (You)' : ''}`);
+    const scoreboardData: MatchScoreboardData = {
+      mode: room.match.mode === '2v2' ? '2v2' : '1v1',
+      halfDropSecondsRemaining: room.match.boundary.noBoundaries ? 0 : noBoundariesTime,
+      blueTeam: {
+        name: 'BLUE TEAM',
+        color: 'blue',
+        score: room.match.scoreByTeamId[blueTeamId] ?? 0,
+        players: teamPlayers(blueTeamId)
+      },
+      redTeam: {
+        name: 'RED TEAM',
+        color: 'red',
+        score: room.match.scoreByTeamId[redTeamId] ?? 0,
+        players: teamPlayers(redTeamId)
+      }
+    };
+    this.teamScoreboard.update(scoreboardData);
+    // The whiteboard is the scoreboard. The legacy top-center strip now only carries match status
+    // the board doesn't show (lives, votes, disconnects, winner), sitting below the board. When
+    // there's nothing to say we hide it entirely so the old panel never shows on its own.
+    this.topCenter.classList.add('hud-top-center--below-scoreboard');
+
     if (isTeamElimination) {
+      this.topCenter.style.display = '';
       this.setHtml(this.topCenter, `
         <div class="team-match-strip">
           ${teamLivesStrip(localTeam, localPlayerId)}
@@ -532,24 +562,20 @@ export class Hud {
         ${winner}
       `);
     } else {
-      this.setHtml(this.topCenter, `
-        <div class="scoreboard-title">Private Duel</div>
-        <div class="scoreboard-digits">
-          <span class="scoreboard-team">YOU</span>
-          <span class="scoreboard-num scoreboard-num--blue">${localScore}</span>
-          <span class="scoreboard-sep">-</span>
-          <span class="scoreboard-num scoreboard-num--red">${opponentScore}</span>
-          <span class="scoreboard-team">OPP</span>
-        </div>
-        <div class="scoreboard-sub">First to ${room.match.scoreLimit} &middot; ${players.length}/${room.match.maxPlayers} players</div>
-        ${roomStatus ? `<div class="scoreboard-msg hud-warn">${escapeHtml(roomStatus)}</div>` : ''}
-        ${disconnectStatus ? `<div class="scoreboard-msg hud-bad">${escapeHtml(disconnectStatus)}</div>` : ''}
-        <div class="${room.match.boundary.noBoundaries ? 'hud-bad' : 'hud-warn'}" style="text-align:center;margin-top:3px">
-          ${room.match.boundary.noBoundaries ? 'NO BOUNDARIES' : `Half-court: ${noBoundariesTime.toFixed(0)}s`}
-        </div>
-        ${resetVoteText}
-        ${winner}
-      `);
+      // Private duel: scores/timer live on the whiteboard now. Only surface the strip when there's
+      // actual status (room state, disconnects, vote, winner); otherwise hide it completely.
+      const duelStatus = [
+        roomStatus ? `<div class="scoreboard-msg hud-warn">${escapeHtml(roomStatus)}</div>` : '',
+        disconnectStatus ? `<div class="scoreboard-msg hud-bad">${escapeHtml(disconnectStatus)}</div>` : '',
+        resetVoteText,
+        winner
+      ].join('');
+      if (duelStatus.trim()) {
+        this.topCenter.style.display = '';
+        this.setHtml(this.topCenter, duelStatus);
+      } else {
+        this.topCenter.style.display = 'none';
+      }
     }
 
     const left = local?.hands.left;
@@ -779,6 +805,7 @@ export class Hud {
       this.hitMarkerTimer = null;
     }
     this.musicHud.dispose();
+    this.teamScoreboard.dispose();
     this.root.remove();
   }
 

@@ -154,8 +154,9 @@ html, body {
 .hud-bottom-left { bottom: 16px; left: 16px; transform: rotate(1.1deg); }
 .hud-bottom-right { bottom: 16px; right: 16px; transform: rotate(-1deg); }
 .hud-hearts {
-  /* Sit just above the bottom ability/cooldown bar (which lives at bottom: 24px). */
-  bottom: 104px;
+  /* Sit clearly above the bottom ability/cooldown bar (which lives at bottom: 24px) so the
+     hearts don't visually overlap the M1/M2/Q icons. */
+  bottom: 132px;
   left: 50%;
   min-width: 0;
   padding: 0;
@@ -2007,6 +2008,122 @@ html, body {
   margin-top: 10px;
 }
 
+/* ============================================================================
+   Connected room panel (1v1 AND 2v2): keep it compact and pinned top-left
+   instead of a big centered modal. Both modes share this layout — 1v1 simply
+   omits the pregame card. The dimmed full-screen shade is dropped so the panel
+   reads as a lightweight HUD card, not a blocking dialog.
+   ============================================================================ */
+.multiplayer-modal--connected {
+  /* Stop the grid from centering the panel so its own top/left anchoring wins. */
+  display: block;
+}
+
+.multiplayer-modal--connected .multiplayer-modal__shade {
+  display: none;
+}
+
+.multiplayer-modal--connected .multiplayer-panel--lobby {
+  position: fixed;
+  top: 16px;
+  left: 16px;
+  width: 286px;
+  max-height: calc(100vh - 32px);
+  overflow-y: auto;
+  padding: 12px 12px 11px;
+  transform: rotate(-0.6deg);
+}
+
+.multiplayer-modal--connected .multiplayer-kicker {
+  margin-bottom: 2px;
+  font-size: 10px;
+}
+
+.multiplayer-modal--connected .multiplayer-title {
+  font-size: 22px;
+}
+
+.multiplayer-modal--connected .multiplayer-close {
+  top: 8px;
+  right: 8px;
+  width: 26px;
+  height: 26px;
+  font-size: 16px;
+  border-width: 2px;
+}
+
+.multiplayer-modal--connected .multiplayer-room-card {
+  margin: 8px 0 6px;
+  padding: 7px 9px;
+}
+
+.multiplayer-modal--connected .multiplayer-room {
+  font-size: 14px;
+}
+
+.multiplayer-modal--connected .multiplayer-copy {
+  min-width: 54px;
+  padding: 6px 8px;
+}
+
+.multiplayer-modal--connected .multiplayer-actions button {
+  padding: 7px 10px;
+}
+
+.multiplayer-modal--connected .multiplayer-line {
+  margin-top: 4px;
+  font-size: 11px;
+}
+
+.multiplayer-modal--connected .multiplayer-room-summary {
+  margin-top: 6px;
+  font-size: 11px;
+  line-height: 1.35;
+}
+
+.multiplayer-modal--connected .multiplayer-pregame,
+.multiplayer-modal--connected .multiplayer-reset,
+.multiplayer-modal--connected .multiplayer-postmatch {
+  margin-top: 8px;
+}
+
+.multiplayer-modal--connected .multiplayer-room-notice {
+  min-height: 0;
+  margin-top: 5px;
+  font-size: 11px;
+}
+
+.multiplayer-modal--connected .multiplayer-error:empty {
+  display: none;
+}
+
+/* Tighten the pregame team-pick + reset-vote cards so they fit the narrow panel. */
+.multiplayer-modal--connected .multiplayer-pregame-card,
+.multiplayer-modal--connected .multiplayer-reset-card {
+  padding: 8px 9px;
+}
+
+.multiplayer-modal--connected .multiplayer-reset-card {
+  grid-template-columns: 1fr;
+  gap: 7px;
+}
+
+/* Stack the reset-vote buttons full width in the narrow panel instead of fixed-width + right-aligned. */
+.multiplayer-modal--connected .multiplayer-reset-actions {
+  grid-template-columns: 1fr 1fr;
+  justify-items: stretch;
+}
+
+.multiplayer-modal--connected .multiplayer-reset-action {
+  width: auto;
+}
+
+/* The big start-vote button can be a little shorter here so the panel stays tight. */
+.multiplayer-modal--connected .multiplayer-start-vote--big {
+  min-height: 40px;
+  font-size: 15px;
+}
+
 /* === Create / Join launch: two toggle buttons that expand a drawer === */
 .multiplayer-launch {
   margin-top: 4px;
@@ -2914,10 +3031,11 @@ html, body {
     flex-direction: row;
   }
 
-  .multiplayer-modal--compact .multiplayer-panel--lobby {
+  .multiplayer-modal--compact .multiplayer-panel--lobby,
+  .multiplayer-modal--connected .multiplayer-panel--lobby {
     top: 10px;
     left: 10px;
-    width: min(248px, calc(100vw - 20px));
+    width: min(286px, calc(100vw - 20px));
   }
 
   .hud-debug-panel {
@@ -2968,7 +3086,7 @@ html, body {
   .hud-hearts {
     top: auto;
     right: auto;
-    bottom: 92px;
+    bottom: 116px;
     left: 50%;
     min-width: 0;
     transform: translateX(-50%);
@@ -3096,4 +3214,369 @@ html, body {
   text-transform: uppercase;
   color: var(--paper);
   text-shadow: 2px 2px 0 var(--ink);
+}
+
+/* When the whiteboard scoreboard owns the top-center, push the legacy lives/vote strip below it
+   so they don't overlap. (Matches the scoreboard's banner height + top offset.) */
+.hud-top-center--below-scoreboard { top: 150px; }
+@media (max-width: 760px) { .hud-top-center--below-scoreboard { top: 124px; } }
+
+
+/* ============================================================================================
+   TeamScoreboard — top-center "classroom whiteboard" scoreboard HUD.
+   Self-contained `.team-scoreboard*` namespace (built by src/game/ui/TeamScoreboard.ts).
+   Goal: a REAL dry-erase whiteboard — marker fonts, hand-drawn underlines/boxes/dividers,
+   an aluminium frame with dark corner brackets, and a pen tray. Not a Word-doc, not sports TV.
+   Readability priority: scores > timer > headers > player names > decorations.
+   Lightweight: SVG strokes + borders only, minimal DOM, no blur, no heavy animation.
+   Fonts (loaded in index.html): Permanent Marker (headers/label), Bangers (mode + timer),
+   Patrick Hand (names). All have sane sans-serif fallbacks if the webfont is slow/offline.
+   ============================================================================================ */
+
+.team-scoreboard {
+  position: absolute;
+  top: 12px;
+  left: 50%;
+  /* Scale the whole board down a notch so it stays compact and doesn't dominate the screen.
+     transform-origin: top center keeps it centered AND flush with the top edge while scaling. */
+  transform: translateX(-50%) scale(0.78);
+  transform-origin: top center;
+  width: min(860px, 94vw);
+  pointer-events: none;
+  z-index: 5;
+  --ts-blue: #1f6dff;
+  --ts-red: #ed3b2f;
+  --ts-board: #f6f5f0;          /* slightly off-white board surface */
+  --ts-board-2: #efeee7;
+  --ts-ink: #1c2026;            /* near-black marker ink for center text */
+  --ts-rule: rgba(28, 32, 38, 0.16);
+  /* aluminium frame */
+  --ts-alu-1: #f3f4f6;
+  --ts-alu-2: #c9ccd2;
+  --ts-alu-3: #a7abb4;
+  --ts-bracket: #3c4046;        /* dark rounded corner brackets */
+  --font-marker: 'Permanent Marker', 'Trebuchet MS', sans-serif;
+  --font-bangers: 'Bangers', 'Arial Black', sans-serif;
+  --font-hand: 'Patrick Hand', 'Trebuchet MS', sans-serif;
+}
+
+/* ---- Outer aluminium frame ---- */
+.team-scoreboard__frame {
+  position: relative;
+  border-radius: 22px;
+  padding: 14px 16px 16px;
+  background:
+    linear-gradient(180deg, var(--ts-alu-1) 0%, var(--ts-alu-2) 48%, var(--ts-alu-3) 100%);
+  box-shadow:
+    0 10px 22px rgba(8, 12, 22, 0.45),
+    inset 0 1px 0 rgba(255, 255, 255, 0.9),
+    inset 0 -2px 3px rgba(0, 0, 0, 0.18);
+}
+
+/* Dark rounded corner brackets, like the reference whiteboard's plastic corners. */
+.ts-corner {
+  position: absolute;
+  width: 30px;
+  height: 30px;
+  background: var(--ts-bracket);
+  z-index: 3;
+}
+.ts-corner--tl { top: 0; left: 0; border-radius: 22px 0 14px 0; }
+.ts-corner--tr { top: 0; right: 0; border-radius: 0 22px 0 14px; }
+.ts-corner--bl { bottom: 0; left: 0; border-radius: 0 14px 0 22px; }
+.ts-corner--br { bottom: 0; right: 0; border-radius: 14px 0 22px 0; }
+
+/* ---- Off-white board surface ---- */
+.team-scoreboard__surface {
+  position: relative;
+  display: grid;
+  grid-template-columns: 1fr auto auto auto 1fr;  /* team | div | center | div | team */
+  align-items: stretch;
+  gap: 6px;
+  padding: 16px 20px 14px;
+  background:
+    radial-gradient(140% 120% at 50% -10%, #ffffff 0%, var(--ts-board) 55%, var(--ts-board-2) 100%);
+  border-radius: 10px;
+  box-shadow:
+    inset 0 2px 6px rgba(0, 0, 0, 0.06),
+    inset 0 0 0 1px rgba(255, 255, 255, 0.7);
+}
+
+/* Shared hand-drawn stroke svg: fills its positioned parent, inherits team color. */
+.ts-stroke { display: block; width: 100%; height: 100%; overflow: visible; }
+
+/* ---- Team columns ---- */
+.team-scoreboard__team {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+}
+.ts-team--left  { align-items: flex-start; }
+.ts-team--right { align-items: flex-end; }
+
+/* Header: bold marker small-caps script with a hand-drawn underline beneath. */
+.ts-team-header {
+  position: relative;
+  font-family: var(--font-marker);
+  font-weight: 400;
+  font-size: 30px;
+  line-height: 1;
+  letter-spacing: 0.01em;
+  padding: 2px 4px 14px;
+  margin-bottom: 6px;
+  width: 100%;
+}
+.ts-team--right .ts-team-header { text-align: right; }
+.ts-team--blue .ts-team-header { color: var(--ts-blue); }
+.ts-team--red  .ts-team-header { color: var(--ts-red); }
+
+/* The underline svg sits at the bottom edge of whatever it's placed under. */
+.ts-underline {
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  height: 11px;
+  color: currentColor;
+  pointer-events: none;
+}
+.ts-underline--ink { color: var(--ts-blue); }
+
+.ts-team-body {
+  display: flex;
+  align-items: stretch;
+  justify-content: space-between;
+  gap: 14px;
+  width: 100%;
+}
+
+/* ---- Score box: a hand-drawn marker rectangle around the big number ---- */
+.ts-score-box {
+  position: relative;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex: 0 0 auto;
+  min-width: 76px;
+  padding: 10px 12px 12px;
+}
+.ts-score-box__draw {
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+}
+.ts-team--blue .ts-score-box { color: var(--ts-blue); }
+.ts-team--red  .ts-score-box { color: var(--ts-red); }
+
+.ts-score {
+  position: relative;
+  font-family: var(--font-bangers);
+  font-weight: 400;
+  font-size: 58px;
+  line-height: 1;
+  color: currentColor;
+  letter-spacing: 0.02em;
+}
+
+/* ---- Roster: bullet dot + handwriting name on a faint ruled line ---- */
+.ts-roster {
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+  gap: 8px;
+  min-width: 110px;  /* fits "Player 1" at name size before it could ever truncate */
+  flex: 1 1 auto;
+}
+
+.ts-player {
+  position: relative;
+  display: flex;
+  align-items: center;
+  gap: 6px;            /* tight dot→name spacing so short names get the room */
+  min-width: 0;
+  padding: 2px 0 7px;
+}
+.ts-team--right .ts-player { flex-direction: row-reverse; }
+
+.ts-player-name {
+  font-family: var(--font-hand);
+  font-weight: 400;
+  font-size: 25px;
+  line-height: 1;
+  color: var(--ts-ink);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.ts-player-dot {
+  width: 9px;
+  height: 9px;
+  border-radius: 50%;
+  flex: 0 0 auto;
+}
+.ts-team--blue .ts-player-dot { background: var(--ts-blue); }
+.ts-team--red  .ts-player-dot { background: var(--ts-red); }
+
+/* faint hand-drawn ruled line beneath the name. Inset on the dot side so the line starts at the
+   name (not out under the bullet), reclaiming the dead space there for the name itself. */
+.ts-rule {
+  position: absolute;
+  left: 15px;     /* dot (9px) + gap (6px) → line begins at the name on the left team */
+  right: 0;
+  bottom: 0;
+  height: 6px;
+  pointer-events: none;
+}
+.ts-team--right .ts-rule { left: 0; right: 15px; }  /* mirrored for the right team */
+.ts-team--blue .ts-rule { color: rgba(31, 109, 255, 0.28); }
+.ts-team--red  .ts-rule { color: rgba(237, 59, 47, 0.26); }
+
+/* ---- Vertical hand-drawn dividers between teams and the center ---- */
+.ts-divider {
+  display: block;
+  width: 8px;
+  align-self: stretch;
+  margin: 4px 2px;
+  pointer-events: none;
+}
+.ts-divider--blue { color: rgba(31, 109, 255, 0.55); }
+.ts-divider--red  { color: rgba(237, 59, 47, 0.55); }
+
+/* ---- Center: mode title + half-drop timer (timer is the loud element) ---- */
+.team-scoreboard__center {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: flex-start;
+  gap: 12px;
+  padding: 0 16px;
+  min-width: 200px;
+}
+
+.ts-mode {
+  position: relative;
+  font-family: var(--font-bangers);
+  font-weight: 400;
+  font-size: 26px;
+  letter-spacing: 0.03em;
+  color: var(--ts-ink);
+  text-align: center;
+  white-space: nowrap;
+  padding: 2px 6px 9px;
+}
+/* the ink underline under the mode title */
+.ts-mode::after {
+  content: '';
+  position: absolute;
+  left: 6%;
+  right: 6%;
+  bottom: 1px;
+  height: 4px;
+  border-radius: 3px;
+  background: var(--ts-ink);
+}
+
+/* the timer card with its hand-drawn marker box */
+.ts-timer-card {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 2px;
+  padding: 8px 26px 8px;
+}
+.ts-timer-box {
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+}
+.ts-timer-label {
+  position: relative;
+  font-family: var(--font-marker);
+  font-weight: 400;
+  font-size: 17px;
+  letter-spacing: 0.01em;
+  color: var(--ts-ink);
+  padding-bottom: 9px;
+}
+.ts-timer-value {
+  font-family: var(--font-bangers);
+  font-weight: 400;
+  font-size: 50px;
+  line-height: 0.95;
+  color: var(--ts-ink);
+  letter-spacing: 0.04em;
+}
+
+/* ---- Pen tray ledge: markers + eraser + a center clip (decorative polish only) ---- */
+.team-scoreboard__tray {
+  position: relative;
+  display: flex;
+  align-items: flex-end;
+  justify-content: space-between;
+  gap: 8px;
+  height: 26px;
+  margin: 8px 26px 0;
+  padding: 0 6px;
+  /* the recessed tray ledge */
+  background: linear-gradient(180deg, rgba(0,0,0,0.10), rgba(255,255,255,0.18));
+  border-radius: 6px;
+  box-shadow: inset 0 2px 3px rgba(0, 0, 0, 0.25);
+}
+.ts-tray-item {
+  height: 22px;
+  width: auto;
+  object-fit: contain;
+  filter: drop-shadow(0 2px 2px rgba(0, 0, 0, 0.35));
+  transform: translateY(-6px);
+}
+.ts-tray-item--eraser { height: 18px; transform: translateY(-3px); }
+.ts-tray-item--marker-blue { margin-right: auto; }
+.ts-tray-item--marker-red { margin-left: auto; }
+/* small center clip nub on the tray, like the reference */
+.ts-tray-clip {
+  width: 40px;
+  height: 7px;
+  border-radius: 4px;
+  background: linear-gradient(180deg, #d9dbe0, #aeb2ba);
+  box-shadow: inset 0 1px 0 rgba(255,255,255,0.7), 0 1px 2px rgba(0,0,0,0.3);
+  align-self: center;
+}
+
+/* ============================================================================================
+   1v1 mode — single player row per team. The roster only renders rows that exist (no empty box);
+   these rules center the lone name against the tall score box and tighten the board.
+   ============================================================================================ */
+.team-scoreboard--1v1 .ts-roster { justify-content: center; }
+.team-scoreboard--1v1 .ts-player-name { font-size: 24px; }
+.team-scoreboard--1v1 .team-scoreboard__surface { padding-top: 14px; padding-bottom: 12px; }
+
+/* ============================================================================================
+   Responsive — keep it readable and never let it dominate the screen.
+   ============================================================================================ */
+@media (max-width: 820px) {
+  .team-scoreboard { width: 97vw; top: 8px; }
+  .team-scoreboard__frame { padding: 10px 12px 12px; border-radius: 18px; }
+  .team-scoreboard__surface { gap: 4px; padding: 12px 12px 10px; }
+  .ts-team-header { font-size: 22px; padding-bottom: 11px; }
+  .ts-score { font-size: 44px; }
+  .ts-score-box { min-width: 58px; padding: 2px 8px 4px; }
+  .ts-player-name { font-size: 17px; }
+  .ts-mode { font-size: 20px; }
+  .ts-timer-label { font-size: 14px; }
+  .ts-timer-value { font-size: 38px; }
+  .team-scoreboard__center { padding: 0 12px; min-width: 0; }
+  .ts-timer-card { padding: 6px 16px; }
+  .team-scoreboard__tray { margin: 6px 12px 0; }
+  .ts-tray-item { height: 18px; }
+}
+
+@media (max-width: 560px) {
+  /* Very narrow: drop the decorative tray so names/scores keep their space. */
+  .team-scoreboard__tray { display: none; }
+  .ts-team-header { font-size: 18px; }
+  .ts-score { font-size: 34px; }
+  .ts-timer-value { font-size: 30px; }
+  .ts-player-name { font-size: 15px; }
 }
