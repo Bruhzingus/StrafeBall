@@ -919,7 +919,7 @@ function formatHearts(lives: number, maxLives: number): string {
   const filled = Math.max(0, Math.min(maxLives, Math.ceil(lives)));
   let html = '<span class="hearts">';
   for (let i = 0; i < maxLives; i += 1) {
-    html += `<span class="heart ${i < filled ? 'heart--full' : 'heart--empty'}">&hearts;</span>`;
+    html += `<span class="heart ${i < filled ? 'heart--full' : 'heart--empty'}" aria-hidden="true"></span>`;
   }
   return `${html}</span>`;
 }

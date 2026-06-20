@@ -58,26 +58,26 @@ html, body {
 .nametag {
   position: absolute;
   transform: translate(-50%, -100%);
+  padding: 1px 7px 2px;
+  border-radius: 6px;
+  /* Small, dim, dark pill — readable over the busy gym without a chunky cream box. */
+  background: rgba(21, 33, 59, 0.55);
+  border-bottom: 2px solid var(--ink);
   font-family: var(--font-display);
   font-size: 10px;
   font-weight: 700;
+  letter-spacing: 0.2px;
   white-space: nowrap;
-  opacity: 0.65;
-  color: var(--ink);
-  /* No box — just the text with a thin outline so it stays legible over any background. */
-  text-shadow:
-    -1px -1px 0 var(--paper),
-    1px -1px 0 var(--paper),
-    -1px 1px 0 var(--paper),
-    1px 1px 0 var(--paper);
+  color: #fff;
+  text-shadow: 0 1px 2px rgba(0, 0, 0, 0.6);
 }
 
 .nametag--red {
-  color: var(--school-red);
+  border-bottom-color: var(--school-red);
 }
 
 .nametag--blue {
-  color: var(--school-blue);
+  border-bottom-color: var(--school-blue);
 }
 
 /* === Crosshair — chunky cartoon plus === */
@@ -154,7 +154,8 @@ html, body {
 .hud-bottom-left { bottom: 16px; left: 16px; transform: rotate(1.1deg); }
 .hud-bottom-right { bottom: 16px; right: 16px; transform: rotate(-1deg); }
 .hud-hearts {
-  bottom: 18px;
+  /* Sit just above the bottom ability/cooldown bar (which lives at bottom: 24px). */
+  bottom: 104px;
   left: 50%;
   min-width: 0;
   padding: 0;
@@ -186,7 +187,7 @@ html, body {
 .hearts-row {
   display: flex;
   align-items: center;
-  justify-content: space-between;
+  justify-content: center;
   gap: 12px;
   margin-top: 3px;
 }
@@ -208,23 +209,31 @@ html, body {
 
 .hearts {
   display: inline-flex;
-  gap: 6px;
-  letter-spacing: 0.02em;
+  align-items: center;
+  gap: 10px;
 }
 
+/* SVG-masked heart — crisp and fully scalable, with a glossy fill and a soft drop shadow. */
 .heart {
-  font-size: 60px;
-  line-height: 1;
-  -webkit-text-stroke: 1px var(--ink);
+  --heart-size: 40px;
+  display: inline-block;
+  width: var(--heart-size);
+  height: var(--heart-size);
+  /* Symmetric heart path in a 0..32 viewBox. */
+  -webkit-mask: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Cpath d='M16 29C16 29 2 20 2 10.5C2 5.8 5.6 3 9 3C12 3 14.5 5 16 7.5C17.5 5 20 3 23 3C26.4 3 30 5.8 30 10.5C30 20 16 29 16 29Z'/%3E%3C/svg%3E") center / contain no-repeat;
+  mask: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Cpath d='M16 29C16 29 2 20 2 10.5C2 5.8 5.6 3 9 3C12 3 14.5 5 16 7.5C17.5 5 20 3 23 3C26.4 3 30 5.8 30 10.5C30 20 16 29 16 29Z'/%3E%3C/svg%3E") center / contain no-repeat;
+  transition: transform 140ms ease;
 }
 
 .heart--full {
-  color: var(--school-red);
-  text-shadow: 1px 1px 0 var(--ink);
+  background:
+    radial-gradient(circle at 34% 26%, rgba(255, 255, 255, 0.7), rgba(255, 255, 255, 0) 40%),
+    linear-gradient(158deg, #ff6a5e 0%, var(--school-red) 52%, #c41a12 100%);
+  filter: drop-shadow(0 3px 4px rgba(0, 0, 0, 0.4));
 }
 
 .heart--empty {
-  color: rgba(21, 33, 59, 0.18);
+  background: rgba(21, 33, 59, 0.28);
 }
 
 .hearts-label {
@@ -293,13 +302,15 @@ html, body {
 }
 
 .team-match-player .heart {
-  font-size: 14px;
-  -webkit-text-stroke: 0;
-  text-shadow: 1px 1px 0 var(--ink);
+  --heart-size: 15px;
+}
+
+.team-match-player .heart--full {
+  filter: drop-shadow(0 1px 1px rgba(0, 0, 0, 0.45));
 }
 
 .team-match-player .hearts {
-  gap: 2px;
+  gap: 4px;
 }
 
 .team-match-chip {
@@ -2946,7 +2957,7 @@ html, body {
   }
 
   .team-match-player .heart {
-    font-size: 11px;
+    --heart-size: 12px;
   }
 
   .team-match-chip {
@@ -2957,7 +2968,7 @@ html, body {
   .hud-hearts {
     top: auto;
     right: auto;
-    bottom: 12px;
+    bottom: 92px;
     left: 50%;
     min-width: 0;
     transform: translateX(-50%);

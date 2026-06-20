@@ -373,11 +373,21 @@ export class ServerGameLoop {
     if (!slot) return null;
 
     const name = sanitizeName(rawName, this.playerCount() + 1);
+    // Mid-match late join: a player who joins (fresh sessionId) while a match is already in
+    // countdown/playing must NOT enter as a full-lives fighter — otherwise someone can leave after
+    // being eliminated and rejoin to "respawn" with a full life count. They join as a spectator
+    // (eliminated, 0 lives); the next room reset rebuilds every roster member with full lives, so
+    // they fight normally in the following match. (A genuine drop+reconnect keeps its state via the
+    // framework's reconnection window and never reaches addPlayer.)
+    const matchInProgress = this.state.match.status === 'countdown' || this.state.match.status === 'playing';
     const player = createPlayerState(playerId, slot.teamId, slot.spawnSide, {
       name,
       spawnSide: slot.spawnSide,
       teamSlotIndex: slot.teamSlotIndex,
-      movement: this.spawnMovement(slot)
+      movement: this.spawnMovement(slot),
+      ...(matchInProgress
+        ? { lives: 0, combatState: 'eliminated' as const, eliminatedAtMs: this.now() }
+        : {})
     });
 
     this.state.players[playerId] = player;

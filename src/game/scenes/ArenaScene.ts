@@ -1337,6 +1337,11 @@ export class ArenaScene {
     this.freeCamPosition.y = Math.min(TUNING.freeCam.verticalCeiling, Math.max(TUNING.freeCam.verticalFloor, this.freeCamPosition.y));
 
     this.player.camera.position.copyFrom(this.freeCamPosition);
+    // The camera is unparented in freecam, so it no longer inherits yaw from the player root.
+    // updateLook()/applyPredicted force camera.rotation.y = 0 (yaw normally lives on the root), so
+    // without re-applying yaw here the fly-cam is locked facing world-Z and can't turn horizontally.
+    this.player.camera.rotation.y = yaw;
+    this.player.camera.rotation.x = pitch;
     this.player.camera.getViewMatrix(true);
   }
 
