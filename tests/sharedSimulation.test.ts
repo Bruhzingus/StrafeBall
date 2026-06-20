@@ -246,6 +246,11 @@ describe('shared movement simulation', () => {
     expect(next.movement.position.y).toBeLessThanOrEqual(maxPlayerY);
     expect(next.movement.wallRunning).toBe(false);
     expect(next.internal.wallRunTimer).toBe(0);
+    expect(next.internal.wallReattachCooldown).toBeGreaterThan(0);
+
+    const forward = { ...neutralInput(), moveZ: 1 };
+    const after = stepMovement(next.movement, next.internal, next.dash, forward, forward, 1 / 72, [], false);
+    expect(after.movement.wallRunning).toBe(false);
   });
 
   // Wall-run vertical is controlled by A/D while holding W. Player hugs the +X wall (normal = -X),

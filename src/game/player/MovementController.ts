@@ -228,6 +228,8 @@ export class MovementController {
       return;
     }
 
+    if (this.tryWallBounce()) return;
+
     if (!this.grounded && this.jumpGraceTimer <= 0) {
       if (!this.doubleJumpAvailable) return;
       const result = this.dash.tryUpwardDash(this.velocity);
@@ -256,6 +258,30 @@ export class MovementController {
     if (wishDir.lengthSquared() > 0.001) {
       this.velocity.addInPlace(wishDir.scale(0.45));
     }
+  }
+
+  /**
+   * Wall-bounce: hit a wall too head-on to wall-run (steeper than runTriggerAngleDegrees) while
+   * airborne, then press jump near/touching the wall to bounce off — same impulse as a wall-jump,
+   * but doesn't require an active wall-run and costs no stamina/dash charge. Free action, but it
+   * still sets the reattach cooldown so you can't immediately wall-run/bounce the same wall again.
+   */
+  private tryWallBounce(): boolean {
+    if (this.grounded) return false;
+    const normal = this.detectWall();
+    if (!normal) return false;
+
+    const horizSpeed = this.horizontalSpeed();
+    if (horizSpeed < TUNING.wall.minEntrySpeed) return false;
+
+    const intoWall = -(this.velocity.x * normal.x + this.velocity.z * normal.z) / horizSpeed;
+    const maxInto = Math.sin(TUNING.wall.runTriggerAngleDegrees * DEG2RAD);
+    if (intoWall <= maxInto) return false; // shallow enough to wall-run instead
+
+    this.velocity = this.velocity.add(normal.scale(TUNING.wall.jumpAwaySpeed));
+    this.velocity.y = TUNING.wall.jumpUpSpeed;
+    this.wallReattachCooldown = TUNING.wall.reattachCooldownSeconds;
+    return true;
   }
 
   private tryDash(input: InputManager, wishDir: Vector3): void {
@@ -295,6 +321,7 @@ export class MovementController {
       // Reached the top of the runnable wall: detach and nudge downward so the head unsticks from
       // the roof instead of pinning fully vertical (and getting stuck in a corner).
       this.endWallRun();
+      this.wallReattachCooldown = Math.max(this.wallReattachCooldown, TUNING.wall.reattachCooldownSeconds);
       if (this.velocity.y > -TUNING.wall.ceilingDetachPushDown) {
         this.velocity.y = -TUNING.wall.ceilingDetachPushDown;
       }
@@ -334,6 +361,7 @@ export class MovementController {
     this.wallRunTimer += dt;
     if (this.wallRunTimer > TUNING.wall.runMaxSeconds) {
       this.endWallRun();
+      this.wallReattachCooldown = Math.max(this.wallReattachCooldown, TUNING.wall.reattachCooldownSeconds);
     } else if (forwardHeld) {
       // W is the engage key: while holding forward you run STRAIGHT (hold height), and A/D adjust
       // height. Steering INTO the wall climbs, AWAY descends — side-relative to facing. Matches

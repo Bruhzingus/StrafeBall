@@ -185,8 +185,9 @@ export function stepMovement(
     }
   }
 
-  // --- jump / wall-jump (edge-triggered) ---
+  // --- jump / wall-jump / wall-bounce (edge-triggered) ---
   const jumpPressed = input.jumpPressed;
+  const wallBounceNormal = !grounded && !wallRunning ? detectWallBounce(px, pz, vx, vz, c) : null;
   if (jumpPressed) {
     if (wallRunning) {
       let awX = lastWallNormalX;
@@ -201,6 +202,14 @@ export function stepMovement(
       vy = c.wall.jumpUpSpeed * speedScale;
       wallRunning = false;
       wallRunTimer = 0;
+      wallReattachCooldown = c.wall.reattachCooldownSeconds;
+    } else if (!grounded && wallBounceNormal !== null) {
+      // Hit a wall too head-on to wall-run (steeper than runTriggerAngleDegrees): bounce off with
+      // the same impulse as a wall-jump, but doesn't require an active wall-run and is free
+      // (no stamina/dash cost). Still sets the reattach cooldown to prevent an immediate re-trigger.
+      vx += wallBounceNormal.x * c.wall.jumpAwaySpeed * speedScale;
+      vz += wallBounceNormal.z * c.wall.jumpAwaySpeed * speedScale;
+      vy = c.wall.jumpUpSpeed * speedScale;
       wallReattachCooldown = c.wall.reattachCooldownSeconds;
     } else if (grounded || jumpGraceTimer > 0) {
       if (sliding) {
@@ -279,6 +288,7 @@ export function stepMovement(
     // unsticks from the roof instead of pinning fully vertical (and getting stuck in a corner).
     wallRunning = false;
     wallRunTimer = 0;
+    wallReattachCooldown = Math.max(wallReattachCooldown, c.wall.reattachCooldownSeconds);
     if (vy > -c.wall.ceilingDetachPushDown) vy = -c.wall.ceilingDetachPushDown;
   } else {
     const normal = detectWall(px, pz, c);
@@ -305,6 +315,7 @@ export function stepMovement(
         if (wallRunTimer > c.wall.runMaxSeconds) {
           wallRunning = false;
           wallRunTimer = 0;
+          wallReattachCooldown = Math.max(wallReattachCooldown, c.wall.reattachCooldownSeconds);
         } else if (moveZ > EPS) {
           // W is the engage key: while holding forward you run STRAIGHT (hold height), and A/D adjust
           // height. Steering INTO the wall climbs, AWAY descends — side-relative to which wall you're
@@ -503,6 +514,22 @@ function detectWall(px: number, pz: number, c: GameConstants): { x: number; z: n
   if (c.map.halfWidth - Math.abs(px) < margin) return { x: -Math.sign(px), z: 0 };
   if (c.map.halfLength - Math.abs(pz) < margin) return { x: 0, z: -Math.sign(pz) };
   return null;
+}
+
+/**
+ * Returns the wall normal to bounce off of if the player is airborne, near a wall, and moving
+ * into it too head-on to wall-run (steeper than runTriggerAngleDegrees) — null otherwise. Mirrors
+ * the offline MovementController.tryWallBounce angle math exactly.
+ */
+function detectWallBounce(px: number, pz: number, vx: number, vz: number, c: GameConstants): { x: number; z: number } | null {
+  const normal = detectWall(px, pz, c);
+  if (!normal) return null;
+  const horizSpeed = Math.hypot(vx, vz);
+  if (horizSpeed < c.wall.minEntrySpeed) return null;
+  const intoWall = -(vx * normal.x + vz * normal.z) / horizSpeed;
+  const maxInto = Math.sin(c.wall.runTriggerAngleDegrees * DEG2RAD);
+  if (intoWall <= maxInto) return null;
+  return normal;
 }
 
 function wallJumpAwayDirection(px: number, pz: number, yaw: number, c: GameConstants): { x: number; z: number } {

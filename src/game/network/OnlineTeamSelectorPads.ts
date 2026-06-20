@@ -1,6 +1,7 @@
 import {
   Color3,
   DynamicTexture,
+  Material,
   Mesh,
   MeshBuilder,
   Scene,
@@ -17,16 +18,20 @@ interface PadDef {
   teamId?: string;
   title: string;
   subtitle: string;
+  helper: string;
   position: Vector3;
   main: Color3;
   accent: Color3;
+  gold: Color3;
+  width: number;
 }
 
 interface Pad extends PadDef {
-  material: StandardMaterial;
-  idleEmissive: Color3;
-  activeEmissive: Color3;
-  chosenEmissive: Color3;
+  padMaterial: StandardMaterial;
+  trimMaterial: StandardMaterial;
+  promptFillMaterial: StandardMaterial;
+  promptFill: Mesh;
+  promptFillWidth: number;
   meshes: Mesh[];
 }
 
@@ -39,36 +44,49 @@ interface PromptCopy {
 
 const HOLD_SECONDS = 0.65;
 const ACTIVATE_RADIUS = 2.05;
+const PROMPT_FILL_WIDTH = 0.72;
+
+const DARK = new Color3(0.025, 0.045, 0.085);
+const NEUTRAL_DARK = new Color3(0.055, 0.055, 0.07);
 
 const PAD_DEFS: PadDef[] = [
   {
     id: 'blue',
     kind: 'team',
     teamId: 'blue',
-    title: 'BLUE',
-    subtitle: 'TEAM CIRCLE',
+    title: 'BLUE TEAM',
+    subtitle: 'Join / confirm',
+    helper: 'Choose this side',
     position: new Vector3(-4.3, 0, 0),
-    main: new Color3(0.08, 0.4, 1.0),
-    accent: new Color3(0.35, 0.86, 1.0)
+    main: new Color3(0.06, 0.28, 0.64),
+    accent: new Color3(0.32, 0.9, 1.0),
+    gold: new Color3(1.0, 0.75, 0.16),
+    width: 2.0
   },
   {
     id: 'red',
     kind: 'team',
     teamId: 'red',
-    title: 'RED',
-    subtitle: 'TEAM CIRCLE',
+    title: 'RED TEAM',
+    subtitle: 'Join / confirm',
+    helper: 'Choose this side',
     position: new Vector3(4.3, 0, 0),
-    main: new Color3(0.95, 0.12, 0.16),
-    accent: new Color3(1.0, 0.58, 0.38)
+    main: new Color3(0.58, 0.065, 0.075),
+    accent: new Color3(1.0, 0.42, 0.34),
+    gold: new Color3(1.0, 0.75, 0.16),
+    width: 2.0
   },
   {
     id: 'start',
     kind: 'start',
-    title: 'START',
-    subtitle: 'VOTE CIRCLE',
+    title: 'START VOTE',
+    subtitle: 'Ready check',
+    helper: 'Begin when teams are locked',
     position: new Vector3(0, 0, 2.85),
-    main: new Color3(1.0, 0.72, 0.12),
-    accent: new Color3(1.0, 0.92, 0.24)
+    main: new Color3(0.45, 0.32, 0.055),
+    accent: new Color3(1.0, 0.86, 0.22),
+    gold: new Color3(1.0, 0.86, 0.22),
+    width: 2.25
   }
 ];
 
@@ -124,7 +142,6 @@ export class OnlineTeamSelectorPads {
     this.setEnabled(shouldEnable);
     if (!shouldEnable || !room) return false;
 
-    const local = room.players[localPlayerId] ?? null;
     const nearest = this.nearestPad(playerPosition, room);
     this.updateGlow(nearest?.id ?? null, room, localPlayerId);
 
@@ -133,6 +150,7 @@ export class OnlineTeamSelectorPads {
       this.holdSeconds = 0;
       this.activatedThisHold = false;
       this.setPromptVisible(false);
+      this.updateWorldProgress(null, 0);
       return false;
     }
 
@@ -149,12 +167,14 @@ export class OnlineTeamSelectorPads {
       if (!interactHeld) this.activatedThisHold = false;
       this.holdSeconds = 0;
       this.updatePromptProgress(0);
+      this.updateWorldProgress(nearest.id, 0);
       return false;
     }
 
     if (!this.activatedThisHold) {
       this.holdSeconds = Math.min(HOLD_SECONDS, this.holdSeconds + dt);
       this.updatePromptProgress(this.holdSeconds / HOLD_SECONDS);
+      this.updateWorldProgress(nearest.id, this.holdSeconds / HOLD_SECONDS);
       if (this.holdSeconds >= HOLD_SECONDS) {
         this.activatedThisHold = true;
         if (nearest.kind === 'team' && nearest.teamId) actions.chooseTeam(nearest.teamId);
@@ -176,6 +196,7 @@ export class OnlineTeamSelectorPads {
       this.holdSeconds = 0;
       this.activatedThisHold = false;
       this.setPromptVisible(false);
+      this.updateWorldProgress(null, 0);
     }
   }
 
@@ -185,81 +206,234 @@ export class OnlineTeamSelectorPads {
   }
 
   private createPad(def: PadDef): void {
-    const padMat = new StandardMaterial(`online_team_${def.id}_pad_mat`, this.scene);
-    padMat.diffuseColor = def.main;
-    padMat.emissiveColor = def.accent.scale(0.18);
-    padMat.specularColor = new Color3(0.1, 0.1, 0.1);
-    padMat.alpha = 0.86;
-    this.disposables.push(padMat);
+    const panelHeight = def.kind === 'start' ? 0.94 : 0.86;
+    const stationZ = def.position.z + 0.54;
+    const platformDepth = def.kind === 'start' ? 1.65 : 1.48;
+    const bodyColor = def.kind === 'start' ? NEUTRAL_DARK : DARK;
 
-    const pad = MeshBuilder.CreateCylinder(
-      `online_team_${def.id}_pad`,
-      { diameter: def.kind === 'start' ? 2.45 : 2.9, height: 0.045, tessellation: 72 },
+    const padMaterial = this.createSolidMaterial(`online_team_${def.id}_pad_mat`, def.main.scale(0.58), def.accent.scale(0.08));
+    const trimMaterial = this.createSolidMaterial(`online_team_${def.id}_trim_mat`, def.gold.scale(0.86), def.gold.scale(0.18));
+    const bodyMaterial = this.createSolidMaterial(`online_team_${def.id}_body_mat`, bodyColor, def.main.scale(0.035));
+    const fillMaterial = this.createSolidMaterial(`online_team_${def.id}_fill_mat`, def.accent, def.accent.scale(0.48));
+    this.disposables.push(padMaterial, trimMaterial, bodyMaterial, fillMaterial);
+
+    const meshes: Mesh[] = [];
+    const add = (mesh: Mesh, freeze = true): Mesh => {
+      mesh.isPickable = false;
+      meshes.push(mesh);
+      this.disposables.push(mesh);
+      if (freeze) mesh.freezeWorldMatrix();
+      return mesh;
+    };
+
+    const platform = MeshBuilder.CreateCylinder(
+      `online_team_${def.id}_platform`,
+      { diameter: 1, height: 0.055, tessellation: 56 },
       this.scene
     );
-    pad.position.set(def.position.x, 0.035, def.position.z);
-    pad.material = padMat;
-    pad.isPickable = false;
-    this.disposables.push(pad);
+    platform.scaling.set(def.width * 0.48, 1, platformDepth * 0.45);
+    platform.position.set(def.position.x, 0.028, def.position.z);
+    platform.material = bodyMaterial;
+    add(platform);
 
-    const rimMat = new StandardMaterial(`online_team_${def.id}_rim_mat`, this.scene);
-    rimMat.diffuseColor = def.accent;
-    rimMat.emissiveColor = def.accent.scale(0.42);
-    rimMat.specularColor = new Color3(0, 0, 0);
-    this.disposables.push(rimMat);
-
-    const rim = MeshBuilder.CreateTorus(
-      `online_team_${def.id}_rim`,
-      { diameter: def.kind === 'start' ? 2.52 : 2.98, thickness: 0.075, tessellation: 80 },
+    const inset = MeshBuilder.CreateCylinder(
+      `online_team_${def.id}_platform_inset`,
+      { diameter: 1, height: 0.022, tessellation: 56 },
       this.scene
     );
-    rim.position.set(def.position.x, 0.07, def.position.z);
-    rim.rotation.x = Math.PI / 2;
-    rim.material = rimMat;
-    rim.isPickable = false;
-    this.disposables.push(rim);
+    inset.scaling.set(def.width * 0.38, 1, platformDepth * 0.33);
+    inset.position.set(def.position.x, 0.073, def.position.z);
+    inset.material = padMaterial;
+    add(inset);
 
-    const tex = this.createLabelTexture(`online_team_${def.id}_label_tex`, def.title, def.subtitle, def.main, def.accent);
+    const frontTrim = MeshBuilder.CreateBox(
+      `online_team_${def.id}_front_trim`,
+      { width: def.width * 0.62, height: 0.016, depth: 0.052 },
+      this.scene
+    );
+    frontTrim.position.set(def.position.x, 0.098, def.position.z - platformDepth * 0.31);
+    frontTrim.material = trimMaterial;
+    add(frontTrim);
+
+    for (const side of [-1, 1] as const) {
+      const sideTrim = MeshBuilder.CreateBox(
+        `online_team_${def.id}_side_trim_${side}`,
+        { width: 0.05, height: 0.016, depth: platformDepth * 0.52 },
+        this.scene
+      );
+      sideTrim.position.set(def.position.x + side * (def.width * 0.37), 0.096, def.position.z - 0.02);
+      sideTrim.material = trimMaterial;
+      add(sideTrim);
+    }
+
+    const pedestal = MeshBuilder.CreateBox(
+      `online_team_${def.id}_pedestal`,
+      { width: def.width * 0.22, height: 0.32, depth: 0.28 },
+      this.scene
+    );
+    pedestal.position.set(def.position.x, 0.25, stationZ + 0.1);
+    pedestal.material = bodyMaterial;
+    add(pedestal);
+
+    const neck = MeshBuilder.CreateBox(
+      `online_team_${def.id}_neck`,
+      { width: def.width * 0.32, height: 0.11, depth: 0.15 },
+      this.scene
+    );
+    neck.position.set(def.position.x, 0.49, stationZ + 0.07);
+    neck.material = trimMaterial;
+    add(neck);
+
+    const panelBack = MeshBuilder.CreateBox(
+      `online_team_${def.id}_panel_back`,
+      { width: def.width, height: panelHeight, depth: 0.095 },
+      this.scene
+    );
+    panelBack.position.set(def.position.x, 0.98, stationZ + 0.025);
+    panelBack.material = bodyMaterial;
+    add(panelBack);
+
+    const tex = this.createLabelTexture(`online_team_${def.id}_label_tex`, def);
     const labelMat = new StandardMaterial(`online_team_${def.id}_label_mat`, this.scene);
     labelMat.diffuseTexture = tex;
     labelMat.emissiveTexture = tex;
     labelMat.emissiveColor = new Color3(1, 1, 1);
     labelMat.disableLighting = true;
     labelMat.specularColor = new Color3(0, 0, 0);
-    labelMat.backFaceCulling = false;
     this.disposables.push(tex, labelMat);
 
     const label = MeshBuilder.CreatePlane(
       `online_team_${def.id}_label`,
-      { width: def.kind === 'start' ? 2.1 : 2.45, height: 0.92 },
+      { width: def.width - 0.18, height: panelHeight - 0.16 },
       this.scene
     );
-    label.position.set(def.position.x, 1.08, def.position.z + 0.05);
-    label.billboardMode = Mesh.BILLBOARDMODE_Y;
+    label.position.set(def.position.x, 0.98, stationZ - 0.045);
     label.material = labelMat;
-    label.isPickable = false;
-    this.disposables.push(label);
+    add(label);
+
+    for (const side of [-1, 1] as const) {
+      const sideCap = MeshBuilder.CreateBox(
+        `online_team_${def.id}_panel_side_${side}`,
+        { width: 0.05, height: panelHeight + 0.08, depth: 0.11 },
+        this.scene
+      );
+      sideCap.position.set(def.position.x + side * (def.width * 0.5 + 0.023), 0.98, stationZ - 0.012);
+      sideCap.material = trimMaterial;
+      add(sideCap);
+    }
+
+    const topCap = MeshBuilder.CreateBox(
+      `online_team_${def.id}_panel_top`,
+      { width: def.width + 0.08, height: 0.05, depth: 0.11 },
+      this.scene
+    );
+    topCap.position.set(def.position.x, 0.98 + panelHeight * 0.5 + 0.027, stationZ - 0.012);
+    topCap.material = trimMaterial;
+    add(topCap);
+
+    const bottomCap = MeshBuilder.CreateBox(
+      `online_team_${def.id}_panel_bottom`,
+      { width: def.width + 0.08, height: 0.05, depth: 0.11 },
+      this.scene
+    );
+    bottomCap.position.set(def.position.x, 0.98 - panelHeight * 0.5 - 0.027, stationZ - 0.012);
+    bottomCap.material = trimMaterial;
+    add(bottomCap);
+
+    const promptTex = this.createPromptTexture(`online_team_${def.id}_prompt_tex`, def);
+    const promptMat = new StandardMaterial(`online_team_${def.id}_prompt_mat`, this.scene);
+    promptMat.diffuseTexture = promptTex;
+    promptMat.emissiveTexture = promptTex;
+    promptMat.emissiveColor = new Color3(1, 1, 1);
+    promptMat.disableLighting = true;
+    promptMat.specularColor = new Color3(0, 0, 0);
+    this.disposables.push(promptTex, promptMat);
+
+    const prompt = MeshBuilder.CreatePlane(`online_team_${def.id}_prompt`, { width: 0.98, height: 0.25 }, this.scene);
+    prompt.position.set(def.position.x, 0.35, def.position.z + 0.02);
+    prompt.material = promptMat;
+    add(prompt);
+
+    const promptFill = MeshBuilder.CreatePlane(
+      `online_team_${def.id}_progress`,
+      { width: PROMPT_FILL_WIDTH, height: 0.024 },
+      this.scene
+    );
+    promptFill.position.set(def.position.x - PROMPT_FILL_WIDTH * 0.5, 0.255, def.position.z - 0.065);
+    promptFill.scaling.x = 0;
+    promptFill.material = fillMaterial;
+    add(promptFill, false);
 
     this.pads.push({
       ...def,
-      material: padMat,
-      idleEmissive: def.accent.scale(0.18),
-      activeEmissive: def.accent.scale(0.5),
-      chosenEmissive: def.accent.scale(0.75),
-      meshes: [pad, rim, label]
+      padMaterial,
+      trimMaterial,
+      promptFillMaterial: fillMaterial,
+      promptFill,
+      promptFillWidth: PROMPT_FILL_WIDTH,
+      meshes
     });
   }
 
-  private createLabelTexture(name: string, title: string, subtitle: string, main: Color3, accent: Color3): DynamicTexture {
-    const tex = new DynamicTexture(name, { width: 640, height: 300 }, this.scene, false);
+  private createLabelTexture(name: string, def: PadDef): DynamicTexture {
+    const tex = new DynamicTexture(name, { width: 760, height: 360 }, this.scene, true);
     tex.hasAlpha = false;
-    const bg = colorToHex(main.scale(0.22));
-    const fg = colorToHex(accent);
-    tex.drawText('', 0, 0, '1px Arial', '#000000', bg, false, false);
-    tex.drawText(title, null, 118, 'bold 78px Arial', fg, 'transparent', false, false);
-    tex.drawText(subtitle, null, 190, 'bold 32px Arial', '#fff6d8', 'transparent', false, false);
+    const ctx = tex.getContext();
+    ctx.clearRect(0, 0, 760, 360);
+
+    ctx.fillStyle = colorToHex(def.kind === 'start' ? NEUTRAL_DARK : DARK);
+    ctx.fillRect(0, 0, 760, 360);
+
+    const gradient = ctx.createLinearGradient(0, 0, 760, 360);
+    gradient.addColorStop(0, colorToRgba(def.main, 0.28));
+    gradient.addColorStop(0.55, colorToRgba(def.kind === 'start' ? NEUTRAL_DARK : DARK, 0.98));
+    gradient.addColorStop(1, colorToRgba(def.main, 0.16));
+    ctx.fillStyle = gradient;
+    ctx.fillRect(0, 0, 760, 360);
+
+    ctx.fillStyle = colorToRgba(def.gold, 0.88);
+    ctx.fillRect(0, 0, 760, 10);
+    ctx.fillRect(0, 350, 760, 10);
+    ctx.fillStyle = colorToRgba(def.accent, 0.4);
+    ctx.fillRect(38, 44, 684, 4);
+    ctx.fillRect(38, 314, 684, 4);
+
+    drawCentered(ctx, def.kind === 'start' ? 'GAME START' : 'TEAM SELECT', 68, '800 24px Arial', '#fff4ce', 380);
+    drawCentered(ctx, def.title, 162, '900 66px Arial', colorToHex(def.accent), 380);
+    drawCentered(ctx, def.subtitle.toUpperCase(), 224, '800 30px Arial', '#fff8dc', 380);
+    drawCentered(ctx, def.helper.toUpperCase(), 270, '700 21px Arial', '#d8e7ff', 380);
     tex.update(true);
     return tex;
+  }
+
+  private createPromptTexture(name: string, def: PadDef): DynamicTexture {
+    const tex = new DynamicTexture(name, { width: 320, height: 96 }, this.scene, true);
+    tex.hasAlpha = false;
+    const ctx = tex.getContext();
+    ctx.clearRect(0, 0, 320, 96);
+    ctx.fillStyle = colorToHex(def.kind === 'start' ? NEUTRAL_DARK : DARK);
+    ctx.fillRect(0, 0, 320, 96);
+    ctx.fillStyle = colorToRgba(def.gold, 0.9);
+    ctx.fillRect(0, 0, 320, 8);
+    ctx.fillRect(0, 88, 320, 8);
+    drawCentered(ctx, def.kind === 'start' ? 'START' : def.teamId?.toUpperCase() ?? 'TEAM', 35, '800 22px Arial', colorToHex(def.accent), 160);
+    drawCentered(ctx, 'HOLD  E', 68, '900 30px Arial', '#ffffff', 160);
+    tex.update(true);
+    return tex;
+  }
+
+  private createSolidMaterial(name: string, diffuse: Color3, emissive: Color3, alpha?: number): StandardMaterial {
+    const material = new StandardMaterial(name, this.scene);
+    material.diffuseColor = diffuse;
+    material.emissiveColor = emissive;
+    material.specularColor = new Color3(0.08, 0.08, 0.08);
+    if (alpha !== undefined) {
+      material.alpha = alpha;
+      material.transparencyMode = Material.MATERIAL_ALPHABLEND;
+      material.backFaceCulling = false;
+      material.specularColor = new Color3(0, 0, 0);
+    }
+    return material;
   }
 
   private nearestPad(playerPosition: Vector3, room: RoomState): Pad | null {
@@ -322,6 +496,17 @@ export class OnlineTeamSelectorPads {
     this.promptFill.style.width = `${pct}%`;
   }
 
+  private updateWorldProgress(activePadId: TeamPadId | null, percent01: number): void {
+    const progress = Math.max(0, Math.min(1, percent01));
+    for (const pad of this.pads) {
+      const active = pad.id === activePadId;
+      const value = active ? progress : 0;
+      pad.promptFill.scaling.x = value;
+      pad.promptFill.position.x = pad.position.x - pad.promptFillWidth * (1 - value) * 0.5;
+      pad.promptFillMaterial.emissiveColor.copyFrom(pad.accent.scale(active ? 0.46 + value * 0.5 : 0.25));
+    }
+  }
+
   private updateGlow(activePadId: TeamPadId | null, room: RoomState, localPlayerId: string): void {
     const local = room.players[localPlayerId] ?? null;
     const localChoice = local ? room.startVote.teamChoicesByPlayerId[local.id] === true : false;
@@ -341,12 +526,11 @@ export class OnlineTeamSelectorPads {
     for (const pad of this.pads) {
       const selectedTeam = pad.kind === 'team' && localChoice && local?.teamId === pad.teamId;
       const selectedStart = pad.kind === 'start' && voteReady;
-      const color = pad.id === activePadId
-        ? pad.activeEmissive
-        : selectedTeam || selectedStart
-          ? pad.chosenEmissive
-          : pad.idleEmissive;
-      pad.material.emissiveColor.copyFrom(color);
+      const active = pad.id === activePadId;
+      const padScale = active ? 0.24 : selectedTeam || selectedStart ? 0.2 : 0.08;
+      const trimScale = active ? 0.46 : selectedTeam || selectedStart ? 0.38 : 0.18;
+      pad.padMaterial.emissiveColor.copyFrom(pad.accent.scale(padScale));
+      pad.trimMaterial.emissiveColor.copyFrom(pad.gold.scale(trimScale));
     }
   }
 
@@ -374,11 +558,37 @@ function canVoteStart(room: RoomState): boolean {
     room.startVote.teamChoiceCount >= room.startVote.requiredTeamChoices;
 }
 
+function drawCentered(
+  ctx: ReturnType<DynamicTexture['getContext']>,
+  text: string,
+  y: number,
+  font: string,
+  color: string,
+  centerX: number
+): void {
+  const textCtx = ctx as ReturnType<DynamicTexture['getContext']> & {
+    textAlign: CanvasTextAlign;
+    textBaseline: CanvasTextBaseline;
+  };
+  ctx.font = font;
+  ctx.fillStyle = color;
+  textCtx.textAlign = 'center';
+  textCtx.textBaseline = 'middle';
+  ctx.fillText(text, centerX, y);
+}
+
 function colorToHex(color: Color3): string {
   const r = channelToHex(color.r);
   const g = channelToHex(color.g);
   const b = channelToHex(color.b);
   return `#${r}${g}${b}`;
+}
+
+function colorToRgba(color: Color3, alpha: number): string {
+  const r = Math.max(0, Math.min(255, Math.round(color.r * 255)));
+  const g = Math.max(0, Math.min(255, Math.round(color.g * 255)));
+  const b = Math.max(0, Math.min(255, Math.round(color.b * 255)));
+  return `rgba(${r}, ${g}, ${b}, ${alpha})`;
 }
 
 function channelToHex(value: number): string {

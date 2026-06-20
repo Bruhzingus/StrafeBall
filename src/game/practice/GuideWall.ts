@@ -138,7 +138,7 @@ const GUIDE_PANELS: readonly GuidePanelSpec[] = [
         ]
       }
     ],
-    footer: 'A wall-run can only climb for the first 1.5s — after that gravity takes over and only descending still works. Jumping to a new wall resets it.'
+    footer: 'A wall-run can only climb for the first 0.8s — after that gravity takes over and only descending still works. Jumping to a new wall resets it.'
   }
 ] as const;
 

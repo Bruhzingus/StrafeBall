@@ -21,6 +21,18 @@ export class Hud {
   private readonly clutchEvent: HTMLDivElement;
   private readonly qteEvent: HTMLDivElement;
   private readonly hitMarker: HTMLDivElement;
+  private readonly interactPrompt: HTMLDivElement;
+  private lastInteractPromptText: string | null = null;
+  private readonly gameplayHud: HTMLDivElement;
+  private readonly leftCatchCard: HTMLDivElement;
+  private readonly leftCatchStatus: HTMLDivElement;
+  private readonly rightCatchCard: HTMLDivElement;
+  private readonly rightCatchStatus: HTMLDivElement;
+  private readonly backflipCard: HTMLDivElement;
+  private readonly backflipStatus: HTMLDivElement;
+  private readonly speedValue: HTMLDivElement;
+  private smoothedSpeed = 0;
+  private hasSmoothedSpeed = false;
   private readonly countdown: HTMLDivElement;
   private readonly boundaryClock: HTMLDivElement;
   private readonly halfCourtWarning: HTMLDivElement;
@@ -74,6 +86,68 @@ export class Hud {
     this.hitMarker.className = 'hit-marker';
     this.root.appendChild(this.hitMarker);
 
+    this.interactPrompt = document.createElement('div');
+    this.interactPrompt.className = 'interact-prompt';
+    this.root.appendChild(this.interactPrompt);
+
+    this.gameplayHud = document.createElement('div');
+    this.gameplayHud.className = 'ability-hud';
+    this.gameplayHud.innerHTML = `
+      <div class="ability-hud-card ability-hud-card--catch" data-ability="left-catch">
+        <div class="ability-ring">
+          <div class="ability-icon ability-icon--hand ability-icon--left" aria-label="Left hand catch">
+            <svg class="ability-glyph ability-glyph--hand" viewBox="0 0 64 64" aria-hidden="true">
+              <g class="ability-hand-shape">
+                <path class="ability-glyph-fill" d="M18 29c0-3 4-3 4 0V17c0-4 6-4 6 0v12-16c0-4 6-4 6 0v16-14c0-4 6-4 6 0v16-9c0-4 6-4 6 0v17c0 10-7 17-17 17h-2c-8 0-14-5-17-13l-4-11c-1-4 5-6 7-2l4 7 1-4z" />
+              </g>
+              <text x="32" y="40">L</text>
+            </svg>
+          </div>
+        </div>
+        <div class="ability-keybind">M1</div>
+        <div class="ability-label">Catch</div>
+        <div class="ability-status">READY</div>
+      </div>
+      <div class="ability-hud-card ability-hud-card--catch" data-ability="right-catch">
+        <div class="ability-ring">
+          <div class="ability-icon ability-icon--hand ability-icon--right" aria-label="Right hand catch">
+            <svg class="ability-glyph ability-glyph--hand" viewBox="0 0 64 64" aria-hidden="true">
+              <g class="ability-hand-shape" transform="translate(64 0) scale(-1 1)">
+                <path class="ability-glyph-fill" d="M18 29c0-3 4-3 4 0V17c0-4 6-4 6 0v12-16c0-4 6-4 6 0v16-14c0-4 6-4 6 0v16-9c0-4 6-4 6 0v17c0 10-7 17-17 17h-2c-8 0-14-5-17-13l-4-11c-1-4 5-6 7-2l4 7 1-4z" />
+              </g>
+              <text x="32" y="40">R</text>
+            </svg>
+          </div>
+        </div>
+        <div class="ability-keybind">M2</div>
+        <div class="ability-label">Catch</div>
+        <div class="ability-status">READY</div>
+      </div>
+      <div class="ability-hud-card ability-hud-card--flip" data-ability="backflip">
+        <div class="ability-ring">
+          <div class="ability-icon ability-icon--flip" aria-label="Backflip">
+            <img class="ability-backflip-img" src="/assets/ui/backflip-icon.png" alt="" aria-hidden="true" />
+          </div>
+        </div>
+        <div class="ability-keybind">Q</div>
+        <div class="ability-label">Backflip</div>
+        <div class="ability-status">READY</div>
+      </div>
+      <div class="ability-speed">
+        <div class="ability-speed-label">Speed</div>
+        <div class="ability-speed-value">0.0</div>
+        <div class="ability-speed-unit">m/s</div>
+      </div>
+    `;
+    this.root.appendChild(this.gameplayHud);
+    this.leftCatchCard = this.mustHudElement<HTMLDivElement>('[data-ability="left-catch"]');
+    this.leftCatchStatus = this.mustHudElement<HTMLDivElement>('[data-ability="left-catch"] .ability-status');
+    this.rightCatchCard = this.mustHudElement<HTMLDivElement>('[data-ability="right-catch"]');
+    this.rightCatchStatus = this.mustHudElement<HTMLDivElement>('[data-ability="right-catch"] .ability-status');
+    this.backflipCard = this.mustHudElement<HTMLDivElement>('[data-ability="backflip"]');
+    this.backflipStatus = this.mustHudElement<HTMLDivElement>('[data-ability="backflip"] .ability-status');
+    this.speedValue = this.mustHudElement<HTMLDivElement>('.ability-speed-value');
+
     this.countdown = document.createElement('div');
     this.countdown.className = 'countdown';
     this.root.appendChild(this.countdown);
@@ -118,6 +192,19 @@ export class Hud {
 
   showScoreEvent(title: string, subtitle: string, variant: 'good' | 'bad' | 'neutral' = 'neutral'): void {
     this.showTimedScoreEvent(title, subtitle, variant, 1150);
+  }
+
+  /** Bottom-middle "Hold/Press E to ..." prompt. Pass null to hide it. */
+  setInteractPrompt(verb: 'Hold' | 'Press' | null, action: string): void {
+    const text = verb === null ? null : `${verb}|${action}`;
+    if (this.lastInteractPromptText === text) return;
+    this.lastInteractPromptText = text;
+    if (verb === null) {
+      this.interactPrompt.classList.remove('interact-prompt--visible');
+      return;
+    }
+    this.interactPrompt.innerHTML = `${escapeHtml(verb)} <span class="key">E</span> ${escapeHtml(action)}`;
+    this.interactPrompt.classList.add('interact-prompt--visible');
   }
 
   showTeamJoinEvent(message: string, teamId: string): void {
@@ -240,6 +327,13 @@ export class Hud {
     const hands = player.hands;
     const v = movement.velocity;
     const noBoundariesTime = Math.max(0, TUNING.match.noBoundariesSeconds - rules.boundary.elapsed);
+    this.updateGameplayHud({
+      leftCatchCooldown: hands.left.cooldown,
+      rightCatchCooldown: hands.right.cooldown,
+      backflipCooldown: player.backflip.cooldown,
+      speed: movement.speed,
+      dt: Math.max(0, frameMs / 1000)
+    });
 
     const dashRecharge =
       player.dash.charges >= TUNING.dash.maxCharges
@@ -443,6 +537,13 @@ export class Hud {
 
     const left = local?.hands.left;
     const right = local?.hands.right;
+    this.updateGameplayHud({
+      leftCatchCooldown: left?.cooldownSeconds ?? 0,
+      rightCatchCooldown: right?.cooldownSeconds ?? 0,
+      backflipCooldown: local?.movementInternal.backflipCooldown ?? 0,
+      speed: local?.movement.speed ?? 0,
+      dt: Math.max(0, frameMs / 1000)
+    });
     const staminaHtml = local
       ? this.staminaBar(local.dash.charges, TUNING.dash.maxCharges, local.dash.charges >= TUNING.dash.maxCharges ? 'full' : `+1 in ${Math.max(0, TUNING.dash.rechargeSeconds - local.dash.rechargeTimerSeconds).toFixed(1)}s`)
       : this.staminaBar(0, TUNING.dash.maxCharges, '-');
@@ -557,6 +658,38 @@ export class Hud {
     el.innerHTML = html;
   }
 
+  private updateGameplayHud(state: {
+    leftCatchCooldown: number;
+    rightCatchCooldown: number;
+    backflipCooldown: number;
+    speed: number;
+    dt: number;
+  }): void {
+    this.updateAbilityCard(this.leftCatchCard, this.leftCatchStatus, state.leftCatchCooldown, TUNING.catch.cooldownSeconds);
+    this.updateAbilityCard(this.rightCatchCard, this.rightCatchStatus, state.rightCatchCooldown, TUNING.catch.cooldownSeconds);
+    this.updateAbilityCard(this.backflipCard, this.backflipStatus, state.backflipCooldown, TUNING.backflip.cooldownSeconds);
+
+    const speed = Number.isFinite(state.speed) ? Math.max(0, state.speed) : 0;
+    if (!this.hasSmoothedSpeed) {
+      this.smoothedSpeed = speed;
+      this.hasSmoothedSpeed = true;
+    } else {
+      const alpha = 1 - Math.exp(-Math.max(0, state.dt) / 0.12);
+      this.smoothedSpeed += (speed - this.smoothedSpeed) * alpha;
+    }
+    this.speedValue.textContent = this.smoothedSpeed.toFixed(1);
+  }
+
+  private updateAbilityCard(card: HTMLDivElement, status: HTMLDivElement, cooldown: number, maxCooldown: number): void {
+    const remaining = Math.max(0, Number.isFinite(cooldown) ? cooldown : 0);
+    const max = Math.max(0.001, maxCooldown);
+    const progress = remaining <= 0 ? 1 : Math.max(0, Math.min(1, 1 - remaining / max));
+    card.style.setProperty('--ability-progress', `${(progress * 360).toFixed(1)}deg`);
+    card.classList.toggle('ability-hud-card--ready', remaining <= 0);
+    card.classList.toggle('ability-hud-card--cooldown', remaining > 0);
+    status.textContent = remaining <= 0 ? 'READY' : `${remaining.toFixed(1)}s`;
+  }
+
   private movementState(player: PlayerController): string {
     const m = player.lastMovementSnapshot;
     const parts: string[] = [];
@@ -666,6 +799,12 @@ export class Hud {
     el.className = `hud-panel ${className}`;
     this.root.appendChild(el);
     return el;
+  }
+
+  private mustHudElement<T extends Element>(selector: string): T {
+    const element = this.gameplayHud.querySelector<T>(selector);
+    if (!element) throw new Error(`Missing gameplay HUD element: ${selector}`);
+    return element;
   }
 
   private handText(hand: { ball: { id: number } | null; charging: boolean; chargeSeconds: number; catchStance: boolean; cooldown: number }): string {

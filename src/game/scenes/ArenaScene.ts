@@ -3,6 +3,7 @@ import { FxaaPostProcess } from '@babylonjs/core/PostProcesses/fxaaPostProcess';
 import { InputManager } from '../input/InputManager';
 import { PlayerController } from '../player/PlayerController';
 import { GymArena } from '../map/GymArena';
+import { MatObstacle } from '../map/MatObstacle';
 import { ModelLoader } from '../assets/ModelLoader';
 import { BallManager } from '../ball/BallManager';
 import { BallVisualEffects } from '../ball/BallVisualEffects';
@@ -597,25 +598,13 @@ export class ArenaScene {
    * collision worlds so it blocks players and balls again.
    */
   private updateMatRestore(dt: number): void {
-    if (!this.input.isKeyDown(CONTROL_KEYS.interact)) {
+    const nearest = this.findNearestRestorableMat();
+    if (!nearest) {
       this.matRestoreHold = 0;
       return;
     }
 
-    const p = this.player.root.position;
-    const restoreReach = TUNING.mat.restoreReach;
-    let nearest: typeof this.gym.mats[number] | null = null;
-    let nearestDist = Infinity;
-    for (const mat of this.gym.mats) {
-      if (!mat.knockedOver) continue;
-      const box = mat.getAABB(); // standing footprint center is a stable proximity anchor
-      const mx = (box.minX + box.maxX) * 0.5;
-      const mz = (box.minZ + box.maxZ) * 0.5;
-      const d = (p.x - mx) * (p.x - mx) + (p.z - mz) * (p.z - mz);
-      if (d < nearestDist) { nearestDist = d; nearest = mat; }
-    }
-
-    if (!nearest || nearestDist > restoreReach * restoreReach) {
+    if (!this.input.isKeyDown(CONTROL_KEYS.interact)) {
       this.matRestoreHold = 0;
       return;
     }
@@ -627,6 +616,44 @@ export class ArenaScene {
       this.gym.addMatCollision(nearest);
       this.matPostResetKnockImmunityById.set(nearest.id, TUNING.mat.postResetKnockImmunitySeconds);
     }
+  }
+
+  /** Nearest knocked-over mat within restore reach of the player, or null if none in range. */
+  private findNearestRestorableMat(): MatObstacle | null {
+    const p = this.player.root.position;
+    const restoreReach = TUNING.mat.restoreReach;
+    let nearest: MatObstacle | null = null;
+    let nearestDist = Infinity;
+    for (const mat of this.gym.mats) {
+      if (!mat.knockedOver) continue;
+      const box = mat.getAABB(); // standing footprint center is a stable proximity anchor
+      const mx = (box.minX + box.maxX) * 0.5;
+      const mz = (box.minZ + box.maxZ) * 0.5;
+      const d = (p.x - mx) * (p.x - mx) + (p.z - mz) * (p.z - mz);
+      if (d < nearestDist) { nearestDist = d; nearest = mat; }
+    }
+    return nearest && nearestDist <= restoreReach * restoreReach ? nearest : null;
+  }
+
+  /** Bottom-middle "Hold E" / "Press E" prompt: mat restore takes priority over ball pickup since
+   * both use E and a mat is the more deliberate action (and rarer to be in range of both). */
+  private updateInteractPrompt(): void {
+    if (this.findNearestRestorableMat()) {
+      this.hud.setInteractPrompt('Hold', 'to pick up mat');
+      return;
+    }
+
+    const left = this.player.hands.getHand('left');
+    const right = this.player.hands.getHand('right');
+    if (!left.ball || !right.ball) {
+      const waist = this.player.lastMovementSnapshot.position.add(new Vector3(0, 0.8, 0));
+      if (this.ballManager.findPickupCandidate(waist)) {
+        this.hud.setInteractPrompt('Press', 'to pick up ball');
+        return;
+      }
+    }
+
+    this.hud.setInteractPrompt(null, '');
   }
 
   private tickMatPostResetKnockImmunity(dt: number): void {
@@ -713,6 +740,7 @@ export class ArenaScene {
     this.checkBotHitsPlayer(dt);
     this.ballVisualEffects.update(dt);
     this.updateOfflineMats(dt);
+    this.updateInteractPrompt();
     this.updateLocalMovementFoley(dt, vector3ToVec3(snap.velocity), snap.grounded, snap.sliding, snap.dashingThisFrame, snap.wallRunning);
 
     // Each landed hit grants the thrower one dash charge (locked rule).

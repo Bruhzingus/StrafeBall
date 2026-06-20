@@ -93,7 +93,7 @@ export const GAME_CONSTANTS = {
     // After this long on the wall, real gravity takes over and climbing (steering up) stops working —
     // only descending is still allowed. Resets whenever the run re-engages (new wall, or jump/dash
     // back into a wall), since wallRunTimer itself resets on re-engage.
-    runGravityDelaySeconds: 1.25,
+    runGravityDelaySeconds: 0.8,
     // Gravity scale applied once runGravityDelaySeconds has elapsed (pulls the player down the wall).
     runLateGravityScale: 0.6,
     // When the player reaches the ceiling clamp while wall-running, push them this far down (m/s)
@@ -139,7 +139,7 @@ export const GAME_CONSTANTS = {
   ball: {
     maxHeldBalls: 2,
     radius: 0.22,
-    pickupRadius: 1.55,
+    pickupRadius: 1.9,
     slowPickupSpeed: 2.25,
     gravity: 9.8,
     quickThrowSpeed: 24,
@@ -169,9 +169,9 @@ export const GAME_CONSTANTS = {
 
   mat: {
     // Hold E this long to stand a knocked-over mat back up.
-    restoreHoldSeconds: 0.6,
-    // Slightly generous so players can reset a flat mat without needing to stand exactly on it.
-    restoreReach: 2.0,
+    restoreHoldSeconds: 0.35,
+    // Generous so players can reset a flat mat without needing to stand exactly on it.
+    restoreReach: 2.6,
     // Freshly reset mats ignore player knock-over contact briefly so they do not immediately flop.
     postResetKnockImmunitySeconds: 2
   },
