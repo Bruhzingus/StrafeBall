@@ -236,7 +236,10 @@ export class GymArena {
     ];
 
     for (const wall of walls) {
-      this.loader.createVisual('wall', { name: wall.name, size: wall.size, position: wall.position });
+      const mesh = this.loader.createVisual('wall', { name: wall.name, size: wall.size, position: wall.position });
+      // Pickable so nametags can raycast against the walls for line-of-sight occlusion.
+      mesh.isPickable = true;
+      mesh.metadata = { ...(mesh.metadata ?? {}), nametagOccluder: true };
     }
   }
 

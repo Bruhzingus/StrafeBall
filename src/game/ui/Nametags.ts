@@ -1,5 +1,5 @@
 import type { AbstractEngine } from '@babylonjs/core';
-import { Camera, Matrix, Scene, Vector3 } from '@babylonjs/core';
+import { Camera, Matrix, Ray, Scene, Vector3 } from '@babylonjs/core';
 import type { PlayerNametagInfo } from '../network/NetworkRenderer';
 
 interface NametagEntry {
@@ -66,12 +66,28 @@ export class Nametags {
     const screen = Vector3.Project(headPosition, Matrix.Identity(), camera.getScene().getTransformMatrix(), viewport);
 
     const behindCamera = screen.z < 0 || screen.z > 1;
-    if (behindCamera) {
+    if (behindCamera || this.isOccluded(headPosition, camera)) {
       entry.el.style.display = 'none';
       return;
     }
     entry.el.style.display = '';
     entry.el.style.left = `${screen.x}px`;
     entry.el.style.top = `${screen.y}px`;
+  }
+
+  /** True when static world geometry blocks the line of sight from the camera to the player's head. */
+  private isOccluded(headPosition: Vector3, camera: Camera): boolean {
+    const origin = camera.globalPosition;
+    const toHead = headPosition.subtract(origin);
+    const distance = toHead.length();
+    if (distance < 1e-3) return false;
+
+    const ray = new Ray(origin, toHead.scale(1 / distance), distance);
+    const scene = camera.getScene();
+    // Only meshes tagged as solid world occluders (the gym walls) should hide a tag —
+    // player avatars, the ball, court lines, etc. are skipped.
+    const hit = scene.pickWithRay(ray, (mesh) => mesh.metadata?.nametagOccluder === true);
+    // Leave a small margin so a tag isn't hidden by the surface directly behind the head.
+    return !!hit?.hit && hit.distance < distance - 0.25;
   }
 }
