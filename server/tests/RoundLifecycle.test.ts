@@ -182,6 +182,9 @@ describe('Stage 3 — unified round lifecycle', () => {
 
 describe('Stage 3 — settings-driven mat presets', () => {
   it('spawns the authoritative mat set for each preset', () => {
+    const six = new ServerGameLoop('room', { settings: settings({ format: '1v1', matPreset: 6 }) });
+    expect(Object.keys(six.state.mats)).toHaveLength(6);
+
     const four = new ServerGameLoop('room', { settings: settings({ format: '1v1', matPreset: 4 }) });
     expect(Object.keys(four.state.mats)).toHaveLength(4);
 
@@ -196,6 +199,8 @@ describe('Stage 3 — settings-driven mat presets', () => {
     const loop = new ServerGameLoop('room');
     loop.addPlayer('a', 'A'); // single player keeps the lobby open
     expect(Object.keys(loop.state.mats)).toHaveLength(4);
+    expect(loop.handleUpdateRoomSettings('a', { matPreset: 6 }).ok).toBe(true);
+    expect(Object.keys(loop.state.mats)).toHaveLength(6);
     expect(loop.handleUpdateRoomSettings('a', { matPreset: 2 }).ok).toBe(true);
     expect(Object.keys(loop.state.mats)).toHaveLength(2);
     expect(loop.handleUpdateRoomSettings('a', { matPreset: 0 }).ok).toBe(true);
@@ -225,6 +230,29 @@ describe('Stage 3 — live-ball bounce cap from settings', () => {
     };
     for (let i = 0; i < 6; i += 1) loop.step();
     expect(loop.state.balls.ball_0.phase).toBe('dead');
+  });
+
+  it('applies the configured bounce cap to wall and ceiling rebounds', () => {
+    const loop = new ServerGameLoop('room', { settings: settings({ format: '1v1', maxLiveBallBounces: 3, matPreset: 0 }) });
+    loop.addPlayer('a', 'A');
+    loop.addPlayer('b', 'B');
+    playNow(loop);
+
+    loop.state.balls.ball_0 = {
+      ...loop.state.balls.ball_0,
+      phase: 'live',
+      ownerKind: 'player',
+      ownerId: 'a',
+      heldByPlayerId: null,
+      heldHand: null,
+      position: vec3(0, GAME_CONSTANTS.map.wallHeight - GAME_CONSTANTS.ball.radius - 0.01, 0),
+      velocity: vec3(0, 24, 0),
+      bounceCount: 0
+    };
+
+    for (let i = 0; i < 8 && loop.state.balls.ball_0.bounceCount < 1; i += 1) loop.step();
+    expect(loop.state.balls.ball_0.phase).toBe('live');
+    expect(loop.state.balls.ball_0.bounceCount).toBe(1);
   });
 });
 

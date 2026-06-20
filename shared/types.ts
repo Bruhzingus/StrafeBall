@@ -55,7 +55,7 @@ export interface RoomSettings {
   dodgeballCount: number;
   /** Bounces a live ball survives before it dies. Range ROOM_SETTINGS_LIMITS.bounces. */
   maxLiveBallBounces: number;
-  /** Mat layout preset: number of standing cover mats. Must be one of ALLOWED_MAT_PRESETS (0, 2, 4). */
+  /** Mat layout preset: number of standing cover mats. Must be one of ALLOWED_MAT_PRESETS. */
   matPreset: number;
   /** Fixed number of rounds in a match. Range ROOM_SETTINGS_LIMITS.rounds. */
   roundCount: number;

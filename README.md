@@ -57,6 +57,14 @@ Open the local URL printed by Vite, usually `http://localhost:5173`.
 
 ## Run Multiplayer Locally
 
+Fast path from the repo root:
+
+```bash
+npm run dev:online
+```
+
+That starts both the Colyseus server on `ws://localhost:2567` and the Vite client pointed at it.
+
 In one terminal, start the Colyseus server:
 
 ```bash

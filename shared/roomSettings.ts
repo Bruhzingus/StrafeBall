@@ -27,8 +27,8 @@ export const ALLOWED_FORMATS: readonly MatchFormat[] = ['1v1', '2v2'];
 /** Hard cap on team size while larger formats are disabled. Validation rejects anything above this. */
 export const MAX_ENABLED_TEAM_SIZE = 2;
 
-/** Mat layout presets: the number of standing cover mats allowed (0, 2, or 4). 4 = current map. */
-export const ALLOWED_MAT_PRESETS: readonly number[] = [0, 2, 4];
+/** Mat layout presets: the number of standing cover mats allowed. 4 = recommended map. */
+export const ALLOWED_MAT_PRESETS: readonly number[] = [0, 2, 4, 6];
 
 export interface TeamShape {
   teamSize: number;

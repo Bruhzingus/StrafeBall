@@ -3187,6 +3187,7 @@ export class ServerGameLoop {
       winnerTeamId: null,
       boundary: { ...this.state.match.boundary, elapsedSeconds: 0, noBoundaries: false, lastEvent: { type: 'none' } }
     };
+    this.roundRebuildPending = true;
     if (this.debug.NET_DEBUG) this.logger(`match start ${kind} players=${this.connectedCount()}/${this.maxPlayers}`);
   }
 
@@ -3713,7 +3714,7 @@ function resolveBallBounds(ball: BallState, bounceRule?: BounceRule): BallState 
   // A floor / back-wall contact always wins (kills now). Otherwise it was a side-wall/ceiling-only
   // contact: let the ball survive its first such bounce, die on the second.
   if (hitKillNow) return applyBallBounce(resolved, bounceRule);
-  return applyWallCeilingBounce(resolved);
+  return applyWallCeilingBounce(resolved, bounceRule);
 }
 
 /**
@@ -3721,13 +3722,15 @@ function resolveBallBounds(ball: BallState, bounceRule?: BounceRule): BallState 
  * SECOND. Implemented by counting wall/ceiling bounces in bounceCount and only killing once the
  * count exceeds 1. Non-live phases just advance the count (mirrors applyBallBounce's tail).
  */
-function applyWallCeilingBounce(ball: BallState): BallState {
+function applyWallCeilingBounce(ball: BallState, bounceRule?: BounceRule): BallState {
   if (ball.phase !== 'live' && ball.phase !== 'deflected') {
     return { ...ball, bounceCount: ball.bounceCount + 1 };
   }
   const bounceCount = ball.bounceCount + 1;
-  // Allow exactly one wall/ceiling bounce; the second one kills.
-  if (bounceCount > 1) {
+  const deadAfterBounces = ball.phase === 'deflected'
+    ? bounceRule?.deflectedDeadAfterBounces ?? GAME_CONSTANTS.ball.deflectedDeadAfterBounces
+    : bounceRule?.deadAfterBounces ?? GAME_CONSTANTS.ball.deadAfterBounces;
+  if (bounceCount > deadAfterBounces) {
     return { ...markBallDead(ball), bounceCount };
   }
   return { ...ball, bounceCount };
@@ -3776,7 +3779,7 @@ function resolveBallStaticBoxes(ball: BallState, boxes: AABB[], logger?: (messag
   if (!bounced) return ball;
   const resolvedBall = { ...ball, position, velocity };
   const resolved = isSideWallLikeStaticBounce(hitBox, hitAxis)
-    ? applyWallCeilingBounce(resolvedBall)
+    ? applyWallCeilingBounce(resolvedBall, bounceRule)
     : applyBallBounce(resolvedBall, bounceRule);
   if (hitBox?.kind === 'bleacher') {
     logger?.(

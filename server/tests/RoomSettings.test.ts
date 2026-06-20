@@ -80,6 +80,7 @@ describe('ServerGameLoop host + settings authority', () => {
     loop.addPlayer('a', 'A');
     expect(loop.handleUpdateRoomSettings('a', { livesPerPlayer: 99 })).toEqual({ ok: false, reason: 'invalid-field' });
     expect(loop.handleUpdateRoomSettings('a', { matPreset: 3 })).toEqual({ ok: false, reason: 'invalid-field' });
+    expect(loop.handleUpdateRoomSettings('a', { matPreset: 6 }).ok).toBe(true);
   });
 
   it('locks settings during live play but allows changes between games', () => {
@@ -126,5 +127,31 @@ describe('ServerGameLoop host + settings authority', () => {
     // The next match start rebuilds the world (a 1-player room needs a single reset vote).
     expect(loop.handleReset('a').ok).toBe(true);
     expect(Object.keys(loop.state.balls)).toHaveLength(9);
+  });
+
+  it('resets moved lobby balls to the center line when the host starts a match', () => {
+    const loop = new ServerGameLoop('room');
+    loop.addPlayer('a', 'A');
+    loop.addPlayer('b', 'B');
+    loop.state.match = { ...loop.state.match, status: 'warmup', countdownSeconds: 0 };
+    loop.state.balls.ball_0 = {
+      ...loop.state.balls.ball_0,
+      position: { x: 11, y: 2, z: 11 },
+      velocity: { x: 5, y: 0, z: 0 },
+      phase: 'live',
+      ownerId: 'a',
+      ownerKind: 'player',
+      bounceCount: 1
+    };
+
+    expect(loop.handleStartMatch('a').ok).toBe(true);
+    const steps = Math.ceil(GAME_CONSTANTS.match.countdownSeconds * loop.tickRate) + 2;
+    for (let i = 0; i < steps && loop.state.match.status === 'countdown'; i += 1) loop.step();
+
+    expect(loop.state.match.status).toBe('playing');
+    expect(loop.state.balls.ball_0.phase).toBe('loose');
+    expect(loop.state.balls.ball_0.position.x).toBeCloseTo(-((GAME_CONSTANTS.map.ballCount - 1) * 2) / 2);
+    expect(loop.state.balls.ball_0.position.z).toBeCloseTo(0);
+    expect(loop.state.balls.ball_0.bounceCount).toBe(0);
   });
 });

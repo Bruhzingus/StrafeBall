@@ -54,12 +54,14 @@ export interface MatSpec {
 export const MAT_SPECS: readonly MatSpec[] = [
   { id: 'mat_-4.5_-5.5', x: -4.5, y: MAT_DIMENSIONS.height / 2, z: -5.5, yawRadians: 0 },
   { id: 'mat_4.5_-5.5', x: 4.5, y: MAT_DIMENSIONS.height / 2, z: -5.5, yawRadians: 0 },
+  { id: 'mat_0_-5.5', x: 0, y: MAT_DIMENSIONS.height / 2, z: -5.5, yawRadians: 0 },
+  { id: 'mat_0_5.5', x: 0, y: MAT_DIMENSIONS.height / 2, z: 5.5, yawRadians: 0 },
   { id: 'mat_-4.5_5.5', x: -4.5, y: MAT_DIMENSIONS.height / 2, z: 5.5, yawRadians: 0 },
   { id: 'mat_4.5_5.5', x: 4.5, y: MAT_DIMENSIONS.height / 2, z: 5.5, yawRadians: 0 }
 ];
 
 /**
- * Deterministic mat layouts per host `matPreset` setting (0 / 2 / 4 standing cover mats). The 2-mat
+ * Deterministic mat layouts per host `matPreset` setting. The 2-mat
  * layout is the point-symmetric diagonal pair (one mat per spawn side, rotationally mirrored through
  * center) so neither team gets more cover — matching the court's 180° rotational symmetry. Any
  * unrecognized preset falls back to the full 4-mat layout. This is the single source of truth the
@@ -69,7 +71,8 @@ export const MAT_SPECS: readonly MatSpec[] = [
 const MAT_PRESET_IDS: Record<number, readonly string[]> = {
   0: [],
   2: ['mat_-4.5_-5.5', 'mat_4.5_5.5'],
-  4: MAT_SPECS.map((spec) => spec.id)
+  4: ['mat_-4.5_-5.5', 'mat_4.5_-5.5', 'mat_-4.5_5.5', 'mat_4.5_5.5'],
+  6: MAT_SPECS.map((spec) => spec.id)
 };
 
 export function matSpecsForPreset(matPreset: number): MatSpec[] {

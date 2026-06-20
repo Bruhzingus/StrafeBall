@@ -6,6 +6,7 @@
   "scripts": {
     "predev": "npm run music:manifest",
     "dev": "vite",
+    "dev:online": "node scripts/dev-online.mjs",
     "prebuild": "npm run music:manifest",
     "build": "tsc && vite build",
     "build:live": "npm run build && npm --prefix server run build",

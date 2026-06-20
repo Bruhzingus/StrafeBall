@@ -2060,14 +2060,14 @@ export class ArenaScene {
         this.hud.pulseCrosshair('hit');
         if (snapshot.room.match.mode === '2v2') {
           const target = snapshot.room.players[event.targetId];
-          this.hud.showScoreEvent('HIT', `${target?.name ?? 'Opponent'} ${target?.lives ?? '-'} / ${TUNING.match.playerLives} lives`, 'good');
+          this.hud.showScoreEvent('HIT', `${target?.name ?? 'Opponent'} ${target?.lives ?? '-'} / ${snapshot.room.settings.livesPerPlayer} lives`, 'good');
         }
       } else if (event.targetId === this.multiplayer.localPlayerId) {
         this.hud.showHitMarker('bad');
         this.hud.pulseCrosshair('throw');
         if (snapshot.room.match.mode === '2v2') {
           const local = snapshot.room.players[event.targetId];
-          this.hud.showScoreEvent('LIFE LOST', `${local?.lives ?? '-'} / ${TUNING.match.playerLives} lives remaining`, 'bad');
+          this.hud.showScoreEvent('LIFE LOST', `${local?.lives ?? '-'} / ${snapshot.room.settings.livesPerPlayer} lives remaining`, 'bad');
         }
       }
     }

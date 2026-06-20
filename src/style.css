@@ -2344,6 +2344,28 @@ html, body {
   font-size: 11px;
 }
 
+.multiplayer-settings-entry:empty {
+  display: none;
+}
+
+.multiplayer-settings-entry {
+  margin-top: 7px;
+}
+
+.multiplayer-settings-entry__button {
+  width: 100%;
+  min-height: 34px;
+  border-width: 2px;
+  border-radius: 9px;
+  padding: 7px 10px;
+  background: linear-gradient(180deg, #79f5ff, var(--electric-cyan));
+  color: var(--ink);
+  font-size: 12px;
+  font-weight: 900;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+
 .multiplayer-modal--connected .multiplayer-room-summary {
   margin-top: 6px;
   font-size: 11px;
@@ -2404,6 +2426,10 @@ html, body {
   display: flex;
   flex-direction: column;
   gap: 10px;
+}
+
+.multiplayer-modal:not(.multiplayer-modal--name-ready) .multiplayer-launch {
+  display: none;
 }
 
 .multiplayer-create,
@@ -3149,19 +3175,14 @@ html, body {
 
 .multiplayer-modal--postmatch {
   box-sizing: border-box;
-  display: grid;
-  place-items: stretch;
-  padding: 18px;
-  background:
-    repeating-linear-gradient(0deg, rgba(255, 255, 255, 0.03) 0 1px, transparent 1px 8px),
-    rgba(8, 13, 26, 0.78);
+  display: block;
+  padding: 0;
+  pointer-events: none;
+  background: transparent;
 }
 
 .multiplayer-modal--postmatch .multiplayer-modal__shade {
-  display: block;
-  background:
-    linear-gradient(180deg, rgba(12, 19, 38, 0.48), rgba(12, 19, 38, 0.86)),
-    rgba(8, 13, 26, 0.72);
+  display: none;
 }
 
 .multiplayer-modal--postmatch .multiplayer-panel--lobby {
@@ -3183,62 +3204,74 @@ html, body {
 }
 
 .multiplayer-modal--postmatch .multiplayer-postmatch {
-  position: relative;
+  position: fixed;
+  top: 12px;
+  left: 50%;
   z-index: 1;
   display: grid;
-  height: 100%;
+  width: min(1180px, calc(100vw - 32px));
+  max-width: calc(100vw - 32px);
+  height: auto;
   min-height: 0;
   margin: 0;
+  transform: translateX(-50%);
+  pointer-events: auto;
 }
 
 .multiplayer-modal--postmatch .multiplayer-report-card {
   display: grid;
-  grid-template-rows: auto auto minmax(0, 1fr) auto auto;
+  grid-template-columns: minmax(220px, 1.15fr) minmax(280px, 1fr) minmax(360px, 1.35fr);
+  align-items: center;
   gap: 14px;
   box-sizing: border-box;
   min-height: 0;
-  height: 100%;
-  padding: 34px 38px 28px 52px;
-  overflow: auto;
-  border-width: 4px;
-  box-shadow: 9px 9px 0 rgba(0, 0, 0, 0.32);
+  height: auto;
+  max-height: none;
+  padding: 12px 14px 12px 24px;
+  overflow: visible;
+  border-width: 3px;
+  box-shadow: 5px 5px 0 rgba(0, 0, 0, 0.32);
 }
 
 .multiplayer-modal--postmatch .multiplayer-report-card::before {
-  top: 30px;
-  bottom: 30px;
-  left: 20px;
+  top: 12px;
+  bottom: 12px;
+  left: 11px;
 }
 
 .multiplayer-modal--postmatch .multiplayer-report-card__top {
-  align-items: center;
-  padding-bottom: 12px;
-  border-bottom: 3px double rgba(21, 33, 59, 0.35);
+  align-items: flex-start;
+  min-width: 0;
+  padding-bottom: 0;
+  border-bottom: 0;
 }
 
 .multiplayer-modal--postmatch .multiplayer-report-card__eyebrow {
-  font-size: 14px;
+  font-size: 11px;
 }
 
 .multiplayer-modal--postmatch .multiplayer-report-card__title {
-  margin-top: 6px;
-  font-size: 64px;
+  margin-top: 4px;
+  font-size: 30px;
+  line-height: 0.95;
 }
 
 .multiplayer-modal--postmatch .multiplayer-report-card__subtitle {
-  max-width: 620px;
-  font-size: 20px;
+  max-width: none;
+  font-size: 13px;
+  line-height: 1.25;
 }
 
 .multiplayer-modal--postmatch .multiplayer-report-card__summary {
   grid-template-columns: repeat(3, minmax(0, 1fr));
-  gap: 12px;
+  gap: 6px;
   margin-top: 0;
 }
 
 .multiplayer-modal--postmatch .multiplayer-report-card__summary span {
-  padding: 12px 14px;
-  font-size: 18px;
+  min-width: 0;
+  padding: 7px 8px;
+  font-size: 12px;
 }
 
 .multiplayer-modal--postmatch .multiplayer-report-card__summary em,
@@ -3248,8 +3281,47 @@ html, body {
 }
 
 .multiplayer-modal--postmatch .multiplayer-report-card__summary strong {
-  margin-top: 4px;
-  font-size: 24px;
+  margin-top: 2px;
+  font-size: 15px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.multiplayer-modal--postmatch .multiplayer-report-card--compact .multiplayer-report-card__actions {
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 7px;
+  margin-top: 0;
+}
+
+.multiplayer-modal--postmatch .multiplayer-report-card--compact .multiplayer-postmatch-action {
+  min-height: 42px;
+  padding: 8px 9px;
+  border-width: 2px;
+  border-radius: 9px;
+  font-size: 12px;
+  white-space: normal;
+}
+
+.multiplayer-modal--postmatch .multiplayer-report-card--compact .multiplayer-report-card__vote {
+  grid-column: 1 / -1;
+  margin-top: 0;
+  padding: 6px 8px;
+  font-size: 11px;
+}
+
+@media (max-width: 1040px) {
+  .multiplayer-modal--postmatch .multiplayer-report-card {
+    grid-template-columns: minmax(220px, 0.9fr) minmax(320px, 1.1fr);
+  }
+
+  .multiplayer-modal--postmatch .multiplayer-report-card__summary {
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+  }
+
+  .multiplayer-modal--postmatch .multiplayer-report-card--compact .multiplayer-report-card__actions {
+    grid-column: 1 / -1;
+  }
 }
 
 .multiplayer-modal--postmatch .multiplayer-report-card__teams {

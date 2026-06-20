@@ -523,18 +523,16 @@ export class Hud {
     const scoreboardData: MatchScoreboardData = {
       mode: room.match.mode === '2v2' ? '2v2' : '1v1',
       halfDropSecondsRemaining: room.match.boundary.noBoundaries ? 0 : noBoundariesTime,
-      // Unified round model: the whiteboard number is ROUNDS WON (best-of-N series progress) for both
-      // formats, not the legacy hit-to-5 score (which no longer decides a private match).
       blueTeam: {
         name: 'BLUE TEAM',
         color: 'blue',
-        score: room.match.roundsWonByTeamId[blueTeamId] ?? 0,
+        score: teamLivesForHud(room, blueTeamId),
         players: teamPlayers(blueTeamId)
       },
       redTeam: {
         name: 'RED TEAM',
         color: 'red',
-        score: room.match.roundsWonByTeamId[redTeamId] ?? 0,
+        score: teamLivesForHud(room, redTeamId),
         players: teamPlayers(redTeamId)
       }
     };
@@ -973,6 +971,12 @@ function compareHudPlayers(a: PlayerState, b: PlayerState): number {
   if (a.teamId !== b.teamId) return a.teamId.localeCompare(b.teamId);
   if (a.teamSlotIndex !== b.teamSlotIndex) return a.teamSlotIndex - b.teamSlotIndex;
   return a.id.localeCompare(b.id);
+}
+
+function teamLivesForHud(room: RoomState, teamId: string): number {
+  return Object.values(room.players).reduce((total, player) => {
+    return player.teamId === teamId ? total + Math.max(0, player.lives) : total;
+  }, 0);
 }
 
 function onlineRoomStatus(room: RoomState): string {
