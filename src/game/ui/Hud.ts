@@ -461,9 +461,6 @@ export class Hud {
     const local = room.players[localPlayerId];
     this.updateHalfCourtWarning(local ? room.match.boundary.illegalCrossByPlayerId[localPlayerId] : undefined);
     const localTeamId = local?.teamId ?? room.match.teamIds[0] ?? 'blue';
-    const opponentTeamId = room.match.teamIds.find((teamId) => teamId !== localTeamId) ?? room.match.teamIds[1] ?? 'red';
-    const localTeam = players.filter((player) => player.teamId === localTeamId);
-    const opponentTeam = players.filter((player) => player.teamId === opponentTeamId);
     const isTeamElimination = room.match.mode === '2v2';
     const roomStatus = onlineRoomStatus(room);
     const disconnectStatus = onlineDisconnectStatus(players);
@@ -542,29 +539,25 @@ export class Hud {
       }
     };
     this.teamScoreboard.update(scoreboardData);
-    // The whiteboard is the scoreboard. The legacy top-center strip now only carries match status
-    // the board doesn't show (lives, votes, disconnects, winner), sitting below the board. When
-    // there's nothing to say we hide it entirely so the old panel never shows on its own.
+    // The whiteboard is the scoreboard. The old top-center match strip duplicated team/timer info and
+    // collided with the board, so this anchor now only carries temporary status messages below it.
     this.topCenter.classList.add('hud-top-center--below-scoreboard');
 
     if (isTeamElimination) {
-      this.topCenter.style.display = '';
-      this.setHtml(this.topCenter, `
-        <div class="team-match-strip">
-          ${teamLivesStrip(localTeam, localPlayerId)}
-          <div class="team-match-chip">
-            <strong>${roundLabel || 'Team Match'}</strong>
-            <span>${room.match.boundary.noBoundaries ? 'No boundaries' : `Half-court ${noBoundariesTime.toFixed(0)}s`}</span>
-          </div>
-          ${teamLivesStrip(opponentTeam, localPlayerId)}
-        </div>
-        ${roomStatus ? `<div class="scoreboard-msg hud-warn">${escapeHtml(roomStatus)}</div>` : ''}
-        ${disconnectStatus ? `<div class="scoreboard-msg hud-bad">${escapeHtml(disconnectStatus)}</div>` : ''}
-        ${downedBanner}
-        ${startVoteText}
-        ${resetVoteText}
-        ${winner}
-      `);
+      const teamStatus = [
+        roomStatus ? `<div class="scoreboard-msg hud-warn">${escapeHtml(roomStatus)}</div>` : '',
+        disconnectStatus ? `<div class="scoreboard-msg hud-bad">${escapeHtml(disconnectStatus)}</div>` : '',
+        downedBanner,
+        startVoteText,
+        resetVoteText,
+        winner
+      ].join('');
+      if (teamStatus.trim()) {
+        this.topCenter.style.display = '';
+        this.setHtml(this.topCenter, teamStatus);
+      } else {
+        this.topCenter.style.display = 'none';
+      }
     } else {
       // Private duel: scores/timer live on the whiteboard now. Only surface the strip when there's
       // actual status (room state, disconnects, vote, winner); otherwise hide it completely.
@@ -955,19 +948,6 @@ function formatHearts(lives: number, maxLives: number): string {
     html += `<span class="heart ${i < filled ? 'heart--full' : 'heart--empty'}" aria-hidden="true"></span>`;
   }
   return `${html}</span>`;
-}
-
-function teamLivesStrip(players: PlayerState[], localPlayerId: string): string {
-  return `
-    <div class="team-match-roster">
-      ${players.map((player) => `
-        <div class="team-match-player team-match-player--${escapeHtml(player.teamId)}">
-          <span class="team-match-name">${escapeHtml(player.name)}${player.id === localPlayerId ? ' (You)' : ''}</span>
-          ${formatHearts(player.lives, TUNING.match.playerLives)}
-        </div>
-      `).join('')}
-    </div>
-  `;
 }
 
 function escapeHtml(value: string): string {

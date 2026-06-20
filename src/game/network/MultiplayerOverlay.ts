@@ -41,6 +41,7 @@ export class MultiplayerOverlay {
   private readonly fullscreenCancel: HTMLButtonElement;
   private selectedMode: LobbyMode = '1v1';
   private modalOpen = false;
+  private settingsOpen = false;
   private wasLiveMatch = false;
   private pendingAction: PendingAction = null;
   private awaitingInteractReleaseFocus = false;
@@ -54,6 +55,7 @@ export class MultiplayerOverlay {
     errorMessage: '',
     selectedMode: null as LobbyMode | null,
     modalOpen: false,
+    settingsOpen: false,
     roomSummaryKey: ''
   };
 
@@ -194,6 +196,7 @@ export class MultiplayerOverlay {
   openMode(mode: LobbyMode): void {
     this.selectedMode = mode;
     this.modalOpen = true;
+    this.settingsOpen = false;
     this.awaitingInteractReleaseFocus = true;
     this.syncLockOverlaySuppression();
     document.exitPointerLock?.();
@@ -218,9 +221,13 @@ export class MultiplayerOverlay {
     // open until they close it (or the next match starts).
     if (liveMatch && !this.wasLiveMatch) {
       this.modalOpen = false;
+      this.settingsOpen = false;
     } else if (!liveMatch && this.wasLiveMatch && matchStatus === 'warmup') {
       // A live→lobby return (early-end vote passed): pop the menu so the host can reconfigure + restart.
       this.modalOpen = true;
+    }
+    if (liveMatch || (snapshot?.room && snapshot.room.match.status !== 'warmup')) {
+      this.settingsOpen = false;
     }
     this.wasLiveMatch = liveMatch;
     const connected = this.client.connected;
@@ -235,6 +242,7 @@ export class MultiplayerOverlay {
       this.lastRendered.errorMessage === this.client.errorMessage &&
       this.lastRendered.selectedMode === this.selectedMode &&
       this.lastRendered.modalOpen === this.modalOpen &&
+      this.lastRendered.settingsOpen === this.settingsOpen &&
       this.lastRendered.roomSummaryKey === roomSummary.key
     ) {
       return;
@@ -248,6 +256,7 @@ export class MultiplayerOverlay {
       errorMessage: this.client.errorMessage,
       selectedMode: this.selectedMode,
       modalOpen: this.modalOpen,
+      settingsOpen: this.settingsOpen,
       roomSummaryKey: roomSummary.key
     };
 
@@ -286,12 +295,13 @@ export class MultiplayerOverlay {
     const postmatch = connected && snapshot?.room.match.status === 'complete';
     // Compact HUD only while the menu is CLOSED. When the player deliberately reopens it (modalOpen),
     // show the full control surface so settings/vote controls are clearly interactive — even mid-match.
-    const compact = connected && !busy && this.client.status !== 'error' && !postmatch && !this.modalOpen;
+    const compact = connected && !busy && this.client.status !== 'error' && !postmatch && !liveMatch && !this.modalOpen && !this.settingsOpen;
     this.root.classList.toggle('multiplayer-modal--compact', compact);
     this.root.classList.toggle('multiplayer-modal--live', liveMatch);
     this.root.classList.toggle('multiplayer-modal--postmatch', postmatch);
     this.root.classList.toggle('multiplayer-modal--connected', connected);
-    const shouldShow = this.modalOpen || connected || busy || this.client.status === 'error';
+    this.root.classList.toggle('multiplayer-modal--settings-open', this.settingsOpen);
+    const shouldShow = (!liveMatch && (this.settingsOpen || this.modalOpen || connected)) || busy || this.client.status === 'error' || postmatch;
     this.root.classList.toggle('multiplayer-modal--hidden', !shouldShow);
     this.syncLockOverlaySuppression();
   }
@@ -310,6 +320,7 @@ export class MultiplayerOverlay {
     this.client.leave();
     this.lastCompletedMatchKey = '';
     this.modalOpen = true;
+    this.settingsOpen = false;
     this.update();
   };
 
@@ -317,6 +328,7 @@ export class MultiplayerOverlay {
     if (this.client.status === 'connecting') return;
     if (this.client.status === 'error') this.client.leave();
     this.modalOpen = false;
+    this.settingsOpen = false;
     this.awaitingInteractReleaseFocus = false;
     this.hideFullscreenPrompt();
     this.update();
@@ -423,7 +435,19 @@ export class MultiplayerOverlay {
   /** Dispatch a click on a room-control button (preset / setting stepper / start / end-vote). */
   private handleControlAction(control: HTMLButtonElement): void {
     const action = control.dataset.action;
+    if (action === 'open-settings') {
+      this.settingsOpen = true;
+      this.modalOpen = false;
+      this.update();
+      return;
+    }
+    if (action === 'close-settings') {
+      this.settingsOpen = false;
+      this.update();
+      return;
+    }
     if (action === 'start-match') {
+      this.settingsOpen = false;
       this.client.requestStartMatch();
       return;
     }
@@ -520,7 +544,7 @@ export class MultiplayerOverlay {
   }
 
   private syncLockOverlaySuppression(): void {
-    const suppress = this.modalOpen || !this.fullscreenPrompt.classList.contains('fullscreen-prompt--hidden');
+    const suppress = this.modalOpen || this.settingsOpen || !this.fullscreenPrompt.classList.contains('fullscreen-prompt--hidden');
     document.body.setAttribute(LOCK_OVERLAY_SUPPRESSED_ATTR, suppress ? '1' : '0');
     const lockOverlay = document.getElementById('lock-overlay');
     if (!lockOverlay) return;
@@ -888,17 +912,67 @@ function buildControlsHtml(room: RoomState, localPlayerId: string): string {
       : '';
 
   const roundInfo = `Round ${room.match.currentRound} / ${room.match.roundCount}`;
+  const settingsButton = room.match.status === 'warmup'
+    ? `<button class="multiplayer-control multiplayer-control--settings" data-action="open-settings" type="button">Settings</button>`
+    : '';
+  const compactSummary = `${escapeHtml(s.format.toUpperCase())} - ${s.livesPerPlayer} lives - ${s.dodgeballCount} balls - ${s.roundCount} round${s.roundCount === 1 ? '' : 's'}`;
+  const settingsMenu = buildSettingsMenuHtml({
+    room,
+    permission,
+    rows,
+    presetBtn,
+    startBtn,
+    lockNote,
+    roundInfo,
+    editable
+  });
 
   return `
-    <div class="multiplayer-controls__panel" data-editable="${editable ? '1' : '0'}">
+    <div class="multiplayer-controls__panel multiplayer-controls__panel--compact" data-editable="${editable ? '1' : '0'}">
       <div class="multiplayer-controls__head">
-        <span class="multiplayer-controls__title">Match Settings</span>
+        <span class="multiplayer-controls__title">Match Controls</span>
         ${permission}
       </div>
       <div class="multiplayer-controls__meta">Code <strong>${escapeHtml(room.id)}</strong> · ${roundInfo}</div>
-      <div class="multiplayer-controls__grid">${rows}</div>
-      <div class="multiplayer-controls__actions">${presetBtn}${startBtn}${endVoteHtml}</div>
+      <div class="multiplayer-controls__summary">${compactSummary}</div>
+      <div class="multiplayer-controls__actions">${settingsButton}${startBtn}${endVoteHtml}</div>
       ${lockNote}
+    </div>
+    ${settingsMenu}
+  `;
+}
+
+function buildSettingsMenuHtml(args: {
+  room: RoomState;
+  permission: string;
+  rows: string;
+  presetBtn: string;
+  startBtn: string;
+  lockNote: string;
+  roundInfo: string;
+  editable: boolean;
+}): string {
+  const { room, permission, rows, presetBtn, startBtn, lockNote, roundInfo, editable } = args;
+  return `
+    <div class="multiplayer-settings-menu" role="dialog" aria-modal="true" aria-label="Match settings">
+      <div class="multiplayer-settings-menu__shade"></div>
+      <div class="multiplayer-settings-menu__panel" data-editable="${editable ? '1' : '0'}">
+        <div class="multiplayer-settings-menu__header">
+          <div>
+            <div class="multiplayer-settings-menu__kicker">Private Match</div>
+            <div class="multiplayer-settings-menu__title">Match Settings</div>
+          </div>
+          <button class="multiplayer-control multiplayer-settings-menu__close" data-action="close-settings" type="button" aria-label="Close settings">x</button>
+        </div>
+        <div class="multiplayer-settings-menu__meta">
+          <span>Code <strong>${escapeHtml(room.id)}</strong></span>
+          <span>${roundInfo}</span>
+          ${permission}
+        </div>
+        <div class="multiplayer-controls__grid multiplayer-settings-menu__grid">${rows}</div>
+        <div class="multiplayer-controls__actions multiplayer-settings-menu__actions">${presetBtn}${startBtn}</div>
+        ${lockNote}
+      </div>
     </div>
   `;
 }
@@ -975,6 +1049,12 @@ function buildResetControlsHtml(room: RoomState, localPlayerId: string): string 
   const voteLabel = room.resetVote.requiredVotes > 0
     ? `Vote ${room.resetVote.voteCount}/${room.resetVote.requiredVotes} for ${room.resetVote.mode === 'reset-teams' ? 'reset teams' : 'reset match'}${resetVoters ? ` (${resetVoters})` : ''}`
     : 'Vote to reset';
+  const sameTeamsLabel = sameTeamsVoted
+    ? `Voted${formatVoteTally(sameTeamsCount, room.resetVote.requiredVotes)}`
+    : `Match${formatVoteTally(sameTeamsCount, room.resetVote.requiredVotes)}`;
+  const resetTeamsLabel = resetTeamsVoted
+    ? `Voted${formatVoteTally(resetTeamsCount, room.resetVote.requiredVotes)}`
+    : `Teams${formatVoteTally(resetTeamsCount, room.resetVote.requiredVotes)}`;
   return `
     <div class="multiplayer-reset-card">
       <div class="multiplayer-reset-copy">
@@ -982,8 +1062,8 @@ function buildResetControlsHtml(room: RoomState, localPlayerId: string): string 
         <div class="multiplayer-reset-status">${voteLabel}</div>
       </div>
       <div class="multiplayer-reset-actions">
-        <button class="multiplayer-reset-action" type="button" data-reset-mode="same-teams"${sameTeamsVoted ? ' disabled' : ''}>${sameTeamsVoted ? 'Voted Match' : 'Vote Reset Match'}${formatVoteTally(sameTeamsCount, room.resetVote.requiredVotes)}</button>
-        <button class="multiplayer-reset-action multiplayer-reset-action--alt" type="button" data-reset-mode="reset-teams"${resetTeamsVoted ? ' disabled' : ''}>${resetTeamsVoted ? 'Voted Teams' : 'Vote Reset Teams'}${formatVoteTally(resetTeamsCount, room.resetVote.requiredVotes)}</button>
+        <button class="multiplayer-reset-action" type="button" data-reset-mode="same-teams" aria-label="Vote reset match"${sameTeamsVoted ? ' disabled' : ''}>${sameTeamsLabel}</button>
+        <button class="multiplayer-reset-action multiplayer-reset-action--alt" type="button" data-reset-mode="reset-teams" aria-label="Vote reset teams"${resetTeamsVoted ? ' disabled' : ''}>${resetTeamsLabel}</button>
       </div>
     </div>
   `;

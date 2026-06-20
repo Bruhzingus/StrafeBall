@@ -233,6 +233,7 @@ class ServerGameLoop {
         this.seedInputTracking(playerId, slot.yawRadians);
         this.syncPlayerScores();
         this.ensureHostAssignment();
+        this.markAutoAssignedTeamChoice(player);
         this.reconcilePregameState('join');
         this.syncRoomPhase();
         return player;
@@ -2688,6 +2689,15 @@ class ServerGameLoop {
         this.resetVotesByPlayerId.clear();
         this.syncStartVoteState();
         this.syncResetVoteState();
+    }
+    markAutoAssignedTeamChoice(player) {
+        if (this.matchMode !== '2v2')
+            return;
+        if (this.state.match.status !== 'warmup')
+            return;
+        if (player.connected === false)
+            return;
+        this.teamChoicesByPlayerId.add(player.id);
     }
     resolveResetVotesAfterRosterChange() {
         this.syncResetVoteState();

@@ -872,11 +872,7 @@ describe('ServerGameLoop', () => {
       loop.addPlayer('d', 'D');
 
       expect(loop.state.match.status).toBe('warmup');
-      expect(loop.handleStartVote('a').ok).toBe(false);
-      chooseCurrentTeam(loop, 'a');
-      chooseCurrentTeam(loop, 'b');
-      chooseCurrentTeam(loop, 'c');
-      chooseCurrentTeam(loop, 'd');
+      // Initial auto-assigned 2v2 slots count as chosen; clicking a team is only needed to change it.
       expect(loop.state.startVote.teamChoiceCount).toBe(4);
       expect(loop.state.startVote.requiredVotes).toBe(3);
       expect(loop.handleStartVote('a').ok).toBe(true);
@@ -885,6 +881,18 @@ describe('ServerGameLoop', () => {
       expect(loop.handleStartVote('c').ok).toBe(true);
       expect(loop.state.match.status).toBe('countdown');
       expect(loop.state.match.countdownSeconds).toBe(GAME_CONSTANTS.match.countdownSeconds);
+    });
+
+    it('lets the host start once auto-assigned 2v2 players are already on separate teams', () => {
+      const loop = new ServerGameLoop('room', { mode: '2v2', playersPerTeam: 2 });
+      loop.addPlayer('a', 'A');
+      loop.addPlayer('b', 'B');
+
+      expect(loop.state.players.a.teamId).not.toBe(loop.state.players.b.teamId);
+      expect(loop.state.startVote.teamChoiceCount).toBe(2);
+      expect(loop.state.startVote.requiredTeamChoices).toBe(2);
+      expect(loop.handleStartMatch('a').ok).toBe(true);
+      expect(loop.state.match.status).toBe('countdown');
     });
 
     it('allows a vote-start for an uneven 2v2 pregame roster', () => {
