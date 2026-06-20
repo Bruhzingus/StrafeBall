@@ -12,6 +12,16 @@ out/
 .vite/
 .cache/
 
+# EXCEPTION: we commit the prebuilt deploy artifacts so the (throttled 1-vCPU) droplet never has
+# to run `npm run build` — it just `git pull`s the already-compiled output. Build locally with
+# `npm run deploy:prebuild`, then commit. See the deploy script in DEPLOY.md.
+#   - dist/        : Vite client bundle (served as static files off the droplet)
+#   - server/dist/ : tsc server output; entry point server/dist/server/src/index.js
+!/dist/
+!/dist/**
+!/server/dist/
+!/server/dist/**
+
 # Environment files
 .env
 .env.local

@@ -1,0 +1,104 @@
+"use strict";
+Object.defineProperty(exports, "__esModule", { value: true });
+exports.curveAccelForThrow = curveAccelForThrow;
+exports.calculateThrow = calculateThrow;
+exports.isCurveThrow = isCurveThrow;
+exports.backflipQteTier = backflipQteTier;
+exports.backflipQteSpeed = backflipQteSpeed;
+exports.isBackflipQteHit = isBackflipQteHit;
+const constants_1 = require("../constants");
+const CollisionMath_1 = require("./CollisionMath");
+/**
+ * Deterministic curve acceleration for a crouch throw (Phase 6). A crouch throw curves SIDEWAYS
+ * relative to the thrower's aim — not relative to world X/Z — so the curve is consistent from every
+ * spawn side and facing direction. The curve direction is the horizontal vector perpendicular to
+ * the aim forward, signed so the ball bends to the side OPPOSITE the throwing hand (a left-hand
+ * crouch throw curves to the thrower's right, and vice-versa). Magnitude is `ball.curveStrength`.
+ *
+ * Both the server (authoritative throw) and the client (visual prediction) call this with the same
+ * inputs, so the predicted path matches the simulated one. Returns a zero vector when not crouched.
+ */
+function curveAccelForThrow(forward, hand, crouching, constants = constants_1.GAME_CONSTANTS) {
+    if (!crouching)
+        return (0, CollisionMath_1.vec3)();
+    // Horizontal right vector relative to aim: right = up x forward (normalized, flattened to XZ).
+    const right = (0, CollisionMath_1.normalize)((0, CollisionMath_1.cross)((0, CollisionMath_1.vec3)(0, 1, 0), forward), (0, CollisionMath_1.vec3)(1, 0, 0));
+    const flatRight = (0, CollisionMath_1.normalize)((0, CollisionMath_1.vec3)(right.x, 0, right.z), (0, CollisionMath_1.vec3)(1, 0, 0));
+    // Curve toward the side opposite the throwing hand: left hand → +right, right hand → −right.
+    const sign = hand === 'left' ? 1 : -1;
+    return (0, CollisionMath_1.scale)(flatRight, sign * constants.ball.curveStrength);
+}
+/**
+ * Shared throw calculation for offline practice, client prediction, and the authoritative server.
+ * Keep every gameplay-affecting throw value here so a "charged/crouch/backflip throw" means the
+ * same thing everywhere.
+ */
+function calculateThrow(request, constants = constants_1.GAME_CONSTANTS) {
+    const forward = (0, CollisionMath_1.normalize)(request.forward, (0, CollisionMath_1.vec3)(0, 0, 1));
+    const charge01 = Math.max(0, Math.min(1, request.charge01));
+    const backflipTier = Math.max(0, Math.trunc(request.backflipTier ?? 0));
+    const isSuper = backflipTier >= 1;
+    let speed = charge01 <= 0.05
+        ? constants.ball.quickThrowSpeed
+        : (0, CollisionMath_1.lerp)(constants.ball.quickThrowSpeed, constants.ball.chargedThrowSpeed, charge01);
+    if (request.fastDoubleThrowPenalty) {
+        speed *= constants.ball.fastDoubleThrowPenalty;
+    }
+    if (isSuper) {
+        speed = backflipQteSpeed(backflipTier, constants);
+    }
+    const velocity = (0, CollisionMath_1.add)((0, CollisionMath_1.scale)(forward, speed), (0, CollisionMath_1.scale)(request.playerVelocity, constants.ball.movementThrowScale));
+    const curveAccel = curveAccelForThrow(forward, request.hand, request.crouching, constants);
+    const dropScale = isSuper
+        ? constants.ball.chargedDropScale
+        : (0, CollisionMath_1.lerp)(constants.ball.quickDropScale, constants.ball.chargedDropScale, charge01);
+    return {
+        velocity,
+        curveAccel,
+        dropScale,
+        isSuper,
+        charge01,
+        speed
+    };
+}
+/** True if `curveAccel` is non-trivial (used to tag throw events as curve throws for the client). */
+function isCurveThrow(curveAccel) {
+    return curveAccel.x * curveAccel.x + curveAccel.y * curveAccel.y + curveAccel.z * curveAccel.z > 1e-6;
+}
+/**
+ * Backflip landing quick-time event scoring (shared so client UI and server validation agree).
+ *
+ * `offset` is the click position along the timing bar as a signed fraction in [-1, 1], where 0 is
+ * dead center and ±1 are the bar ends. Returns a success TIER from 1..tierCount (1 = slowest, near
+ * the edge of the hit zone; tierCount = fastest, dead center), or 0 for a MISS (the click landed
+ * outside the hit half-width, or the bar lapsed with no click). Tiers are concentric bands whose
+ * widths come from `tierBandEdges` (non-uniform: a small center band, wider outer bands).
+ */
+function backflipQteTier(offset, constants = constants_1.GAME_CONSTANTS) {
+    const { hitHalfWidth, tierCount, tierBandEdges } = constants.backflip.qte;
+    const mag = Math.abs(offset);
+    if (mag > hitHalfWidth)
+        return 0; // outside the hit zone → miss → no throw
+    // Normalize the click into the hit zone [0, 1], then find the first band edge it falls within.
+    // edge[0] bounds the top tier (center), the last edge is 1.0 (zone boundary).
+    const norm = mag / hitHalfWidth;
+    for (let i = 0; i < tierCount; i++) {
+        if (norm <= tierBandEdges[i])
+            return tierCount - i; // band 0 (center) → top tier
+    }
+    return 1; // numerical guard: a click at the very edge → slowest tier
+}
+/**
+ * Throw speed for a successful backflip QTE tier (1..tierCount). Tier 1 = a regular quick throw;
+ * the top tier = the fastest backflip throw (10% above the legacy super). Returns quickThrowSpeed
+ * for an out-of-range/zero tier as a safe floor.
+ */
+function backflipQteSpeed(tier, constants = constants_1.GAME_CONSTANTS) {
+    const mults = constants.backflip.qte.tierSpeedMultipliers;
+    const idx = Math.max(1, Math.min(mults.length, Math.round(tier))) - 1;
+    return constants.ball.quickThrowSpeed * mults[idx];
+}
+/** True if a QTE tier represents a successful (throwable) backflip throw. */
+function isBackflipQteHit(tier) {
+    return tier >= 1;
+}

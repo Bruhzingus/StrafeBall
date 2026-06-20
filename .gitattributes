@@ -1,0 +1,4 @@
+# Committed build artifacts (see DEPLOY.md). Pin to LF so building on Windows doesn't rewrite every
+# line ending and produce huge, meaningless diffs on each deploy. The droplet (Linux) wants LF anyway.
+/dist/**        -text eol=lf
+/server/dist/** -text eol=lf

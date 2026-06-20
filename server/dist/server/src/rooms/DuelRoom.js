@@ -1,0 +1,751 @@
+"use strict";
+Object.defineProperty(exports, "__esModule", { value: true });
+exports.DuelRoom = void 0;
+const colyseus_1 = require("colyseus");
+const node_perf_hooks_1 = require("node:perf_hooks");
+const constants_1 = require("../../../shared/constants");
+const netConfig_1 = require("../../../shared/netConfig");
+const snapshotCodec_1 = require("../../../shared/snapshotCodec");
+const NetworkRateLimits_1 = require("../network/NetworkRateLimits");
+const ServerGameLoop_1 = require("../simulation/ServerGameLoop");
+const snapshotScheduler_1 = require("./snapshotScheduler");
+// All timing/rate constants now come from the centralized netConfig — never hardcode a rate here.
+// Visual state is sent through explicit `snapshot` messages, not Colyseus Schema patches, so we
+// keep the manual snapshot cadence (SNAPSHOT_RATE) explicit and decoupled from the sim tick.
+const COLYSEUS_PATCH_RATE_MS = null;
+// How long a dropped player has to reconnect before their team may forfeit (#12).
+const RECONNECT_SECONDS = constants_1.GAME_CONSTANTS.match.disconnectForfeitSeconds;
+// Hard cap on concurrent duel rooms per process (#19 — cheap DoS guard).
+const MAX_ROOMS = 200;
+let activeRoomCount = 0;
+// Per-message-type rate limits: { capacity (burst), refillPerSecond } (#11).
+// Input is sized from the active tick rate with burst headroom so a steady input stream is never
+// throttled, capacity ~1.5x the rate to absorb reconnection/jitter bursts.
+const RATE_LIMITS = (0, NetworkRateLimits_1.buildInboundRateLimits)(netConfig_1.CLIENT_INPUT_RATE);
+class DuelRoom extends colyseus_1.Room {
+    maxClients = constants_1.GAME_CONSTANTS.match.teamIds.length;
+    autoDispose = true;
+    game;
+    debug = (0, netConfig_1.resolveServerDebugFlags)();
+    roomMode = '1v1';
+    playersPerTeam = 1;
+    buckets = new Map();
+    createdAtMs = Date.now();
+    rateWindowStartedAtMs = 0;
+    simTicksThisWindow = 0;
+    snapshotsThisWindow = 0;
+    simTickMsTotal = 0;
+    simTickMsMax = 0;
+    stepCapHitsThisWindow = 0;
+    snapshotBuildMsTotal = 0;
+    snapshotBuildMsMax = 0;
+    snapshotBroadcastMsTotal = 0;
+    snapshotBroadcastMsMax = 0;
+    snapshotLateMsTotal = 0;
+    snapshotLateMsMax = 0;
+    snapshotDeadlineSkipsThisWindow = 0;
+    snapshotNoNewTickSkipsThisWindow = 0;
+    snapshotBackpressureSkipsThisWindow = 0;
+    snapshotAllBackpressureSkipsThisWindow = 0;
+    snapshotClientSendsThisWindow = 0;
+    // Approximate snapshot payload size, sampled cheaply (only when PERF_DEBUG is on) once per window.
+    snapshotPayloadBytesTotal = 0;
+    snapshotPayloadBytesMax = 0;
+    snapshotFullPayloadBytesTotal = 0;
+    snapshotFullPayloadBytesMax = 0;
+    snapshotCompactPayloadBytesTotal = 0;
+    snapshotCompactPayloadBytesMax = 0;
+    snapshotPayloadSamples = 0;
+    snapshotWsBufferedBytesTotal = 0;
+    snapshotWsBufferedBytesMax = 0;
+    snapshotWsBufferedSamples = 0;
+    simulationAccumulatorMs = 0;
+    lastLoopWakeAtMs = 0;
+    nextSnapshotDueAtMs = 0;
+    lastSnapshotTickSent = -1;
+    // When sim and snapshot rates are equal (mode A/C) we broadcast one snapshot per sim step, which
+    // is exactly the old coupled behavior — no accumulator drift, lowest latency.
+    snapshotCoupledToTick = netConfig_1.SNAPSHOT_RATE === netConfig_1.SERVER_TICK_RATE;
+    eventLoopDelay = (0, node_perf_hooks_1.monitorEventLoopDelay)({ resolution: 20 });
+    incomingMessagesThisWindow = 0;
+    incomingMessagesByType = new Map();
+    incomingMessagesByPlayerId = new Map();
+    incomingMessagesByPlayerIdAndType = new Map();
+    tokenBucketRejectsByType = new Map();
+    tokenBucketRejectsByPlayerId = new Map();
+    handlerRejectsByType = new Map();
+    handlerRejectsByPlayerId = new Map();
+    snapshotStatsByPlayerId = new Map();
+    onCreate(options = {}) {
+        activeRoomCount += 1;
+        this.eventLoopDelay.enable();
+        this.setPrivate(true);
+        this.patchRate = COLYSEUS_PATCH_RATE_MS;
+        this.roomMode = options.mode === '2v2' ? '2v2' : '1v1';
+        this.playersPerTeam = this.roomMode === '2v2' ? constants_1.GAME_CONSTANTS.match.playersPerTeam : 1;
+        this.maxClients = constants_1.GAME_CONSTANTS.match.teamIds.length * this.playersPerTeam;
+        // Colyseus 0.17 applies this PER CLIENT on inbound messages and force-closes the sender when
+        // exceeded, so size it to a single client's expected 128Hz stream plus burst headroom.
+        this.maxMessagesPerSecond = (0, NetworkRateLimits_1.computeMaxMessagesPerSecondPerClient)(netConfig_1.CLIENT_INPUT_RATE);
+        this.game = new ServerGameLoop_1.ServerGameLoop(this.roomId, {
+            tickRate: netConfig_1.SERVER_TICK_RATE,
+            mode: this.roomMode,
+            playersPerTeam: this.playersPerTeam,
+            logger: (message) => this.log(message),
+            debug: this.debug
+        });
+        // One-time room-created line describing the active net config + the manual-snapshot patch mode.
+        this.log(`room created mode=${this.roomMode} playersPerTeam=${this.playersPerTeam} ${(0, netConfig_1.describeNetConfig)()} ` +
+            `snapshotEncoding=${netConfig_1.SNAPSHOT_ENCODING} snapshotBackpressure=${netConfig_1.SNAPSHOT_BACKPRESSURE_BYTES}B ` +
+            `colyseusPatchRate=${formatPatchRate(COLYSEUS_PATCH_RATE_MS)} ` +
+            `colyseusMaxMessagesPerSecond=${this.maxMessagesPerSecond}/s(per-client inbound, expected~${(0, NetworkRateLimits_1.expectedPerClientMessagesPerSecond)(netConfig_1.CLIENT_INPUT_RATE)}/s)`);
+        this.onMessage('input', (client, message) => {
+            this.recordIncomingMessage(client, 'input');
+            if (!this.allow(client, 'input'))
+                return;
+            const wrapped = message && typeof message === 'object' && 'input' in message
+                ? message
+                : undefined;
+            const input = wrapped ? wrapped.input : message;
+            const seq = wrapped?.sequence ?? wrapped?.input?.sequence ?? message?.sequence ?? 0;
+            const rttMs = typeof wrapped?.rttMs === 'number' && Number.isFinite(wrapped.rttMs) ? wrapped.rttMs : undefined;
+            if (!this.game.handleInput(client.sessionId, input, seq, rttMs)) {
+                this.reject(client, 'input', 'unknown-player');
+            }
+        });
+        this.onMessage('pickup', (client) => {
+            this.recordIncomingMessage(client, 'pickup');
+            if (!this.allow(client, 'pickup'))
+                return;
+            const result = this.game.handlePickup(client.sessionId);
+            if (!result.ok) {
+                if (this.debug.PICKUP_DEBUG)
+                    this.log(`pickup rejected player=${client.sessionId} reason=${result.reason}`);
+                this.reject(client, 'pickup', result.reason);
+            }
+            else if (result.log && this.debug.PICKUP_DEBUG) {
+                this.log(result.log);
+            }
+        });
+        this.onMessage('drop', (client, message) => {
+            this.recordIncomingMessage(client, 'drop');
+            if (!this.allow(client, 'drop'))
+                return;
+            const result = this.game.handleDrop(client.sessionId, message?.hand);
+            if (!result.ok)
+                this.reject(client, 'drop', result.reason);
+        });
+        this.onMessage('throw', (client, message) => {
+            this.recordIncomingMessage(client, 'throw');
+            if (!this.allow(client, 'throw'))
+                return;
+            // direction/charge are intentionally NOT trusted — the server uses its own facing and the
+            // server-tracked charge (#7). Only the hand selection comes from the client.
+            const result = this.game.handleThrow(client.sessionId, { hand: message?.hand });
+            if (!result.ok) {
+                if (this.debug.THROW_DEBUG)
+                    this.log(`throw rejected player=${client.sessionId} reason=${result.reason}`);
+                this.reject(client, 'throw', result.reason);
+            }
+            else if (result.log && this.debug.THROW_DEBUG) {
+                this.log(result.log);
+            }
+        });
+        this.onMessage('catch-parry', (client) => {
+            this.recordIncomingMessage(client, 'catch-parry');
+            if (!this.allow(client, 'catch-parry'))
+                return;
+            // facing is taken from the server's known aim, not the client (#8).
+            const result = this.game.handleCatchParry(client.sessionId);
+            if (!result.ok)
+                this.reject(client, 'catch-parry', result.reason);
+        });
+        this.onMessage('reset', (client, message) => {
+            this.recordIncomingMessage(client, 'reset');
+            if (!this.allow(client, 'reset'))
+                return;
+            const result = this.game.handleReset(client.sessionId, message?.mode);
+            if (!result.ok)
+                this.reject(client, 'reset', result.reason);
+        });
+        this.onMessage('start-vote', (client, _message) => {
+            this.recordIncomingMessage(client, 'start-vote');
+            if (!this.allow(client, 'start-vote'))
+                return;
+            const result = this.game.handleStartVote(client.sessionId);
+            if (!result.ok)
+                this.reject(client, 'start-vote', result.reason);
+        });
+        this.onMessage('switch-team', (client, message) => {
+            this.recordIncomingMessage(client, 'switch-team');
+            if (!this.allow(client, 'switch-team'))
+                return;
+            const result = this.game.handleTeamSwitch(client.sessionId, message?.teamId, message?.teamSlotIndex);
+            if (!result.ok)
+                this.reject(client, 'switch-team', result.reason);
+        });
+        this.onMessage('ping', (client, message) => {
+            this.recordIncomingMessage(client, 'ping');
+            if (!this.allow(client, 'ping'))
+                return;
+            client.send('pong', {
+                type: 'pong',
+                clientTimeMs: message?.clientTimeMs ?? 0,
+                serverTimeMs: Date.now()
+            });
+        });
+        this.setSimulationInterval(() => {
+            // Skip the whole step+broadcast when no one is here (#18); empty rooms auto-dispose.
+            const now = node_perf_hooks_1.performance.now();
+            if (this.clients.length === 0) {
+                this.simulationAccumulatorMs = 0;
+                this.lastLoopWakeAtMs = now;
+                this.nextSnapshotDueAtMs = 0;
+                this.lastSnapshotTickSent = -1;
+                return;
+            }
+            if (this.lastLoopWakeAtMs === 0)
+                this.lastLoopWakeAtMs = now;
+            if (this.nextSnapshotDueAtMs === 0)
+                this.nextSnapshotDueAtMs = now + netConfig_1.SNAPSHOT_INTERVAL_MS;
+            // Monotonic clock; clamp the elapsed slice so an alt-tab/GC pause can't dump a huge backlog.
+            const elapsedMs = Math.min(netConfig_1.MAX_ACCUMULATOR_CLAMP_MS, now - this.lastLoopWakeAtMs);
+            this.lastLoopWakeAtMs = now;
+            this.simulationAccumulatorMs += elapsedMs;
+            // Drain fixed sim steps, capped to avoid a spiral-of-death after a long pause.
+            let steps = 0;
+            while (this.simulationAccumulatorMs + 0.001 >= netConfig_1.SERVER_STEP_MS && steps < netConfig_1.MAX_ACCUMULATOR_STEPS) {
+                this.simulationAccumulatorMs -= netConfig_1.SERVER_STEP_MS;
+                steps += 1;
+                const startedAt = node_perf_hooks_1.performance.now();
+                this.game.advance();
+                this.recordSimulationTick(node_perf_hooks_1.performance.now() - startedAt, node_perf_hooks_1.performance.now());
+                // Broadcast any authoritative throw events accepted this step BEFORE the snapshot, so the
+                // client can seed deterministic live-ball prediction the instant a throw lands.
+                this.broadcastStepEvents();
+                this.broadcastBattleMusicSyncIfDirty();
+                // Coupled fast path (mode A/C, snapshots == sim): broadcast every step, exactly the old
+                // behavior — lowest latency, no snapshot accumulator drift.
+                if (this.snapshotCoupledToTick) {
+                    const snapshotAt = node_perf_hooks_1.performance.now();
+                    this.broadcastSnapshot(snapshotAt, snapshotAt);
+                }
+            }
+            // Step cap hit with backlog remaining: discard the backlog (don't time-warp) and report only
+            // under PERF_DEBUG so a real playtest stays silent.
+            if (steps >= netConfig_1.MAX_ACCUMULATOR_STEPS && this.simulationAccumulatorMs >= netConfig_1.SERVER_STEP_MS) {
+                this.stepCapHitsThisWindow += 1;
+                this.simulationAccumulatorMs = netConfig_1.SERVER_STEP_MS;
+            }
+            if (!this.snapshotCoupledToTick) {
+                this.broadcastDueSnapshot(node_perf_hooks_1.performance.now());
+            }
+        }, netConfig_1.ROOM_LOOP_WAKE_INTERVAL_MS);
+    }
+    onAuth(_client, _options) {
+        if (activeRoomCount > MAX_ROOMS) {
+            this.log('join rejected reason=server-at-capacity');
+            return false;
+        }
+        const allowed = this.clients.length < this.maxClients;
+        if (!allowed)
+            this.log('join rejected reason=room-full');
+        return allowed;
+    }
+    onJoin(client, options) {
+        const player = this.game.addPlayer(client.sessionId, options.name);
+        if (!player) {
+            client.leave(4001);
+            return;
+        }
+        this.game.setConnected(client.sessionId, true);
+        this.log(`player joined id=${player.id} name="${player.name}" side=${player.spawnSide}`);
+        client.send('joined-room', {
+            type: 'joined-room',
+            room: this.game.snapshot().room,
+            playerId: player.id
+        });
+        this.sendBattleMusicSync(client);
+        this.broadcast('player-joined', { type: 'player-joined', playerId: player.id }, { except: client });
+        this.broadcastRosterUpdate();
+    }
+    // Unconsented disconnect: pause the player and give them a window to reconnect with their
+    // state intact (#12). If the window elapses, the framework proceeds to onLeave.
+    async onDrop(client, _code) {
+        this.game.setConnected(client.sessionId, false, Date.now() + RECONNECT_SECONDS * 1000);
+        this.log(`player dropped id=${client.sessionId} — awaiting reconnection`);
+        try {
+            await this.allowReconnection(client, RECONNECT_SECONDS);
+        }
+        catch {
+            // reconnection window elapsed — onLeave will finalize the departure
+        }
+    }
+    onReconnect(client) {
+        this.game.setConnected(client.sessionId, true, null);
+        this.log(`player reconnected id=${client.sessionId}`);
+        this.sendBattleMusicSync(client);
+        this.broadcastRosterUpdate();
+    }
+    // Terminal departure (consented leave, or reconnection window expired) → the remaining player
+    // wins by forfeit (#13).
+    onLeave(client, _code) {
+        this.buckets.delete(client.sessionId);
+        this.game.abandon(client.sessionId);
+        this.log(`player left id=${client.sessionId}`);
+        this.broadcast('player-left', { type: 'player-left', playerId: client.sessionId });
+        this.broadcastRosterUpdate();
+    }
+    onDispose() {
+        activeRoomCount = Math.max(0, activeRoomCount - 1);
+        this.eventLoopDelay.disable();
+        this.log('room disposed');
+        this.game.dispose();
+    }
+    /** Record one fixed sim step for the periodic [rates] summary. Counts ticks separately from
+     * snapshots since the two cadences can differ (mode B). Emits the summary at most once/second,
+     * and ONLY when PERF_DEBUG is enabled. */
+    recordSimulationTick(simTickMs, now) {
+        if (this.rateWindowStartedAtMs === 0)
+            this.rateWindowStartedAtMs = now;
+        this.simTicksThisWindow += 1;
+        this.simTickMsTotal += simTickMs;
+        this.simTickMsMax = Math.max(this.simTickMsMax, simTickMs);
+        const elapsedMs = now - this.rateWindowStartedAtMs;
+        if (elapsedMs < netConfig_1.PERF_REPORT_INTERVAL_MS)
+            return;
+        if (this.debug.PERF_DEBUG)
+            this.emitPerfReport(elapsedMs);
+        this.rateWindowStartedAtMs = now;
+        this.simTicksThisWindow = 0;
+        this.snapshotsThisWindow = 0;
+        this.simTickMsTotal = 0;
+        this.simTickMsMax = 0;
+        this.stepCapHitsThisWindow = 0;
+        this.snapshotBuildMsTotal = 0;
+        this.snapshotBuildMsMax = 0;
+        this.snapshotBroadcastMsTotal = 0;
+        this.snapshotBroadcastMsMax = 0;
+        this.snapshotLateMsTotal = 0;
+        this.snapshotLateMsMax = 0;
+        this.snapshotDeadlineSkipsThisWindow = 0;
+        this.snapshotNoNewTickSkipsThisWindow = 0;
+        this.snapshotBackpressureSkipsThisWindow = 0;
+        this.snapshotAllBackpressureSkipsThisWindow = 0;
+        this.snapshotClientSendsThisWindow = 0;
+        this.snapshotPayloadBytesTotal = 0;
+        this.snapshotPayloadBytesMax = 0;
+        this.snapshotFullPayloadBytesTotal = 0;
+        this.snapshotFullPayloadBytesMax = 0;
+        this.snapshotCompactPayloadBytesTotal = 0;
+        this.snapshotCompactPayloadBytesMax = 0;
+        this.snapshotPayloadSamples = 0;
+        this.snapshotWsBufferedBytesTotal = 0;
+        this.snapshotWsBufferedBytesMax = 0;
+        this.snapshotWsBufferedSamples = 0;
+        this.incomingMessagesThisWindow = 0;
+        this.incomingMessagesByType.clear();
+        this.incomingMessagesByPlayerId.clear();
+        this.incomingMessagesByPlayerIdAndType.clear();
+        this.tokenBucketRejectsByType.clear();
+        this.tokenBucketRejectsByPlayerId.clear();
+        this.handlerRejectsByType.clear();
+        this.handlerRejectsByPlayerId.clear();
+        this.snapshotStatsByPlayerId.clear();
+    }
+    /** Emit the throttled (every PERF_REPORT_INTERVAL_MS) server [perf] report. PERF_DEBUG-gated. */
+    emitPerfReport(elapsedMs) {
+        const elapsedSeconds = elapsedMs / 1000;
+        const avgSimTickMs = this.simTicksThisWindow > 0 ? this.simTickMsTotal / this.simTicksThisWindow : 0;
+        const balls = Object.values(this.game.state.balls);
+        const playerStates = Object.values(this.game.state.players);
+        let activePlayers = 0;
+        let alivePlayers = 0;
+        let eliminatedPlayers = 0;
+        let disconnectedPlayers = 0;
+        for (const player of playerStates) {
+            if (player.connected === false) {
+                disconnectedPlayers += 1;
+                continue;
+            }
+            activePlayers += 1;
+            if (player.combatState === 'eliminated' || player.lives <= 0) {
+                eliminatedPlayers += 1;
+            }
+            else {
+                alivePlayers += 1;
+            }
+        }
+        let activeBalls = 0;
+        let liveBalls = 0;
+        for (const ball of balls) {
+            if (ball.phase !== 'dead')
+                activeBalls += 1;
+            if (ball.phase === 'live' || ball.phase === 'deflected')
+                liveBalls += 1;
+        }
+        const mem = process.memoryUsage();
+        const mb = (bytes) => (bytes / 1048576).toFixed(1);
+        const avgPayload = this.snapshotPayloadSamples > 0
+            ? Math.round(this.snapshotPayloadBytesTotal / this.snapshotPayloadSamples)
+            : 0;
+        const avgFullPayload = this.snapshotPayloadSamples > 0
+            ? Math.round(this.snapshotFullPayloadBytesTotal / this.snapshotPayloadSamples)
+            : 0;
+        const avgCompactPayload = this.snapshotPayloadSamples > 0
+            ? Math.round(this.snapshotCompactPayloadBytesTotal / this.snapshotPayloadSamples)
+            : 0;
+        const avgSnapshotBuildMs = this.snapshotsThisWindow > 0 ? this.snapshotBuildMsTotal / this.snapshotsThisWindow : 0;
+        const avgSnapshotBroadcastMs = this.snapshotsThisWindow > 0 ? this.snapshotBroadcastMsTotal / this.snapshotsThisWindow : 0;
+        const avgSnapshotLateMs = this.snapshotsThisWindow > 0 ? this.snapshotLateMsTotal / this.snapshotsThisWindow : 0;
+        const eventLoopDelayAvgMs = this.eventLoopDelay.mean > 0 ? this.eventLoopDelay.mean / 1e6 : 0;
+        const eventLoopDelayMaxMs = this.eventLoopDelay.max > 0 ? this.eventLoopDelay.max / 1e6 : 0;
+        const socketBuffer = this.socketBufferStats();
+        const wsBufferedAvg = this.snapshotWsBufferedSamples > 0
+            ? Math.round(this.snapshotWsBufferedBytesTotal / this.snapshotWsBufferedSamples)
+            : socketBuffer.avgBytes;
+        const wsBufferedMax = Math.max(this.snapshotWsBufferedBytesMax, socketBuffer.maxBytes);
+        const buffers = this.game.getDebugBufferStats();
+        const playerNetStats = this.game.drainPlayerNetworkStats();
+        const roomAgeSec = Math.max(0, (Date.now() - this.createdAtMs) / 1000);
+        const incomingRate = this.incomingMessagesThisWindow / elapsedSeconds;
+        // Combat counters for this window (verify the lag-comp catch fix in production).
+        const c = this.game.drainCombatMetrics();
+        this.log(`[perf] roomAgeSec=${roomAgeSec.toFixed(1)} ` +
+            `sim=${netConfig_1.SERVER_TICK_RATE}Hz input=${netConfig_1.CLIENT_INPUT_RATE}Hz snapshots=${netConfig_1.SNAPSHOT_RATE}Hz ` +
+            `simTicks=${(this.simTicksThisWindow / elapsedSeconds).toFixed(1)}/s ` +
+            `snapshotsSent=${(this.snapshotsThisWindow / elapsedSeconds).toFixed(1)}/s snapshotClientSends=${(this.snapshotClientSendsThisWindow / elapsedSeconds).toFixed(1)}/s ` +
+            `simTickMs avg=${avgSimTickMs.toFixed(2)} max=${this.simTickMsMax.toFixed(2)} ` +
+            `snapshotBuildMs avg=${avgSnapshotBuildMs.toFixed(3)} max=${this.snapshotBuildMsMax.toFixed(3)} ` +
+            `snapshotBroadcastMs avg=${avgSnapshotBroadcastMs.toFixed(3)} max=${this.snapshotBroadcastMsMax.toFixed(3)} ` +
+            `snapshotLateMs avg=${avgSnapshotLateMs.toFixed(2)} max=${this.snapshotLateMsMax.toFixed(2)} skippedSnapshots=${this.snapshotDeadlineSkipsThisWindow} noNewTickSkips=${this.snapshotNoNewTickSkipsThisWindow} backpressureSkips=${this.snapshotBackpressureSkipsThisWindow} allBackpressureSkips=${this.snapshotAllBackpressureSkipsThisWindow} ` +
+            `incoming=${incomingRate.toFixed(1)}/s ` +
+            `players total=${playerStates.length} active=${activePlayers} alive=${alivePlayers} eliminated=${eliminatedPlayers} disconnected=${disconnectedPlayers} ` +
+            `balls total=${balls.length} active=${activeBalls} live=${liveBalls} ` +
+            `inputDrain={avg=${buffers.inputsDrainedAvg.toFixed(2)} max=${buffers.inputsDrainedMax} maxQueueBefore=${buffers.maxInputQueueBeforeDrain}} ` +
+            `buffers={input=${buffers.inputQueues} inputMax=${buffers.maxInputQueue} throw=${buffers.pendingThrowEvents} combat=${buffers.pendingCombatEvents} defenseHist=${buffers.defenseHistoryEntries} ballHist=${buffers.ballHistoryEntries} catch=${buffers.catchAttempts} hit=${buffers.recentHits}} ` +
+            `combat={catchTry=${c.catchAttemptsOpened} catch=${c.catches} reclaim=${c.reclaimCatches} parry=${c.parries} hit=${c.hits} revert=${c.hitReverts}} ` +
+            `accumulatorCaps=${this.stepCapHitsThisWindow} ` +
+            `snapshotBytes activeAvg=${avgPayload} activeMax=${this.snapshotPayloadBytesMax} fullAvg=${avgFullPayload} fullMax=${this.snapshotFullPayloadBytesMax} compactAvg=${avgCompactPayload} compactMax=${this.snapshotCompactPayloadBytesMax} ` +
+            `wsBuffered avg=${wsBufferedAvg}B max=${wsBufferedMax}B ` +
+            `eventLoopMs avg=${eventLoopDelayAvgMs.toFixed(2)} max=${eventLoopDelayMaxMs.toFixed(2)} ` +
+            `mem heapUsed=${mb(mem.heapUsed)}MB heapTotal=${mb(mem.heapTotal)}MB rss=${mb(mem.rss)}MB`);
+        this.log(`[perf/net] colyseusMaxMessagesPerSecond=${this.maxMessagesPerSecond}/s(per-client inbound)` +
+            ` incomingByType={${formatCounterRates(this.incomingMessagesByType, elapsedSeconds)}}` +
+            ` incomingByPlayer={${formatCounterRates(this.incomingMessagesByPlayerId, elapsedSeconds, formatPlayerKey)}}` +
+            ` tokenRejectsByType={${formatCounterTotals(this.tokenBucketRejectsByType)}}` +
+            ` tokenRejectsByPlayer={${formatCounterTotals(this.tokenBucketRejectsByPlayerId, formatPlayerKey)}}` +
+            ` handlerRejectsByType={${formatCounterTotals(this.handlerRejectsByType)}}` +
+            ` handlerRejectsByPlayer={${formatCounterTotals(this.handlerRejectsByPlayerId, formatPlayerKey)}}`);
+        this.log(`[perf/clients] ${formatPerClientPerfLine(playerStates, playerNetStats, this.incomingMessagesByPlayerIdAndType, this.snapshotStatsByPlayerId, elapsedSeconds)}`);
+        if (this.debug.SOAK_DEBUG) {
+            this.log(`[soak] roomAgeSec=${roomAgeSec.toFixed(1)} ` +
+                `accumulators={simMs=${this.simulationAccumulatorMs.toFixed(2)} nextSnapshotInMs=${Math.max(0, this.nextSnapshotDueAtMs - node_perf_hooks_1.performance.now()).toFixed(2)}} ` +
+                `queues={inputTotal=${buffers.inputQueues} inputMax=${buffers.maxInputQueue} defenseTotal=${buffers.defenseHistoryEntries} defenseMax=${buffers.maxDefenseHistoryEntries} ballTotal=${buffers.ballHistoryEntries} ballMax=${buffers.maxBallHistoryEntries}} ` +
+                `snapshots={lastTickSent=${this.lastSnapshotTickSent} noNewTickSkips=${this.snapshotNoNewTickSkipsThisWindow}} ` +
+                `socket={avgBuffered=${socketBuffer.avgBytes} maxBuffered=${socketBuffer.maxBytes}} ` +
+                `runtime={clients=${this.clients.length} messageBuckets=${this.buckets.size} listeners=${this.clients.length * 7 + 1}}`);
+        }
+        this.eventLoopDelay.reset();
+    }
+    /**
+     * Record one snapshot broadcast for the [perf] summary (decoupled from sim ticks in mode B).
+     * The payload-size sample uses JSON.stringify, which is expensive — so it runs at most ONCE per
+     * report window, and only when PERF_DEBUG is on. Real playtests with PERF_DEBUG off pay nothing.
+     */
+    recordSnapshot(snapshot, payload, buildMs, broadcastMs, lateMs, sentClients) {
+        this.snapshotsThisWindow += 1;
+        this.snapshotClientSendsThisWindow += sentClients;
+        this.snapshotBuildMsTotal += buildMs;
+        this.snapshotBuildMsMax = Math.max(this.snapshotBuildMsMax, buildMs);
+        this.snapshotBroadcastMsTotal += broadcastMs;
+        this.snapshotBroadcastMsMax = Math.max(this.snapshotBroadcastMsMax, broadcastMs);
+        this.snapshotLateMsTotal += lateMs;
+        this.snapshotLateMsMax = Math.max(this.snapshotLateMsMax, lateMs);
+        const sampleStride = Math.max(1, Math.floor(netConfig_1.SNAPSHOT_RATE / 4));
+        if (this.debug.PERF_DEBUG && this.snapshotPayloadSamples < 8 && this.snapshotsThisWindow % sampleStride === 1) {
+            const activeBytes = JSON.stringify(payload).length;
+            const fullBytes = JSON.stringify(snapshot).length;
+            const compactBytes = netConfig_1.USE_COMPACT_SNAPSHOTS && payload.type === 'snapshot-compact'
+                ? activeBytes
+                : JSON.stringify((0, snapshotCodec_1.makeCompactSnapshot)(snapshot)).length;
+            this.snapshotPayloadBytesTotal += activeBytes;
+            this.snapshotPayloadBytesMax = Math.max(this.snapshotPayloadBytesMax, activeBytes);
+            this.snapshotFullPayloadBytesTotal += fullBytes;
+            this.snapshotFullPayloadBytesMax = Math.max(this.snapshotFullPayloadBytesMax, fullBytes);
+            this.snapshotCompactPayloadBytesTotal += compactBytes;
+            this.snapshotCompactPayloadBytesMax = Math.max(this.snapshotCompactPayloadBytesMax, compactBytes);
+            this.snapshotPayloadSamples += 1;
+        }
+    }
+    broadcastStepEvents() {
+        const throwEvents = this.game.drainThrowEvents();
+        for (const event of throwEvents)
+            this.broadcast('throw-event', event);
+        const combatEvents = this.game.drainCombatEvents();
+        for (const event of combatEvents)
+            this.broadcast(event.type, event);
+    }
+    broadcastBattleMusicSyncIfDirty() {
+        const music = this.game.drainBattleMusicSyncDirty();
+        if (!music)
+            return;
+        this.broadcast('music-sync', {
+            type: 'music-sync',
+            serverTimeMs: Date.now(),
+            music
+        });
+    }
+    broadcastDueSnapshot(actualNowMs) {
+        if (actualNowMs + 0.001 < this.nextSnapshotDueAtMs)
+            return;
+        const dueAtMs = this.nextSnapshotDueAtMs;
+        const schedule = (0, snapshotScheduler_1.advanceSnapshotDeadline)(dueAtMs, actualNowMs, netConfig_1.SNAPSHOT_INTERVAL_MS);
+        this.snapshotDeadlineSkipsThisWindow += schedule.skippedIntervals;
+        this.nextSnapshotDueAtMs = schedule.nextDueAtMs;
+        // Don't queue stale visual duplicates when the sim hasn't advanced since the last send.
+        if (this.game.state.tick <= this.lastSnapshotTickSent) {
+            this.snapshotNoNewTickSkipsThisWindow += 1;
+            return;
+        }
+        this.broadcastSnapshot(dueAtMs, actualNowMs);
+    }
+    broadcastSnapshot(dueAtMs, actualNowMs) {
+        const sendableClients = this.snapshotSendableClients();
+        if (sendableClients.length === 0)
+            return;
+        const snapshot = this.game.snapshot();
+        const snapshotBuildMs = this.game.getLastSnapshotBuildMs();
+        const encodeStartedAt = node_perf_hooks_1.performance.now();
+        const payload = this.encodeSnapshot(snapshot);
+        const buildMs = snapshotBuildMs + (node_perf_hooks_1.performance.now() - encodeStartedAt);
+        const broadcastStartedAt = node_perf_hooks_1.performance.now();
+        for (const client of sendableClients) {
+            this.recordSnapshotClientSend(client.sessionId);
+            client.send('snapshot', payload);
+        }
+        const broadcastMs = node_perf_hooks_1.performance.now() - broadcastStartedAt;
+        this.lastSnapshotTickSent = snapshot.tick;
+        this.recordSnapshot(snapshot, payload, buildMs, broadcastMs, Math.max(0, actualNowMs - dueAtMs), sendableClients.length);
+    }
+    snapshotSendableClients() {
+        const sendable = [];
+        let skipped = 0;
+        for (const client of this.clients) {
+            const buffered = readClientBufferedAmount(client);
+            if (buffered !== null)
+                this.recordSnapshotBufferedAmount(client.sessionId, buffered);
+            this.recordObservedColyseusMessageRate(client);
+            if (buffered !== null && buffered > netConfig_1.SNAPSHOT_BACKPRESSURE_BYTES) {
+                skipped += 1;
+                this.recordSnapshotClientSkip(client.sessionId);
+                continue;
+            }
+            sendable.push(client);
+        }
+        if (skipped > 0) {
+            this.snapshotBackpressureSkipsThisWindow += skipped;
+            if (skipped === this.clients.length)
+                this.snapshotAllBackpressureSkipsThisWindow += 1;
+        }
+        return sendable;
+    }
+    encodeSnapshot(snapshot) {
+        return netConfig_1.USE_COMPACT_SNAPSHOTS ? (0, snapshotCodec_1.makeCompactSnapshot)(snapshot) : snapshot;
+    }
+    recordSnapshotBufferedAmount(playerId, buffered) {
+        this.snapshotWsBufferedBytesTotal += buffered;
+        this.snapshotWsBufferedBytesMax = Math.max(this.snapshotWsBufferedBytesMax, buffered);
+        this.snapshotWsBufferedSamples += 1;
+        const stats = this.snapshotStatsForPlayer(playerId);
+        stats.wsBufferedBytesTotal += buffered;
+        stats.wsBufferedBytesMax = Math.max(stats.wsBufferedBytesMax, buffered);
+        stats.wsBufferedSamples += 1;
+    }
+    broadcastRosterUpdate() {
+        this.broadcast('roster-update', {
+            type: 'roster-update',
+            roster: (0, snapshotCodec_1.rosterFromRoom)(this.game.state)
+        });
+    }
+    sendBattleMusicSync(client) {
+        const payload = {
+            type: 'music-sync',
+            serverTimeMs: Date.now(),
+            music: this.game.getBattleMusicSyncState()
+        };
+        client.send('music-sync', payload);
+    }
+    socketBufferStats() {
+        if (this.clients.length === 0)
+            return { avgBytes: 0, maxBytes: 0 };
+        let total = 0;
+        let samples = 0;
+        let maxBytes = 0;
+        for (const client of this.clients) {
+            const buffered = readClientBufferedAmount(client);
+            if (buffered === null)
+                continue;
+            total += buffered;
+            samples += 1;
+            maxBytes = Math.max(maxBytes, buffered);
+        }
+        return {
+            avgBytes: samples > 0 ? Math.round(total / samples) : 0,
+            maxBytes
+        };
+    }
+    recordIncomingMessage(client, type) {
+        this.incomingMessagesThisWindow += 1;
+        incrementCounter(this.incomingMessagesByType, type);
+        incrementCounter(this.incomingMessagesByPlayerId, client.sessionId);
+        incrementNestedCounter(this.incomingMessagesByPlayerIdAndType, client.sessionId, type);
+        this.recordObservedColyseusMessageRate(client);
+    }
+    recordObservedColyseusMessageRate(client) {
+        const seen = readClientMessagesLastSecond(client);
+        if (seen === null)
+            return;
+        const stats = this.snapshotStatsForPlayer(client.sessionId);
+        stats.colyseusMessagesPerSecondMax = Math.max(stats.colyseusMessagesPerSecondMax, seen);
+    }
+    snapshotStatsForPlayer(playerId) {
+        let stats = this.snapshotStatsByPlayerId.get(playerId);
+        if (!stats) {
+            stats = {
+                snapshotSends: 0,
+                snapshotSkips: 0,
+                wsBufferedBytesTotal: 0,
+                wsBufferedBytesMax: 0,
+                wsBufferedSamples: 0,
+                colyseusMessagesPerSecondMax: 0
+            };
+            this.snapshotStatsByPlayerId.set(playerId, stats);
+        }
+        return stats;
+    }
+    recordSnapshotClientSend(playerId) {
+        this.snapshotStatsForPlayer(playerId).snapshotSends += 1;
+    }
+    recordSnapshotClientSkip(playerId) {
+        this.snapshotStatsForPlayer(playerId).snapshotSkips += 1;
+    }
+    /** Token-bucket rate limit per client per message type (#11). Returns false if over limit. */
+    allow(client, type) {
+        const limit = RATE_LIMITS[type];
+        if (!limit)
+            return true;
+        let perClient = this.buckets.get(client.sessionId);
+        if (!perClient) {
+            perClient = new Map();
+            this.buckets.set(client.sessionId, perClient);
+        }
+        const now = Date.now();
+        const bucket = perClient.get(type) ?? { tokens: limit.capacity, lastRefillMs: now };
+        const elapsed = (now - bucket.lastRefillMs) / 1000;
+        bucket.tokens = Math.min(limit.capacity, bucket.tokens + elapsed * limit.refillPerSecond);
+        bucket.lastRefillMs = now;
+        if (bucket.tokens < 1) {
+            perClient.set(type, bucket);
+            incrementCounter(this.tokenBucketRejectsByType, type);
+            incrementCounter(this.tokenBucketRejectsByPlayerId, client.sessionId);
+            return false;
+        }
+        bucket.tokens -= 1;
+        perClient.set(type, bucket);
+        return true;
+    }
+    reject(client, request, reason) {
+        incrementCounter(this.handlerRejectsByType, request);
+        incrementCounter(this.handlerRejectsByPlayerId, client.sessionId);
+        client.send('request-rejected', { type: 'request-rejected', request, reason });
+    }
+    log(message) {
+        console.log(`[duel ${this.roomId}] ${message}`);
+    }
+}
+exports.DuelRoom = DuelRoom;
+function formatPatchRate(patchRateMs) {
+    return patchRateMs === null ? 'disabled(manual snapshots)' : `${(1000 / patchRateMs).toFixed(1)}Hz`;
+}
+function readClientBufferedAmount(client) {
+    const raw = client;
+    if (typeof raw.ref?.bufferedAmount === 'number')
+        return raw.ref.bufferedAmount;
+    if (typeof raw.ref?.ws?.bufferedAmount === 'number')
+        return raw.ref.ws.bufferedAmount;
+    const directAmount = raw.ref?.getBufferedAmount?.();
+    if (typeof directAmount === 'number')
+        return directAmount;
+    const uwsAmount = raw.ref?.ws?.getBufferedAmount?.();
+    return typeof uwsAmount === 'number' ? uwsAmount : null;
+}
+function readClientMessagesLastSecond(client) {
+    const raw = client;
+    return typeof raw._numMessagesLastSecond === 'number' ? raw._numMessagesLastSecond : null;
+}
+function incrementCounter(map, key, delta = 1) {
+    map.set(key, (map.get(key) ?? 0) + delta);
+}
+function incrementNestedCounter(parent, outerKey, innerKey, delta = 1) {
+    let map = parent.get(outerKey);
+    if (!map) {
+        map = new Map();
+        parent.set(outerKey, map);
+    }
+    incrementCounter(map, innerKey, delta);
+}
+function formatPlayerKey(playerId) {
+    return playerId.slice(-4);
+}
+function formatCounterRates(map, elapsedSeconds, keyFormatter = identity) {
+    if (map.size === 0)
+        return 'none';
+    return [...map.entries()]
+        .sort(([a], [b]) => a.localeCompare(b))
+        .map(([key, count]) => `${keyFormatter(key)}:${(count / elapsedSeconds).toFixed(1)}/s`)
+        .join(',');
+}
+function formatCounterTotals(map, keyFormatter = identity) {
+    if (map.size === 0)
+        return 'none';
+    return [...map.entries()]
+        .sort(([a], [b]) => a.localeCompare(b))
+        .map(([key, count]) => `${keyFormatter(key)}:${count}`)
+        .join(',');
+}
+function formatPerClientPerfLine(players, playerNetStats, incomingByPlayerIdAndType, snapshotStatsByPlayerId, elapsedSeconds) {
+    if (players.length === 0)
+        return 'none';
+    const playerNetById = new Map(playerNetStats.map((stats) => [stats.playerId, stats]));
+    return players
+        .map((player) => {
+        const playerId = player.id;
+        const key = formatPlayerKey(playerId);
+        const incomingByType = incomingByPlayerIdAndType.get(playerId) ?? new Map();
+        const snapshots = snapshotStatsByPlayerId.get(playerId);
+        const net = playerNetById.get(playerId);
+        const inputRate = (incomingByType.get('input') ?? 0) / elapsedSeconds;
+        const pingRate = (incomingByType.get('ping') ?? 0) / elapsedSeconds;
+        const snapshotRate = snapshots ? snapshots.snapshotSends / elapsedSeconds : 0;
+        const snapshotSkipRate = snapshots ? snapshots.snapshotSkips / elapsedSeconds : 0;
+        const wsBufferedAvg = snapshots && snapshots.wsBufferedSamples > 0
+            ? Math.round(snapshots.wsBufferedBytesTotal / snapshots.wsBufferedSamples)
+            : 0;
+        const wsBufferedMax = snapshots?.wsBufferedBytesMax ?? 0;
+        return (`${key}{input=${inputRate.toFixed(1)}/s ping=${pingRate.toFixed(1)}/s ` +
+            `q=${(net?.inputQueueDepthAvg ?? 0).toFixed(2)}/${net?.inputQueueDepthMax ?? 0} cur=${net?.inputQueueDepthCurrent ?? 0} ` +
+            `drain=${(net?.inputsDrainedAvg ?? 0).toFixed(2)}/${net?.inputsDrainedMax ?? 0} ` +
+            `seq=${net?.lastProcessedInputSeq ?? 0}/${net?.lastEnqueuedInputSeq ?? 0} ` +
+            `ackAgeEst=${formatNullableMs(net?.ackAgeEstimateMs ?? null)} inputAge=${Math.round(net?.lastInputAgeMs ?? 0)}ms ` +
+            `snap=${snapshotRate.toFixed(1)}/s skip=${snapshotSkipRate.toFixed(1)}/s ` +
+            `ws=${wsBufferedAvg}/${wsBufferedMax}B colyseusSeenMax=${snapshots?.colyseusMessagesPerSecondMax ?? 0}/s}`);
+    })
+        .join(' ');
+}
+function formatNullableMs(value) {
+    return value === null ? 'n/a' : `${Math.round(value)}ms`;
+}
+function identity(value) {
+    return value;
+}

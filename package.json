@@ -12,6 +12,7 @@
     "music:manifest": "node scripts/generateBattleMusicManifest.mjs",
     "typecheck:all": "npm run typecheck && npm --prefix server run typecheck",
     "verify:live": "npm run music:manifest && npm run typecheck:all && npm run build:live",
+    "deploy:prebuild": "npm run verify:live && git add -f dist server/dist",
     "typecheck": "tsc --noEmit",
     "preview": "vite preview",
     "test": "vitest run",
