@@ -16,6 +16,7 @@ interface GuideSection {
 interface GuidePanelSpec {
   name: string;
   z: number;
+  width: number;
   title: string;
   accent: string;
   sections: GuideSection[];
@@ -39,14 +40,22 @@ const PANEL_DEPTH = 0.05;
 const WALL_X = TUNING.map.halfWidth - PANEL_DEPTH / 2 - 0.04;
 const BLEACHER_LENGTH = TUNING.map.halfLength * BLEACHER_LAYOUT.lengthScale;
 const USABLE_SPAN = BLEACHER_LENGTH - EDGE_PADDING * 2;
-const PANEL_WIDTH = (USABLE_SPAN - PANEL_GAP * (PANEL_COUNT - 1)) / PANEL_COUNT;
+const WIDE_PANEL_WEIGHT = 1.12;
+const CENTER_PANEL_WEIGHT = 0.86;
+const BASE_PANEL_WIDTH = (USABLE_SPAN - PANEL_GAP * (PANEL_COUNT - 1)) / (WIDE_PANEL_WEIGHT * 2 + CENTER_PANEL_WEIGHT);
+const WIDE_PANEL_WIDTH = BASE_PANEL_WIDTH * WIDE_PANEL_WEIGHT;
+const CENTER_PANEL_WIDTH = BASE_PANEL_WIDTH * CENTER_PANEL_WEIGHT;
+const CENTER_PANEL_Z = 0;
+const RIGHT_PANEL_Z = -(CENTER_PANEL_WIDTH / 2 + PANEL_GAP + WIDE_PANEL_WIDTH / 2);
+const LEFT_PANEL_Z = CENTER_PANEL_WIDTH / 2 + PANEL_GAP + WIDE_PANEL_WIDTH / 2;
 const TEXTURE_WIDTH = 2048;
 const TEXTURE_HEIGHT = 1365;
 
 const GUIDE_PANELS: readonly GuidePanelSpec[] = [
   {
     name: 'guide_defense',
-    z: -(PANEL_WIDTH + PANEL_GAP),
+    z: RIGHT_PANEL_Z,
+    width: WIDE_PANEL_WIDTH,
     title: 'How To Play',
     accent: '#5fb0ff',
     sections: [
@@ -56,48 +65,49 @@ const GUIDE_PANELS: readonly GuidePanelSpec[] = [
           { label: '1v1', text: 'First team to 5 points wins.' },
           { label: '2v2', text: 'Each player has 3 lives. Last team standing wins.' },
           { label: 'GET HIT', text: 'Lose a life (2v2) or give up a point (1v1).' },
-          { label: 'OUT', text: 'Eliminated players switch to free-cam and spectate.' }
+          { label: 'OUT', text: 'Eliminated players switch to free-cam and spectate until the round ends.' }
         ]
       },
       {
         heading: 'Defense',
         items: [
-          { label: 'EMPTY CLICK', text: 'Catch with an empty hand. Negates the hit.' },
-          { label: 'STAY READY', text: 'Face the ball. Stay close. Do not dash.' },
-          { label: 'HOLD 2 BALLS', text: 'Auto-parries live shots back, no click needed.' }
+          { label: 'EMPTY CLICK', text: 'Catch with an empty hand. Each hand has its own cooldown.' },
+          { label: 'FACE BALL', text: 'Catches work best when the ball is inside your view cone.' },
+          { label: 'HOLD 2 BALLS', text: 'Auto-parries live shots back, no click needed, but slows you slightly.' }
         ]
       },
       {
         heading: 'Practice Room',
         items: [
-          { label: 'WEST WALL', text: 'Buttons: balls, bots, resets, difficulty.' },
-          { label: 'PORTALS', text: 'Queue 1v1 or 2v2 from the gym.' },
-          { text: 'Hit dummies and live through return fire.' }
+          { label: 'WEST WALL', text: 'Spawn balls, add bots, reset the map, and tune bot difficulty.' },
+          { label: 'PORTALS', text: 'Hold E at match stations to queue 1v1 or 2v2.' },
+          { text: 'Use the gym to practice catches, wall routes, backflip throws, and live return fire.' }
         ]
       }
     ],
-    footer: 'A caught or parried ball never scores. Land clean hits before the other side lands theirs.'
+    footer: 'A caught or parried ball never scores. Control space, keep a ball ready, and land hits before the other side can reset.'
   },
   {
     name: 'guide_ball',
-    z: 0,
+    z: CENTER_PANEL_Z,
+    width: CENTER_PANEL_WIDTH,
     title: 'Ball Control',
     accent: '#ffd24d',
     sections: [
       {
         heading: 'Hands',
         items: [
-          { label: 'LMB / RMB', text: 'Left hand / right hand.' },
-          { label: 'E', text: 'Pick up a loose ball.' },
-          { label: 'R', text: 'Drop your held ball.' }
+          { label: 'LMB / RMB', text: 'Left hand / right hand. Empty click attempts a catch.' },
+          { label: 'E', text: 'Pick up a loose ball when you have an empty hand.' },
+          { label: 'R', text: 'Drop your held ball if you need to reset a hand.' }
         ]
       },
       {
         heading: 'Throws',
         items: [
-          { label: 'HOLD CLICK', text: 'Charge a fast straight throw.' },
-          { label: 'TAP + RELEASE', text: 'Quick lob with more arc.' },
-          { label: 'CROUCH + THROW', text: 'Curve the ball.' },
+          { label: 'HOLD CLICK', text: 'Charge a fast, direct throw.' },
+          { label: 'TAP + RELEASE', text: 'Quick lob with more arc for clearing cover.' },
+          { label: 'CROUCH + THROW', text: 'Curve the ball around players and mats.' },
           { label: 'F', text: 'Fake or cancel.' }
         ]
       },
@@ -105,7 +115,7 @@ const GUIDE_PANELS: readonly GuidePanelSpec[] = [
         heading: 'Holding 2 Balls',
         items: [
           { text: 'Slows you slightly but arms the auto-parry.' },
-          { text: 'Landing a hit refills a dash charge — keep throwing.' }
+          { text: 'Landing a hit refills a dash charge - keep throwing.' }
         ]
       }
     ],
@@ -113,32 +123,33 @@ const GUIDE_PANELS: readonly GuidePanelSpec[] = [
   },
   {
     name: 'guide_movement',
-    z: PANEL_WIDTH + PANEL_GAP,
+    z: LEFT_PANEL_Z,
+    width: WIDE_PANEL_WIDTH,
     title: 'Movement',
     accent: '#76b8ff',
     sections: [
       {
         heading: 'Core',
         items: [
-          { label: 'W A S D', text: 'Move' },
-          { label: 'MOUSE', text: 'Look / aim' },
-          { label: 'SPACE', text: 'Jump and bunnyhop' },
-          { label: 'L-SHIFT', text: 'Dash with 2 charges' },
-          { label: 'CTRL', text: 'Crouch' },
-          { label: 'C', text: 'Slide while sprinting' }
+          { label: 'W A S D', text: 'Move. Hold W to sprint into jumps, slides, and wall routes.' },
+          { label: 'MOUSE', text: 'Look and aim. Movement direction follows your view.' },
+          { label: 'SPACE', text: 'Jump. Chain clean landings to bunnyhop and keep momentum.' },
+          { label: 'L-SHIFT', text: 'Dash with 2 charges. Hits can refill a charge.' },
+          { label: 'CTRL / C', text: 'Crouch, or slide while sprinting to duck and keep speed.' }
         ]
       },
       {
         heading: 'Advanced',
         items: [
-          { label: 'WALL-RUN', text: 'Sprint beside a wall to carry speed.' },
-          { label: 'A / D', text: 'While wall-running: steer toward the wall to climb, away to descend.' },
-          { label: 'WALL-JUMP', text: 'Jump off the wall to redirect.' },
-          { label: 'Q', text: 'Backflip to set up the QTE throw.' }
+          { label: 'WALL-RUN', text: 'Sprint beside a wall while airborne to stick and carry speed.' },
+          { label: 'CLIMB', text: 'For the first 0.8s, steer toward the wall with A/D to climb.' },
+          { label: 'DESCEND', text: 'After 0.8s gravity wins. Steer away from the wall to drop out safely.' },
+          { label: 'WALL-JUMP', text: 'Press SPACE during a wall-run to kick off, redirect, and reset on a new wall.' },
+          { label: 'Q', text: 'Backflip to dodge and arm the landing timing bar for a powered throw.' }
         ]
       }
     ],
-    footer: 'A wall-run can only climb for the first 0.8s — after that gravity takes over and only descending still works. Jumping to a new wall resets it.'
+    footer: 'Wall-run rule: climb only during the first 0.8s. New wall, new timer. Ceiling contact does not refresh it.'
   }
 ] as const;
 
@@ -177,7 +188,7 @@ export class GuideWall {
     this.disposables.push(backMat);
 
     const back = MeshBuilder.CreateBox(`${spec.name}_back`, {
-      width: PANEL_WIDTH + 0.16,
+      width: spec.width + 0.16,
       height: PANEL_HEIGHT + 0.14,
       depth: PANEL_DEPTH
     }, scene);
@@ -189,7 +200,7 @@ export class GuideWall {
     this.meshes.push(back);
     this.disposables.push(back);
 
-    const panel = MeshBuilder.CreatePlane(spec.name, { width: PANEL_WIDTH, height: PANEL_HEIGHT }, scene);
+    const panel = MeshBuilder.CreatePlane(spec.name, { width: spec.width, height: PANEL_HEIGHT }, scene);
     panel.position.set(WALL_X - 0.01, PANEL_Y_CENTER, spec.z);
     panel.rotation.y = Math.PI / 2;
     panel.material = panelMat;
@@ -256,8 +267,8 @@ function drawPanelTexture(
   ctx.fillText(spec.title, width / 2, 88);
 
   const marginX = 76;
-  const labelWidth = 500;
-  const gap = 42;
+  const labelWidth = 405;
+  const gap = 34;
   const bodyX = marginX + labelWidth + gap;
   const bodyWidth = width - bodyX - marginX;
   let y = 202;
@@ -266,7 +277,7 @@ function drawPanelTexture(
     ctx.textAlign = 'left';
     ctx.textBaseline = 'alphabetic';
     ctx.fillStyle = spec.accent;
-    ctx.font = '700 40px Arial';
+    ctx.font = '700 38px Arial';
     ctx.fillText(section.heading.toUpperCase(), marginX, y);
 
     ctx.strokeStyle = hexToRgba(spec.accent, 0.35);
@@ -275,13 +286,13 @@ function drawPanelTexture(
     ctx.moveTo(marginX, y + 12);
     ctx.lineTo(width - marginX, y + 12);
     ctx.stroke();
-    y += 48;
+    y += 44;
 
     for (const item of section.items) {
       y += drawGuideItem(ctx, marginX, y, labelWidth, bodyX, bodyWidth, item, spec.accent);
     }
 
-    y += 18;
+    y += 12;
   }
 
   const footerY = height - 196;
@@ -293,10 +304,10 @@ function drawPanelTexture(
   ctx.stroke();
 
   ctx.fillStyle = '#dfe9ff';
-  ctx.font = '600 34px Arial';
+  ctx.font = '600 32px Arial';
   ctx.textAlign = 'left';
   ctx.textBaseline = 'middle';
-  drawWrappedText(ctx, spec.footer, 88, footerY + 56, width - 176, 40, 2);
+  drawWrappedText(ctx, spec.footer, 88, footerY + 56, width - 176, 38, 2);
 }
 
 function drawGuideItem(
@@ -309,11 +320,11 @@ function drawGuideItem(
   item: GuideItem,
   accent: string
 ): number {
-  const labelLines = item.label ? wrapText(ctx, item.label, labelWidth, '700 34px Arial') : [];
-  const bodyLines = wrapText(ctx, item.text, bodyWidth, item.label ? '600 34px Arial' : '600 36px Arial');
-  const lineHeight = item.label ? 40 : 42;
+  const labelLines = item.label ? wrapText(ctx, item.label, labelWidth, '700 30px Arial') : [];
+  const bodyLines = wrapText(ctx, item.text, bodyWidth, item.label ? '600 30px Arial' : '600 32px Arial');
+  const lineHeight = item.label ? 35 : 38;
   const contentLines = Math.max(labelLines.length || 0, bodyLines.length);
-  const blockHeight = Math.max(64, contentLines * lineHeight + 16);
+  const blockHeight = Math.max(54, contentLines * lineHeight + 10);
 
   if (item.label) {
     drawRoundedRect(ctx, labelX, y - 26, labelWidth, blockHeight, 18);
@@ -324,13 +335,13 @@ function drawGuideItem(
     ctx.stroke();
 
     ctx.fillStyle = '#ffd74a';
-    ctx.font = '700 34px Arial';
+    ctx.font = '700 30px Arial';
     ctx.textAlign = 'left';
     ctx.textBaseline = 'top';
-    drawTextLines(ctx, labelLines, labelX + 24, y - 12, lineHeight);
+    drawTextLines(ctx, labelLines, labelX + 22, y - 12, lineHeight);
 
     ctx.fillStyle = '#eef4ff';
-    ctx.font = '600 34px Arial';
+    ctx.font = '600 30px Arial';
     drawTextLines(ctx, bodyLines, bodyX, y - 10, lineHeight);
   } else {
     ctx.fillStyle = hexToRgba(accent, 0.88);
@@ -339,13 +350,13 @@ function drawGuideItem(
     ctx.fill();
 
     ctx.fillStyle = '#d9e8ff';
-    ctx.font = '600 36px Arial';
+    ctx.font = '600 32px Arial';
     ctx.textAlign = 'left';
     ctx.textBaseline = 'top';
     drawTextLines(ctx, bodyLines, labelX + 34, y - 10, lineHeight);
   }
 
-  return blockHeight + 16;
+  return blockHeight + 10;
 }
 
 function wrapText(

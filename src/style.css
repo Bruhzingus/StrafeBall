@@ -1561,6 +1561,54 @@ html, body {
   backdrop-filter: blur(2px);
 }
 
+.ability-power-bar {
+  position: absolute;
+  top: 8px;
+  bottom: 8px;
+  width: 9px;
+  overflow: hidden;
+  border: 2px solid rgba(255, 207, 46, 0.42);
+  border-radius: 999px;
+  background:
+    linear-gradient(180deg, rgba(255, 255, 255, 0.06), rgba(0, 0, 0, 0.18)),
+    rgba(6, 12, 23, 0.86);
+  box-shadow:
+    0 3px 0 rgba(0, 0, 0, 0.44),
+    inset 0 0 0 1px rgba(255, 255, 255, 0.05);
+}
+
+.ability-power-bar--left {
+  left: -17px;
+}
+
+.ability-power-bar--right {
+  right: -17px;
+}
+
+.ability-power-bar__fill {
+  position: absolute;
+  inset: 0;
+  transform: scaleY(0);
+  transform-origin: 50% 100%;
+  border-radius: inherit;
+  background:
+    linear-gradient(180deg, #fff6a8 0%, var(--school-gold) 48%, #ff9d2d 100%);
+  box-shadow:
+    0 0 9px rgba(255, 207, 46, 0.44),
+    inset 0 0 0 1px rgba(255, 255, 255, 0.28);
+  transition: transform 0.045s linear;
+}
+
+.ability-power-bar--active {
+  border-color: rgba(255, 207, 46, 0.74);
+}
+
+.ability-power-bar--full .ability-power-bar__fill {
+  box-shadow:
+    0 0 14px rgba(255, 207, 46, 0.76),
+    inset 0 0 0 1px rgba(255, 255, 255, 0.34);
+}
+
 .ability-hud-card {
   --ability-progress: 360deg;
   display: grid;

@@ -30,6 +30,8 @@ export class Hud {
   private readonly rightCatchStatus: HTMLDivElement;
   private readonly backflipCard: HTMLDivElement;
   private readonly backflipStatus: HTMLDivElement;
+  private readonly leftPowerBar: HTMLDivElement;
+  private readonly rightPowerBar: HTMLDivElement;
   private readonly speedValue: HTMLDivElement;
   private smoothedSpeed = 0;
   private hasSmoothedSpeed = false;
@@ -93,6 +95,9 @@ export class Hud {
     this.gameplayHud = document.createElement('div');
     this.gameplayHud.className = 'ability-hud';
     this.gameplayHud.innerHTML = `
+      <div class="ability-power-bar ability-power-bar--left" aria-hidden="true">
+        <div class="ability-power-bar__fill"></div>
+      </div>
       <div class="ability-hud-card ability-hud-card--catch" data-ability="left-catch">
         <div class="ability-ring">
           <div class="ability-icon ability-icon--hand ability-icon--left" aria-label="Left hand catch">
@@ -138,6 +143,9 @@ export class Hud {
         <div class="ability-speed-value">0.0</div>
         <div class="ability-speed-unit">m/s</div>
       </div>
+      <div class="ability-power-bar ability-power-bar--right" aria-hidden="true">
+        <div class="ability-power-bar__fill"></div>
+      </div>
     `;
     this.root.appendChild(this.gameplayHud);
     this.leftCatchCard = this.mustHudElement<HTMLDivElement>('[data-ability="left-catch"]');
@@ -146,6 +154,8 @@ export class Hud {
     this.rightCatchStatus = this.mustHudElement<HTMLDivElement>('[data-ability="right-catch"] .ability-status');
     this.backflipCard = this.mustHudElement<HTMLDivElement>('[data-ability="backflip"]');
     this.backflipStatus = this.mustHudElement<HTMLDivElement>('[data-ability="backflip"] .ability-status');
+    this.leftPowerBar = this.mustHudElement<HTMLDivElement>('.ability-power-bar--left .ability-power-bar__fill');
+    this.rightPowerBar = this.mustHudElement<HTMLDivElement>('.ability-power-bar--right .ability-power-bar__fill');
     this.speedValue = this.mustHudElement<HTMLDivElement>('.ability-speed-value');
 
     this.countdown = document.createElement('div');
@@ -331,6 +341,8 @@ export class Hud {
       leftCatchCooldown: hands.left.cooldown,
       rightCatchCooldown: hands.right.cooldown,
       backflipCooldown: player.backflip.cooldown,
+      leftCharge: hands.left.ball && hands.left.charging ? this.charge01(hands.left) : 0,
+      rightCharge: hands.right.ball && hands.right.charging ? this.charge01(hands.right) : 0,
       speed: movement.speed,
       dt: Math.max(0, frameMs / 1000)
     });
@@ -541,6 +553,8 @@ export class Hud {
       leftCatchCooldown: left?.cooldownSeconds ?? 0,
       rightCatchCooldown: right?.cooldownSeconds ?? 0,
       backflipCooldown: local?.movementInternal.backflipCooldown ?? 0,
+      leftCharge: left?.heldBallId && left.mode === 'charging' ? this.chargeSeconds01(left.chargeSeconds) : 0,
+      rightCharge: right?.heldBallId && right.mode === 'charging' ? this.chargeSeconds01(right.chargeSeconds) : 0,
       speed: local?.movement.speed ?? 0,
       dt: Math.max(0, frameMs / 1000)
     });
@@ -662,12 +676,16 @@ export class Hud {
     leftCatchCooldown: number;
     rightCatchCooldown: number;
     backflipCooldown: number;
+    leftCharge: number;
+    rightCharge: number;
     speed: number;
     dt: number;
   }): void {
     this.updateAbilityCard(this.leftCatchCard, this.leftCatchStatus, state.leftCatchCooldown, TUNING.catch.cooldownSeconds);
     this.updateAbilityCard(this.rightCatchCard, this.rightCatchStatus, state.rightCatchCooldown, TUNING.catch.cooldownSeconds);
     this.updateAbilityCard(this.backflipCard, this.backflipStatus, state.backflipCooldown, TUNING.backflip.cooldownSeconds);
+    this.updatePowerBar(this.leftPowerBar, state.leftCharge);
+    this.updatePowerBar(this.rightPowerBar, state.rightCharge);
 
     const speed = Number.isFinite(state.speed) ? Math.max(0, state.speed) : 0;
     if (!this.hasSmoothedSpeed) {
@@ -688,6 +706,13 @@ export class Hud {
     card.classList.toggle('ability-hud-card--ready', remaining <= 0);
     card.classList.toggle('ability-hud-card--cooldown', remaining > 0);
     status.textContent = remaining <= 0 ? 'READY' : `${remaining.toFixed(1)}s`;
+  }
+
+  private updatePowerBar(fill: HTMLDivElement, charge01: number): void {
+    const clamped = Math.max(0, Math.min(1, Number.isFinite(charge01) ? charge01 : 0));
+    fill.style.transform = `scaleY(${clamped.toFixed(3)})`;
+    fill.parentElement?.classList.toggle('ability-power-bar--active', clamped > 0.001);
+    fill.parentElement?.classList.toggle('ability-power-bar--full', clamped >= 0.995);
   }
 
   private movementState(player: PlayerController): string {
@@ -825,7 +850,11 @@ export class Hud {
   }
 
   private charge01(hand: { chargeSeconds: number }): number {
-    return Math.min(1, hand.chargeSeconds / TUNING.ball.maxChargeSeconds);
+    return this.chargeSeconds01(hand.chargeSeconds);
+  }
+
+  private chargeSeconds01(chargeSeconds: number): number {
+    return Math.max(0, Math.min(1, chargeSeconds / TUNING.ball.maxChargeSeconds));
   }
 
   private updateStaminaWidget(charges: number, maxCharges: number): void {
