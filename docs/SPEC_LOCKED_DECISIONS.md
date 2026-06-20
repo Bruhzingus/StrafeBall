@@ -20,7 +20,7 @@
 
 If hand is empty:
 - Tap = attempt catch
-- Hold = prepare catch/tracking stance
+
 
 If hand has ball:
 - Tap = quick throw

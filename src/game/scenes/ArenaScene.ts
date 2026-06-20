@@ -311,6 +311,10 @@ export class ArenaScene {
             lastPongAgeMs: connectionDebug.lastPongAgeMs,
             missedPongs: connectionDebug.missedPongs,
             socketBufferedAmount: connectionDebug.socketBufferedAmount,
+            socketBufferedPeak: connectionDebug.socketBufferedPeak,
+            pingSendBufferedAmount: connectionDebug.pingSendBufferedAmount,
+            rttEstimateMs: connectionDebug.rttEstimateMs,
+            maxRecentPingMs: connectionDebug.maxRecentPingMs,
             predictionActive: this.predictedMovement !== null,
           }
         );

@@ -1,4 +1,5 @@
 import { Client, Room } from '@colyseus/sdk';
+import { toWireInput } from '../../../shared/protocol';
 import type {
   BattleMusicSyncMessage,
   CatchEvent,
@@ -54,6 +55,10 @@ const EMPTY_HIT_EVENTS: readonly HitEvent[] = [];
 const EMPTY_HIT_REVERT_EVENTS: readonly HitRevertEvent[] = [];
 
 export class MultiplayerClient {
+  // A ping send-gap or round-trip beyond this is not network latency: the ping timer (1s) was
+  // throttled by a backgrounded tab / OS sleep / long main-thread stall. 4s is ~4 intervals — well
+  // clear of any real RTT or transient hitch, but far below the multi-second freezes we must reject.
+  private static readonly PING_FREEZE_GAP_MS = 4000;
   public readonly serverUrl: string;
   public status: ConnectionStatus = 'offline';
   public errorMessage = '';
@@ -86,9 +91,23 @@ export class MultiplayerClient {
   private lastPingClientTime = 0;
   private lastPongReceivedAtMs = 0;
   private pingJitterMs = 0;
+  // Raw last round-trip (== pingMs, kept for clarity). Floor-tracked network RTT estimate used for
+  // clock sync (immune to queue/stall spikes). Window peak of the raw RTT for the debug overlay.
+  private rawPingMs = 0;
+  private smoothedRttMs = 0;
+  private maxRecentPingMs = 0;
+  private maxRecentPingWindowStartedAtMs = 0;
   private missedPongs = 0;
   private consecutiveMissedPongs = 0;
   private awaitingPong = false;
+  // Wall-clock time the in-flight ping was SENT. If the gap until its pong (or until the next send)
+  // far exceeds the ping interval, our timer was throttled/frozen — a backgrounded tab, the machine
+  // sleeping, or a long main-thread stall. The resulting "RTT" is that frozen wall-clock gap, NOT
+  // network latency, so we must discard it rather than display a 19000ms "ping".
+  private lastPingSentAtMs = 0;
+  // True once a ping round-trip has been invalidated by a detected freeze, until a clean fresh
+  // round trip arrives. Drives the HUD to show "stale" instead of a bogus latency number.
+  private pingStale = false;
   private snapshotWindowStartedAtMs = 0;
   private snapshotWindowCount = 0;
   private snapshotWindowUniqueCount = 0;
@@ -105,6 +124,15 @@ export class MultiplayerClient {
   private connectGeneration = 0;
   private lastServerTimeSampleMs: number | null = null;
   private lastServerTimeSampleReceivedAtMs = 0;
+  // Rolling peak of the client uplink WebSocket send buffer (bytes). An instantaneous read at HUD
+  // refresh time misses transient spikes — and a transient uplink backlog is exactly what inflates
+  // the measured ping. We sample on every input send (the highest-frequency outbound path) and on
+  // every ping send, keep the window peak, and decay it slowly so the HUD shows recent worst-case.
+  private wsBufferedPeakBytes = 0;
+  private wsBufferedPeakDecayAtMs = 0;
+  // The bufferedAmount captured at the instant the most recent ping was SENT. If this is large when
+  // a slow pong arrives, the "ping" is queue time on our own uplink, not network RTT.
+  private lastPingSendBufferedBytes = 0;
 
   constructor(serverUrl = resolveServerUrl()) {
     this.serverUrl = serverUrl;
@@ -116,21 +144,55 @@ export class MultiplayerClient {
     return this.status === 'connected' && this.room !== null;
   }
 
+  /**
+   * Floor-tracked network RTT estimate (ms), immune to uplink-queue / main-thread-stall spikes that
+   * inflate the raw `pingMs`. This is what should drive anything latency-compensated (e.g. the
+   * server's catch rewind window) so a transient 3000ms send-queue spike can't widen lag-comp.
+   * Falls back to the raw ping until the floor estimate has a sample.
+   */
+  get rttEstimateMs(): number | null {
+    if (this.smoothedRttMs > 0) return this.smoothedRttMs;
+    return this.pingMs;
+  }
+
   getConnectionDebug(): {
     pingJitterMs: number;
     lastPongAgeMs: number | null;
     missedPongs: number;
     consecutiveMissedPongs: number;
     socketBufferedAmount: number;
+    socketBufferedPeak: number;
+    pingSendBufferedAmount: number;
+    rttEstimateMs: number;
+    maxRecentPingMs: number;
     lastSnapshotAgeMs: number | null;
   } {
     const now = Date.now();
+    // Refresh the decayed peak even if no input was sent this tick (e.g. paused in a menu).
+    this.sampleWsBufferedPeak();
+    // Roll the "max recent ping" window every PERF_REPORT_INTERVAL_MS so the overlay shows the worst
+    // round-trip in the last few seconds (where a spike actually shows up), not an all-time high.
+    if (this.maxRecentPingWindowStartedAtMs === 0) this.maxRecentPingWindowStartedAtMs = now;
+    const reportedMaxRecentPing = this.maxRecentPingMs;
+    if (now - this.maxRecentPingWindowStartedAtMs >= PERF_REPORT_INTERVAL_MS) {
+      this.maxRecentPingMs = this.rawPingMs;
+      this.maxRecentPingWindowStartedAtMs = now;
+    }
     return {
       pingJitterMs: this.pingJitterMs,
       lastPongAgeMs: this.lastPongReceivedAtMs > 0 ? Math.max(0, now - this.lastPongReceivedAtMs) : null,
       missedPongs: this.missedPongs,
       consecutiveMissedPongs: this.consecutiveMissedPongs,
+      // Floor-tracked network RTT estimate (queue/stall-immune) and the worst raw round-trip in the
+      // recent window. If maxRecentPingMs >> rttEstimateMs, the spike is local queue/stall, not network.
+      rttEstimateMs: Math.round(this.smoothedRttMs),
+      maxRecentPingMs: Math.round(reportedMaxRecentPing),
       socketBufferedAmount: this.socketBufferedAmount(),
+      // Rolling worst-case uplink backlog and the backlog measured at last ping-send time. When
+      // ping spikes, compare these: a high pingSendBufferedAmount proves the spike is send-queue
+      // time on the client's own uplink, not network round-trip.
+      socketBufferedPeak: Math.round(this.wsBufferedPeakBytes),
+      pingSendBufferedAmount: this.lastPingSendBufferedBytes,
       lastSnapshotAgeMs: this.lastSnapshotReceivedAtMs > 0 ? Math.max(0, now - this.lastSnapshotReceivedAtMs) : null
     };
   }
@@ -173,14 +235,40 @@ export class MultiplayerClient {
   }
 
   sendInput(input: PlayerInput): void {
-    this.room?.send('input', {
+    if (!this.room) return;
+    // Sample the uplink send buffer BEFORE we enqueue this input. The input stream is the dominant
+    // outbound traffic (one packet per fixed step), so this is where uplink congestion first shows.
+    this.sampleWsBufferedPeak();
+    // Report the FLOOR-tracked RTT, not the raw ping: the server uses this for the catch lag-comp
+    // rewind window, and a transient uplink-queue spike (the thing that inflates raw ping to ~3000ms)
+    // must not widen lag-comp. The server still clamps/EMA-smooths it, so this only makes the rewind
+    // track true network RTT more faithfully during congestion — no balance change.
+    const reportedRtt = this.rttEstimateMs;
+    this.room.send('input', {
       type: 'input',
       playerId: this.localPlayerId,
       sequence: input.sequence,
       clientTimeMs: input.clientTimeMs,
-      ...(this.pingMs !== null ? { rttMs: this.pingMs } : {}),
-      input
+      ...(reportedRtt !== null ? { rttMs: reportedRtt } : {}),
+      input: toWireInput(input)
     } satisfies InputCommand);
+  }
+
+  /** Update the rolling peak of the uplink WebSocket send buffer. Cheap (a couple of property reads
+   *  plus arithmetic); safe to call on every input send. Decays the peak toward the current value
+   *  over ~1s so the HUD reflects RECENT worst-case rather than an all-time high. */
+  private sampleWsBufferedPeak(): void {
+    const buffered = this.socketBufferedAmount();
+    const now = Date.now();
+    if (this.wsBufferedPeakDecayAtMs === 0) this.wsBufferedPeakDecayAtMs = now;
+    // Linear decay of the held peak: full peak falls back to `buffered` over ~1s of no new spikes.
+    const elapsed = now - this.wsBufferedPeakDecayAtMs;
+    if (elapsed > 0) {
+      const decay = (this.wsBufferedPeakBytes - buffered) * Math.min(1, elapsed / 1000);
+      this.wsBufferedPeakBytes = Math.max(buffered, this.wsBufferedPeakBytes - decay);
+      this.wsBufferedPeakDecayAtMs = now;
+    }
+    if (buffered > this.wsBufferedPeakBytes) this.wsBufferedPeakBytes = buffered;
   }
 
   requestPickup(): void {
@@ -374,16 +462,45 @@ export class MultiplayerClient {
 
     room.onMessage('pong', (message: Extract<ServerMessage, { type: 'pong' }>) => {
       if (this.room !== room) return;
+      const now = Date.now();
+      const roundTrip = Math.max(0, now - message.clientTimeMs);
+      this.awaitingPong = false;
+      this.lastPongReceivedAtMs = now;
+      this.consecutiveMissedPongs = 0;
+
+      // Discard a round trip that spans a detected freeze (backgrounded tab / sleep / long stall) or
+      // is itself implausibly large for network RTT. Its "RTT" is frozen wall-clock time, not latency.
+      // We mark pingMs null (HUD shows "—/stale") and leave the floor RTT + clock estimate untouched
+      // so a 19000ms reading can't poison them. A clean fresh round trip below clears the stale flag.
+      if (this.pingStale || roundTrip > MultiplayerClient.PING_FREEZE_GAP_MS) {
+        this.pingMs = null;
+        this.pingStale = false; // this pong cleared the freeze; the NEXT round trip is trustworthy
+        return;
+      }
+
       const previousPing = this.pingMs;
-      this.pingMs = Math.max(0, Date.now() - message.clientTimeMs);
+      // Raw application round-trip: send-enqueue → server echo → receive-process. This INCLUDES any
+      // time the ping spent queued behind our own outbound backlog and any main-thread stall before
+      // we processed the pong, so a spike here is not necessarily network latency. We surface it
+      // (pingMs) but also derive a clock-safe one-way delay below that ignores such spikes.
+      this.pingMs = roundTrip;
+      this.rawPingMs = this.pingMs;
+      this.maxRecentPingMs = Math.max(this.maxRecentPingMs, this.pingMs);
       if (previousPing !== null) {
         const delta = Math.abs(this.pingMs - previousPing);
         this.pingJitterMs = this.pingJitterMs === 0 ? delta : this.pingJitterMs * 0.8 + delta * 0.2;
       }
-      this.awaitingPong = false;
-      this.lastPongReceivedAtMs = Date.now();
-      this.consecutiveMissedPongs = 0;
-      this.recordServerTimeSample(message.serverTimeMs, this.pingMs * 0.5);
+      // Server-time estimate must NOT be jerked around by a queue/stall spike. Estimate true network
+      // RTT by tracking the FLOOR of recent samples: every spike (uplink queue, main-thread stall)
+      // only ADDS delay, so the minimum recent round-trip is the best estimate of real latency. The
+      // floor follows genuine latency increases slowly (it relaxes upward toward the live sample) but
+      // a single 3000ms outlier can't shove the render/server clock by ~1.5s.
+      this.smoothedRttMs = this.smoothedRttMs === 0
+        ? this.pingMs
+        : this.pingMs < this.smoothedRttMs
+          ? this.pingMs // snap down: a lower sample is real network latency, adopt it immediately
+          : this.smoothedRttMs + (this.pingMs - this.smoothedRttMs) * 0.1; // relax up slowly toward sustained higher RTT
+      this.recordServerTimeSample(message.serverTimeMs, this.smoothedRttMs * 0.5);
     });
 
     room.onError((code, message) => {
@@ -486,17 +603,34 @@ export class MultiplayerClient {
   private startPing(): void {
     this.stopPing();
     this.sendPing();
-    this.pingTimer = window.setInterval(() => this.sendPing(), 2000);
+    // 1s cadence (was 2s): a fresher sample recovers the displayed ping faster after a transient
+    // spike, and the floor-tracked RTT estimate converges quicker. One tiny ping/s is negligible
+    // next to the 128–180 input packets/s already on this socket.
+    this.pingTimer = window.setInterval(() => this.sendPing(), 1000);
   }
 
   private sendPing(): void {
     if (!this.room) return;
+    const now = Date.now();
+    // Detect a throttled/frozen ping timer: a backgrounded tab, OS sleep, or a long main-thread
+    // stall delays setInterval far past its 1s period. When the gap between sends is much larger
+    // than the interval, any pong for the previous (or this) ping measures frozen wall-clock time,
+    // not network RTT — flag it stale so we don't display a bogus multi-second "ping".
+    if (this.lastPingSentAtMs > 0 && now - this.lastPingSentAtMs > MultiplayerClient.PING_FREEZE_GAP_MS) {
+      this.pingStale = true;
+    }
     if (this.awaitingPong) {
       this.missedPongs += 1;
       this.consecutiveMissedPongs += 1;
     }
-    this.lastPingClientTime = Date.now();
+    this.lastPingClientTime = now;
+    this.lastPingSentAtMs = now;
     this.awaitingPong = true;
+    // Capture the uplink backlog at the instant the ping is enqueued. A large value here means the
+    // ping is queued behind our own outbound backlog, so the resulting "ping" is mostly send-queue
+    // time, not network RTT — the core distinction this investigation needs.
+    this.sampleWsBufferedPeak();
+    this.lastPingSendBufferedBytes = this.socketBufferedAmount();
     this.room.send('ping', { clientTimeMs: this.lastPingClientTime });
   }
 
@@ -527,6 +661,15 @@ export class MultiplayerClient {
     this.awaitingPong = false;
     this.lastServerTimeSampleMs = null;
     this.lastServerTimeSampleReceivedAtMs = 0;
+    this.wsBufferedPeakBytes = 0;
+    this.wsBufferedPeakDecayAtMs = 0;
+    this.lastPingSendBufferedBytes = 0;
+    this.rawPingMs = 0;
+    this.smoothedRttMs = 0;
+    this.maxRecentPingMs = 0;
+    this.maxRecentPingWindowStartedAtMs = 0;
+    this.lastPingSentAtMs = 0;
+    this.pingStale = false;
   }
 
   private recordServerTimeSample(serverTimeMs: number, oneWayDelayMs = (this.pingMs ?? 0) * 0.5): void {

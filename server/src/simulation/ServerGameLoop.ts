@@ -225,6 +225,10 @@ const MAX_INPUT_QUEUE = SERVER_INPUT_QUEUE_LIMIT;
 // If no fresh input arrives for this long, the player's input is treated as neutral (so a
 // backgrounded/frozen tab doesn't keep walking or charging on the last-held input).
 const STALE_INPUT_MS = 1000;
+// Default dashDirection for an input whose dashDirection was trimmed from the wire (zero vector).
+// MUST be zero, not the previous input, so the sim derives the dash dir from the wish/facing — see
+// normalizeInput. Frozen so it can't be mutated by a downstream consumer.
+const ZERO_DASH_DIRECTION: Readonly<Vec3> = Object.freeze(vec3());
 const START_VOTE_TTL_MS = GAME_CONSTANTS.match.startVoteSeconds * 1000;
 const RESET_VOTE_TTL_MS = GAME_CONSTANTS.match.resetVoteSeconds * 1000;
 const LAST_PLAYER_BUFF_MS = GAME_CONSTANTS.match.lastPlayerBuffSeconds * 1000;
@@ -3400,7 +3404,12 @@ function normalizeInput(input: Partial<PlayerInput>, fallback: PlayerInput = def
   const leftHandHeld = boolOr(input.leftHandHeld, legacy.leftHand, fallback.leftHandHeld);
   const rightHandHeld = boolOr(input.rightHandHeld, legacy.rightHand, fallback.rightHandHeld);
   const fakeThrowHeld = boolOr(input.fakeThrowHeld, legacy.fakeThrow, fallback.fakeThrowHeld);
-  const dashDirection = sanitizeVec3(input.dashDirection, fallback.dashDirection);
+  // dashDirection is trimmed from the wire when zero (see toWireInput): an ABSENT dashDirection must
+  // default to a ZERO vector, NOT the previous input's value. The sim only reads it on the dash tick
+  // and a zero vector makes it fall through to the wish/facing direction — exactly what the client
+  // predicted locally. Falling back to `fallback.dashDirection` would leak a stale earlier dash dir
+  // into a later dash-with-no-movement tick and diverge from the client (reconciliation would fight).
+  const dashDirection = sanitizeVec3(input.dashDirection, ZERO_DASH_DIRECTION);
 
   return {
     ...fallback,

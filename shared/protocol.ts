@@ -2,6 +2,35 @@ import type { HandSide, PlayerInput, RoomState, Vec3 } from './types';
 import type { CompactServerSnapshot, PlayerRoster } from './snapshotCodec';
 import type { BattleMusicSyncState } from './music/BattleMusic';
 
+/**
+ * The on-the-wire form of PlayerInput. `dashDirection` is OMITTED when it is a zero vector — which
+ * is every non-dash tick and a dash-with-no-movement tick — because the server's movement sim only
+ * reads it on the `dashPressed` tick and, when absent, derives the dash direction from the same
+ * move keys (the wish direction, which is mathematically identical to what the client computed) or
+ * the facing. Omitting it shaves a 3-number object off the dominant outbound packet (one per fixed
+ * step at up to 180Hz) with zero gameplay effect. The server defaults an absent dashDirection to a
+ * ZERO vector (never the previous input), so an omitted field is sim-equivalent to a zero one.
+ */
+export type WireInput = Omit<PlayerInput, 'dashDirection'> & { dashDirection?: Vec3 };
+
+/** Vectors at or below this length are treated as "no dash direction" — matches the sim's EPS. */
+const WIRE_DASH_DIRECTION_EPS = 0.001;
+
+/**
+ * Encode a PlayerInput for the wire, omitting `dashDirection` when it is effectively zero. A zero
+ * dash direction carries no information: the sim ignores dashDirection on non-dash ticks entirely,
+ * and on a dash tick a zero/absent direction makes it fall back to the wish/facing direction — the
+ * exact behavior a zero vector already produces. The local prediction copy keeps the full input
+ * untouched (only the transmitted object is trimmed), so reconciliation is unaffected.
+ */
+export function toWireInput(input: PlayerInput): WireInput {
+  const { dashDirection, ...rest } = input;
+  const dx = dashDirection?.x ?? 0;
+  const dz = dashDirection?.z ?? 0;
+  if (Math.hypot(dx, dz) <= WIRE_DASH_DIRECTION_EPS) return rest;
+  return { ...rest, dashDirection };
+}
+
 export interface InputCommand {
   type: 'input';
   playerId: string;
@@ -9,7 +38,7 @@ export interface InputCommand {
   clientTimeMs: number;
   /** Client-measured round-trip time in ms. Used server-side only to size lag-comp catch rewind. */
   rttMs?: number;
-  input: PlayerInput;
+  input: WireInput;
 }
 
 export interface ServerSnapshot {

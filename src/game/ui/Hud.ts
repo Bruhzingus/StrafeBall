@@ -446,6 +446,10 @@ export class Hud {
       lastPongAgeMs: number | null;
       missedPongs: number;
       socketBufferedAmount: number;
+      socketBufferedPeak: number;
+      pingSendBufferedAmount: number;
+      rttEstimateMs: number;
+      maxRecentPingMs: number;
       predictionActive: boolean;
     }
   ): void {
@@ -487,9 +491,10 @@ export class Hud {
         <div class="hud-title">Online <span style="font-weight:400;opacity:0.45;font-size:10px">[Tab]</span></div>
         <div>FPS <span class="hud-good">${Math.round(fps)}</span> &middot; ${frameMs.toFixed(1)} ms</div>
         <div>Room: <span class="hud-good">${escapeHtml(room.id)}</span> · Players: ${Object.keys(room.players).length}/${room.match.maxPlayers}</div>
-        <div>Ping: <span class="hud-good">${pingMs === null ? '-' : `${pingMs} ms`}</span> · Tick: ${snapshot.tick}</div>
+        <div>Ping: <span class="hud-good">${pingMs === null ? '-' : `${pingMs} ms`}</span> · net RTT ~${netDebug.rttEstimateMs} ms · recent max ${netDebug.maxRecentPingMs} ms · Tick: ${snapshot.tick}</div>
         <div>Snap recv/render: <span class="hud-good">${netDebug.snapshotRateHz.toFixed(1)}</span> / ${netDebug.renderSnapshotRateHz.toFixed(1)} Hz | Ack age: ${netDebug.ackAgeMs === null ? '-' : `${netDebug.ackAgeMs} ms`}</div>
-        <div>Jitter: ${netDebug.pingJitterMs.toFixed(1)} ms | Pong age: ${netDebug.lastPongAgeMs === null ? '-' : `${netDebug.lastPongAgeMs} ms`} | Missed: ${netDebug.missedPongs} | WS: ${netDebug.socketBufferedAmount} B</div>
+        <div>Jitter: ${netDebug.pingJitterMs.toFixed(1)} ms | Pong age: ${netDebug.lastPongAgeMs === null ? '-' : `${netDebug.lastPongAgeMs} ms`} | Missed: ${netDebug.missedPongs}</div>
+        <div>WS buf: <span class="${wsBufferColor(netDebug.socketBufferedPeak)}">${netDebug.socketBufferedAmount} B</span> · peak ${netDebug.socketBufferedPeak} B · @ping ${netDebug.pingSendBufferedAmount} B</div>
         <div>Tick rate: <span class="hud-good">${SERVER_TICK_RATE} Hz</span> &middot; Snap ${SNAPSHOT_RATE} Hz</div>
         <div>Raw lead: ${netDebug.predictionErrorM.toFixed(3)} m / ~${netDebug.expectedLeadM.toFixed(3)} m</div>
         <div>Desync: <span class="${desyncColor}">${netDebug.residualAfterReplayM.toFixed(3)} m</span> avg ${netDebug.desyncAverageM.toFixed(3)} max ${netDebug.desyncRecentMaxM.toFixed(3)} peak ${netDebug.desyncPeakM.toFixed(3)}</div>
@@ -939,6 +944,16 @@ function escapeHtml(value: string): string {
     .replace(/>/g, '&gt;')
     .replace(/"/g, '&quot;')
     .replace(/'/g, '&#039;');
+}
+
+/** Color the WS uplink-buffer line by its rolling peak. A healthy socket flushes to ~0 between
+ *  sends; a sustained backlog is the signature of an uplink that can't keep up with the send rate,
+ *  which is what inflates the measured ping. 4 KB warn / 16 KB bad are well below the server's
+ *  64 KB backpressure threshold so the client flags trouble before the server starts skipping. */
+function wsBufferColor(peakBytes: number): string {
+  if (peakBytes >= 16 * 1024) return 'hud-bad';
+  if (peakBytes >= 4 * 1024) return 'hud-warn';
+  return 'hud-good';
 }
 
 function compareHudPlayers(a: PlayerState, b: PlayerState): number {
