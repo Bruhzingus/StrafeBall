@@ -1,6 +1,9 @@
 import type { HandSide, PlayerInput, RoomState, Vec3 } from './types';
 import type { CompactServerSnapshot, PlayerRoster } from './snapshotCodec';
 import type { BattleMusicSyncState } from './music/BattleMusic';
+import type { RoomSettingsPatch } from './roomSettings';
+
+export type { RoomSettingsPatch } from './roomSettings';
 
 /**
  * The on-the-wire form of PlayerInput. `dashDirection` is OMITTED when it is a zero vector — which
@@ -168,6 +171,54 @@ export interface SwitchTeamRequest {
   teamSlotIndex?: number;
 }
 
+/**
+ * Host-only request to change the room's authoritative settings. `settings` is a PARTIAL patch — only
+ * the fields being changed are sent (the derived team shape is never sent; it follows `format`). The
+ * server is the source of truth: it checks host identity + lifecycle phase, then strictly validates
+ * the patch (validateRoomSettingsPatch). A rejected update comes back as a `request-rejected` message
+ * carrying request:'update-room-settings' and the RoomSettingsRejectReason; an accepted one is
+ * reflected in the next snapshot's `room.settings` (and the derived match fields).
+ */
+export interface UpdateRoomSettingsRequest {
+  type: 'update-room-settings';
+  playerId: string;
+  settings: RoomSettingsPatch;
+}
+
+/**
+ * End-the-live-game-early vote (Stage 4). The host's first send OPENS the vote (and counts as their
+ * yes); connected players then send it to cast their yes. When the vote reaches the shared 70%
+ * supermajority threshold the server returns the room to the lobby/setup phase. A rejected send
+ * (e.g. a non-host opening it, or sending while not live) comes back as `request-rejected` with
+ * request:'end-vote'.
+ */
+export interface EndVoteRequest {
+  type: 'end-vote';
+  playerId: string;
+}
+
+/**
+ * Host-only "start the configured match now" request (Stage 4). Begins the pre-round countdown from
+ * the lobby for BOTH formats when enough players are present (and, for 2v2, teams are chosen). This is
+ * the host's lobby start button — distinct from 2v2's player-driven start vote, which still works.
+ */
+export interface StartMatchRequest {
+  type: 'start-match';
+  playerId: string;
+}
+
+/**
+ * Between-rounds / post-match vote cast over the report card. `choice` selects which button the
+ * player is voting for: 'next-round' (start the next round; intermission only) or 'to-lobby' (end
+ * the match, return to the pregame lobby). A player's vote is exclusive — switching choices moves
+ * their vote. Either option needs a 70% supermajority of connected players to pass.
+ */
+export interface IntermissionVoteRequest {
+  type: 'intermission-vote';
+  playerId: string;
+  choice: 'next-round' | 'to-lobby';
+}
+
 export type ClientMessage =
   | InputCommand
   | PickupRequest
@@ -177,6 +228,10 @@ export type ClientMessage =
   | ResetRequest
   | StartVoteRequest
   | SwitchTeamRequest
+  | UpdateRoomSettingsRequest
+  | EndVoteRequest
+  | StartMatchRequest
+  | IntermissionVoteRequest
   | { type: 'join-room'; roomId: string; playerId: string }
   | { type: 'leave-room'; roomId: string; playerId: string }
   | { type: 'ping'; clientTimeMs: number };

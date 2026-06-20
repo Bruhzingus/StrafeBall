@@ -467,7 +467,9 @@ export class Hud {
     const isTeamElimination = room.match.mode === '2v2';
     const roomStatus = onlineRoomStatus(room);
     const disconnectStatus = onlineDisconnectStatus(players);
-    const noBoundariesTime = Math.max(0, TUNING.match.noBoundariesSeconds - room.match.boundary.elapsedSeconds);
+    // Half-court drop clock counts down the HOST-CONFIGURED timer, not the fixed constant.
+    const noBoundariesTime = Math.max(0, room.settings.halfCourtTimerSeconds - room.match.boundary.elapsedSeconds);
+    const roundLabel = room.match.roundCount > 1 ? `Round ${room.match.currentRound}/${room.match.roundCount}` : '';
     const resetVoteText = room.resetVote.voteCount > 0
       ? `<div class="scoreboard-msg hud-warn">${room.resetVote.mode === 'reset-teams' ? 'Reset teams' : 'Reset match'}: ${room.resetVote.voteCount}/${room.resetVote.requiredVotes} (${votersLabel(room, room.resetVote.votesByPlayerId)})</div>`
       : '';
@@ -524,16 +526,18 @@ export class Hud {
     const scoreboardData: MatchScoreboardData = {
       mode: room.match.mode === '2v2' ? '2v2' : '1v1',
       halfDropSecondsRemaining: room.match.boundary.noBoundaries ? 0 : noBoundariesTime,
+      // Unified round model: the whiteboard number is ROUNDS WON (best-of-N series progress) for both
+      // formats, not the legacy hit-to-5 score (which no longer decides a private match).
       blueTeam: {
         name: 'BLUE TEAM',
         color: 'blue',
-        score: room.match.scoreByTeamId[blueTeamId] ?? 0,
+        score: room.match.roundsWonByTeamId[blueTeamId] ?? 0,
         players: teamPlayers(blueTeamId)
       },
       redTeam: {
         name: 'RED TEAM',
         color: 'red',
-        score: room.match.scoreByTeamId[redTeamId] ?? 0,
+        score: room.match.roundsWonByTeamId[redTeamId] ?? 0,
         players: teamPlayers(redTeamId)
       }
     };
@@ -549,7 +553,7 @@ export class Hud {
         <div class="team-match-strip">
           ${teamLivesStrip(localTeam, localPlayerId)}
           <div class="team-match-chip">
-            <strong>Team Match</strong>
+            <strong>${roundLabel || 'Team Match'}</strong>
             <span>${room.match.boundary.noBoundaries ? 'No boundaries' : `Half-court ${noBoundariesTime.toFixed(0)}s`}</span>
           </div>
           ${teamLivesStrip(opponentTeam, localPlayerId)}
@@ -564,7 +568,11 @@ export class Hud {
     } else {
       // Private duel: scores/timer live on the whiteboard now. Only surface the strip when there's
       // actual status (room state, disconnects, vote, winner); otherwise hide it completely.
+      const roundStatus = roundLabel && (room.match.status === 'playing' || room.match.status === 'countdown')
+        ? `<div class="scoreboard-msg hud-good">${roundLabel}</div>`
+        : '';
       const duelStatus = [
+        roundStatus,
         roomStatus ? `<div class="scoreboard-msg hud-warn">${escapeHtml(roomStatus)}</div>` : '',
         disconnectStatus ? `<div class="scoreboard-msg hud-bad">${escapeHtml(disconnectStatus)}</div>` : '',
         resetVoteText,
@@ -818,13 +826,11 @@ export class Hud {
   }
 
   private updateLivesPanel(room: RoomState, localPlayerId: string): void {
-    if (room.match.mode !== '2v2') {
-      this.hearts.style.display = 'none';
-      this.clutchBuffWasActive = false;
-      return;
-    }
     const local = room.players[localPlayerId];
-    if (!local) {
+    // Both formats are lives-based now, so the hearts panel shows in 1v1 too (the last-player buff
+    // line below only ever fires in 2v2). Hide it only outside a live round / when there's no local.
+    const liveRound = room.match.status === 'countdown' || room.match.status === 'playing';
+    if (!local || !liveRound) {
       this.hearts.style.display = 'none';
       this.clutchBuffWasActive = false;
       return;
@@ -842,7 +848,7 @@ export class Hud {
 
     this.setHtml(this.hearts, `
       <div class="hearts-row hearts-row--local">
-        ${formatHearts(local.lives, TUNING.match.playerLives)}
+        ${formatHearts(local.lives, room.settings.livesPerPlayer)}
       </div>
       ${buffLine}
     `);

@@ -17,8 +17,10 @@ export function createMatchState(
   constants: GameConstants = GAME_CONSTANTS
 ): MatchState {
   const scoreByTeamId: Record<string, number> = {};
+  const roundsWonByTeamId: Record<string, number> = {};
   for (const teamId of teamIds) {
     scoreByTeamId[teamId] = 0;
+    roundsWonByTeamId[teamId] = 0;
   }
 
   const base: MatchState = {
@@ -32,6 +34,9 @@ export function createMatchState(
     maxPlayers: Math.max(2, teamIds.length),
     scoreByTeamId,
     winnerTeamId: null,
+    roundCount: 1,
+    currentRound: 1,
+    roundsWonByTeamId,
     countdownSeconds: 0,
     boundary: {
       elapsedSeconds: 0,
@@ -48,6 +53,7 @@ export function createMatchState(
     mode: (overrides.mode ?? base.mode) as MatchMode,
     teamIds: overrides.teamIds ? [...overrides.teamIds] : base.teamIds,
     scoreByTeamId: { ...base.scoreByTeamId, ...overrides.scoreByTeamId },
+    roundsWonByTeamId: { ...base.roundsWonByTeamId, ...overrides.roundsWonByTeamId },
     boundary: {
       ...base.boundary,
       ...overrides.boundary,
@@ -84,6 +90,38 @@ export function hasReachedScoreLimit(score: number, constants: GameConstants = G
   return score >= constants.match.scoreLimit;
 }
 
+/**
+ * Rounds a team must win to clinch a best-of-`roundCount` series (majority). For roundCount=1 this is
+ * 1 (single round decides the match); for 3 it is 2; etc. Used by the unified round lifecycle to end
+ * the match as soon as a team is mathematically guaranteed the series.
+ */
+export function roundsNeededToWin(roundCount: number): number {
+  return Math.floor(Math.max(1, Math.trunc(roundCount)) / 2) + 1;
+}
+
+/**
+ * Resolve the overall match winner after a round was awarded, or null if the series continues. The
+ * match ends when a team clinches the majority (roundsNeededToWin) OR all rounds have been played; on
+ * an all-rounds tie the team with more round wins takes it (callers pass odd round counts to avoid
+ * ties — see ROOM_SETTINGS_LIMITS). Pure so it is unit-testable without a running room.
+ */
+export function matchWinnerFromRounds(match: Pick<MatchState, 'teamIds' | 'roundCount' | 'roundsWonByTeamId'>): string | null {
+  const need = roundsNeededToWin(match.roundCount);
+  let leader: string | null = null;
+  let leaderWins = -1;
+  let totalPlayed = 0;
+  for (const teamId of match.teamIds) {
+    const wins = match.roundsWonByTeamId[teamId] ?? 0;
+    totalPlayed += wins;
+    if (wins >= need) return teamId; // clinched the series
+    if (wins > leaderWins) {
+      leaderWins = wins;
+      leader = teamId;
+    }
+  }
+  return totalPlayed >= match.roundCount ? leader : null;
+}
+
 export function getOpponentTeamId(match: MatchState, teamId: string): string | null {
   return match.teamIds.find((candidate) => candidate !== teamId) ?? null;
 }
@@ -99,6 +137,11 @@ export function isHitInRange(ballPosition: Vec3, targetPosition: Vec3, constants
 export function advanceNoBoundariesTimer(
   match: MatchState,
   dt: number,
+  /**
+   * Seconds until half-court restrictions drop. Sourced from the host setting `halfCourtTimerSeconds`
+   * so boundary timing is settings-driven; when omitted, falls back to the constant (offline/legacy).
+   */
+  halfCourtTimerSecondsOverride?: number,
   constants: GameConstants = GAME_CONSTANTS
 ): MatchState {
   if (match.boundary.noBoundaries) {
@@ -113,8 +156,11 @@ export function advanceNoBoundariesTimer(
     };
   }
 
+  const dropSeconds = typeof halfCourtTimerSecondsOverride === 'number' && Number.isFinite(halfCourtTimerSecondsOverride)
+    ? halfCourtTimerSecondsOverride
+    : constants.match.noBoundariesSeconds;
   const elapsedSeconds = match.boundary.elapsedSeconds + dt;
-  const noBoundaries = elapsedSeconds >= constants.match.noBoundariesSeconds;
+  const noBoundaries = elapsedSeconds >= dropSeconds;
   const event: BoundaryEvent = noBoundaries ? { type: 'no-boundaries' } : { type: 'none' };
 
   return {
@@ -145,7 +191,14 @@ export function applyHalfCourtRule(
   legalHalf: LegalHalf,
   position: Vec3,
   dt = 0,
-  constants: GameConstants = GAME_CONSTANTS
+  constants: GameConstants = GAME_CONSTANTS,
+  /**
+   * Whether a boundary penalty also awards score to the opponent. Legacy (offline / shared tests)
+   * keep the score behavior; the unified server lifecycle passes `false` because boundary penalties
+   * now cost the OFFENDER lives instead (applyHalfCourtPenalty), and score never decides victory.
+   * The 'half-court-penalty' event still fires either way so the server can apply the life loss.
+   */
+  scorePenalties = true
 ): MatchState {
   const existing = match.boundary.illegalCrossByPlayerId[playerId] ?? createHalfCourtViolationState(constants);
 
@@ -229,7 +282,7 @@ export function applyHalfCourtRule(
   if (penaltiesDue > 0) {
     const opponentTeamId = getOpponentTeamId(match, offenderTeamId);
     const value = penaltiesDue * constants.match.penaltyHitValue;
-    const scoredMatch = opponentTeamId && match.mode !== '2v2' ? applyScore(match, opponentTeamId, value) : match;
+    const scoredMatch = opponentTeamId && scorePenalties && match.mode !== '2v2' ? applyScore(match, opponentTeamId, value) : match;
     return setHalfCourtViolation(
       scoredMatch,
       playerId,

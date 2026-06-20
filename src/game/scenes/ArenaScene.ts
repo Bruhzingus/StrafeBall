@@ -147,6 +147,9 @@ export class ArenaScene {
   private readonly netCollisionScratch: AABB[] = [];
   // Set of mat ids currently reflected in netCollisionBoxes — avoids rebuilding every frame.
   private readonly knockedNetMatIds = new Set<string>();
+  // Mats hidden by the host mat-preset setting (absent from authoritative room.mats). Excluded from
+  // both visuals and the local prediction collision so the client world matches the server's.
+  private readonly excludedNetMatIds = new Set<string>();
   // Offline practice: hold-E progress (seconds) toward standing the nearest knocked-over mat back
   // up. Resets whenever E is released or the player leaves the mat's reach.
   private matRestoreHold = 0;
@@ -684,7 +687,27 @@ export class ArenaScene {
 
     for (const mat of this.gym.mats) {
       const state = mats[mat.id];
-      if (!state) continue;
+      // Mat-preset exclusion: a mat absent from authoritative room.mats does not exist this match.
+      // Hide its visual + drop its collision so the client world matches the server's mat set.
+      if (!state) {
+        if (!this.excludedNetMatIds.has(mat.id)) {
+          if (mat.knockedOver) mat.reset();
+          this.gym.removeMatCollision(mat);
+          mat.mesh.setEnabled(false);
+          this.knockedNetMatIds.delete(mat.id);
+          this.excludedNetMatIds.add(mat.id);
+          knockedChanged = true;
+        }
+        continue;
+      }
+      // Mat is back in the active set (host raised the preset / new match): re-show + re-collide.
+      if (this.excludedNetMatIds.has(mat.id)) {
+        mat.mesh.setEnabled(true);
+        mat.reset();
+        this.gym.addMatCollision(mat);
+        this.excludedNetMatIds.delete(mat.id);
+        knockedChanged = true;
+      }
       if (state.knockedOver && !mat.knockedOver) {
         // Drop the mat's ball-collision box BEFORE tipping it (getAABB returns the standing
         // footprint that was registered), so balls pass over the downed mat.
@@ -702,9 +725,10 @@ export class ArenaScene {
       }
     }
 
-    // Keep the prediction collision set in sync with the server: a downed mat stops blocking.
+    // Keep the prediction collision set in sync with the server: downed AND preset-excluded mats
+    // stop blocking the local player.
     if (knockedChanged) {
-      this.netCollisionBoxes = createPlayerCollisionBoxes(this.knockedNetMatIds);
+      this.netCollisionBoxes = createPlayerCollisionBoxes(new Set([...this.knockedNetMatIds, ...this.excludedNetMatIds]));
     }
   }
 
@@ -1567,9 +1591,13 @@ export class ArenaScene {
     this.chargeBot.reset();
     this.setPracticePropsEnabled(false);
     this.ballManager.clear();
-    // Mats start upright online; server mat state then drives them via applyOnlineMats.
+    // Mats start upright online; server mat state then drives them via applyOnlineMats (including
+    // hiding any the host's mat preset excludes). Re-show every mat here so a previous session's
+    // preset-hidden mats don't stay invisible.
     this.gym.resetMats();
+    for (const mat of this.gym.mats) mat.mesh.setEnabled(true);
     this.knockedNetMatIds.clear();
+    this.excludedNetMatIds.clear();
     this.netCollisionBoxes = createPlayerCollisionBoxes();
     this.lastOnlineScoreByTeamId = {};
     this.pendingOnlineScoreEvents = [];
@@ -1608,9 +1636,12 @@ export class ArenaScene {
     this.chargeBot.reset();
     this.setPracticePropsEnabled(true);
     this.ballManager.spawnCenterLineBalls();
-    // Restore upright mats + their player collision when returning to practice.
+    // Restore upright + VISIBLE mats and their player collision when returning to practice (a host
+    // mat preset may have hidden some online). resetMats rebuilds all mat collision boxes.
     this.gym.resetMats();
+    for (const mat of this.gym.mats) mat.mesh.setEnabled(true);
     this.knockedNetMatIds.clear();
+    this.excludedNetMatIds.clear();
   }
 
   private resetPrediction(reason = 'reset'): void {

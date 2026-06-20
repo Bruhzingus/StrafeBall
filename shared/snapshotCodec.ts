@@ -7,6 +7,10 @@ export interface CompactServerSnapshot {
   type: 'snapshot-compact';
   tick: number;
   serverTimeMs: number;
+  // Only `players` and `balls` are positionally packed; everything else in RoomState — including the
+  // new `hostPlayerId`, `phase`, and `settings` — rides through verbatim via `Omit<RoomState, ...>`.
+  // Those fields are plain JSON scalars (strings + small ints), so they need NO bespoke packing and
+  // survive makeLeanSnapshot / makeCompactSnapshot / inflateCompactSnapshot through the room spreads.
   room: Omit<RoomState, 'players' | 'balls'> & {
     players: unknown[][];
     balls: unknown[][];

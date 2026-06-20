@@ -756,7 +756,10 @@ describe('ServerGameLoop', () => {
       expect(buffed.dash.cooldownSeconds).toBeLessThan(unbuffed.dash.cooldownSeconds);
     });
 
-    it('awards one duel penalty hit per second after the half-court warning is spent', () => {
+    it('eliminates a 1v1 offender who racks up half-court penalties, ending the match for the opponent', () => {
+      // Unified lives model (Stage 3): 1v1 half-court penalties now cost the OFFENDER lives (they no
+      // longer hand the opponent score-to-5). Enough penalties eliminate the offender, which ends the
+      // single round → the match, with the opponent as the winner.
       const loop = new ServerGameLoop('room');
       loop.addPlayer('a', 'A');
       loop.addPlayer('b', 'B');
@@ -773,13 +776,14 @@ describe('ServerGameLoop', () => {
       loop.state.players.a.movement.position = loop.state.players.a.legalHalf === 'negativeZ'
         ? vec3(0, 0, GAME_CONSTANTS.match.halfCourtLineZ + 1)
         : vec3(0, 0, -GAME_CONSTANTS.match.halfCourtLineZ - 1);
-      const steps = Math.ceil(GAME_CONSTANTS.match.scoreLimit * GAME_CONSTANTS.match.illegalCrossPenaltyIntervalSeconds * loop.tickRate) + 2;
+      // One penalty per second; (lives + 1) seconds is more than enough to remove every life.
+      const steps = Math.ceil((GAME_CONSTANTS.match.playerLives + 1) * GAME_CONSTANTS.match.illegalCrossPenaltyIntervalSeconds * loop.tickRate) + 2;
       for (let i = 0; i < steps; i += 1) loop.step();
 
-      expect(loop.state.players.a.combatState).toBe('alive');
+      expect(loop.state.players.a.combatState).toBe('eliminated');
+      expect(loop.state.players.a.lives).toBe(0);
       expect(loop.state.match.status).toBe('complete');
       expect(loop.state.match.winnerTeamId).toBe(loop.state.players.b.teamId);
-      expect(loop.state.match.scoreByTeamId[loop.state.players.b.teamId]).toBe(GAME_CONSTANTS.match.scoreLimit);
     });
 
     it('removes 2v2 lives once per second after the half-court warning is spent', () => {
@@ -860,7 +864,7 @@ describe('ServerGameLoop', () => {
   });
 
   describe('2v2 Phase 4 lifecycle', () => {
-    it('keeps a full 2v2 roster in team-pick warmup until choices and start votes complete', () => {
+    it('keeps a full 2v2 roster in team-pick warmup until choices and a 70% start vote complete', () => {
       const loop = new ServerGameLoop('room', { mode: '2v2', playersPerTeam: 2 });
       loop.addPlayer('a', 'A');
       loop.addPlayer('b', 'B');
@@ -874,10 +878,11 @@ describe('ServerGameLoop', () => {
       chooseCurrentTeam(loop, 'c');
       chooseCurrentTeam(loop, 'd');
       expect(loop.state.startVote.teamChoiceCount).toBe(4);
+      expect(loop.state.startVote.requiredVotes).toBe(3);
       expect(loop.handleStartVote('a').ok).toBe(true);
       expect(loop.handleStartVote('b').ok).toBe(true);
+      expect(loop.state.match.status).toBe('warmup');
       expect(loop.handleStartVote('c').ok).toBe(true);
-      expect(loop.handleStartVote('d').ok).toBe(true);
       expect(loop.state.match.status).toBe('countdown');
       expect(loop.state.match.countdownSeconds).toBe(GAME_CONSTANTS.match.countdownSeconds);
     });
@@ -977,10 +982,10 @@ describe('ServerGameLoop', () => {
       expect(loop.state.match.status).not.toBe('warmup');
 
       // A full room reset rebuilds every roster member with full lives — they fight the next match.
+      expect(loop.state.resetVote.requiredVotes).toBe(3);
       loop.handleReset('a2', 'reset-teams');
       loop.handleReset('b', 'reset-teams');
       loop.handleReset('c', 'reset-teams');
-      loop.handleReset('d', 'reset-teams');
       expect(loop.state.players.a2.lives).toBe(GAME_CONSTANTS.match.playerLives);
       expect(loop.state.players.a2.combatState).toBe('alive');
     });
@@ -1287,7 +1292,7 @@ describe('ServerGameLoop', () => {
     expect(loop.state.resetVote.resetSerial).toBe(1);
   });
 
-  it('requires all connected players to vote for a room reset', () => {
+  it('requires the shared 70% threshold for a room reset', () => {
     const loop = new ServerGameLoop('room');
     loop.addPlayer('a', 'A');
     loop.addPlayer('b', 'B');

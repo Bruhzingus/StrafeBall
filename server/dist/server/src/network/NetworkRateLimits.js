@@ -29,6 +29,12 @@ function buildInboundRateLimits(clientInputRate = netConfig_1.CLIENT_INPUT_RATE)
         reset: resetLike,
         'start-vote': resetLike,
         'switch-team': resetLike,
+        // Host settings updates are low-frequency lobby actions; allow small bursts (slider drags) but
+        // keep the steady rate modest so a client can't spam canonicalization.
+        'update-room-settings': { capacity: 8, refillPerSecond: 4 },
+        'end-vote': resetLike,
+        'start-match': resetLike,
+        'intermission-vote': resetLike,
         ping: { capacity: 4, refillPerSecond: 2 }
     };
 }

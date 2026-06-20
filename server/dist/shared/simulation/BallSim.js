@@ -166,14 +166,14 @@ function deflectBall(ball, defenderPlayerId, forward, constants = constants_1.GA
         throwId: throwId ?? ball.throwId
     };
 }
-function applyBallBounce(ball, constants = constants_1.GAME_CONSTANTS) {
+function applyBallBounce(ball, bounceRule, constants = constants_1.GAME_CONSTANTS) {
     if (ball.phase !== 'live' && ball.phase !== 'deflected') {
         return { ...ball, bounceCount: ball.bounceCount + 1 };
     }
     const bounceCount = ball.bounceCount + 1;
     const deadAfterBounces = ball.phase === 'deflected'
-        ? constants.ball.deflectedDeadAfterBounces
-        : constants.ball.deadAfterBounces;
+        ? bounceRule?.deflectedDeadAfterBounces ?? constants.ball.deflectedDeadAfterBounces
+        : bounceRule?.deadAfterBounces ?? constants.ball.deadAfterBounces;
     if (bounceCount >= deadAfterBounces) {
         return {
             ...markBallDead(ball),

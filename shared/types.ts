@@ -7,8 +7,87 @@ export interface Vec3 {
 export type HandSide = 'left' | 'right';
 export type SpawnSide = 'negativeZ' | 'positiveZ';
 export type LegalHalf = SpawnSide;
-export type MatchMode = '1v1' | '2v2';
+
+/**
+ * Match format / team configuration. Only '1v1' and '2v2' are enabled right now (see ALLOWED_FORMATS
+ * in roomSettings.ts), but this union is the single extensibility seam: a future '3v3' is one entry
+ * here plus a FORMAT_TEAM_SHAPE row — never a structural rewrite of room/match state. `MatchMode` is
+ * kept as the legacy alias the existing render/sim code reads; the two are intentionally identical.
+ */
+export type MatchFormat = '1v1' | '2v2';
+export type MatchMode = MatchFormat;
+
+/** Identity of the recommended preset a room's settings came from, or 'custom' once the host edits. */
+export type MatchPresetId = '1v1-recommended' | '2v2-recommended' | 'custom';
+
+/**
+ * Unified private-match lifecycle phase — the room-level state machine the new private-match flow
+ * renders from. Stage 1 maps this 1:1 from the legacy MatchStatus (warmup→lobby, countdown→countdown,
+ * playing→live, complete→match-end). The 'round-end' / 'returning' transitions and a true multi-round
+ * progression are modeled here now but only driven in later stages (round bookkeeping is deferred).
+ */
+export type RoomLifecyclePhase =
+  | 'lobby'        // room setup / waiting; host configures settings
+  | 'countdown'    // pre-round countdown, players pinned to spawn
+  | 'live'         // live round in progress
+  | 'round-end'    // brief transition between rounds (multi-round; later stage)
+  | 'match-end'    // match summary / report card
+  | 'returning';   // returning to the room lobby after the summary
+
 export type PlayerCombatState = 'waiting' | 'alive' | 'eliminated';
+
+/**
+ * Host-controlled, authoritative room configuration — the single source of truth the host edits and
+ * the protocol carries. Clients render from it; only the host may mutate it (validated server-side,
+ * never UI-only). Shaped so larger formats are a DATA change (format + the derived team shape in
+ * resolveMatchSettings), never a structural one: nothing here hardcodes "1 or 2 players per team".
+ * Larger-than-2v2 is intentionally NOT permitted yet (canonicalizeRoomSettings/validate clamp it),
+ * but the model already supports it. Numeric bounds live in ROOM_SETTINGS_LIMITS (roomSettings.ts).
+ */
+export interface RoomSettings {
+  /** Recommended-preset identity this config came from, or 'custom' once any field diverges. */
+  preset: MatchPresetId;
+  /** Team format. Drives the derived team shape (teamSize/teamCount/maxPlayers). */
+  format: MatchFormat;
+  /** Starting lives per player. Range ROOM_SETTINGS_LIMITS.lives (1..6). */
+  livesPerPlayer: number;
+  /** Dodgeballs spawned at center court. Range ROOM_SETTINGS_LIMITS.dodgeballs. */
+  dodgeballCount: number;
+  /** Bounces a live ball survives before it dies. Range ROOM_SETTINGS_LIMITS.bounces. */
+  maxLiveBallBounces: number;
+  /** Mat layout preset: number of standing cover mats. Must be one of ALLOWED_MAT_PRESETS (0, 2, 4). */
+  matPreset: number;
+  /** Fixed number of rounds in a match. Range ROOM_SETTINGS_LIMITS.rounds. */
+  roundCount: number;
+  /** Seconds until half-court restrictions drop and the full court opens. Range ROOM_SETTINGS_LIMITS.halfCourtTimer. */
+  halfCourtTimerSeconds: number;
+}
+
+/**
+ * Fully-resolved, simulation-facing settings derived from RoomSettings via resolveMatchSettings. This
+ * is the "engine parameters" half of the split: RoomSettings is host INTENT (what the menu edits),
+ * MatchSettings is the canonical RESOLVED shape (team geometry + per-round rules) the game loop
+ * consumes. Derived fields that the host never edits directly (teamSize/teamCount/maxPlayers, and the
+ * legacy 1v1 scoreLimit) live only here.
+ */
+export interface MatchSettings {
+  format: MatchFormat;
+  teamSize: number;
+  teamCount: number;
+  maxPlayers: number;
+  livesPerPlayer: number;
+  dodgeballCount: number;
+  maxLiveBallBounces: number;
+  matPreset: number;
+  roundCount: number;
+  halfCourtTimerSeconds: number;
+  /**
+   * Legacy first-to-N score limit, retained ONLY for 1v1 (current 1v1 is a score race, not
+   * elimination). 2v2 ignores it (elimination-based). Stage 2+ folds scoring into the unified
+   * lives/round model and this field is expected to disappear.
+   */
+  scoreLimit: number;
+}
 
 export type BallPhase = 'loose' | 'held' | 'live' | 'dead' | 'deflected';
 export type BallOwnerKind = 'player' | 'launcher' | 'bot' | 'dummy' | null;
@@ -190,7 +269,7 @@ export interface BallSnapshot extends BallState {
   serverTick: number;
 }
 
-export type MatchStatus = 'warmup' | 'countdown' | 'playing' | 'complete';
+export type MatchStatus = 'warmup' | 'countdown' | 'playing' | 'intermission' | 'complete';
 
 export interface HalfCourtViolationState {
   illegalCrossCount: number;
@@ -229,6 +308,17 @@ export interface MatchState {
   scoreByTeamId: Record<string, number>;
   winnerTeamId: string | null;
   boundary: MatchBoundaryState;
+  /**
+   * Unified round system (Stage 3). A private match is a best-of-`roundCount` series of elimination
+   * rounds for BOTH formats: a round ends when one team is fully eliminated, the surviving team takes
+   * the round, and the match ends once a team clinches the majority (or all rounds are played). The
+   * legacy `scoreByTeamId`/`scoreLimit` no longer determine private-match victory.
+   */
+  roundCount: number;
+  /** 1-based index of the round currently being played. */
+  currentRound: number;
+  /** Rounds won so far, per team. The match winner is derived from this, not from score. */
+  roundsWonByTeamId: Record<string, number>;
   /**
    * Seconds remaining in the pre-round countdown while `status === 'countdown'`. The server pins
    * every player to spawn and ignores movement/combat input during this window, then flips to
@@ -271,15 +361,62 @@ export interface StartVoteState {
   requiredTeamChoices: number;
 }
 
+/**
+ * Host-triggered "end the live game early" vote (Stage 4). The host opens it during an active round;
+ * connected players then add their yes votes; it passes once it reaches the shared 70%
+ * supermajority threshold, at which point the room returns to the lobby/setup phase with membership
+ * + settings preserved. Snapshot-visible so all clients can render the vote prompt and tally.
+ */
+export interface EndVoteState {
+  active: boolean;
+  initiatedByPlayerId: string | null;
+  votesByPlayerId: Record<string, true>;
+  voteCount: number;
+  requiredVotes: number;
+  expiresAtMs: number | null;
+}
+
+/**
+ * Between-rounds (status 'intermission') and post-match (status 'complete') vote shown over the
+ * report card. Each option needs a 70% supermajority of connected players to pass: `nextRound`
+ * starts the next round (intermission only); `toLobby` ends the match and returns everyone to the
+ * pregame lobby. A player's vote is exclusive (voting one option clears their other). Tallies are
+ * snapshot-visible so every client renders how many votes each button has. `nextRoundDeadlineAtMs`
+ * is when the intermission auto-advances to the next round if no vote resolves it first.
+ */
+export interface IntermissionVoteState {
+  active: boolean;
+  /** True while a next-round option is offered (intermission only, not the final report card). */
+  allowsNextRound: boolean;
+  nextRoundByPlayerId: Record<string, true>;
+  nextRoundCount: number;
+  toLobbyByPlayerId: Record<string, true>;
+  toLobbyCount: number;
+  requiredVotes: number;
+  nextRoundDeadlineAtMs: number | null;
+}
+
 export interface RoomState {
   id: string;
   tick: number;
+  /**
+   * Session id of the host (the room creator). Only the host may mutate `settings`; non-host players
+   * receive live updates but cannot change them. Reassigned to another connected player if the host
+   * leaves, and null only when the room is empty.
+   */
+  hostPlayerId: string | null;
+  /** Unified private-match lifecycle phase. Mirrors `match.status` in Stage 1 (see RoomLifecyclePhase). */
+  phase: RoomLifecyclePhase;
+  /** Authoritative, host-controlled room configuration (source of truth; host-only mutation). */
+  settings: RoomSettings;
   match: MatchState;
   players: Record<string, PlayerState>;
   balls: Record<string, BallState>;
   mats: Record<string, MatState>;
   resetVote: ResetVoteState;
   startVote: StartVoteState;
+  endVote: EndVoteState;
+  intermissionVote: IntermissionVoteState;
 }
 
 export type ValidationResult<Reason extends string = string> =

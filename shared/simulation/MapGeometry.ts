@@ -58,6 +58,26 @@ export const MAT_SPECS: readonly MatSpec[] = [
   { id: 'mat_4.5_5.5', x: 4.5, y: MAT_DIMENSIONS.height / 2, z: 5.5, yawRadians: 0 }
 ];
 
+/**
+ * Deterministic mat layouts per host `matPreset` setting (0 / 2 / 4 standing cover mats). The 2-mat
+ * layout is the point-symmetric diagonal pair (one mat per spawn side, rotationally mirrored through
+ * center) so neither team gets more cover — matching the court's 180° rotational symmetry. Any
+ * unrecognized preset falls back to the full 4-mat layout. This is the single source of truth the
+ * server's authoritative mat state AND both worlds' collision derive from, so visuals + player + ball
+ * collision always agree on which mats exist.
+ */
+const MAT_PRESET_IDS: Record<number, readonly string[]> = {
+  0: [],
+  2: ['mat_-4.5_-5.5', 'mat_4.5_5.5'],
+  4: MAT_SPECS.map((spec) => spec.id)
+};
+
+export function matSpecsForPreset(matPreset: number): MatSpec[] {
+  const ids = MAT_PRESET_IDS[matPreset] ?? MAT_PRESET_IDS[4];
+  const idSet = new Set(ids);
+  return MAT_SPECS.filter((spec) => idSet.has(spec.id));
+}
+
 /** Standing-mat collision AABB for a spec. Quarter-turned mats swap width/depth extents. */
 export function matCollisionBox(spec: MatSpec): AABB {
   const quarterTurned = Math.abs(Math.round(spec.yawRadians / (Math.PI / 2))) % 2 === 1;
@@ -217,9 +237,13 @@ export function createGymCollisionBoxes(): AABB[] {
  * while it is still standing. Knocked-over mats lie flat and become walkable, so they are omitted.
  * `knockedOverMatIds` is the set of mats currently down (empty = all standing).
  */
-export function createPlayerCollisionBoxes(knockedOverMatIds?: ReadonlySet<string>): AABB[] {
+export function createPlayerCollisionBoxes(
+  knockedOverMatIds?: ReadonlySet<string>,
+  /** The mats that currently exist (active preset). Defaults to the full set for offline/legacy use. */
+  activeMatSpecs: readonly MatSpec[] = MAT_SPECS
+): AABB[] {
   const boxes: AABB[] = createBleacherCollisionBoxes();
-  for (const spec of MAT_SPECS) {
+  for (const spec of activeMatSpecs) {
     if (knockedOverMatIds?.has(spec.id)) continue;
     boxes.push(matCollisionBox(spec));
   }
@@ -231,9 +255,13 @@ export function createPlayerCollisionBoxes(knockedOverMatIds?: ReadonlySet<strin
  * blocks dodgeballs (they bounce back off it); a knocked-over mat lies flat and is skipped so balls
  * pass over it. Mirrors createPlayerCollisionBoxes so player and ball worlds agree on mat state.
  */
-export function createBallCollisionBoxes(knockedOverMatIds?: ReadonlySet<string>): AABB[] {
+export function createBallCollisionBoxes(
+  knockedOverMatIds?: ReadonlySet<string>,
+  /** The mats that currently exist (active preset). Defaults to the full set for offline/legacy use. */
+  activeMatSpecs: readonly MatSpec[] = MAT_SPECS
+): AABB[] {
   const boxes: AABB[] = createBleacherCollisionBoxes();
-  for (const spec of MAT_SPECS) {
+  for (const spec of activeMatSpecs) {
     if (knockedOverMatIds?.has(spec.id)) continue;
     boxes.push(matCollisionBox(spec));
   }

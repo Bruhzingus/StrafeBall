@@ -5,14 +5,17 @@ import type {
   ClientMessage,
   InputCommand,
   ResetRequest,
+  RoomSettingsPatch,
   StartVoteRequest,
   SwitchTeamRequest,
+  UpdateRoomSettingsRequest,
   ServerMessage,
   ServerSnapshot,
   SnapshotPayload
 } from '../../../shared/protocol';
-import type { PlayerInput, PlayerState } from '../../../shared/types';
+import type { MatchFormat, PlayerInput, PlayerState, RoomSettings } from '../../../shared/types';
 import { GAME_CONSTANTS } from '../../../shared/constants';
+import { defaultRoomSettings, resolveMatchSettings } from '../../../shared/roomSettings';
 import {
   CLIENT_INPUT_RATE,
   MAX_ACCUMULATOR_CLAMP_MS,
@@ -42,7 +45,10 @@ import { advanceSnapshotDeadline } from './snapshotScheduler';
 
 export interface DuelRoomOptions {
   name?: string;
-  mode?: '1v1' | '2v2';
+  /** Legacy alias for `format`. Kept so existing clients keep working. */
+  mode?: MatchFormat;
+  /** Match format the host chose when creating the room. Drives the room's settings + size. */
+  format?: MatchFormat;
 }
 
 // All timing/rate constants now come from the centralized netConfig — never hardcode a rate here.
@@ -80,8 +86,9 @@ export class DuelRoom extends Room {
 
   private game!: ServerGameLoop;
   private readonly debug: DebugFlags = resolveServerDebugFlags();
-  private roomMode: '1v1' | '2v2' = '1v1';
+  private roomMode: MatchFormat = '1v1';
   private playersPerTeam = 1;
+  private roomSettings: RoomSettings = defaultRoomSettings('1v1');
   private readonly buckets = new Map<string, Map<string, Bucket>>();
   private readonly createdAtMs = Date.now();
   private rateWindowStartedAtMs = 0;
@@ -135,22 +142,27 @@ export class DuelRoom extends Room {
     this.eventLoopDelay.enable();
     this.setPrivate(true);
     this.patchRate = COLYSEUS_PATCH_RATE_MS;
-    this.roomMode = options.mode === '2v2' ? '2v2' : '1v1';
-    this.playersPerTeam = this.roomMode === '2v2' ? GAME_CONSTANTS.match.playersPerTeam : 1;
-    this.maxClients = GAME_CONSTANTS.match.teamIds.length * this.playersPerTeam;
+    // Resolve the host's authoritative settings from the requested format (the `format`/`mode` join
+    // option), then derive room size from them — never from a bare constant. This is the single place
+    // the room's max-clients / players-per-team come from, so 1v1 vs 2v2 size is settings-driven.
+    const requestedFormat: MatchFormat = options.format === '2v2' || options.mode === '2v2' ? '2v2' : '1v1';
+    this.roomSettings = defaultRoomSettings(requestedFormat);
+    const matchSettings = resolveMatchSettings(this.roomSettings);
+    this.roomMode = matchSettings.format;
+    this.playersPerTeam = matchSettings.teamSize;
+    this.maxClients = matchSettings.maxPlayers;
     // Colyseus 0.17 applies this PER CLIENT on inbound messages and force-closes the sender when
     // exceeded, so size it to a single client's expected 128Hz stream plus burst headroom.
     this.maxMessagesPerSecond = computeMaxMessagesPerSecondPerClient(CLIENT_INPUT_RATE);
     this.game = new ServerGameLoop(this.roomId, {
       tickRate: SERVER_TICK_RATE,
-      mode: this.roomMode,
-      playersPerTeam: this.playersPerTeam,
+      settings: this.roomSettings,
       logger: (message) => this.log(message),
       debug: this.debug
     });
     // One-time room-created line describing the active net config + the manual-snapshot patch mode.
     this.log(
-      `room created mode=${this.roomMode} playersPerTeam=${this.playersPerTeam} ${describeNetConfig()} ` +
+      `room created mode=${this.roomMode} playersPerTeam=${this.playersPerTeam} preset=${this.roomSettings.preset} ${describeNetConfig()} ` +
       `snapshotEncoding=${SNAPSHOT_ENCODING} snapshotBackpressure=${SNAPSHOT_BACKPRESSURE_BYTES}B ` +
       `colyseusPatchRate=${formatPatchRate(COLYSEUS_PATCH_RATE_MS)} ` +
       `colyseusMaxMessagesPerSecond=${this.maxMessagesPerSecond}/s(per-client inbound, expected~${expectedPerClientMessagesPerSecond(CLIENT_INPUT_RATE)}/s)`
@@ -230,6 +242,43 @@ export class DuelRoom extends Room {
       if (!this.allow(client, 'switch-team')) return;
       const result = this.game.handleTeamSwitch(client.sessionId, message?.teamId, message?.teamSlotIndex);
       if (!result.ok) this.reject(client, 'switch-team', result.reason);
+    });
+
+    this.onMessage('update-room-settings', (client, message: Partial<UpdateRoomSettingsRequest> | undefined) => {
+      this.recordIncomingMessage(client, 'update-room-settings');
+      if (!this.allow(client, 'update-room-settings')) return;
+      // Host identity + validation are fully owned by the game loop (server-authoritative); the room
+      // only relays the patch and surfaces a rejection.
+      const patch = (message?.settings ?? {}) as RoomSettingsPatch;
+      const result = this.game.handleUpdateRoomSettings(client.sessionId, patch);
+      if (!result.ok) {
+        if (this.debug.NET_DEBUG) this.log(`settings update rejected player=${client.sessionId} reason=${result.reason}`);
+        this.reject(client, 'update-room-settings', result.reason);
+      } else if (result.log && this.debug.NET_DEBUG) {
+        this.log(result.log);
+      }
+    });
+
+    this.onMessage('start-match', (client) => {
+      this.recordIncomingMessage(client, 'start-match');
+      if (!this.allow(client, 'start-match')) return;
+      const result = this.game.handleStartMatch(client.sessionId);
+      if (!result.ok) this.reject(client, 'start-match', result.reason);
+    });
+
+    this.onMessage('end-vote', (client) => {
+      this.recordIncomingMessage(client, 'end-vote');
+      if (!this.allow(client, 'end-vote')) return;
+      const result = this.game.handleEndVote(client.sessionId);
+      if (!result.ok) this.reject(client, 'end-vote', result.reason);
+    });
+
+    this.onMessage('intermission-vote', (client, message: { choice?: 'next-round' | 'to-lobby' }) => {
+      this.recordIncomingMessage(client, 'intermission-vote');
+      if (!this.allow(client, 'intermission-vote')) return;
+      const choice = message?.choice === 'to-lobby' ? 'to-lobby' : 'next-round';
+      const result = this.game.handleIntermissionVote(client.sessionId, choice);
+      if (!result.ok) this.reject(client, 'intermission-vote', result.reason);
     });
 
     this.onMessage('ping', (client, message: { clientTimeMs?: number }) => {

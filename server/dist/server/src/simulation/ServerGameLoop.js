@@ -4,6 +4,7 @@ exports.ServerGameLoop = void 0;
 const constants_1 = require("../../../shared/constants");
 const node_perf_hooks_1 = require("node:perf_hooks");
 const netConfig_1 = require("../../../shared/netConfig");
+const roomSettings_1 = require("../../../shared/roomSettings");
 const DefenseHistory_1 = require("./DefenseHistory");
 const BallSim_1 = require("../../../shared/simulation/BallSim");
 const CollisionMath_1 = require("../../../shared/simulation/CollisionMath");
@@ -37,6 +38,10 @@ const STALE_INPUT_MS = 1000;
 const ZERO_DASH_DIRECTION = Object.freeze((0, CollisionMath_1.vec3)());
 const START_VOTE_TTL_MS = constants_1.GAME_CONSTANTS.match.startVoteSeconds * 1000;
 const RESET_VOTE_TTL_MS = constants_1.GAME_CONSTANTS.match.resetVoteSeconds * 1000;
+const END_VOTE_TTL_MS = constants_1.GAME_CONSTANTS.match.resetVoteSeconds * 1000;
+// How long a between-rounds intermission lingers on the report card before auto-starting the next
+// round, if the players haven't voted to continue or to return to the lobby first.
+const INTERMISSION_TIMEOUT_MS = 30_000;
 const LAST_PLAYER_BUFF_MS = constants_1.GAME_CONSTANTS.match.lastPlayerBuffSeconds * 1000;
 class ServerGameLoop {
     tickRate;
@@ -50,6 +55,22 @@ class ServerGameLoop {
     playersPerTeam;
     maxPlayers;
     teamsRequiredToPlay;
+    // Authoritative host settings (intent) + their resolved engine parameters. Mutable so the host can
+    // change them between games (handleUpdateRoomSettings). `format` and the derived team geometry stay
+    // fixed for the room's life in this stage; in-room format switching is deferred (see that handler).
+    settings;
+    matchSettings;
+    // Settings-driven live-ball bounce rule, recomputed whenever settings change.
+    bounceRule;
+    // The mats that currently exist for this room (host matPreset subset). The authoritative mat state
+    // and BOTH collision worlds are derived from this, so visuals + player + ball collision agree.
+    activeMatSpecs;
+    // Set when a round ended and the room is in the inter-round countdown: the new round's world is
+    // rebuilt (full lives, fresh balls/mats) only when that countdown flips to 'playing', which is far
+    // longer than the lag-comp catch grace — so a hit-revert during the gap cleanly cancels the round.
+    roundRebuildPending = false;
+    // Session id of the host (room creator). Reassigned to another connected player on host departure.
+    hostPlayerId = null;
     battleMusicTrackCount;
     playerSlots;
     /** Injectable wall-clock (ms). Defaults to Date.now; overridden by a virtual clock in tests. */
@@ -83,6 +104,14 @@ class ServerGameLoop {
     teamChoicesByPlayerId = new Set();
     startVotesByPlayerId = new Map();
     resetVotesByPlayerId = new Map();
+    // Early-end vote: connected players who have agreed to abort the live game, plus who opened it.
+    endVotesByPlayerId = new Map();
+    endVoteInitiatorId = null;
+    // Between-rounds / post-match intermission vote: who picked "next round" vs "back to lobby", plus
+    // the deadline at which an undecided intermission auto-advances to the next round.
+    intermissionNextVotes = new Set();
+    intermissionLobbyVotes = new Set();
+    intermissionDeadlineAtMs = null;
     // Anti "2-ball technique": tracks each player's most recent throw so a second throw landing
     // within `doubleThrowWindowSeconds` of the first gets BOTH balls slowed (see handleThrow).
     lastThrowByPlayerId = new Map();
@@ -140,11 +169,21 @@ class ServerGameLoop {
         this.logger = options.logger ?? (() => undefined);
         this.now = options.now ?? Date.now;
         this.teamIds = options.teamIds?.length ? [...options.teamIds] : [...constants_1.GAME_CONSTANTS.match.teamIds];
-        this.playersPerTeam = Math.max(1, Math.trunc(options.playersPerTeam ?? 1));
+        // Resolve the authoritative host settings ONCE up front. The team geometry (playersPerTeam/
+        // maxPlayers) and every per-round rule below are derived from them rather than from loose
+        // constructor args. Legacy callers that pass only `mode`/`playersPerTeam` get the recommended
+        // preset for the implied format, so behavior is unchanged.
+        this.settings = options.settings
+            ? (0, roomSettings_1.canonicalizeRoomSettings)(options.settings)
+            : (0, roomSettings_1.defaultRoomSettings)(resolveConstructorFormat(options));
+        this.matchSettings = (0, roomSettings_1.resolveMatchSettings)(this.settings);
+        this.bounceRule = bounceRuleFromSettings(this.matchSettings);
+        this.activeMatSpecs = (0, MapGeometry_1.matSpecsForPreset)(this.matchSettings.matPreset);
+        this.matchMode = this.settings.format;
+        this.playersPerTeam = Math.max(1, this.matchSettings.teamSize);
         this.maxPlayers = this.teamIds.length * this.playersPerTeam;
         this.teamsRequiredToPlay = Math.min(2, this.teamIds.length);
         this.battleMusicTrackCount = Math.max(0, Math.trunc(options.battleMusicTrackCount ?? generatedBattleMusicManifest_1.BATTLE_MUSIC_TRACKS.length));
-        this.matchMode = options.mode ?? (this.playersPerTeam >= 2 ? '2v2' : '1v1');
         this.playerSlots = buildPlayerSlots(this.teamIds, this.playersPerTeam);
         // All flags default OFF. The legacy `debugInput` boolean maps to NET_DEBUG for compat; an
         // explicit `debug.NET_DEBUG` (if provided) wins over it.
@@ -187,12 +226,15 @@ class ServerGameLoop {
             movement: this.spawnMovement(slot),
             ...(matchInProgress
                 ? { lives: 0, combatState: 'eliminated', eliminatedAtMs: this.now() }
-                : {})
+                // Starting lives come from the host setting, not the bare constant.
+                : { lives: this.matchSettings.livesPerPlayer })
         });
         this.state.players[playerId] = player;
         this.seedInputTracking(playerId, slot.yawRadians);
         this.syncPlayerScores();
+        this.ensureHostAssignment();
         this.reconcilePregameState('join');
+        this.syncRoomPhase();
         return player;
     }
     removePlayer(playerId) {
@@ -220,7 +262,13 @@ class ServerGameLoop {
         this.teamChoicesByPlayerId.delete(playerId);
         this.startVotesByPlayerId.delete(playerId);
         this.resetVotesByPlayerId.delete(playerId);
+        this.endVotesByPlayerId.delete(playerId);
+        this.intermissionNextVotes.delete(playerId);
+        this.intermissionLobbyVotes.delete(playerId);
+        this.ensureHostAssignment();
         this.reconcilePregameState('remove');
+        this.pruneEndVotes(this.now());
+        this.syncRoomPhase();
     }
     /** Mark a player connected/disconnected (drives match pause + the connected flag). */
     setConnected(playerId, connected, reconnectDeadlineAtMs = null) {
@@ -233,7 +281,9 @@ class ServerGameLoop {
         player.reconnectDeadlineAtMs = connected ? null : reconnectDeadlineAtMs;
         if (connected)
             this.lastInputAtByPlayerId.set(playerId, this.now());
+        this.ensureHostAssignment();
         this.reconcilePregameState(connected ? 'reconnect' : 'disconnect');
+        this.syncRoomPhase();
     }
     /**
      * Handle a player abandoning (a non-consented leave that didn't reconnect in time). If that leaves
@@ -267,6 +317,8 @@ class ServerGameLoop {
         this.teamChoicesByPlayerId.clear();
         this.startVotesByPlayerId.clear();
         this.resetVotesByPlayerId.clear();
+        this.endVotesByPlayerId.clear();
+        this.clearIntermissionVotes();
     }
     /** Enqueue a client input. `seq` lets the client reconcile; out-of-order/dupes are ignored. */
     handleInput(playerId, rawInput = {}, seq = 0, rttMs) {
@@ -546,6 +598,211 @@ class ServerGameLoop {
         }
         return { ok: true, log: `start vote pending player=${playerId} votes=${vote.voteCount}/${vote.requiredVotes}` };
     }
+    /**
+     * Host-only "start the configured match now" from the lobby. Works for both formats: begins the
+     * pre-round countdown when enough players are present (and, for 2v2, teams are chosen). This is the
+     * lobby's host start button — and the way to begin a new match after an early-end returns to lobby.
+     */
+    handleStartMatch(playerId) {
+        const player = this.state.players[playerId];
+        if (!player)
+            return { ok: false, reason: 'unknown-player' };
+        if (this.hostPlayerId !== playerId)
+            return { ok: false, reason: 'not-host' };
+        if (this.state.match.status !== 'warmup')
+            return { ok: false, reason: 'match-already-started' };
+        if (!this.hasEnoughConnectedTeamsToPlay())
+            return { ok: false, reason: 'not-enough-players' };
+        if (this.matchMode === '2v2' && !this.allConnectedPlayersChoseTeams())
+            return { ok: false, reason: 'teams-not-chosen' };
+        this.beginPregameCountdown('host');
+        return { ok: true, log: `match started by host=${playerId}` };
+    }
+    /**
+     * Early-end vote. The host opens it during a live round (their send counts as a yes); it passes
+     * on the shared 70% supermajority rule, at which point the room returns to the lobby (a reset
+     * that intentionally does NOT auto-start, so both formats land in a configurable lobby).
+     */
+    handleEndVote(playerId) {
+        const player = this.state.players[playerId];
+        if (!player)
+            return { ok: false, reason: 'unknown-player' };
+        if (player.connected === false)
+            return { ok: false, reason: 'disconnected' };
+        const live = this.state.match.status === 'playing' || this.state.match.status === 'countdown';
+        if (!live)
+            return { ok: false, reason: 'not-live' };
+        this.pruneEndVotes(this.now());
+        if (!this.state.endVote.active) {
+            // Only the host may OPEN the vote; once open any connected player may cast a yes.
+            if (this.hostPlayerId !== playerId)
+                return { ok: false, reason: 'not-host' };
+            this.endVoteInitiatorId = playerId;
+        }
+        this.endVotesByPlayerId.set(playerId, this.now() + END_VOTE_TTL_MS);
+        this.syncEndVoteState();
+        const vote = this.state.endVote;
+        if (this.debug.NET_DEBUG)
+            this.logger(`end vote player=${playerId} votes=${vote.voteCount}/${vote.requiredVotes}`);
+        if (vote.requiredVotes > 0 && vote.voteCount >= vote.requiredVotes) {
+            this.endGameEarly(playerId);
+            return { ok: true, log: `early end approved initiator=${this.endVoteInitiatorId ?? playerId}` };
+        }
+        return { ok: true, log: `end vote pending player=${playerId} votes=${vote.voteCount}/${vote.requiredVotes}` };
+    }
+    endGameEarly(playerId) {
+        this.returnToLobby(`early-end:${playerId}`);
+    }
+    /**
+     * Between-rounds / post-match vote cast over the report card. Any connected player may vote;
+     * 'next-round' (intermission only) starts the next round and 'to-lobby' ends the match, each on a
+     * 70% supermajority. A player's vote is exclusive — switching choices moves their vote.
+     */
+    handleIntermissionVote(playerId, choice) {
+        const player = this.state.players[playerId];
+        if (!player)
+            return { ok: false, reason: 'unknown-player' };
+        if (player.connected === false)
+            return { ok: false, reason: 'disconnected' };
+        const status = this.state.match.status;
+        if (status !== 'intermission' && status !== 'complete')
+            return { ok: false, reason: 'not-intermission' };
+        if (choice === 'next-round') {
+            if (status !== 'intermission')
+                return { ok: false, reason: 'match-complete' };
+            this.intermissionNextVotes.add(playerId);
+            this.intermissionLobbyVotes.delete(playerId);
+        }
+        else {
+            this.intermissionLobbyVotes.add(playerId);
+            this.intermissionNextVotes.delete(playerId);
+        }
+        this.resolveIntermissionVotes(this.now());
+        return { ok: true, log: `intermission vote player=${playerId} choice=${choice}` };
+    }
+    /** Per-tick intermission upkeep: keep the vote state live, auto-advance on timeout, resolve passes. */
+    tickIntermission(nowMs) {
+        const status = this.state.match.status;
+        const active = status === 'intermission' || status === 'complete';
+        if (!active) {
+            if (this.intermissionDeadlineAtMs !== null || this.intermissionNextVotes.size > 0 || this.intermissionLobbyVotes.size > 0 || this.state.intermissionVote.active) {
+                this.clearIntermissionVotes();
+                this.syncIntermissionVoteState();
+            }
+            return;
+        }
+        if (status === 'intermission' && this.intermissionDeadlineAtMs === null) {
+            this.intermissionDeadlineAtMs = nowMs + INTERMISSION_TIMEOUT_MS;
+        }
+        this.resolveIntermissionVotes(nowMs);
+    }
+    resolveIntermissionVotes(nowMs) {
+        const status = this.state.match.status;
+        if (status !== 'intermission' && status !== 'complete')
+            return;
+        this.pruneIntermissionVoters();
+        const required = (0, roomSettings_1.votesRequiredForPass)(this.connectedCount());
+        this.syncIntermissionVoteState();
+        if (required > 0) {
+            if (status === 'intermission' && this.liveVoteCount(this.intermissionNextVotes) >= required) {
+                this.beginNextRound('vote');
+                return;
+            }
+            if (this.liveVoteCount(this.intermissionLobbyVotes) >= required) {
+                this.returnToLobby('vote');
+                return;
+            }
+        }
+        // Fallback so an undecided intermission never stalls: auto-start the next round on timeout.
+        if (status === 'intermission' && this.intermissionDeadlineAtMs !== null && nowMs >= this.intermissionDeadlineAtMs) {
+            this.beginNextRound('timeout');
+        }
+    }
+    pruneIntermissionVoters() {
+        for (const set of [this.intermissionNextVotes, this.intermissionLobbyVotes]) {
+            for (const pid of set) {
+                const p = this.state.players[pid];
+                if (!p || p.connected === false)
+                    set.delete(pid);
+            }
+        }
+    }
+    liveVoteCount(set) {
+        let count = 0;
+        for (const pid of set) {
+            const p = this.state.players[pid];
+            if (p && p.connected !== false)
+                count += 1;
+        }
+        return count;
+    }
+    syncIntermissionVoteState() {
+        const status = this.state.match.status;
+        const active = status === 'intermission' || status === 'complete';
+        const tally = (set) => {
+            const out = {};
+            for (const pid of set) {
+                const p = this.state.players[pid];
+                if (p && p.connected !== false)
+                    out[pid] = true;
+            }
+            return out;
+        };
+        const nextRoundByPlayerId = tally(this.intermissionNextVotes);
+        const toLobbyByPlayerId = tally(this.intermissionLobbyVotes);
+        this.state.intermissionVote = (0, MatchSim_1.createIntermissionVoteState)({
+            active,
+            allowsNextRound: status === 'intermission',
+            nextRoundByPlayerId,
+            nextRoundCount: Object.keys(nextRoundByPlayerId).length,
+            toLobbyByPlayerId,
+            toLobbyCount: Object.keys(toLobbyByPlayerId).length,
+            requiredVotes: active ? (0, roomSettings_1.votesRequiredForPass)(this.connectedCount()) : 0,
+            nextRoundDeadlineAtMs: status === 'intermission' ? this.intermissionDeadlineAtMs : null
+        });
+    }
+    pruneEndVotes(now) {
+        if (this.endVotesByPlayerId.size === 0) {
+            if (this.state.endVote.active)
+                this.syncEndVoteState();
+            return;
+        }
+        const live = this.state.match.status === 'playing' || this.state.match.status === 'countdown';
+        let changed = false;
+        for (const [pid, expiresAtMs] of this.endVotesByPlayerId) {
+            const p = this.state.players[pid];
+            if (!live || !p || p.connected === false || expiresAtMs <= now) {
+                this.endVotesByPlayerId.delete(pid);
+                changed = true;
+            }
+        }
+        if (!live || this.endVotesByPlayerId.size === 0) {
+            this.endVoteInitiatorId = null;
+        }
+        if (changed)
+            this.syncEndVoteState();
+    }
+    syncEndVoteState() {
+        const votesByPlayerId = {};
+        let expiresAtMs = null;
+        for (const [pid, expiry] of this.endVotesByPlayerId) {
+            const p = this.state.players[pid];
+            if (!p || p.connected === false)
+                continue;
+            votesByPlayerId[pid] = true;
+            expiresAtMs = expiresAtMs === null ? expiry : Math.min(expiresAtMs, expiry);
+        }
+        const voteCount = Object.keys(votesByPlayerId).length;
+        const active = voteCount > 0;
+        this.state.endVote = (0, MatchSim_1.createEndVoteState)({
+            active,
+            initiatedByPlayerId: active ? this.endVoteInitiatorId : null,
+            votesByPlayerId,
+            voteCount,
+            requiredVotes: active ? (0, roomSettings_1.votesRequiredForPass)(this.connectedCount()) : 0,
+            expiresAtMs
+        });
+    }
     handleTeamSwitch(playerId, targetTeamId, requestedSlotIndex) {
         const player = this.state.players[playerId];
         if (!player)
@@ -607,6 +864,117 @@ class ServerGameLoop {
         this.syncPlayerScores();
         return { ok: true, log: `team switch player=${playerId} team=${slot.teamId} slot=${slot.teamSlotIndex + 1}` };
     }
+    /**
+     * Host-only settings mutation. Enforces (in order): the player exists, the player is the host,
+     * the room is between games (warmup/complete — never mid-countdown or live), and the patch passes
+     * strict value validation. Format changes are rejected here (`format-locked`) because the team
+     * geometry is fixed for the room's life in this stage; the host chooses the format at creation.
+     * On success the canonical settings are stored and the derived match fields are re-applied.
+     */
+    handleUpdateRoomSettings(playerId, patch) {
+        const player = this.state.players[playerId];
+        if (!player)
+            return { ok: false, reason: 'unknown-player' };
+        if (this.hostPlayerId !== playerId)
+            return { ok: false, reason: 'not-host' };
+        if (this.state.match.status !== 'warmup' && this.state.match.status !== 'complete') {
+            return { ok: false, reason: 'settings-locked' };
+        }
+        if (patch?.format !== undefined && !(0, roomSettings_1.isAllowedFormat)(patch.format)) {
+            return { ok: false, reason: 'invalid-format' };
+        }
+        if (patch?.format !== undefined && patch.format !== this.settings.format) {
+            return { ok: false, reason: 'format-locked' };
+        }
+        const validation = (0, roomSettings_1.validateRoomSettingsPatch)(this.settings, patch);
+        if (!validation.ok)
+            return { ok: false, reason: validation.reason };
+        // A preset patch can imply a different format without an explicit `format` field; reject that too
+        // so the room's team geometry can never change out from under the loop.
+        if (validation.settings.format !== this.settings.format) {
+            return { ok: false, reason: 'format-locked' };
+        }
+        this.applyRoomSettings(validation.settings);
+        if (this.debug.NET_DEBUG) {
+            this.logger(`settings updated host=${playerId} preset=${validation.settings.preset} ` +
+                `lives=${this.matchSettings.livesPerPlayer} balls=${this.matchSettings.dodgeballCount} ` +
+                `bounces=${this.matchSettings.maxLiveBallBounces} mats=${this.matchSettings.matPreset} ` +
+                `rounds=${this.matchSettings.roundCount} halfTimer=${this.matchSettings.halfCourtTimerSeconds}`);
+        }
+        return { ok: true, log: `settings updated host=${playerId} preset=${validation.settings.preset}` };
+    }
+    /**
+     * Apply already-validated settings to authoritative state. The bounce rule and half-court timer
+     * take effect immediately (read every tick); the dodgeball COUNT and per-player starting lives are
+     * applied at the next match start (createFreshRoomState / performRoomReset rebuilds the ball set and
+     * fighters from matchSettings) to avoid disturbing balls a warmup player may be holding. Waiting
+     * fighters get their displayed lives refreshed now so the lobby reflects the change.
+     */
+    applyRoomSettings(next) {
+        this.settings = next;
+        this.matchSettings = (0, roomSettings_1.resolveMatchSettings)(next);
+        this.bounceRule = bounceRuleFromSettings(this.matchSettings);
+        this.activeMatSpecs = (0, MapGeometry_1.matSpecsForPreset)(this.matchSettings.matPreset);
+        this.state.settings = next;
+        this.state.match = {
+            ...this.state.match,
+            scoreLimit: this.matchSettings.scoreLimit,
+            maxPlayers: this.maxPlayers,
+            playersPerTeam: this.playersPerTeam,
+            roundCount: this.matchSettings.roundCount
+        };
+        if (this.state.match.status === 'warmup') {
+            // In the lobby we can safely re-seed the world to the new settings: starting lives for waiting
+            // fighters and the active mat layout (with its collision). The dodgeball COUNT is applied at the
+            // next match start to avoid disturbing a ball a warmup player may be holding.
+            for (const id in this.state.players) {
+                const waiting = this.state.players[id];
+                if (waiting.combatState !== 'eliminated')
+                    waiting.lives = this.matchSettings.livesPerPlayer;
+            }
+            this.knockedOverMatIds.clear();
+            this.matPostResetKnockImmunityById.clear();
+            this.state.mats = (0, MatchSim_1.createMatStates)(this.activeMatSpecs);
+            this.rebuildCollisionBoxes();
+        }
+        this.syncRoomPhase();
+    }
+    /** Current authoritative host settings (intent). */
+    getSettings() {
+        return this.settings;
+    }
+    /** Resolved engine parameters derived from the current settings. */
+    getMatchSettings() {
+        return this.matchSettings;
+    }
+    /** Session id of the current host, or null when the room is empty. */
+    getHostPlayerId() {
+        return this.hostPlayerId;
+    }
+    /**
+     * Ensure the host role points at a present, connected player. Keeps the current host while they are
+     * connected; otherwise hands it to the first remaining connected player (stable order), or null
+     * when the room is empty. Mirrors the chosen id onto snapshot-visible state.
+     */
+    ensureHostAssignment() {
+        const current = this.hostPlayerId ? this.state.players[this.hostPlayerId] : undefined;
+        if (!current || current.connected === false) {
+            const next = Object.values(this.state.players).find((p) => p.connected !== false)
+                ?? Object.values(this.state.players)[0]
+                ?? null;
+            this.hostPlayerId = next ? next.id : null;
+        }
+        this.state.hostPlayerId = this.hostPlayerId;
+    }
+    /** Keep the unified lifecycle phase in lock-step with the legacy match status (Stage 1 mapping). */
+    syncRoomPhase() {
+        this.state.phase = (0, roomSettings_1.roomPhaseFromMatchStatus)(this.state.match.status);
+    }
+    /** Rebuild both collision worlds from the active mat preset minus any currently knocked-over mats. */
+    rebuildCollisionBoxes() {
+        this.playerCollisionBoxes = (0, MapGeometry_1.createPlayerCollisionBoxes)(this.knockedOverMatIds, this.activeMatSpecs);
+        this.ballCollisionBoxes = (0, MapGeometry_1.createBallCollisionBoxes)(this.knockedOverMatIds, this.activeMatSpecs);
+    }
     step() {
         this.advance();
         return this.snapshot();
@@ -621,6 +989,7 @@ class ServerGameLoop {
         this.pruneExpiredReconnects(this.stepNowMs);
         this.pruneStartVotes(this.stepNowMs);
         this.pruneResetVotes(this.stepNowMs);
+        this.pruneEndVotes(this.stepNowMs);
         this.tickMatPostResetKnockImmunity(fixedDt);
         // Advance the pre-round countdown. While counting down, players are frozen (look only) and no
         // combat resolves; when it elapses, flip to 'playing' so this tick already runs live.
@@ -667,6 +1036,8 @@ class ServerGameLoop {
         }
         this.repairBallHandConsistency();
         this.syncPlayerScores();
+        this.tickIntermission(this.stepNowMs);
+        this.syncRoomPhase();
         this.syncBattleMusicForMatchTransition(previousMatchStatus, this.stepNowMs);
     }
     /** Tick the pre-round countdown timer; flip to 'playing' once it reaches 0. */
@@ -678,7 +1049,13 @@ class ServerGameLoop {
             this.state.match = { ...this.state.match, countdownSeconds: remaining };
             return;
         }
-        // Countdown finished → live play. Reset the no-boundaries clock so the round starts fresh.
+        // Countdown finished → live play. If this was an inter-round countdown, rebuild the round world
+        // now (deferred from resolveRoundOutcome so a same-tick hit-revert could still cancel the round).
+        if (this.roundRebuildPending) {
+            this.startRoundWorld();
+            this.roundRebuildPending = false;
+        }
+        // Reset the no-boundaries clock so the round starts fresh.
         this.state.match = {
             ...this.state.match,
             status: 'playing',
@@ -1025,9 +1402,10 @@ class ServerGameLoop {
                         }
                     }
                 }
-                // World collision per substep so fast balls bounce correctly at sub-tick positions.
-                const bounded = resolveBallBounds(resolved);
-                const collided = resolveBallStaticBoxes(bounded, this.ballCollisionBoxesWithEliminatedCover(), this.debug.COLLISION_DEBUG ? this.logger : undefined);
+                // World collision per substep so fast balls bounce correctly at sub-tick positions. The
+                // settings-driven bounce rule decides when a live/deflected ball dies on these contacts.
+                const bounded = resolveBallBounds(resolved, this.bounceRule);
+                const collided = resolveBallStaticBoxes(bounded, this.ballCollisionBoxesWithEliminatedCover(), this.debug.COLLISION_DEBUG ? this.logger : undefined, this.bounceRule);
                 current = (0, BallSim_1.settleBallIfSlow)(collided);
                 if (!combatDone &&
                     (current.phase === 'loose' || (current.phase === 'dead' && !(0, BallSim_1.isBallCatchableInFlight)(current)))) {
@@ -1147,17 +1525,10 @@ class ServerGameLoop {
         const scorer = this.state.players[throwerId];
         if (!scorer)
             return null;
-        if (this.state.match.mode !== '2v2') {
-            this.state = (0, MatchSim_1.registerPlayerHit)(this.state, throwerId);
-            this.adjustPlayerMatchStat(throwerId, 'hits', 1);
-            this.adjustPlayerMatchStat(target.id, 'hitsTaken', 1);
-            return {
-                kind: 'score',
-                throwerTeamId: scorer.teamId,
-                value: 1,
-                throwerDashBefore
-            };
-        }
+        // Unified lives model (Stage 3): a hit costs the target a life for BOTH formats; a fully
+        // eliminated team loses the round (resolveRoundOutcome). 1v1 additionally keeps a per-team hit
+        // tally in scoreByTeamId purely as a stat/display — it NEVER decides victory now (lives/rounds
+        // do). 2v2 leaves scoreByTeamId at 0 and shows lives. The win is no longer score-to-5.
         const targetLive = this.state.players[target.id];
         if (!targetLive || !this.isPlayerAlive(targetLive))
             return null;
@@ -1166,24 +1537,44 @@ class ServerGameLoop {
         const defenderEliminatedAtMsBefore = targetLive.eliminatedAtMs;
         const matchStatusBefore = this.state.match.status;
         const winnerTeamIdBefore = this.state.match.winnerTeamId;
+        const currentRoundBefore = this.state.match.currentRound;
+        const roundsWonByTeamIdBefore = { ...this.state.match.roundsWonByTeamId };
+        const countdownSecondsBefore = this.state.match.countdownSeconds;
+        const roundRebuildPendingBefore = this.roundRebuildPending;
+        const scoreDelta = this.matchSettings.format === '1v1' ? 1 : 0;
         this.state.players[throwerId] = { ...scorer, dash: (0, PlayerSim_1.grantDashCharge)(scorer.dash) };
+        if (scoreDelta > 0)
+            this.bumpTeamHitScore(scorer.teamId, scoreDelta);
         this.adjustPlayerMatchStat(throwerId, 'hits', 1);
         this.adjustPlayerMatchStat(target.id, 'hitsTaken', 1);
         targetLive.lives = Math.max(0, targetLive.lives - 1);
         if (targetLive.lives <= 0)
             this.eliminatePlayer(targetLive.id);
         this.refreshLastPlayerBuffs(this.stepNowMs);
-        this.checkEliminationVictory();
+        this.resolveRoundOutcome();
         return {
             kind: 'life',
             throwerTeamId: scorer.teamId,
             value: 1,
+            scoreDelta,
             defenderLivesBefore,
             defenderCombatStateBefore,
             defenderEliminatedAtMsBefore,
             matchStatusBefore,
             winnerTeamIdBefore,
+            currentRoundBefore,
+            roundsWonByTeamIdBefore,
+            countdownSecondsBefore,
+            roundRebuildPendingBefore,
             throwerDashBefore
+        };
+    }
+    /** Direct, non-victory hit-tally bump for 1v1's legacy scoreByTeamId stat (clamped at 0). */
+    bumpTeamHitScore(teamId, delta) {
+        const current = this.state.match.scoreByTeamId[teamId] ?? 0;
+        this.state.match = {
+            ...this.state.match,
+            scoreByTeamId: { ...this.state.match.scoreByTeamId, [teamId]: Math.max(0, current + delta) }
         };
     }
     eliminatePlayer(playerId) {
@@ -1209,27 +1600,110 @@ class ServerGameLoop {
         this.catchAttemptByKey.delete(`${playerId}:right`);
         this.parryCooldownByPlayerId.set(playerId, 0);
     }
-    checkEliminationVictory() {
-        if (this.state.match.status === 'complete')
+    /**
+     * Unified round resolution (Stage 3): when one team is fully eliminated, award the round to the
+     * survivors, then either END THE MATCH (a team clinched the best-of-roundCount series, or all rounds
+     * are played → 'complete') or pause on the between-rounds report card ('intermission'). From the
+     * intermission, players vote to start the next round or to return to the lobby (handleIntermission
+     * Vote / tickIntermission). It does NOT touch currentRound or rebuild the world here — that happens
+     * when the next round's countdown begins (beginNextRound) — so a same-tick lag-comp hit-revert that
+     * un-eliminates the deciding player cleanly cancels the round (revertHit restores 'playing').
+     */
+    resolveRoundOutcome() {
+        if (this.state.match.status !== 'playing')
             return;
-        for (const teamId of this.state.match.teamIds) {
+        const losingTeamId = this.state.match.teamIds.find((teamId) => {
             const teamPlayers = Object.values(this.state.players).filter((player) => player.teamId === teamId);
-            if (!this.teamHasNoActiveFighter(teamPlayers))
-                continue;
-            const winnerTeamId = this.state.match.teamIds.find((candidate) => candidate !== teamId) ?? null;
-            if (!winnerTeamId)
-                return;
-            this.state.match = {
-                ...this.state.match,
-                status: 'complete',
-                winnerTeamId,
-                countdownSeconds: 0
-            };
-            this.refreshLastPlayerBuffs(this.stepNowMs);
-            if (this.debug.NET_DEBUG)
-                this.logger(`elimination win team=${winnerTeamId}`);
+            return this.teamHasNoActiveFighter(teamPlayers);
+        });
+        if (!losingTeamId)
             return;
+        const roundWinnerTeamId = this.state.match.teamIds.find((teamId) => teamId !== losingTeamId) ?? null;
+        if (!roundWinnerTeamId)
+            return;
+        const roundsWonByTeamId = {
+            ...this.state.match.roundsWonByTeamId,
+            [roundWinnerTeamId]: (this.state.match.roundsWonByTeamId[roundWinnerTeamId] ?? 0) + 1
+        };
+        const matchWithRound = { ...this.state.match, roundsWonByTeamId };
+        const matchWinnerTeamId = (0, RuleSim_1.matchWinnerFromRounds)(matchWithRound);
+        this.state.match = matchWinnerTeamId
+            // Series clinched (or all rounds played): final report card. Players then vote back to the lobby.
+            ? { ...matchWithRound, status: 'complete', winnerTeamId: matchWinnerTeamId, countdownSeconds: 0 }
+            // Round over, match continues: between-rounds report card + next-round / to-lobby votes.
+            : { ...matchWithRound, status: 'intermission', winnerTeamId: null, countdownSeconds: 0 };
+        this.refreshLastPlayerBuffs(this.stepNowMs);
+        if (this.debug.NET_DEBUG) {
+            this.logger(`round won team=${roundWinnerTeamId} rounds=${JSON.stringify(roundsWonByTeamId)} ` +
+                `status=${this.state.match.status}`);
         }
+    }
+    /** Begin the next round's pre-round countdown from the intermission (vote passed or timed out). */
+    beginNextRound(kind) {
+        this.clearIntermissionVotes();
+        this.state.match = {
+            ...this.state.match,
+            status: 'countdown',
+            countdownSeconds: constants_1.GAME_CONSTANTS.match.countdownSeconds,
+            currentRound: this.state.match.currentRound + 1,
+            winnerTeamId: null,
+            boundary: { ...this.state.match.boundary, elapsedSeconds: 0, noBoundaries: false, lastEvent: { type: 'none' } }
+        };
+        // The world (full lives, fresh balls/mats) is rebuilt when this countdown flips to 'playing'.
+        this.roundRebuildPending = true;
+        this.syncIntermissionVoteState();
+        this.refreshLastPlayerBuffs(this.now());
+        if (this.debug.NET_DEBUG)
+            this.logger(`next round=${this.state.match.currentRound} via=${kind}`);
+    }
+    /** Return the room to the pregame lobby (warmup), preserving membership + settings. */
+    returnToLobby(kind) {
+        this.clearIntermissionVotes();
+        this.endVotesByPlayerId.clear();
+        this.endVoteInitiatorId = null;
+        // A reset that intentionally does NOT auto-start, so both formats land in a configurable lobby.
+        this.performRoomReset(`to-lobby:${kind}`, 'same-teams', false);
+    }
+    clearIntermissionVotes() {
+        this.intermissionNextVotes.clear();
+        this.intermissionLobbyVotes.clear();
+        this.intermissionDeadlineAtMs = null;
+    }
+    /**
+     * Rebuild the world for a new round: every connected fighter back to full lives at spawn (cleared
+     * hands/dash/buffs), fresh dodgeballs + mats, collision rebuilt, combat history dropped. The match
+     * identity and round tally are preserved (this is between rounds, NOT a room reset, so resetSerial
+     * and votes are untouched).
+     */
+    startRoundWorld() {
+        for (const id in this.state.players) {
+            const player = this.state.players[id];
+            if (player.connected === false)
+                continue;
+            const slot = this.slotForPlayer(player);
+            player.lives = this.matchSettings.livesPerPlayer;
+            player.combatState = 'alive';
+            player.eliminatedAtMs = null;
+            player.lastPlayerBuffUntilMs = null;
+            player.movement = this.spawnMovement(slot);
+            player.movementInternal = (0, PlayerSim_1.createMovementInternalState)();
+            player.hands = (0, HandSim_1.createHands)();
+            player.dash = (0, PlayerSim_1.createDashState)();
+            this.seedInputTracking(player.id, slot.yawRadians);
+        }
+        this.knockedOverMatIds.clear();
+        this.matRestoreHoldByPlayerId.clear();
+        this.matPostResetKnockImmunityById.clear();
+        this.state.mats = (0, MatchSim_1.createMatStates)(this.activeMatSpecs);
+        this.rebuildCollisionBoxes();
+        const balls = {};
+        for (const ball of createInitialBalls(this.matchSettings.dodgeballCount))
+            balls[ball.id] = ball;
+        this.state.balls = balls;
+        this.ballHistoryById.clear();
+        this.catchAttemptByKey.clear();
+        this.recentHitByBallId.clear();
+        this.pendingThrowEvents = [];
     }
     refreshLastPlayerBuffs(nowMs) {
         if (this.state.match.mode !== '2v2') {
@@ -1385,7 +1859,7 @@ class ServerGameLoop {
         const reachSq = reach * reach;
         const pos = player.movement.position;
         let knockedAny = false;
-        for (const spec of MapGeometry_1.MAT_SPECS) {
+        for (const spec of this.activeMatSpecs) {
             if (this.knockedOverMatIds.has(spec.id))
                 continue;
             if ((this.matPostResetKnockImmunityById.get(spec.id) ?? 0) > 0)
@@ -1411,8 +1885,7 @@ class ServerGameLoop {
         // Rebuild both collision sets once if anything changed, so a downed mat becomes walkable AND
         // stops blocking balls.
         if (knockedAny) {
-            this.playerCollisionBoxes = (0, MapGeometry_1.createPlayerCollisionBoxes)(this.knockedOverMatIds);
-            this.ballCollisionBoxes = (0, MapGeometry_1.createBallCollisionBoxes)(this.knockedOverMatIds);
+            this.rebuildCollisionBoxes();
         }
     }
     /**
@@ -1430,7 +1903,7 @@ class ServerGameLoop {
         const reachSq = ServerGameLoop.MAT_RESTORE_REACH * ServerGameLoop.MAT_RESTORE_REACH;
         let nearestId = null;
         let nearestDistSq = Infinity;
-        for (const spec of MapGeometry_1.MAT_SPECS) {
+        for (const spec of this.activeMatSpecs) {
             if (!this.knockedOverMatIds.has(spec.id))
                 continue;
             const dx = pos.x - spec.x;
@@ -1454,8 +1927,7 @@ class ServerGameLoop {
         this.state.mats[nearestId] = { ...this.state.mats[nearestId], knockedOver: false, knockDirection: (0, CollisionMath_1.vec3)() };
         this.knockedOverMatIds.delete(nearestId);
         this.matPostResetKnockImmunityById.set(nearestId, ServerGameLoop.MAT_POST_RESET_KNOCK_IMMUNITY_SECONDS);
-        this.playerCollisionBoxes = (0, MapGeometry_1.createPlayerCollisionBoxes)(this.knockedOverMatIds);
-        this.ballCollisionBoxes = (0, MapGeometry_1.createBallCollisionBoxes)(this.knockedOverMatIds);
+        this.rebuildCollisionBoxes();
         if (this.debug.COLLISION_DEBUG)
             this.logger(`mat restored id=${nearestId} by player=${player.id}`);
     }
@@ -1469,16 +1941,20 @@ class ServerGameLoop {
         }
     }
     updateRules(dt) {
-        this.state.match = (0, RuleSim_1.advanceNoBoundariesTimer)(this.state.match, dt);
+        // Half-court drop timing is sourced from the host setting, not the bare constant.
+        this.state.match = (0, RuleSim_1.advanceNoBoundariesTimer)(this.state.match, dt, this.matchSettings.halfCourtTimerSeconds);
         for (const playerId in this.state.players) {
             const player = this.state.players[playerId];
             if (!this.isPlayerAlive(player))
                 continue;
-            this.state.match = (0, RuleSim_1.applyHalfCourtRule)(this.state.match, player.id, player.teamId, player.legalHalf, player.movement.position, dt);
+            this.state.match = (0, RuleSim_1.applyHalfCourtRule)(this.state.match, player.id, player.teamId, player.legalHalf, player.movement.position, dt, constants_1.GAME_CONSTANTS, 
+            // Unified lives model: boundary penalties cost the OFFENDER lives (applyHalfCourtPenalty),
+            // never opponent score — so a half-court abuse can no longer "win" a 1v1 by score.
+            false);
             if (this.state.match.boundary.lastEvent.type === 'half-court-elimination') {
                 this.eliminatePlayer(player.id);
                 this.refreshLastPlayerBuffs(this.stepNowMs);
-                this.checkEliminationVictory();
+                this.resolveRoundOutcome();
             }
             else if (this.state.match.boundary.lastEvent.type === 'half-court-penalty') {
                 this.applyHalfCourtPenalty(player.id, this.state.match.boundary.lastEvent.value);
@@ -1486,8 +1962,7 @@ class ServerGameLoop {
         }
     }
     applyHalfCourtPenalty(playerId, value) {
-        if (this.state.match.mode !== '2v2')
-            return;
+        // Unified across formats: a half-court penalty costs the offender lives (1v1 + 2v2).
         const player = this.state.players[playerId];
         if (!player || !this.isPlayerAlive(player))
             return;
@@ -1496,7 +1971,7 @@ class ServerGameLoop {
         if (player.lives <= 0)
             this.eliminatePlayer(player.id);
         this.refreshLastPlayerBuffs(this.stepNowMs);
-        this.checkEliminationVictory();
+        this.resolveRoundOutcome();
     }
     // ===========================================================================================
     //  Server-authoritative combat: defensive history, catch attempts, auto-parry, swept resolution
@@ -1865,25 +2340,29 @@ class ServerGameLoop {
     revertHit(hit) {
         this.adjustPlayerMatchStat(hit.throwerId, 'hits', -hit.value);
         this.adjustPlayerMatchStat(hit.defenderId, 'hitsTaken', -hit.value);
-        if (hit.kind === 'score') {
-            const current = this.state.match.scoreByTeamId[hit.throwerTeamId] ?? 0;
-            const scoreByTeamId = { ...this.state.match.scoreByTeamId, [hit.throwerTeamId]: Math.max(0, current - hit.value) };
-            this.state.match = recomputeMatchOutcome({ ...this.state.match, scoreByTeamId });
+        // Restore the defender's life/elimination, the 1v1 hit-tally stat, and any round/match transition
+        // this hit caused (round award + inter-round countdown), so a lag-comp catch cleanly supersedes it.
+        const defender = this.state.players[hit.defenderId];
+        if (defender) {
+            defender.lives = Math.max(1, hit.defenderLivesBefore ?? defender.lives);
+            defender.combatState = hit.defenderCombatStateBefore ?? 'alive';
+            defender.eliminatedAtMs = hit.defenderEliminatedAtMsBefore ?? null;
         }
-        else {
-            const defender = this.state.players[hit.defenderId];
-            if (defender) {
-                defender.lives = Math.max(1, hit.defenderLivesBefore ?? defender.lives);
-                defender.combatState = hit.defenderCombatStateBefore ?? 'alive';
-                defender.eliminatedAtMs = hit.defenderEliminatedAtMsBefore ?? null;
-            }
-            this.state.match = {
-                ...this.state.match,
-                status: hit.matchStatusBefore ?? this.state.match.status,
-                winnerTeamId: hit.winnerTeamIdBefore ?? null
-            };
-            this.refreshLastPlayerBuffs(this.stepNowMs);
-        }
+        const scoreDelta = hit.scoreDelta ?? 0;
+        const scoreByTeamId = scoreDelta > 0
+            ? { ...this.state.match.scoreByTeamId, [hit.throwerTeamId]: Math.max(0, (this.state.match.scoreByTeamId[hit.throwerTeamId] ?? 0) - scoreDelta) }
+            : this.state.match.scoreByTeamId;
+        this.state.match = {
+            ...this.state.match,
+            scoreByTeamId,
+            status: hit.matchStatusBefore ?? this.state.match.status,
+            winnerTeamId: hit.winnerTeamIdBefore ?? null,
+            currentRound: hit.currentRoundBefore ?? this.state.match.currentRound,
+            roundsWonByTeamId: hit.roundsWonByTeamIdBefore ? { ...hit.roundsWonByTeamIdBefore } : this.state.match.roundsWonByTeamId,
+            countdownSeconds: hit.countdownSecondsBefore ?? this.state.match.countdownSeconds
+        };
+        this.roundRebuildPending = hit.roundRebuildPendingBefore ?? this.roundRebuildPending;
+        this.refreshLastPlayerBuffs(this.stepNowMs);
         const thrower = this.state.players[hit.throwerId];
         if (thrower)
             this.state.players[hit.throwerId] = { ...thrower, dash: hit.throwerDashBefore };
@@ -2072,7 +2551,7 @@ class ServerGameLoop {
         this.battleMusicSyncState = nextState;
         this.battleMusicSyncDirty = true;
     }
-    performRoomReset(triggerPlayerId, mode = 'same-teams') {
+    performRoomReset(triggerPlayerId, mode = 'same-teams', autoStart = true) {
         const previousMatchStatus = this.state.match.status;
         const players = Object.values(this.state.players)
             .filter((player) => player.connected !== false)
@@ -2081,6 +2560,8 @@ class ServerGameLoop {
             spawnSide: player.spawnSide,
             teamSlotIndex: player.teamSlotIndex,
             score: 0,
+            // Each new match rebuilds every fighter with the host-configured starting lives.
+            lives: this.matchSettings.livesPerPlayer,
             connected: true,
             reconnectDeadlineAtMs: null,
             movement: this.spawnMovement(this.slotForPlayer(player))
@@ -2088,23 +2569,30 @@ class ServerGameLoop {
         this.resetSerial += 1;
         this.startVotesByPlayerId.clear();
         this.resetVotesByPlayerId.clear();
+        this.endVotesByPlayerId.clear();
+        this.endVoteInitiatorId = null;
+        this.clearIntermissionVotes();
         // Preserve the running tick so it stays monotonic across the reset (see createFreshRoomState).
         this.state = this.createFreshRoomState(players, this.state.tick);
+        this.ensureHostAssignment();
         this.teamChoicesByPlayerId.clear();
         for (const player of players) {
             this.seedInputTracking(player.id, this.slotForPlayer(player).yawRadians);
         }
-        if (mode === 'same-teams' && this.matchMode === '2v2') {
-            for (const player of players)
-                this.teamChoicesByPlayerId.add(player.id);
-            if (this.canVoteStart(players))
-                this.beginPregameCountdown('reset');
-        }
-        else if (this.matchMode === '1v1' && this.shouldAutoStart(players)) {
-            this.beginPregameCountdown('auto');
+        if (autoStart) {
+            if (mode === 'same-teams' && this.matchMode === '2v2') {
+                for (const player of players)
+                    this.teamChoicesByPlayerId.add(player.id);
+                if (this.canVoteStart(players))
+                    this.beginPregameCountdown('reset');
+            }
+            else if (this.matchMode === '1v1' && this.shouldAutoStart(players)) {
+                this.beginPregameCountdown('auto');
+            }
         }
         this.syncStartVoteState();
         this.syncResetVoteState();
+        this.syncRoomPhase();
         this.syncBattleMusicForMatchTransition(previousMatchStatus, this.now());
         if (this.debug.NET_DEBUG)
             this.logger(`room reset by player=${triggerPlayerId} mode=${mode} players=${players.length} serial=${this.resetSerial}`);
@@ -2134,7 +2622,7 @@ class ServerGameLoop {
             mode,
             votesByPlayerId,
             voteCount: Object.keys(votesByPlayerId).length,
-            requiredVotes: this.connectedCount(),
+            requiredVotes: (0, roomSettings_1.votesRequiredForPass)(this.connectedCount()),
             expiresAtMs,
             resetSerial: this.resetSerial
         });
@@ -2163,7 +2651,7 @@ class ServerGameLoop {
         this.state.startVote = (0, MatchSim_1.createStartVoteState)({
             votesByPlayerId,
             voteCount: Object.keys(votesByPlayerId).length,
-            requiredVotes: this.canVoteStart() ? this.connectedCount() : 0,
+            requiredVotes: this.canVoteStart() ? (0, roomSettings_1.votesRequiredForPass)(this.connectedCount()) : 0,
             expiresAtMs,
             teamChoicesByPlayerId: this.teamChoicesSnapshot(),
             teamChoiceCount: this.teamChoiceCount(),
@@ -2592,12 +3080,14 @@ class ServerGameLoop {
         this.lastCatchAttemptIdByKey.set(`${playerId}:right`, 0);
     }
     createFreshRoomState(players = [], startTick = 0) {
-        // All mats stand again on a fresh state / reset; rebuild both collision sets to include them.
+        // All active mats stand again on a fresh state / reset; rebuild both collision sets from the
+        // current host mat preset so the rebuilt world matches the authoritative mat state.
         this.knockedOverMatIds.clear();
         this.matRestoreHoldByPlayerId.clear();
         this.matPostResetKnockImmunityById.clear();
-        this.playerCollisionBoxes = (0, MapGeometry_1.createPlayerCollisionBoxes)();
-        this.ballCollisionBoxes = (0, MapGeometry_1.createBallCollisionBoxes)();
+        this.roundRebuildPending = false;
+        this.activeMatSpecs = (0, MapGeometry_1.matSpecsForPreset)(this.matchSettings.matPreset);
+        this.rebuildCollisionBoxes();
         // Combat history is timeline-specific: a reset is a discontinuity, so drop ball history, any
         // open catch attempts, and undelivered throw events so lag-comp never rewinds across the reset.
         this.ballHistoryById.clear();
@@ -2605,7 +3095,21 @@ class ServerGameLoop {
         this.catchTraceEvalSeen.clear();
         this.recentHitByBallId.clear();
         this.pendingThrowEvents = [];
-        const room = (0, MatchSim_1.createRoomState)({
+        // Fresh room state always returns to warmup. Joins / explicit start votes / auto-start checks
+        // drive the next countdown transition so resets and post-game roster changes land in a clean
+        // pre-game waiting state instead of silently re-entering the round. Legacy match fields are
+        // derived from the resolved host settings; the ball count comes straight from the settings.
+        const match = (0, RuleSim_1.createMatchState)(this.roomId, [...this.teamIds], {
+            mode: this.matchMode,
+            scoreLimit: this.matchSettings.scoreLimit,
+            playersPerTeam: this.playersPerTeam,
+            maxPlayers: this.maxPlayers,
+            roundCount: this.matchSettings.roundCount,
+            currentRound: 1,
+            status: 'warmup',
+            countdownSeconds: 0
+        });
+        return (0, MatchSim_1.createRoomState)({
             id: this.roomId,
             // The snapshot tick MUST stay monotonic across a room reset. The client gates reconciliation
             // on `snapshot.tick > lastReconciledTick`; if the tick fell back to 0 here, every post-reset
@@ -2613,34 +3117,18 @@ class ServerGameLoop {
             // state). Carry the running tick forward; resetSerial is what signals a reset to the client.
             tick: startTick,
             players,
-            balls: createInitialBalls(this.initialBallCount()),
+            balls: createInitialBalls(this.matchSettings.dodgeballCount),
+            settings: this.settings,
+            hostPlayerId: this.hostPlayerId,
+            phase: (0, roomSettings_1.roomPhaseFromMatchStatus)('warmup'),
+            mats: (0, MatchSim_1.createMatStates)(this.activeMatSpecs),
+            match,
             startVote: (0, MatchSim_1.createStartVoteState)(),
             resetVote: (0, MatchSim_1.createResetVoteState)({
-                requiredVotes: players.filter((player) => player.connected !== false).length,
+                requiredVotes: (0, roomSettings_1.votesRequiredForPass)(players.filter((player) => player.connected !== false).length),
                 resetSerial: this.resetSerial
             })
         });
-        const match = (0, RuleSim_1.createMatchState)(this.roomId, [...this.teamIds], {
-            mode: this.matchMode,
-            playersPerTeam: this.playersPerTeam,
-            maxPlayers: this.maxPlayers
-        });
-        // Fresh room state always returns to warmup. Joins / explicit start votes / auto-start checks
-        // drive the next countdown transition so resets and post-game roster changes land in a clean
-        // pre-game waiting state instead of silently re-entering the round.
-        return {
-            ...room,
-            match: {
-                ...match,
-                status: 'warmup',
-                countdownSeconds: 0
-            }
-        };
-    }
-    initialBallCount() {
-        return this.matchMode === '2v2'
-            ? constants_1.GAME_CONSTANTS.match.twoVTwoBallCount
-            : constants_1.GAME_CONSTANTS.map.ballCount;
     }
 }
 exports.ServerGameLoop = ServerGameLoop;
@@ -2665,6 +3153,22 @@ function horizontalDistanceSqToSegment(point, a, b) {
     const dx = point.x - closestX;
     const dz = point.z - closestZ;
     return dx * dx + dz * dz;
+}
+/** Pick the room's format from legacy constructor args (settings.format wins, then mode, then size). */
+function resolveConstructorFormat(options) {
+    const requested = options.settings?.format ?? options.mode ?? ((options.playersPerTeam ?? 1) >= 2 ? '2v2' : '1v1');
+    return (0, roomSettings_1.isAllowedFormat)(requested) ? requested : '1v1';
+}
+/**
+ * Live-ball bounce rule sourced from the host setting. One knob (`maxLiveBallBounces`) drives both the
+ * live and deflected death thresholds — the separate side-wall/ceiling "one bounce" mechanic is left
+ * to its dedicated rule (applyWallCeilingBounce) and is intentionally not overridden here.
+ */
+function bounceRuleFromSettings(matchSettings) {
+    return {
+        deadAfterBounces: matchSettings.maxLiveBallBounces,
+        deflectedDeadAfterBounces: matchSettings.maxLiveBallBounces
+    };
 }
 function buildPlayerSlots(teamIds, playersPerTeam) {
     const slots = [];
@@ -2697,7 +3201,7 @@ function buildPlayerSlots(teamIds, playersPerTeam) {
  * bounce: the floor (−Y) must NOT keep the ball alive, and the back walls (±Z) and static objects
  * (bleachers/mats, handled in resolveBallStaticBoxes) are unchanged. Dead/loose balls just reflect.
  */
-function resolveBallBounds(ball) {
+function resolveBallBounds(ball, bounceRule) {
     const r = constants_1.GAME_CONSTANTS.ball.radius;
     const e = constants_1.GAME_CONSTANTS.ball.bounceRestitution;
     const minX = -constants_1.GAME_CONSTANTS.map.halfWidth + r;
@@ -2747,7 +3251,7 @@ function resolveBallBounds(ball) {
     // A floor / back-wall contact always wins (kills now). Otherwise it was a side-wall/ceiling-only
     // contact: let the ball survive its first such bounce, die on the second.
     if (hitKillNow)
-        return (0, BallSim_1.applyBallBounce)(resolved);
+        return (0, BallSim_1.applyBallBounce)(resolved, bounceRule);
     return applyWallCeilingBounce(resolved);
 }
 /**
@@ -2766,7 +3270,7 @@ function applyWallCeilingBounce(ball) {
     }
     return { ...ball, bounceCount };
 }
-function resolveBallStaticBoxes(ball, boxes, logger) {
+function resolveBallStaticBoxes(ball, boxes, logger, bounceRule) {
     const r = constants_1.GAME_CONSTANTS.ball.radius;
     const e = constants_1.GAME_CONSTANTS.ball.bounceRestitution;
     const position = { ...ball.position };
@@ -2811,7 +3315,7 @@ function resolveBallStaticBoxes(ball, boxes, logger) {
     const resolvedBall = { ...ball, position, velocity };
     const resolved = isSideWallLikeStaticBounce(hitBox, hitAxis)
         ? applyWallCeilingBounce(resolvedBall)
-        : (0, BallSim_1.applyBallBounce)(resolvedBall);
+        : (0, BallSim_1.applyBallBounce)(resolvedBall, bounceRule);
     if (hitBox?.kind === 'bleacher') {
         logger?.(`bleacher collision ball=${ball.id} box=${hitBox.id ?? 'unknown'}` +
             ` axis=${hitAxis ?? 'unknown'}` +
@@ -2832,28 +3336,6 @@ const SIDE_BLEACHER_COURT_FACE_X = constants_1.GAME_CONSTANTS.map.halfWidth -
 function sideBleacherCourtFaceX(box) {
     const centerX = (box.minX + box.maxX) * 0.5;
     return centerX >= 0 ? SIDE_BLEACHER_COURT_FACE_X : -SIDE_BLEACHER_COURT_FACE_X;
-}
-/**
- * Recompute winner/status from the current scores (used after a lag-comp catch reverts a hit). A
- * team at/over the score limit wins → 'complete'; if a revert dropped the leader back below the
- * limit, an already-'complete' match returns to 'playing'. Other statuses are untouched.
- */
-function recomputeMatchOutcome(match) {
-    if (match.mode === '2v2')
-        return match;
-    let winnerTeamId = null;
-    for (const teamId of match.teamIds) {
-        if ((match.scoreByTeamId[teamId] ?? 0) >= match.scoreLimit) {
-            winnerTeamId = teamId;
-            break;
-        }
-    }
-    let status = match.status;
-    if (winnerTeamId)
-        status = 'complete';
-    else if (match.status === 'complete')
-        status = 'playing';
-    return { ...match, winnerTeamId, status };
 }
 function canScorePlayerHit(ball) {
     if (ball.phase !== 'live')

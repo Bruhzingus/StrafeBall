@@ -11,7 +11,12 @@ import type {
   ParryEvent,
   PickupRequest,
   ResetRequest,
+  RoomSettingsPatch,
   StartVoteRequest,
+  StartMatchRequest,
+  EndVoteRequest,
+  IntermissionVoteRequest,
+  UpdateRoomSettingsRequest,
   ServerMessage,
   ServerSnapshot,
   SnapshotPayload,
@@ -19,7 +24,7 @@ import type {
   ThrowEvent,
   ThrowRequest
 } from '../../../shared/protocol';
-import type { HandSide, MatchMode, PlayerInput, Vec3 } from '../../../shared/types';
+import type { HandSide, MatchMode, MatchPresetId, PlayerInput, Vec3 } from '../../../shared/types';
 import type { BattleMusicSyncState } from '../../../shared/music/BattleMusic';
 import { PERF_REPORT_INTERVAL_MS } from '../../../shared/netConfig';
 import {
@@ -296,6 +301,48 @@ export class MultiplayerClient {
       hand,
       facing
     } satisfies CatchParryRequest);
+  }
+
+  /**
+   * Host-only: change one or more authoritative room settings (partial patch). The server validates
+   * host identity + values; a rejection arrives as a `request-rejected` message. No-ops when offline.
+   */
+  requestRoomSettings(patch: RoomSettingsPatch): void {
+    this.room?.send('update-room-settings', {
+      type: 'update-room-settings',
+      playerId: this.localPlayerId,
+      settings: patch
+    } satisfies UpdateRoomSettingsRequest);
+  }
+
+  /** Host-only: apply a recommended preset (1v1 / 2v2) to the room's settings in one message. */
+  requestPreset(preset: MatchPresetId): void {
+    this.requestRoomSettings({ preset });
+  }
+
+  /** Host-only: start the configured match from the lobby (begins the pre-round countdown). */
+  requestStartMatch(): void {
+    this.room?.send('start-match', {
+      type: 'start-match',
+      playerId: this.localPlayerId
+    } satisfies StartMatchRequest);
+  }
+
+  /** Cast/open the early-end vote. The host opens it during a live game; everyone else then agrees. */
+  requestEndVote(): void {
+    this.room?.send('end-vote', {
+      type: 'end-vote',
+      playerId: this.localPlayerId
+    } satisfies EndVoteRequest);
+  }
+
+  /** Cast a between-rounds / post-match vote: 'next-round' (intermission) or 'to-lobby'. */
+  requestIntermissionVote(choice: 'next-round' | 'to-lobby'): void {
+    this.room?.send('intermission-vote', {
+      type: 'intermission-vote',
+      playerId: this.localPlayerId,
+      choice
+    } satisfies IntermissionVoteRequest);
   }
 
   /** Drain throw events received since the last call (renderer consumes these for ball prediction). */

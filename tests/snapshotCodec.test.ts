@@ -47,6 +47,9 @@ describe('snapshot codec', () => {
     });
     const room = createRoomState({ id: 'room', tick: 44, players: [player], balls: [ball] });
     room.resetVote = { ...room.resetVote, resetSerial: 3 };
+    room.hostPlayerId = 'p1';
+    room.phase = 'live';
+    room.settings = { ...room.settings, livesPerPlayer: 5, dodgeballCount: 9, matPreset: 2 };
 
     const snapshot: ServerSnapshot = {
       type: 'snapshot',
@@ -81,6 +84,13 @@ describe('snapshot codec', () => {
     expect(decodedBall.throwId).toBe(77);
     expect(decodedBall.lastTouchedByPlayerId).toBe('p1');
     expect(hydrated.room.resetVote.resetSerial).toBe(3);
+
+    // Host / lifecycle / settings ride the room spread untouched through the compact codec.
+    expect(hydrated.room.hostPlayerId).toBe('p1');
+    expect(hydrated.room.phase).toBe('live');
+    expect(hydrated.room.settings.livesPerPlayer).toBe(5);
+    expect(hydrated.room.settings.dodgeballCount).toBe(9);
+    expect(hydrated.room.settings.matPreset).toBe(2);
   });
 
   it('int16-quantizes positions/velocities within sub-centimeter precision', () => {

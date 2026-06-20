@@ -1990,8 +1990,136 @@ html, body {
 .multiplayer-modal:not(.multiplayer-modal--connected) .multiplayer-actions--leave,
 .multiplayer-modal:not(.multiplayer-modal--connected) .multiplayer-line--ping,
 .multiplayer-modal:not(.multiplayer-modal--connected) .multiplayer-room-notice,
+.multiplayer-modal:not(.multiplayer-modal--connected) .multiplayer-controls,
 .multiplayer-modal:not(.multiplayer-modal--connected) .multiplayer-room-summary {
   display: none;
+}
+
+/* --- Unified room control surface (settings + host/guest + early-end vote) --- */
+.multiplayer-controls__panel {
+  margin-top: 10px;
+  padding: 12px 14px;
+  border-radius: 12px;
+  background: rgba(15, 25, 45, 0.05);
+  border: 1px solid rgba(33, 49, 79, 0.12);
+}
+.multiplayer-controls__head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  margin-bottom: 4px;
+}
+.multiplayer-controls__title {
+  font-weight: 700;
+  font-size: 13px;
+  color: #1a2740;
+}
+.multiplayer-host-badge,
+.multiplayer-guest-badge {
+  font-size: 11px;
+  font-weight: 600;
+  padding: 2px 8px;
+  border-radius: 999px;
+}
+.multiplayer-host-badge {
+  color: #0b5d2a;
+  background: rgba(34, 197, 94, 0.16);
+}
+.multiplayer-guest-badge {
+  color: #5a4a12;
+  background: rgba(234, 179, 8, 0.16);
+}
+.multiplayer-controls__meta {
+  font-size: 11px;
+  color: #44566f;
+  margin-bottom: 8px;
+}
+.multiplayer-controls__grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 4px 16px;
+}
+.multiplayer-controls__row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  font-size: 12px;
+  min-height: 26px;
+}
+.multiplayer-controls__label {
+  color: #44566f;
+}
+.multiplayer-controls__field {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+.multiplayer-controls__val {
+  font-weight: 700;
+  color: #1a2740;
+  min-width: 28px;
+  text-align: center;
+}
+.multiplayer-step {
+  width: 22px;
+  height: 22px;
+  line-height: 1;
+  border-radius: 6px;
+  border: 1px solid rgba(33, 49, 79, 0.2);
+  background: #fff;
+  color: #1a2740;
+  font-weight: 700;
+  cursor: pointer;
+}
+.multiplayer-step:disabled {
+  opacity: 0.35;
+  cursor: default;
+}
+.multiplayer-controls__actions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+  margin-top: 10px;
+}
+.multiplayer-control:not(.multiplayer-step) {
+  padding: 7px 12px;
+  border-radius: 8px;
+  border: 1px solid rgba(33, 49, 79, 0.2);
+  background: #fff;
+  color: #1a2740;
+  font-weight: 600;
+  font-size: 12px;
+  cursor: pointer;
+}
+.multiplayer-control--primary {
+  background: #2563eb;
+  border-color: #2563eb;
+  color: #fff;
+}
+.multiplayer-control--danger {
+  background: #e11d48;
+  border-color: #e11d48;
+  color: #fff;
+}
+.multiplayer-controls__vote {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 12px;
+  font-weight: 600;
+  color: #1a2740;
+}
+.multiplayer-controls__hint {
+  font-size: 11px;
+  color: #6a7890;
+  margin-top: 6px;
+}
+.multiplayer-modal--compact .multiplayer-controls,
+.multiplayer-modal--live .multiplayer-controls__grid {
+  /* In the compact/live HUD the full grid is noise; keep just the actions visible. */
 }
 
 /* Connected: the lobby setup + launch controls are done with; show the room status instead. */
@@ -2125,17 +2253,16 @@ html, body {
 }
 
 /* === Create / Join launch: two toggle buttons that expand a drawer === */
+/* Launch block: Create button + an always-visible "join with a code" row (no toggle drawers). */
 .multiplayer-launch {
-  margin-top: 4px;
-}
-
-.multiplayer-launch-row {
-  display: grid;
-  grid-template-columns: 1fr 1fr;
+  margin-top: 6px;
+  display: flex;
+  flex-direction: column;
   gap: 10px;
 }
 
-.multiplayer-toggle {
+.multiplayer-create,
+.multiplayer-join {
   border: 3px solid var(--ink);
   border-radius: 12px;
   padding: 11px 12px;
@@ -2143,102 +2270,87 @@ html, body {
   font-weight: 900;
   font-size: 15px;
   text-transform: uppercase;
-  letter-spacing: 0.04em;
+  letter-spacing: 0.03em;
   cursor: pointer;
   box-shadow: 2px 2px 0 var(--ink);
   transition: transform 0.05s ease, box-shadow 0.05s ease;
 }
 
-.multiplayer-toggle--create {
-  background: linear-gradient(180deg, #79f5ff, var(--electric-cyan));
-}
-
-.multiplayer-toggle--join {
-  background: linear-gradient(180deg, #ffe481, var(--school-gold));
-}
-
-.multiplayer-toggle:hover:not(:disabled) {
-  transform: translate(-1px, -1px);
-  box-shadow: 3px 3px 0 var(--ink);
-}
-
-.multiplayer-toggle--active {
-  transform: translate(1px, 1px);
-  box-shadow: 0 0 0 var(--ink);
-}
-
-.multiplayer-toggle:disabled {
-  cursor: default;
-  opacity: 0.5;
-  box-shadow: 1px 1px 0 var(--ink);
-}
-
-/* Drawer is collapsed by default; the --open modifier reveals it under the toggle row. */
-.multiplayer-drawer {
-  display: none;
-  margin-top: 10px;
-  padding: 12px;
-  border: 3px solid var(--ink);
-  border-radius: 13px;
-  background: rgba(16, 27, 52, 0.06);
-}
-
-.multiplayer-drawer--open {
-  display: block;
-}
-
-.multiplayer-drawer-hint {
-  margin-bottom: 9px;
-  color: rgba(21, 33, 59, 0.78);
-  font-size: 12px;
-  font-weight: 800;
-  line-height: 1.35;
-}
-
-.multiplayer-drawer .multiplayer-field {
-  margin-bottom: 9px;
-}
-
-.multiplayer-drawer .multiplayer-create,
-.multiplayer-drawer .multiplayer-join {
+.multiplayer-create {
   width: 100%;
-  border: 3px solid var(--ink);
-  border-radius: 11px;
-  padding: 9px 10px;
-  color: var(--ink);
-  font-weight: 900;
-  text-transform: uppercase;
-  letter-spacing: 0.02em;
-  cursor: pointer;
-  box-shadow: 2px 2px 0 var(--ink);
-  transition: transform 0.05s ease, box-shadow 0.05s ease;
 }
 
-.multiplayer-drawer .multiplayer-create {
-  background: linear-gradient(180deg, #79f5ff, var(--electric-cyan));
-}
-
-.multiplayer-drawer .multiplayer-join {
+.multiplayer-join {
   background: linear-gradient(180deg, #ffe481, var(--school-gold));
+  white-space: nowrap;
 }
 
-.multiplayer-drawer .multiplayer-create:hover:not(:disabled),
-.multiplayer-drawer .multiplayer-join:hover:not(:disabled) {
+.multiplayer-create:hover:not(:disabled),
+.multiplayer-join:hover:not(:disabled) {
   transform: translate(-1px, -1px);
   box-shadow: 3px 3px 0 var(--ink);
 }
 
-.multiplayer-drawer .multiplayer-create:active:not(:disabled),
-.multiplayer-drawer .multiplayer-join:active:not(:disabled) {
+.multiplayer-create:active:not(:disabled),
+.multiplayer-join:active:not(:disabled) {
   transform: translate(2px, 2px);
   box-shadow: 0 0 0 var(--ink);
 }
 
-.multiplayer-drawer .multiplayer-create:disabled,
-.multiplayer-drawer .multiplayer-join:disabled {
+.multiplayer-create:disabled,
+.multiplayer-join:disabled {
   cursor: default;
   opacity: 0.5;
   box-shadow: 1px 1px 0 var(--ink);
+}
+
+/* "or join with a code" divider between Create and the join row. */
+.multiplayer-launch-or {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  color: rgba(21, 33, 59, 0.6);
+  font-size: 11px;
+  font-weight: 800;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+}
+
+.multiplayer-launch-or::before,
+.multiplayer-launch-or::after {
+  content: '';
+  flex: 1;
+  height: 2px;
+  background: rgba(21, 33, 59, 0.18);
+}
+
+/* Code field + Join button side by side, always visible (no need to open a drawer first). */
+.multiplayer-join-row {
+  display: flex;
+  gap: 10px;
+}
+
+.multiplayer-join-code {
+  flex: 1;
+  min-width: 0;
+  border: 3px solid var(--ink);
+  border-radius: 12px;
+  padding: 11px 12px;
+  font-weight: 800;
+  font-size: 14px;
+  color: var(--ink);
+  background: #fff;
+}
+
+.multiplayer-join-code:disabled {
+  opacity: 0.5;
+}
+
+.multiplayer-drawer-hint {
+  color: rgba(21, 33, 59, 0.7);
+  font-size: 12px;
+  font-weight: 700;
+  line-height: 1.35;
 }
 
 .multiplayer-pregame {
@@ -2274,26 +2386,57 @@ html, body {
 }
 
 .multiplayer-report-card {
-  padding: 12px 12px 11px;
+  --report-result-wash: rgba(255, 246, 203, 0.52);
+  position: relative;
+  overflow: hidden;
+  padding: 16px 16px 14px 24px;
   border: 3px solid var(--ink);
-  border-radius: 16px;
+  border-radius: 10px;
   background:
-    linear-gradient(180deg, rgba(255, 255, 255, 0.74), rgba(255, 246, 203, 0.94)),
-    var(--paper);
+    linear-gradient(90deg, transparent 0 30px, rgba(255, 59, 48, 0.22) 30px 32px, transparent 32px),
+    repeating-linear-gradient(0deg, rgba(47, 123, 255, 0.13) 0 1px, transparent 1px 31px),
+    repeating-linear-gradient(112deg, rgba(21, 33, 59, 0.04) 0 1px, transparent 1px 13px),
+    linear-gradient(180deg, rgba(255, 255, 255, 0.88), var(--report-result-wash)),
+    #fff8df;
   color: var(--ink);
   box-shadow: 4px 4px 0 rgba(16, 27, 52, 0.28);
 }
 
-.multiplayer-report-card--win {
+.multiplayer-report-card::before {
+  content: "";
+  position: absolute;
+  top: 20px;
+  bottom: 20px;
+  left: 10px;
+  width: 8px;
+  border-radius: 2px;
   background:
-    linear-gradient(180deg, rgba(255, 255, 255, 0.78), rgba(215, 255, 229, 0.96)),
-    var(--paper);
+    repeating-linear-gradient(0deg, rgba(21, 33, 59, 0.16) 0 10px, transparent 10px 54px);
+  opacity: 0.7;
+  pointer-events: none;
+}
+
+.multiplayer-report-card::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  background:
+    repeating-linear-gradient(86deg, rgba(255, 255, 255, 0.18) 0 2px, transparent 2px 19px),
+    repeating-linear-gradient(14deg, rgba(80, 61, 27, 0.035) 0 1px, transparent 1px 11px);
+  pointer-events: none;
+}
+
+.multiplayer-report-card > * {
+  position: relative;
+  z-index: 1;
+}
+
+.multiplayer-report-card--win {
+  --report-result-wash: rgba(215, 255, 229, 0.7);
 }
 
 .multiplayer-report-card--loss {
-  background:
-    linear-gradient(180deg, rgba(255, 255, 255, 0.76), rgba(255, 226, 226, 0.96)),
-    var(--paper);
+  --report-result-wash: rgba(255, 226, 226, 0.78);
 }
 
 .multiplayer-report-card__top {
@@ -2314,9 +2457,19 @@ html, body {
 .multiplayer-report-card__title {
   margin-top: 4px;
   font-size: 28px;
+  font-family: "Arial Black", "Trebuchet MS", "Segoe UI", Verdana, sans-serif;
   font-weight: 900;
   line-height: 0.95;
-  letter-spacing: -0.04em;
+  letter-spacing: 0;
+  text-transform: uppercase;
+}
+
+.multiplayer-report-card--win .multiplayer-report-card__title {
+  color: #177b3f;
+}
+
+.multiplayer-report-card--loss .multiplayer-report-card__title {
+  color: #c32828;
 }
 
 .multiplayer-report-card__subtitle {
@@ -2328,53 +2481,58 @@ html, body {
   line-height: 1.35;
 }
 
-.multiplayer-report-card__grade {
-  min-width: 78px;
-  padding: 8px 10px;
-  border: 3px solid var(--ink);
-  border-radius: 14px;
-  background: #fffef6;
-  color: #177b3f;
-  font-size: 34px;
-  font-weight: 900;
-  text-align: center;
-  line-height: 1;
-  box-shadow: 3px 3px 0 rgba(16, 27, 52, 0.22);
-}
-
-.multiplayer-report-card--loss .multiplayer-report-card__grade {
-  color: #c32828;
-  background: #fff6f6;
-}
-
 .multiplayer-report-card__summary {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 6px;
-  margin-top: 10px;
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 7px;
+  margin-top: 12px;
 }
 
 .multiplayer-report-card__summary span,
 .multiplayer-report-card__vote {
-  border-radius: 999px;
-  padding: 5px 9px;
-  background: rgba(16, 27, 52, 0.08);
+  border: 2px solid rgba(21, 33, 59, 0.2);
+  border-radius: 8px;
+  padding: 7px 9px;
+  background: rgba(255, 255, 255, 0.5);
   color: #314361;
-  font-size: 11px;
+  font-size: 12px;
   font-weight: 800;
+}
+
+.multiplayer-report-card__summary em,
+.multiplayer-report-team__totals em,
+.multiplayer-report-player__stats em {
+  display: block;
+  color: #60708a;
+  font-size: 9px;
+  font-style: normal;
+  font-weight: 900;
+  letter-spacing: 0.08em;
+  line-height: 1.15;
+  text-transform: uppercase;
+}
+
+.multiplayer-report-card__summary strong,
+.multiplayer-report-team__totals strong,
+.multiplayer-report-player__stats strong {
+  display: block;
+  margin-top: 2px;
+  color: var(--ink);
+  font-weight: 900;
+  line-height: 1;
 }
 
 .multiplayer-report-card__teams {
   display: grid;
-  gap: 8px;
-  margin-top: 10px;
+  gap: 10px;
+  margin-top: 12px;
 }
 
 .multiplayer-report-team {
-  border: 2px solid rgba(16, 27, 52, 0.22);
-  border-radius: 14px;
-  padding: 9px 10px;
-  background: rgba(255, 255, 255, 0.68);
+  border: 2px solid rgba(16, 27, 52, 0.28);
+  border-radius: 8px;
+  padding: 11px 12px;
+  background: rgba(255, 255, 255, 0.54);
 }
 
 .multiplayer-report-team--winner {
@@ -2398,7 +2556,7 @@ html, body {
 }
 
 .multiplayer-report-team__header strong {
-  font-size: 14px;
+  font-size: 15px;
   font-weight: 900;
   letter-spacing: 0.04em;
   text-transform: uppercase;
@@ -2414,7 +2572,7 @@ html, body {
 
 .multiplayer-report-team__score {
   min-width: 36px;
-  border-radius: 10px;
+  border-radius: 8px;
   padding: 6px 8px;
   background: #101b34;
   color: var(--paper);
@@ -2427,22 +2585,31 @@ html, body {
 .multiplayer-report-team__totals,
 .multiplayer-report-player__stats,
 .multiplayer-report-card__actions {
-  display: flex;
-  flex-wrap: wrap;
+  display: grid;
   gap: 6px;
 }
 
 .multiplayer-report-team__totals {
+  grid-template-columns: repeat(3, minmax(0, 1fr));
   margin-top: 8px;
+}
+
+.multiplayer-report-player__stats {
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+}
+
+.multiplayer-report-card__actions {
+  grid-template-columns: repeat(3, minmax(0, 1fr));
 }
 
 .multiplayer-report-team__totals span,
 .multiplayer-report-player__stats span {
-  border-radius: 999px;
-  padding: 4px 8px;
-  background: rgba(16, 27, 52, 0.08);
+  border: 1px solid rgba(21, 33, 59, 0.14);
+  border-radius: 8px;
+  padding: 6px 7px;
+  background: rgba(255, 255, 255, 0.5);
   color: #2c3f5e;
-  font-size: 10px;
+  font-size: 12px;
   font-weight: 900;
   text-transform: uppercase;
 }
@@ -2454,29 +2621,92 @@ html, body {
 }
 
 .multiplayer-report-player {
-  border-radius: 12px;
-  padding: 8px;
-  background: rgba(255, 255, 255, 0.72);
+  border-radius: 8px;
+  padding: 9px 10px;
+  background: rgba(255, 255, 255, 0.6);
   box-shadow: inset 0 0 0 1px rgba(16, 27, 52, 0.08);
 }
 
 .multiplayer-report-player__main {
   display: flex;
-  align-items: baseline;
+  align-items: flex-start;
   justify-content: space-between;
   gap: 8px;
 }
 
 .multiplayer-report-player__main strong {
+  display: block;
   font-size: 13px;
   font-weight: 900;
 }
 
-.multiplayer-report-player__main span {
+.multiplayer-report-player__main > div:first-child span {
+  display: block;
+  margin-top: 2px;
   color: #526684;
   font-size: 10px;
   font-weight: 900;
   text-transform: uppercase;
+}
+
+.multiplayer-report-player__grade {
+  flex: 0 0 auto;
+  min-width: 54px;
+  padding: 5px 7px;
+  border: 2px solid var(--ink);
+  border-radius: 8px;
+  background: #fffef6;
+  color: var(--ink);
+  text-align: center;
+  box-shadow: 2px 2px 0 rgba(16, 27, 52, 0.2);
+}
+
+.multiplayer-report-player__grade em,
+.multiplayer-report-player__grade span {
+  display: block;
+  font-style: normal;
+  font-weight: 900;
+  line-height: 1;
+  text-transform: uppercase;
+}
+
+.multiplayer-report-player__grade em {
+  color: #60708a;
+  font-size: 8px;
+  letter-spacing: 0.08em;
+}
+
+.multiplayer-report-player__grade strong {
+  margin-top: 2px;
+  font-family: "Arial Black", "Trebuchet MS", "Segoe UI", Verdana, sans-serif;
+  font-size: 20px;
+  line-height: 0.95;
+}
+
+.multiplayer-report-player__grade span {
+  margin-top: 2px;
+  color: #526684;
+  font-size: 9px;
+}
+
+.multiplayer-report-player__grade--excellent {
+  color: #177b3f;
+  background: #f2fff5;
+}
+
+.multiplayer-report-player__grade--good {
+  color: #1b63b7;
+  background: #f2f8ff;
+}
+
+.multiplayer-report-player__grade--fair {
+  color: #9a6a00;
+  background: #fff8df;
+}
+
+.multiplayer-report-player__grade--poor {
+  color: #c32828;
+  background: #fff4f4;
 }
 
 .multiplayer-report-player__stats {
@@ -2771,6 +3001,240 @@ html, body {
   z-index: 1;
 }
 
+.multiplayer-modal--postmatch {
+  box-sizing: border-box;
+  display: grid;
+  place-items: stretch;
+  padding: 18px;
+  background:
+    repeating-linear-gradient(0deg, rgba(255, 255, 255, 0.03) 0 1px, transparent 1px 8px),
+    rgba(8, 13, 26, 0.78);
+}
+
+.multiplayer-modal--postmatch .multiplayer-modal__shade {
+  display: block;
+  background:
+    linear-gradient(180deg, rgba(12, 19, 38, 0.48), rgba(12, 19, 38, 0.86)),
+    rgba(8, 13, 26, 0.72);
+}
+
+.multiplayer-modal--postmatch .multiplayer-panel--lobby {
+  position: relative;
+  inset: auto;
+  display: grid;
+  width: 100%;
+  height: 100%;
+  min-height: 0;
+  max-height: none;
+  padding: 0;
+  overflow: visible;
+  transform: none;
+  pointer-events: auto;
+  background: transparent;
+  border: 0;
+  border-radius: 0;
+  box-shadow: none;
+}
+
+.multiplayer-modal--postmatch .multiplayer-kicker,
+.multiplayer-modal--postmatch .multiplayer-title,
+.multiplayer-modal--postmatch .multiplayer-close,
+.multiplayer-modal--postmatch .multiplayer-room-card,
+.multiplayer-modal--postmatch .multiplayer-actions--leave,
+.multiplayer-modal--postmatch .multiplayer-line--ping,
+.multiplayer-modal--postmatch .multiplayer-room-summary,
+.multiplayer-modal--postmatch .multiplayer-pregame,
+.multiplayer-modal--postmatch .multiplayer-reset,
+.multiplayer-modal--postmatch .multiplayer-room-notice,
+.multiplayer-modal--postmatch .multiplayer-error:empty {
+  display: none;
+}
+
+.multiplayer-modal--postmatch .multiplayer-postmatch {
+  display: grid;
+  height: 100%;
+  min-height: 0;
+  margin: 0;
+}
+
+.multiplayer-modal--postmatch .multiplayer-report-card {
+  display: grid;
+  grid-template-rows: auto auto minmax(0, 1fr) auto auto;
+  gap: 14px;
+  box-sizing: border-box;
+  min-height: 0;
+  height: 100%;
+  padding: 34px 38px 28px 52px;
+  overflow: auto;
+  border-width: 4px;
+  box-shadow: 9px 9px 0 rgba(0, 0, 0, 0.32);
+}
+
+.multiplayer-modal--postmatch .multiplayer-report-card::before {
+  top: 30px;
+  bottom: 30px;
+  left: 20px;
+}
+
+.multiplayer-modal--postmatch .multiplayer-report-card__top {
+  align-items: center;
+  padding-bottom: 12px;
+  border-bottom: 3px double rgba(21, 33, 59, 0.35);
+}
+
+.multiplayer-modal--postmatch .multiplayer-report-card__eyebrow {
+  font-size: 14px;
+}
+
+.multiplayer-modal--postmatch .multiplayer-report-card__title {
+  margin-top: 6px;
+  font-size: 64px;
+}
+
+.multiplayer-modal--postmatch .multiplayer-report-card__subtitle {
+  max-width: 620px;
+  font-size: 20px;
+}
+
+.multiplayer-modal--postmatch .multiplayer-report-card__summary {
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 12px;
+  margin-top: 0;
+}
+
+.multiplayer-modal--postmatch .multiplayer-report-card__summary span {
+  padding: 12px 14px;
+  font-size: 18px;
+}
+
+.multiplayer-modal--postmatch .multiplayer-report-card__summary em,
+.multiplayer-modal--postmatch .multiplayer-report-team__totals em,
+.multiplayer-modal--postmatch .multiplayer-report-player__stats em {
+  font-size: 11px;
+}
+
+.multiplayer-modal--postmatch .multiplayer-report-card__summary strong {
+  margin-top: 4px;
+  font-size: 24px;
+}
+
+.multiplayer-modal--postmatch .multiplayer-report-card__teams {
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  align-items: stretch;
+  gap: 16px;
+  min-height: 0;
+  margin-top: 0;
+}
+
+.multiplayer-modal--postmatch .multiplayer-report-team {
+  display: grid;
+  grid-template-rows: auto auto minmax(0, 1fr);
+  padding: 16px;
+  overflow: hidden;
+}
+
+.multiplayer-modal--postmatch .multiplayer-report-team__header strong {
+  font-size: 24px;
+}
+
+.multiplayer-modal--postmatch .multiplayer-report-team__header span {
+  font-size: 12px;
+}
+
+.multiplayer-modal--postmatch .multiplayer-report-team__score {
+  min-width: 62px;
+  padding: 10px 12px;
+  font-size: 42px;
+}
+
+.multiplayer-modal--postmatch .multiplayer-report-team__totals {
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 8px;
+  margin-top: 12px;
+}
+
+.multiplayer-modal--postmatch .multiplayer-report-team__totals span {
+  padding: 9px 10px;
+}
+
+.multiplayer-modal--postmatch .multiplayer-report-team__totals strong {
+  font-size: 24px;
+}
+
+.multiplayer-modal--postmatch .multiplayer-report-team__players {
+  align-content: start;
+  gap: 10px;
+  min-height: 0;
+  margin-top: 12px;
+  overflow: auto;
+}
+
+.multiplayer-modal--postmatch .multiplayer-report-player {
+  padding: 12px;
+}
+
+.multiplayer-modal--postmatch .multiplayer-report-player__main strong {
+  font-size: 20px;
+}
+
+.multiplayer-modal--postmatch .multiplayer-report-player__main > div:first-child span {
+  font-size: 12px;
+}
+
+.multiplayer-modal--postmatch .multiplayer-report-player__grade {
+  min-width: 76px;
+  padding: 8px 10px;
+  border-width: 3px;
+}
+
+.multiplayer-modal--postmatch .multiplayer-report-player__grade em {
+  font-size: 9px;
+}
+
+.multiplayer-modal--postmatch .multiplayer-report-player__grade strong {
+  font-size: 30px;
+}
+
+.multiplayer-modal--postmatch .multiplayer-report-player__grade span {
+  font-size: 10px;
+}
+
+.multiplayer-modal--postmatch .multiplayer-report-player__stats {
+  gap: 8px;
+  margin-top: 10px;
+}
+
+.multiplayer-modal--postmatch .multiplayer-report-player__stats span {
+  padding: 8px 9px;
+}
+
+.multiplayer-modal--postmatch .multiplayer-report-player__stats strong {
+  font-size: 20px;
+}
+
+.multiplayer-modal--postmatch .multiplayer-report-card__actions {
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 12px;
+  margin-top: 0;
+}
+
+.multiplayer-modal--postmatch .multiplayer-report-card[data-mode="1v1"] .multiplayer-report-card__actions {
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+}
+
+.multiplayer-modal--postmatch .multiplayer-postmatch-action {
+  width: 100%;
+  min-height: 50px;
+  padding: 12px 14px;
+  font-size: 14px;
+}
+
+.multiplayer-modal--postmatch .multiplayer-report-card__vote {
+  margin-top: 0;
+  padding: 10px 14px;
+  font-size: 15px;
+}
+
 .multiplayer-close {
   position: absolute;
   top: 10px;
@@ -2795,6 +3259,16 @@ html, body {
   gap: 12px;
   margin: 12px 0;
   align-items: stretch;
+}
+
+/* Full-width header clarifying the format tabs choose the format only when CREATING a room. */
+.multiplayer-setup-label {
+  grid-column: 1 / -1;
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: #6a7890;
 }
 
 .multiplayer-mode-tabs {
@@ -3097,6 +3571,114 @@ html, body {
   }
 }
 
+@media (max-width: 760px) {
+  .multiplayer-modal--postmatch {
+    padding: 10px;
+  }
+
+  .multiplayer-modal--postmatch .multiplayer-panel--lobby {
+    top: auto;
+    left: auto;
+    width: 100%;
+  }
+
+  .multiplayer-modal--postmatch .multiplayer-report-card {
+    gap: 11px;
+    padding: 24px 16px 18px 32px;
+  }
+
+  .multiplayer-modal--postmatch .multiplayer-report-card::before {
+    top: 22px;
+    bottom: 22px;
+    left: 12px;
+  }
+
+  .multiplayer-modal--postmatch .multiplayer-report-card__top {
+    align-items: stretch;
+    flex-direction: column;
+    gap: 10px;
+  }
+
+  .multiplayer-modal--postmatch .multiplayer-report-card__eyebrow {
+    font-size: 11px;
+  }
+
+  .multiplayer-modal--postmatch .multiplayer-report-card__title {
+    font-size: 38px;
+  }
+
+  .multiplayer-modal--postmatch .multiplayer-report-card__subtitle {
+    max-width: none;
+    font-size: 15px;
+  }
+
+  .multiplayer-modal--postmatch .multiplayer-report-card__summary,
+  .multiplayer-modal--postmatch .multiplayer-report-card__teams,
+  .multiplayer-modal--postmatch .multiplayer-report-card__actions,
+  .multiplayer-modal--postmatch .multiplayer-report-card[data-mode="1v1"] .multiplayer-report-card__actions {
+    grid-template-columns: 1fr;
+  }
+
+  .multiplayer-modal--postmatch .multiplayer-report-card__summary span {
+    padding: 10px 11px;
+    font-size: 14px;
+  }
+
+  .multiplayer-modal--postmatch .multiplayer-report-card__summary strong {
+    font-size: 18px;
+  }
+
+  .multiplayer-modal--postmatch .multiplayer-report-team {
+    padding: 12px;
+    overflow: visible;
+  }
+
+  .multiplayer-modal--postmatch .multiplayer-report-team__header {
+    align-items: flex-start;
+  }
+
+  .multiplayer-modal--postmatch .multiplayer-report-team__header strong {
+    font-size: 19px;
+  }
+
+  .multiplayer-modal--postmatch .multiplayer-report-team__score {
+    min-width: 48px;
+    font-size: 32px;
+  }
+
+  .multiplayer-modal--postmatch .multiplayer-report-team__totals,
+  .multiplayer-modal--postmatch .multiplayer-report-player__stats {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .multiplayer-modal--postmatch .multiplayer-report-team__totals strong,
+  .multiplayer-modal--postmatch .multiplayer-report-player__stats strong {
+    font-size: 18px;
+  }
+
+  .multiplayer-modal--postmatch .multiplayer-report-player__main {
+    align-items: flex-start;
+    flex-direction: column;
+    gap: 4px;
+  }
+
+  .multiplayer-modal--postmatch .multiplayer-report-player__main strong {
+    font-size: 17px;
+  }
+
+  .multiplayer-modal--postmatch .multiplayer-report-player__grade {
+    min-width: 64px;
+  }
+
+  .multiplayer-modal--postmatch .multiplayer-report-player__stats span {
+    padding: 7px 8px;
+  }
+
+  .multiplayer-modal--postmatch .multiplayer-postmatch-action {
+    min-height: 46px;
+  }
+}
+
 @supports not (-webkit-text-stroke: 1px #000) {
   .heart,
   #lock-overlay,
@@ -3216,10 +3798,37 @@ html, body {
   text-shadow: 2px 2px 0 var(--ink);
 }
 
-/* When the whiteboard scoreboard owns the top-center, push the legacy lives/vote strip below it
-   so they don't overlap. (Matches the scoreboard's banner height + top offset.) */
-.hud-top-center--below-scoreboard { top: 150px; }
-@media (max-width: 760px) { .hud-top-center--below-scoreboard { top: 124px; } }
+/* When the whiteboard scoreboard owns the top-center, the legacy status strip should live BELOW
+   it without bringing its own old scoreboard card chrome. Keep the whiteboard fixed in place and
+   turn this container into a transparent anchor that only positions the strip/messages. */
+.hud-top-center--below-scoreboard {
+  top: 184px;
+  min-width: 0;
+  padding: 0;
+  background: transparent;
+  border: 0;
+  border-radius: 0;
+  box-shadow: none;
+}
+
+.hud-top-center--below-scoreboard .team-match-strip {
+  width: min(760px, calc(100vw - 34px));
+}
+
+.hud-top-center--below-scoreboard .scoreboard-msg {
+  margin-top: 8px;
+  text-shadow: 0 2px 4px rgba(0, 0, 0, 0.38);
+}
+
+@media (max-width: 760px) {
+  .hud-top-center--below-scoreboard {
+    top: 142px;
+  }
+
+  .hud-top-center--below-scoreboard .team-match-strip {
+    width: calc(100vw - 20px);
+  }
+}
 
 
 /* ============================================================================================

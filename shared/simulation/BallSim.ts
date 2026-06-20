@@ -194,15 +194,29 @@ export function deflectBall(ball: BallState, defenderPlayerId: string, forward: 
   };
 }
 
-export function applyBallBounce(ball: BallState, constants: GameConstants = GAME_CONSTANTS): BallState {
+/**
+ * Per-room override for how many bounces a live/deflected ball survives. Sourced from the host
+ * setting `maxLiveBallBounces` (see roomSettings.ts) so the bounce rule is settings-driven instead of
+ * hardcoded to the GAME_CONSTANTS value. When omitted, the constants are used (offline / legacy).
+ */
+export interface BounceRule {
+  deadAfterBounces: number;
+  deflectedDeadAfterBounces: number;
+}
+
+export function applyBallBounce(
+  ball: BallState,
+  bounceRule?: BounceRule,
+  constants: GameConstants = GAME_CONSTANTS
+): BallState {
   if (ball.phase !== 'live' && ball.phase !== 'deflected') {
     return { ...ball, bounceCount: ball.bounceCount + 1 };
   }
 
   const bounceCount = ball.bounceCount + 1;
   const deadAfterBounces = ball.phase === 'deflected'
-    ? constants.ball.deflectedDeadAfterBounces
-    : constants.ball.deadAfterBounces;
+    ? bounceRule?.deflectedDeadAfterBounces ?? constants.ball.deflectedDeadAfterBounces
+    : bounceRule?.deadAfterBounces ?? constants.ball.deadAfterBounces;
 
   if (bounceCount >= deadAfterBounces) {
     return {

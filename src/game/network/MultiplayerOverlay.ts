@@ -1,6 +1,7 @@
 import { GAME_CONSTANTS } from '../../../shared/constants';
 import type { LobbyMode } from '../practice/LobbyModePortals';
-import type { MatchMode, PlayerState, RoomState } from '../../../shared/types';
+import type { MatchMode, MatchPresetId, PlayerState, RoomState } from '../../../shared/types';
+import { ALLOWED_MAT_PRESETS, ROOM_SETTINGS_LIMITS, type RoomSettingsPatch, votesRequiredForPass } from '../../../shared/roomSettings';
 import { MultiplayerClient } from './MultiplayerClient';
 
 type PendingAction = (() => Promise<void>) | null;
@@ -19,6 +20,7 @@ export class MultiplayerOverlay {
   private readonly roomValue: HTMLSpanElement;
   private readonly pingValue: HTMLSpanElement;
   private readonly rosterValue: HTMLDivElement;
+  private readonly controlsValue: HTMLDivElement;
   private readonly pregameValue: HTMLDivElement;
   private readonly resetValue: HTMLDivElement;
   private readonly postmatchValue: HTMLDivElement;
@@ -29,7 +31,6 @@ export class MultiplayerOverlay {
   private readonly leaveButton: HTMLButtonElement;
   private readonly copyButton: HTMLButtonElement;
   private readonly closeButton: HTMLButtonElement;
-  private readonly toggleButtons: NodeListOf<HTMLButtonElement>;
   private readonly modeButtons: NodeListOf<HTMLButtonElement>;
   private readonly modeTitle: HTMLDivElement;
   private readonly modeSubtitle: HTMLDivElement;
@@ -39,9 +40,8 @@ export class MultiplayerOverlay {
   private readonly fullscreenRequest: HTMLButtonElement;
   private readonly fullscreenCancel: HTMLButtonElement;
   private selectedMode: LobbyMode = '1v1';
-  /** Which launch drawer (create/join) is expanded in the lobby, or null when both are collapsed. */
-  private openDrawer: 'create' | 'join' | null = null;
   private modalOpen = false;
+  private wasLiveMatch = false;
   private pendingAction: PendingAction = null;
   private awaitingInteractReleaseFocus = false;
   private lastCompletedMatchKey = '';
@@ -66,9 +66,10 @@ export class MultiplayerOverlay {
       <div class="multiplayer-panel multiplayer-panel--lobby">
         <button class="multiplayer-close" type="button" aria-label="Close match menu">x</button>
         <div class="multiplayer-kicker">StrafeBall Lobby</div>
-        <div class="multiplayer-title">Choose Match</div>
+        <div class="multiplayer-title">Private Match</div>
 
         <div class="multiplayer-setup">
+          <div class="multiplayer-setup-label">New room format</div>
           <div class="multiplayer-mode-tabs">
             <button class="multiplayer-mode-tab" data-mode="1v1" type="button">1v1</button>
             <button class="multiplayer-mode-tab" data-mode="2v2" type="button">2v2</button>
@@ -87,23 +88,13 @@ export class MultiplayerOverlay {
         </label>
 
         <div class="multiplayer-launch">
-          <div class="multiplayer-launch-row">
-            <button class="multiplayer-toggle multiplayer-toggle--create" type="button" data-panel="create" aria-expanded="false">Create</button>
-            <button class="multiplayer-toggle multiplayer-toggle--join" type="button" data-panel="join" aria-expanded="false">Join</button>
+          <button class="multiplayer-create">Create Room</button>
+          <div class="multiplayer-launch-or"><span>or join with a code</span></div>
+          <div class="multiplayer-join-row">
+            <input class="multiplayer-join-code" placeholder="Room code" aria-label="Room code" />
+            <button class="multiplayer-join">Join</button>
           </div>
-
-          <div class="multiplayer-drawer multiplayer-drawer--create" data-drawer="create">
-            <div class="multiplayer-drawer-hint">Spin up a fresh room and share the code.</div>
-            <button class="multiplayer-create">Create Room</button>
-          </div>
-
-          <div class="multiplayer-drawer multiplayer-drawer--join" data-drawer="join">
-            <label class="multiplayer-field multiplayer-field--join-code">
-              <span>Room Code</span>
-              <input class="multiplayer-join-code" placeholder="Paste code" />
-            </label>
-            <button class="multiplayer-join">Join Room</button>
-          </div>
+          <div class="multiplayer-drawer-hint">Create makes a new room with the format above. Join uses the room's existing settings — just the code.</div>
         </div>
 
         <div class="multiplayer-room-card">
@@ -118,6 +109,7 @@ export class MultiplayerOverlay {
           <button class="multiplayer-leave">Leave</button>
         </div>
         <div class="multiplayer-line multiplayer-line--ping">Ping <span class="multiplayer-ping">-</span></div>
+        <div class="multiplayer-controls"></div>
         <div class="multiplayer-room-summary"></div>
         <div class="multiplayer-pregame"></div>
         <div class="multiplayer-reset"></div>
@@ -147,6 +139,7 @@ export class MultiplayerOverlay {
     this.roomValue = this.mustQuery<HTMLSpanElement>('.multiplayer-room');
     this.pingValue = this.mustQuery<HTMLSpanElement>('.multiplayer-ping');
     this.rosterValue = this.mustQuery<HTMLDivElement>('.multiplayer-room-summary');
+    this.controlsValue = this.mustQuery<HTMLDivElement>('.multiplayer-controls');
     this.pregameValue = this.mustQuery<HTMLDivElement>('.multiplayer-pregame');
     this.resetValue = this.mustQuery<HTMLDivElement>('.multiplayer-reset');
     this.postmatchValue = this.mustQuery<HTMLDivElement>('.multiplayer-postmatch');
@@ -157,7 +150,6 @@ export class MultiplayerOverlay {
     this.leaveButton = this.mustQuery<HTMLButtonElement>('.multiplayer-leave');
     this.copyButton = this.mustQuery<HTMLButtonElement>('.multiplayer-copy');
     this.closeButton = this.mustQuery<HTMLButtonElement>('.multiplayer-close');
-    this.toggleButtons = this.root.querySelectorAll<HTMLButtonElement>('.multiplayer-toggle');
     this.modeButtons = this.root.querySelectorAll<HTMLButtonElement>('.multiplayer-mode-tab');
     this.modeTitle = this.mustQuery<HTMLDivElement>('.multiplayer-mode-title');
     this.modeSubtitle = this.mustQuery<HTMLDivElement>('.multiplayer-mode-subtitle');
@@ -178,7 +170,6 @@ export class MultiplayerOverlay {
     this.fullscreenCancel.addEventListener('click', this.cancelFullscreenWarning);
     this.root.addEventListener('click', this.onRootClick);
     for (const button of this.modeButtons) button.addEventListener('click', this.onModeClick);
-    for (const button of this.toggleButtons) button.addEventListener('click', this.onToggleClick);
     window.addEventListener('keyup', this.onPortalFocusKeyUp);
     document.body.appendChild(this.root);
     this.update();
@@ -196,7 +187,6 @@ export class MultiplayerOverlay {
     this.fullscreenCancel.removeEventListener('click', this.cancelFullscreenWarning);
     this.root.removeEventListener('click', this.onRootClick);
     for (const button of this.modeButtons) button.removeEventListener('click', this.onModeClick);
-    for (const button of this.toggleButtons) button.removeEventListener('click', this.onToggleClick);
     window.removeEventListener('keyup', this.onPortalFocusKeyUp);
     this.root.remove();
   }
@@ -222,9 +212,17 @@ export class MultiplayerOverlay {
       this.modalOpen = true;
     }
     const liveMatch = isLiveMatch(snapshot?.room ?? null);
-    if (liveMatch && this.modalOpen) {
+    const matchStatus = snapshot?.room.match.status;
+    // Auto-close the menu only at the MOMENT the match goes live (so play isn't blocked). The player
+    // can deliberately reopen it mid-match — e.g. to call or agree to an early-end vote — and it stays
+    // open until they close it (or the next match starts).
+    if (liveMatch && !this.wasLiveMatch) {
       this.modalOpen = false;
+    } else if (!liveMatch && this.wasLiveMatch && matchStatus === 'warmup') {
+      // A live→lobby return (early-end vote passed): pop the menu so the host can reconfigure + restart.
+      this.modalOpen = true;
     }
+    this.wasLiveMatch = liveMatch;
     const connected = this.client.connected;
     const busy = this.client.status === 'connecting';
     const roomSummary = summarizeRoom(snapshot?.room ?? null, this.client.localPlayerId);
@@ -241,7 +239,6 @@ export class MultiplayerOverlay {
     ) {
       return;
     }
-    const wasConnected = this.lastRendered.connected;
     this.lastRendered = {
       connected,
       busy,
@@ -257,6 +254,7 @@ export class MultiplayerOverlay {
     this.roomValue.textContent = this.client.roomId || 'Practice';
     this.pingValue.textContent = this.client.pingMs === null ? '-' : `${this.client.pingMs} ms`;
     this.rosterValue.innerHTML = roomSummary.rosterHtml;
+    this.controlsValue.innerHTML = roomSummary.controlsHtml;
     this.pregameValue.innerHTML = roomSummary.pregameHtml;
     this.resetValue.innerHTML = roomSummary.resetHtml;
     this.postmatchValue.innerHTML = roomSummary.postmatchHtml;
@@ -266,8 +264,8 @@ export class MultiplayerOverlay {
     const supported = this.modeSupported(this.selectedMode);
     this.modeTitle.textContent = MODE_LABEL[this.selectedMode];
     this.modeSubtitle.textContent = this.selectedMode === '1v1'
-      ? 'Classic private duel. Create a code or join a friend.'
-      : 'Team warmup. Choose a side in the pre-game, then vote start when ready.';
+      ? 'Create a 1v1 room. Tune lives, rounds and the court in the lobby, then start.'
+      : 'Create a 2v2 room. Squad up and pick sides in the lobby, then start.';
     this.modeNotice.textContent = supported
       ? 'Tip: use F11 fullscreen before the match starts.'
       : '2v2 is disabled in the active build configuration.';
@@ -277,21 +275,22 @@ export class MultiplayerOverlay {
     }
 
     this.createButton.disabled = connected || busy || !supported;
-    this.joinButton.disabled = connected || busy || !supported;
+    // Joining is format-independent (you adopt the room's settings), so it isn't gated by `supported`.
+    this.joinButton.disabled = connected || busy;
     this.leaveButton.disabled = !connected && !busy;
     this.copyButton.disabled = !connected || !this.client.roomId;
     this.createButton.textContent = busy ? 'Creating...' : supported ? `Create ${this.selectedMode}` : '2v2 Soon';
-    this.joinButton.textContent = busy ? 'Joining...' : supported ? `Join ${this.selectedMode}` : '2v2 Soon';
-    for (const button of this.toggleButtons) button.disabled = connected || busy || !supported;
+    this.joinButton.textContent = busy ? 'Joining...' : 'Join';
+    this.joinInput.disabled = connected || busy;
 
-    const compact = connected && !busy && this.client.status !== 'error' && (!this.modalOpen || liveMatch);
+    const postmatch = connected && snapshot?.room.match.status === 'complete';
+    // Compact HUD only while the menu is CLOSED. When the player deliberately reopens it (modalOpen),
+    // show the full control surface so settings/vote controls are clearly interactive — even mid-match.
+    const compact = connected && !busy && this.client.status !== 'error' && !postmatch && !this.modalOpen;
     this.root.classList.toggle('multiplayer-modal--compact', compact);
     this.root.classList.toggle('multiplayer-modal--live', liveMatch);
+    this.root.classList.toggle('multiplayer-modal--postmatch', postmatch);
     this.root.classList.toggle('multiplayer-modal--connected', connected);
-    // Once connected the launch drawers are hidden anyway; collapse them so reopening the lobby
-    // (after leaving) starts clean with both buttons closed.
-    if (connected && !wasConnected) this.openDrawer = null;
-    this.syncDrawers();
     const shouldShow = this.modalOpen || connected || busy || this.client.status === 'error';
     this.root.classList.toggle('multiplayer-modal--hidden', !shouldShow);
     this.syncLockOverlaySuppression();
@@ -355,36 +354,17 @@ export class MultiplayerOverlay {
     this.update();
   };
 
-  private onToggleClick = (event: Event): void => {
-    const target = event.currentTarget as HTMLButtonElement;
-    const panel = target.dataset.panel;
-    if (panel !== 'create' && panel !== 'join') return;
-    // Tapping an open drawer closes it; tapping the other one switches.
-    this.openDrawer = this.openDrawer === panel ? null : panel;
-    this.syncDrawers();
-    if (this.openDrawer === 'join') {
-      this.joinInput.focus();
-      this.joinInput.select();
-    }
-  };
-
-  /** Reflect `openDrawer` onto the DOM: expand the chosen drawer, collapse the rest. */
-  private syncDrawers(): void {
-    for (const button of this.toggleButtons) {
-      const panel = button.dataset.panel;
-      const active = panel === this.openDrawer;
-      button.classList.toggle('multiplayer-toggle--active', active);
-      button.setAttribute('aria-expanded', active ? 'true' : 'false');
-    }
-    const drawers = this.root.querySelectorAll<HTMLDivElement>('.multiplayer-drawer');
-    for (const drawer of drawers) {
-      drawer.classList.toggle('multiplayer-drawer--open', drawer.dataset.drawer === this.openDrawer);
-    }
-  }
-
   private onRootClick = (event: MouseEvent): void => {
     const target = event.target instanceof Element ? event.target : null;
     if (!target) return;
+
+    // Unified room-control surface: presets, host settings steppers, host start, early-end vote.
+    const control = target.closest<HTMLButtonElement>('.multiplayer-control');
+    if (control) {
+      event.preventDefault();
+      this.handleControlAction(control);
+      return;
+    }
 
     const voteButton = target.closest<HTMLButtonElement>('.multiplayer-start-vote');
     if (voteButton) {
@@ -420,6 +400,14 @@ export class MultiplayerOverlay {
       }
       if (action === 'reshuffle') {
         this.client.requestReset('reset-teams');
+        return;
+      }
+      if (action === 'next-round') {
+        this.client.requestIntermissionVote('next-round');
+        return;
+      }
+      if (action === 'to-lobby') {
+        this.client.requestIntermissionVote('to-lobby');
       }
       return;
     }
@@ -431,6 +419,47 @@ export class MultiplayerOverlay {
     if (mode !== 'same-teams' && mode !== 'reset-teams') return;
     this.client.requestReset(mode);
   };
+
+  /** Dispatch a click on a room-control button (preset / setting stepper / start / end-vote). */
+  private handleControlAction(control: HTMLButtonElement): void {
+    const action = control.dataset.action;
+    if (action === 'start-match') {
+      this.client.requestStartMatch();
+      return;
+    }
+    if (action === 'end-vote') {
+      this.client.requestEndVote();
+      return;
+    }
+    if (action === 'preset') {
+      const preset = control.dataset.preset;
+      if (preset === '1v1-recommended' || preset === '2v2-recommended') this.client.requestPreset(preset);
+      return;
+    }
+
+    const room = this.client.latestSnapshot?.room;
+    if (!room) return;
+
+    if (action === 'set') {
+      const field = control.dataset.field as StepField | undefined;
+      const delta = Number(control.dataset.delta ?? 0);
+      if (!field || !(field in SETTING_FIELDS) || !delta) return;
+      const cfg = SETTING_FIELDS[field];
+      const current = room.settings[field];
+      const next = Math.min(cfg.limit.max, Math.max(cfg.limit.min, current + delta * cfg.step));
+      if (next !== current) this.client.requestRoomSettings({ [field]: next } as RoomSettingsPatch);
+      return;
+    }
+
+    if (action === 'mat') {
+      const delta = Number(control.dataset.delta ?? 0);
+      const idx = ALLOWED_MAT_PRESETS.indexOf(room.settings.matPreset);
+      const base = idx < 0 ? 0 : idx;
+      const nextIdx = Math.min(ALLOWED_MAT_PRESETS.length - 1, Math.max(0, base + (delta > 0 ? 1 : -1)));
+      const next = ALLOWED_MAT_PRESETS[nextIdx];
+      if (next !== room.settings.matPreset) this.client.requestRoomSettings({ matPreset: next });
+    }
+  }
 
   private onPortalFocusKeyUp = (event: KeyboardEvent): void => {
     if (!this.awaitingInteractReleaseFocus || !this.modalOpen) return;
@@ -574,6 +603,7 @@ function summarizeRoom(room: RoomState | null, localPlayerId: string): {
   statusLabel: string;
   capacityLabel: string;
   rosterHtml: string;
+  controlsHtml: string;
   pregameHtml: string;
   resetHtml: string;
   postmatchHtml: string;
@@ -585,6 +615,7 @@ function summarizeRoom(room: RoomState | null, localPlayerId: string): {
       statusLabel: 'practice',
       capacityLabel: '0 / 0',
       rosterHtml: '',
+      controlsHtml: '',
       pregameHtml: '',
       resetHtml: '',
       postmatchHtml: '',
@@ -638,19 +669,48 @@ function summarizeRoom(room: RoomState | null, localPlayerId: string): {
   const pregameHtml = buildPregameHtml(room, localPlayerId);
   const resetHtml = buildResetControlsHtml(room, localPlayerId);
   const postmatchHtml = buildPostmatchHtml(room, localPlayerId);
+  const controlsHtml = buildControlsHtml(room, localPlayerId);
 
+  const s = room.settings;
   return {
     key: [
       room.match.mode,
       room.match.status,
       room.match.countdownSeconds.toFixed(0),
+      room.phase,
+      room.hostPlayerId ?? '',
+      room.match.currentRound,
+      room.match.roundCount,
+      Object.entries(room.match.roundsWonByTeamId).map(([t, w]) => `${t}:${w}`).join(','),
+      s.preset,
+      s.format,
+      s.livesPerPlayer,
+      s.dodgeballCount,
+      s.maxLiveBallBounces,
+      s.matPreset,
+      s.roundCount,
+      s.halfCourtTimerSeconds,
+      room.endVote.active ? 1 : 0,
+      room.endVote.voteCount,
+      room.endVote.requiredVotes,
+      Object.keys(room.endVote.votesByPlayerId).sort().join(','),
       room.resetVote.mode,
       room.resetVote.voteCount,
       room.resetVote.requiredVotes,
+      Object.keys(room.resetVote.votesByPlayerId).sort().join(','),
       room.startVote.voteCount,
       room.startVote.requiredVotes,
+      Object.keys(room.startVote.votesByPlayerId).sort().join(','),
       room.startVote.teamChoiceCount,
       room.startVote.requiredTeamChoices,
+      Object.keys(room.startVote.teamChoicesByPlayerId).sort().join(','),
+      room.intermissionVote.active ? 1 : 0,
+      room.intermissionVote.allowsNextRound ? 1 : 0,
+      room.intermissionVote.nextRoundCount,
+      room.intermissionVote.toLobbyCount,
+      room.intermissionVote.requiredVotes,
+      Object.keys(room.intermissionVote.nextRoundByPlayerId).sort().join(','),
+      Object.keys(room.intermissionVote.toLobbyByPlayerId).sort().join(','),
       players.length,
       maxPlayers,
       disconnected.map((player) => `${player.id}:${formatReconnectSeconds(player.reconnectDeadlineAtMs)}`).join(','),
@@ -674,6 +734,7 @@ function summarizeRoom(room: RoomState | null, localPlayerId: string): {
     statusLabel,
     capacityLabel: `${players.length} / ${maxPlayers}`,
     rosterHtml,
+    controlsHtml,
     pregameHtml,
     resetHtml,
     postmatchHtml,
@@ -698,6 +759,10 @@ function votersLabel(room: RoomState, votesByPlayerId: Record<string, true>): st
   return names.length > 0 ? escapeHtml(names.join(', ')) : '';
 }
 
+function formatVoteTally(count: number, requiredVotes: number): string {
+  return requiredVotes > 0 ? ` ${count}/${requiredVotes}` : '';
+}
+
 function formatReconnectSeconds(deadlineAtMs: number | null): number {
   if (!deadlineAtMs) return 0;
   return Math.max(0, Math.ceil((deadlineAtMs - Date.now()) / 1000));
@@ -712,6 +777,130 @@ function compareRosterPlayers(a: RoomState['players'][string], b: RoomState['pla
 function isLiveMatch(room: RoomState | null): boolean {
   if (!room) return false;
   return room.match.status === 'countdown' || room.match.status === 'playing';
+}
+
+/** Host-editable numeric settings: their validated range + UI step + unit, shared by render + click. */
+type StepField = 'livesPerPlayer' | 'dodgeballCount' | 'maxLiveBallBounces' | 'roundCount' | 'halfCourtTimerSeconds';
+const SETTING_FIELDS: Record<StepField, { limit: { min: number; max: number }; step: number; unit: string; label: string }> = {
+  livesPerPlayer: { limit: ROOM_SETTINGS_LIMITS.lives, step: 1, unit: '', label: 'Lives' },
+  dodgeballCount: { limit: ROOM_SETTINGS_LIMITS.dodgeballs, step: 1, unit: '', label: 'Dodgeballs' },
+  maxLiveBallBounces: { limit: ROOM_SETTINGS_LIMITS.bounces, step: 1, unit: '', label: 'Max bounces' },
+  roundCount: { limit: ROOM_SETTINGS_LIMITS.rounds, step: 1, unit: '', label: 'Rounds' },
+  halfCourtTimerSeconds: { limit: ROOM_SETTINGS_LIMITS.halfCourtTimer, step: 15, unit: 's', label: 'Half timer' }
+};
+
+function presetLabel(preset: MatchPresetId): string {
+  return preset === 'custom' ? 'Custom' : 'Recommended';
+}
+
+function textRow(label: string, text: string): string {
+  return `<div class="multiplayer-controls__row"><span class="multiplayer-controls__label">${label}</span><span class="multiplayer-controls__field"><span class="multiplayer-controls__val">${text}</span></span></div>`;
+}
+
+function stepRow(label: string, value: number, field: StepField | null, editable: boolean, unit: string): string {
+  const display = `<span class="multiplayer-controls__val">${value}${unit}</span>`;
+  if (!editable || !field) {
+    return `<div class="multiplayer-controls__row"><span class="multiplayer-controls__label">${label}</span><span class="multiplayer-controls__field">${display}</span></div>`;
+  }
+  const cfg = SETTING_FIELDS[field];
+  const minOff = value <= cfg.limit.min ? 'disabled' : '';
+  const maxOff = value >= cfg.limit.max ? 'disabled' : '';
+  const controls =
+    `<button class="multiplayer-control multiplayer-step" data-action="set" data-field="${field}" data-delta="-1" type="button" ${minOff}>−</button>` +
+    display +
+    `<button class="multiplayer-control multiplayer-step" data-action="set" data-field="${field}" data-delta="1" type="button" ${maxOff}>+</button>`;
+  return `<div class="multiplayer-controls__row"><span class="multiplayer-controls__label">${label}</span><span class="multiplayer-controls__field">${controls}</span></div>`;
+}
+
+function matRow(value: number, editable: boolean): string {
+  const text = `${value} mat${value === 1 ? '' : 's'}`;
+  const display = `<span class="multiplayer-controls__val">${text}</span>`;
+  if (!editable) {
+    return `<div class="multiplayer-controls__row"><span class="multiplayer-controls__label">Mats</span><span class="multiplayer-controls__field">${display}</span></div>`;
+  }
+  const controls =
+    `<button class="multiplayer-control multiplayer-step" data-action="mat" data-delta="-1" type="button">−</button>` +
+    display +
+    `<button class="multiplayer-control multiplayer-step" data-action="mat" data-delta="1" type="button">+</button>`;
+  return `<div class="multiplayer-controls__row"><span class="multiplayer-controls__label">Mats</span><span class="multiplayer-controls__field">${controls}</span></div>`;
+}
+
+/**
+ * Unified room control surface (Stage 4): the authoritative settings, host identity, room code, round
+ * progress, and the lifecycle actions (host start, host/guest early-end vote). The host sees editable
+ * steppers + a preset button when between games; guests see the same values read-only. The server is
+ * the source of truth — every control just sends a request that the server validates.
+ */
+function buildControlsHtml(room: RoomState, localPlayerId: string): string {
+  const isHost = !!room.hostPlayerId && room.hostPlayerId === localPlayerId;
+  const hostName = room.hostPlayerId ? (room.players[room.hostPlayerId]?.name ?? '—') : '—';
+  const s = room.settings;
+  const live = room.match.status === 'countdown' || room.match.status === 'playing';
+  const connectedCount = Object.values(room.players).filter((player) => player.connected !== false).length;
+  const endVoteRequirement = votesRequiredForPass(connectedCount);
+  // Settings may be edited only between games (lobby / match summary), mirroring the server gate.
+  const editable = isHost && (room.match.status === 'warmup' || room.match.status === 'complete');
+
+  const permission = isHost
+    ? `<span class="multiplayer-host-badge">You are the host</span>`
+    : `<span class="multiplayer-guest-badge">Host: ${escapeHtml(hostName)} · view only</span>`;
+
+  const rows = [
+    textRow('Format', escapeHtml(s.format.toUpperCase())),
+    textRow('Preset', presetLabel(s.preset)),
+    stepRow(SETTING_FIELDS.livesPerPlayer.label, s.livesPerPlayer, 'livesPerPlayer', editable, ''),
+    stepRow(SETTING_FIELDS.dodgeballCount.label, s.dodgeballCount, 'dodgeballCount', editable, ''),
+    stepRow(SETTING_FIELDS.maxLiveBallBounces.label, s.maxLiveBallBounces, 'maxLiveBallBounces', editable, ''),
+    stepRow(SETTING_FIELDS.roundCount.label, s.roundCount, 'roundCount', editable, ''),
+    stepRow(SETTING_FIELDS.halfCourtTimerSeconds.label, s.halfCourtTimerSeconds, 'halfCourtTimerSeconds', editable, 's'),
+    matRow(s.matPreset, editable)
+  ].join('');
+
+  const presetId: MatchPresetId = s.format === '2v2' ? '2v2-recommended' : '1v1-recommended';
+  const presetBtn = editable && s.preset === 'custom'
+    ? `<button class="multiplayer-control" data-action="preset" data-preset="${presetId}" type="button">Reset to ${escapeHtml(s.format)} recommended</button>`
+    : '';
+
+  const startBtn = isHost && room.match.status === 'warmup'
+    ? `<button class="multiplayer-control multiplayer-control--primary" data-action="start-match" type="button">Start Match</button>`
+    : '';
+
+  let endVoteHtml = '';
+  if (live) {
+    if (!room.endVote.active) {
+      endVoteHtml = isHost
+        ? `<button class="multiplayer-control multiplayer-control--danger" data-action="end-vote" type="button">Call End Vote${formatVoteTally(0, endVoteRequirement)}</button>`
+        : `<div class="multiplayer-controls__hint">The host can call a vote to end the game early.</div>`;
+    } else {
+      const hasVoted = !!room.endVote.votesByPlayerId[localPlayerId];
+      const tally = `End-game vote ${room.endVote.voteCount}/${room.endVote.requiredVotes}`;
+      const action = hasVoted
+        ? `<span class="multiplayer-controls__hint">You voted to end — waiting for the rest.</span>`
+        : `<button class="multiplayer-control multiplayer-control--danger" data-action="end-vote" type="button">Agree to End${formatVoteTally(room.endVote.voteCount, room.endVote.requiredVotes)}</button>`;
+      endVoteHtml = `<div class="multiplayer-controls__vote">${tally} ${action}</div>`;
+    }
+  }
+
+  const lockNote = isHost && live
+    ? `<div class="multiplayer-controls__hint">Settings are locked during a live game.</div>`
+    : !isHost
+      ? `<div class="multiplayer-controls__hint">Only the host can change settings.</div>`
+      : '';
+
+  const roundInfo = `Round ${room.match.currentRound} / ${room.match.roundCount}`;
+
+  return `
+    <div class="multiplayer-controls__panel" data-editable="${editable ? '1' : '0'}">
+      <div class="multiplayer-controls__head">
+        <span class="multiplayer-controls__title">Match Settings</span>
+        ${permission}
+      </div>
+      <div class="multiplayer-controls__meta">Code <strong>${escapeHtml(room.id)}</strong> · ${roundInfo}</div>
+      <div class="multiplayer-controls__grid">${rows}</div>
+      <div class="multiplayer-controls__actions">${presetBtn}${startBtn}${endVoteHtml}</div>
+      ${lockNote}
+    </div>
+  `;
 }
 
 function buildPregameHtml(room: RoomState, localPlayerId: string): string {
@@ -759,7 +948,9 @@ function buildPregameHtml(room: RoomState, localPlayerId: string): string {
   const localVoted = room.startVote.votesByPlayerId[localPlayerId] === true;
   const startEnabled = choicesReady && room.startVote.requiredVotes > 0 && !localVoted;
   const startLabel = choicesReady
-    ? localVoted ? 'Voted' : 'Start Vote'
+    ? localVoted
+      ? `Voted${formatVoteTally(room.startVote.voteCount, room.startVote.requiredVotes)}`
+      : `Start Vote${formatVoteTally(room.startVote.voteCount, room.startVote.requiredVotes)}`
     : 'Choose Teams First';
 
   return `
@@ -778,6 +969,8 @@ function buildResetControlsHtml(room: RoomState, localPlayerId: string): string 
   if (room.match.mode !== '2v2' || room.match.status === 'complete') return '';
   const sameTeamsVoted = room.resetVote.mode === 'same-teams' && room.resetVote.votesByPlayerId[localPlayerId] === true;
   const resetTeamsVoted = room.resetVote.mode === 'reset-teams' && room.resetVote.votesByPlayerId[localPlayerId] === true;
+  const sameTeamsCount = room.resetVote.mode === 'same-teams' ? room.resetVote.voteCount : 0;
+  const resetTeamsCount = room.resetVote.mode === 'reset-teams' ? room.resetVote.voteCount : 0;
   const resetVoters = votersLabel(room, room.resetVote.votesByPlayerId);
   const voteLabel = room.resetVote.requiredVotes > 0
     ? `Vote ${room.resetVote.voteCount}/${room.resetVote.requiredVotes} for ${room.resetVote.mode === 'reset-teams' ? 'reset teams' : 'reset match'}${resetVoters ? ` (${resetVoters})` : ''}`
@@ -789,62 +982,94 @@ function buildResetControlsHtml(room: RoomState, localPlayerId: string): string 
         <div class="multiplayer-reset-status">${voteLabel}</div>
       </div>
       <div class="multiplayer-reset-actions">
-        <button class="multiplayer-reset-action" type="button" data-reset-mode="same-teams"${sameTeamsVoted ? ' disabled' : ''}>${sameTeamsVoted ? 'Voted Match' : 'Vote Reset Match'}</button>
-        <button class="multiplayer-reset-action multiplayer-reset-action--alt" type="button" data-reset-mode="reset-teams"${resetTeamsVoted ? ' disabled' : ''}>${resetTeamsVoted ? 'Voted Teams' : 'Vote Reset Teams'}</button>
+        <button class="multiplayer-reset-action" type="button" data-reset-mode="same-teams"${sameTeamsVoted ? ' disabled' : ''}>${sameTeamsVoted ? 'Voted Match' : 'Vote Reset Match'}${formatVoteTally(sameTeamsCount, room.resetVote.requiredVotes)}</button>
+        <button class="multiplayer-reset-action multiplayer-reset-action--alt" type="button" data-reset-mode="reset-teams"${resetTeamsVoted ? ' disabled' : ''}>${resetTeamsVoted ? 'Voted Teams' : 'Vote Reset Teams'}${formatVoteTally(resetTeamsCount, room.resetVote.requiredVotes)}</button>
       </div>
     </div>
   `;
 }
 
+/**
+ * The report card, shown BOTH between rounds (status 'intermission') and after the match
+ * (status 'complete'). Between rounds it offers a "Next Round" vote and a "Back to Lobby" vote;
+ * after the match it offers Rematch / (Change Teams) / "To Lobby". Every vote button shows its live
+ * tally and needs a 70% supermajority — the server is authoritative for the transition.
+ */
 function buildPostmatchHtml(room: RoomState, localPlayerId: string): string {
-  if (room.match.status !== 'complete') return '';
+  const status = room.match.status;
+  if (status !== 'complete' && status !== 'intermission') return '';
+  const isFinal = status === 'complete';
 
   const players = Object.values(room.players).sort(compareRosterPlayers);
   const local = room.players[localPlayerId];
   const localTeamId = local?.teamId ?? room.match.teamIds[0] ?? 'blue';
-  const winnerTeamId = room.match.winnerTeamId ?? localTeamId;
+  // Final match → the match winner; between rounds → the team that won THIS round (the side still
+  // with an alive fighter; the loser is fully eliminated until the next round rebuilds the world).
+  const roundWinnerTeamId = room.match.teamIds.find((teamId) =>
+    players.some((player) => player.teamId === teamId && player.combatState !== 'eliminated' && player.lives > 0)
+  ) ?? null;
+  const winnerTeamId = (isFinal ? room.match.winnerTeamId : roundWinnerTeamId) ?? localTeamId;
   const localWon = local ? local.teamId === winnerTeamId : winnerTeamId === localTeamId;
-  const grade = localWon ? 'A+' : 'F';
-  const verdict = localWon ? 'Victory' : 'Defeat';
-  const reportVoteLabel = describeResetVote(room);
-  const rematchVoted = room.resetVote.mode === 'same-teams' && room.resetVote.votesByPlayerId[localPlayerId] === true;
-  const reshuffleVoted = room.resetVote.mode === 'reset-teams' && room.resetVote.votesByPlayerId[localPlayerId] === true;
-  const orderedTeamIds = [
-    localTeamId,
-    ...room.match.teamIds.filter((teamId) => teamId !== localTeamId)
-  ];
+
+  const orderedTeamIds = [localTeamId, ...room.match.teamIds.filter((teamId) => teamId !== localTeamId)];
   const teamCards = orderedTeamIds
-    .map((teamId) => buildReportTeamHtml(room, teamId, localPlayerId, winnerTeamId, players.filter((player) => player.teamId === teamId)))
+    .map((teamId) => buildReportTeamHtml(room, teamId, localPlayerId, winnerTeamId, players.filter((player) => player.teamId === teamId), isFinal))
     .join('');
-  const subtitle = room.match.mode === '2v2'
-    ? `${escapeHtml(winnerTeamId.toUpperCase())} team wins the class match.`
-    : `${localWon ? 'You passed the duel.' : 'You got marked down in the duel.'}`;
+
+  const eyebrow = isFinal ? 'Final Report Card' : `Round ${room.match.currentRound} of ${room.match.roundCount}`;
+  const title = isFinal ? (localWon ? 'Victory' : 'Defeat') : (localWon ? 'Round Won' : 'Round Lost');
+  const subtitle = isFinal
+    ? `${escapeHtml(winnerTeamId.toUpperCase())} team won the dodgeball match.`
+    : `${escapeHtml(winnerTeamId.toUpperCase())} took the round. Series ${formatRoundLine(room)}.`;
+
+  const iv = room.intermissionVote;
+  const req = iv.requiredVotes;
+  const nextRoundTally = formatVoteTally(iv.nextRoundCount, req);
+  const toLobbyTally = formatVoteTally(iv.toLobbyCount, req);
+  const nextVoted = iv.nextRoundByPlayerId[localPlayerId] === true;
+  const lobbyVoted = iv.toLobbyByPlayerId[localPlayerId] === true;
+
+  let actions: string;
+  if (isFinal) {
+    const rematchVoted = room.resetVote.mode === 'same-teams' && room.resetVote.votesByPlayerId[localPlayerId] === true;
+    const reshuffleVoted = room.resetVote.mode === 'reset-teams' && room.resetVote.votesByPlayerId[localPlayerId] === true;
+    const rematchCount = room.resetVote.mode === 'same-teams' ? room.resetVote.voteCount : 0;
+    const reshuffleCount = room.resetVote.mode === 'reset-teams' ? room.resetVote.voteCount : 0;
+    actions = `
+      <button class="multiplayer-postmatch-action" type="button" data-postmatch-action="rematch"${rematchVoted ? ' disabled' : ''}>${rematchVoted ? 'Rematch Voted' : 'Vote Rematch'}${formatVoteTally(rematchCount, room.resetVote.requiredVotes)}</button>
+      ${room.match.mode === '2v2'
+        ? `<button class="multiplayer-postmatch-action multiplayer-postmatch-action--alt" type="button" data-postmatch-action="reshuffle"${reshuffleVoted ? ' disabled' : ''}>${reshuffleVoted ? 'Teams Voted' : 'Vote Change Teams'}${formatVoteTally(reshuffleCount, room.resetVote.requiredVotes)}</button>`
+        : ''}
+      <button class="multiplayer-postmatch-action multiplayer-postmatch-action--paper" type="button" data-postmatch-action="to-lobby"${lobbyVoted ? ' disabled' : ''}>${lobbyVoted ? `To Lobby Voted${toLobbyTally}` : `To Lobby${toLobbyTally}`}</button>
+      <button class="multiplayer-postmatch-action multiplayer-postmatch-action--paper" type="button" data-postmatch-action="leave-lobby">Leave Room</button>
+    `;
+  } else {
+    actions = `
+      <button class="multiplayer-postmatch-action" type="button" data-postmatch-action="next-round"${nextVoted ? ' disabled' : ''}>${nextVoted ? `Next Round Voted${nextRoundTally}` : `Next Round${nextRoundTally}`}</button>
+      <button class="multiplayer-postmatch-action multiplayer-postmatch-action--paper" type="button" data-postmatch-action="to-lobby"${lobbyVoted ? ' disabled' : ''}>${lobbyVoted ? `To Lobby Voted${toLobbyTally}` : `Back To Lobby${toLobbyTally}`}</button>
+    `;
+  }
+
+  const connectedCount = players.filter((player) => player.connected !== false).length;
+  const voteHint = req > 0 ? `A vote passes at ${req} of ${connectedCount} players (70%).` : '';
 
   return `
     <div class="multiplayer-report-card multiplayer-report-card--${localWon ? 'win' : 'loss'}" data-mode="${room.match.mode}">
       <div class="multiplayer-report-card__top">
         <div>
-          <div class="multiplayer-report-card__eyebrow">Final Report Card</div>
-          <div class="multiplayer-report-card__title">${verdict}</div>
+          <div class="multiplayer-report-card__eyebrow">${eyebrow}</div>
+          <div class="multiplayer-report-card__title">${title}</div>
           <div class="multiplayer-report-card__subtitle">${subtitle}</div>
         </div>
-        <div class="multiplayer-report-card__grade" aria-label="Match grade">${grade}</div>
       </div>
       <div class="multiplayer-report-card__summary">
-        <span>Result: <strong>${escapeHtml(winnerTeamId.toUpperCase())}</strong></span>
-        <span>${room.match.mode === '2v2' ? 'Lives:' : 'Score:'} <strong>${formatScoreLine(room)}</strong></span>
-        <span>${room.match.mode === '2v2' ? 'Class project report' : 'One-on-one exam'}</span>
+        <span><em>${isFinal ? 'Result' : 'Round'}</em><strong>${escapeHtml(winnerTeamId.toUpperCase())}</strong></span>
+        <span><em>Series</em><strong>${formatRoundLine(room)}</strong></span>
+        <span><em>Subject</em><strong>Gym Class</strong></span>
       </div>
       <div class="multiplayer-report-card__teams">${teamCards}</div>
-      <div class="multiplayer-report-card__actions">
-        <button class="multiplayer-postmatch-action" type="button" data-postmatch-action="rematch"${rematchVoted ? ' disabled' : ''}>${rematchVoted ? 'Rematch Voted' : 'Vote Rematch'}</button>
-        ${room.match.mode === '2v2'
-          ? `<button class="multiplayer-postmatch-action multiplayer-postmatch-action--alt" type="button" data-postmatch-action="reshuffle"${reshuffleVoted ? ' disabled' : ''}>${reshuffleVoted ? 'Teams Voted' : 'Vote Change Teams'}</button>`
-          : ''
-        }
-        <button class="multiplayer-postmatch-action multiplayer-postmatch-action--paper" type="button" data-postmatch-action="leave-lobby">Back To Lobby</button>
-      </div>
-      <div class="multiplayer-report-card__vote">${escapeHtml(reportVoteLabel)}</div>
+      <div class="multiplayer-report-card__actions">${actions}</div>
+      <div class="multiplayer-report-card__vote">${escapeHtml(voteHint)}</div>
     </div>
   `;
 }
@@ -854,20 +1079,19 @@ function buildReportTeamHtml(
   teamId: string,
   localPlayerId: string,
   winnerTeamId: string,
-  players: PlayerState[]
+  players: PlayerState[],
+  isFinal: boolean
 ): string {
   const totals = players.reduce((acc, player) => {
     acc.hits += player.matchStats.hits;
     acc.hitsTaken += player.matchStats.hitsTaken;
     acc.catches += player.matchStats.catches;
     acc.parries += player.matchStats.parries;
-    acc.saves += player.matchStats.saves;
     acc.lives += Math.max(0, player.lives);
     return acc;
-  }, { hits: 0, hitsTaken: 0, catches: 0, parries: 0, saves: 0, lives: 0 });
+  }, { hits: 0, hitsTaken: 0, catches: 0, parries: 0, lives: 0 });
   const isWinner = teamId === winnerTeamId;
-  const teamScore = room.match.scoreByTeamId[teamId] ?? 0;
-  const teamMetric = room.match.mode === '2v2' ? totals.lives : teamScore;
+  const teamMetric = room.match.roundsWonByTeamId[teamId] ?? 0;
   const teamLabel = room.match.mode === '2v2'
     ? `${escapeHtml(teamId.toUpperCase())} Team`
     : teamId === room.players[localPlayerId]?.teamId ? 'You' : 'Opponent';
@@ -877,48 +1101,107 @@ function buildReportTeamHtml(
       <div class="multiplayer-report-team__header">
         <div>
           <strong>${teamLabel}</strong>
-          <span>${isWinner ? 'Honor Roll' : 'Needs Improvement'}</span>
+          <span>${isWinner ? (isFinal ? 'Won Match' : 'Won Round') : (isFinal ? 'Lost Match' : 'Lost Round')}</span>
         </div>
         <div class="multiplayer-report-team__score">${teamMetric}</div>
       </div>
       <div class="multiplayer-report-team__totals">
-        <span>Hits ${totals.hits}</span>
-        <span>Catches ${totals.catches}</span>
-        <span>Parries ${totals.parries}</span>
-        <span>Saves ${totals.saves}</span>
-        <span>Taken ${totals.hitsTaken}</span>
-        ${room.match.mode === '2v2' ? `<span>Lives ${totals.lives}</span>` : ''}
+        <span><em>Hits</em><strong>${totals.hits}</strong></span>
+        <span><em>Catches</em><strong>${totals.catches}</strong></span>
+        <span><em>Parries</em><strong>${totals.parries}</strong></span>
+        <span><em>Lives Lost</em><strong>${totals.hitsTaken}</strong></span>
+        <span><em>Lives Left</em><strong>${totals.lives}</strong></span>
       </div>
       <div class="multiplayer-report-team__players">
-        ${players.map((player) => buildReportPlayerHtml(room.match.mode, player, localPlayerId)).join('')}
+        ${players.map((player) => buildReportPlayerHtml(room, player, localPlayerId, winnerTeamId)).join('')}
       </div>
     </div>
   `;
 }
 
-function buildReportPlayerHtml(mode: MatchMode, player: PlayerState, localPlayerId: string): string {
+function buildReportPlayerHtml(room: RoomState, player: PlayerState, localPlayerId: string, winnerTeamId: string): string {
   const suffix = player.id === localPlayerId ? ' (You)' : player.connected === false ? ' (DC)' : '';
-  const status = mode === '2v2'
-    ? player.combatState === 'eliminated'
-      ? 'Out'
-      : `${player.lives} life${player.lives === 1 ? '' : 's'} left`
-    : `${player.score} point${player.score === 1 ? '' : 's'}`;
+  // Both formats are lives-based now: show remaining lives (or Out), not the legacy 1v1 point count.
+  const status = player.combatState === 'eliminated'
+    ? 'Out'
+    : `${player.lives} life${player.lives === 1 ? '' : 's'} left`;
+  const grade = calculatePlayerReportGrade(room, player, winnerTeamId);
 
   return `
     <div class="multiplayer-report-player">
       <div class="multiplayer-report-player__main">
-        <strong>${escapeHtml(player.name)}${suffix}</strong>
-        <span>${escapeHtml(status)}</span>
+        <div>
+          <strong>${escapeHtml(player.name)}${suffix}</strong>
+          <span>${escapeHtml(status)}</span>
+        </div>
+        <div class="multiplayer-report-player__grade multiplayer-report-player__grade--${grade.band}" aria-label="Player grade ${grade.letter}, ${grade.percent} percent">
+          <em>Grade</em>
+          <strong>${grade.letter}</strong>
+          <span>${grade.percent}%</span>
+        </div>
       </div>
       <div class="multiplayer-report-player__stats">
-        <span>Hits ${player.matchStats.hits}</span>
-        <span>Catches ${player.matchStats.catches}</span>
-        <span>Parries ${player.matchStats.parries}</span>
-        <span>Saves ${player.matchStats.saves}</span>
-        <span>Taken ${player.matchStats.hitsTaken}</span>
+        <span><em>Hits</em><strong>${player.matchStats.hits}</strong></span>
+        <span><em>Catches</em><strong>${player.matchStats.catches}</strong></span>
+        <span><em>Parries</em><strong>${player.matchStats.parries}</strong></span>
+        <span><em>Lives Lost</em><strong>${player.matchStats.hitsTaken}</strong></span>
       </div>
     </div>
   `;
+}
+
+type ReportGradeBand = 'excellent' | 'good' | 'fair' | 'poor';
+
+interface ReportGrade {
+  letter: string;
+  percent: number;
+  band: ReportGradeBand;
+}
+
+function calculatePlayerReportGrade(room: RoomState, player: PlayerState, winnerTeamId: string): ReportGrade {
+  const roundsWon = room.match.roundsWonByTeamId[player.teamId] ?? 0;
+  const winningRounds = Math.max(1, ...room.match.teamIds.map((teamId) => room.match.roundsWonByTeamId[teamId] ?? 0));
+  const scoreRatio = player.teamId === winnerTeamId ? 1 : Math.min(1, roundsWon / winningRounds);
+  const scorePoints = scoreRatio * 60;
+  const statRaw =
+    player.matchStats.hits * 8 +
+    player.matchStats.parries * 2 +
+    player.matchStats.catches * 1 -
+    player.matchStats.hitsTaken * 5;
+  const statPoints = clampNumber(statRaw, 0, 40);
+  const percent = Math.round(clampNumber(scorePoints + statPoints, 0, 100));
+  return {
+    letter: letterGrade(percent),
+    percent,
+    band: gradeBand(percent)
+  };
+}
+
+function clampNumber(value: number, min: number, max: number): number {
+  return Math.max(min, Math.min(max, value));
+}
+
+function letterGrade(percent: number): string {
+  if (percent >= 97) return 'A+';
+  if (percent >= 93) return 'A';
+  if (percent >= 90) return 'A-';
+  if (percent >= 87) return 'B+';
+  if (percent >= 83) return 'B';
+  if (percent >= 80) return 'B-';
+  if (percent >= 77) return 'C+';
+  if (percent >= 73) return 'C';
+  if (percent >= 70) return 'C-';
+  if (percent >= 67) return 'D+';
+  if (percent >= 63) return 'D';
+  if (percent >= 60) return 'D-';
+  return 'F';
+}
+
+function gradeBand(percent: number): ReportGradeBand {
+  if (percent >= 90) return 'excellent';
+  if (percent >= 80) return 'good';
+  if (percent >= 70) return 'fair';
+  return 'poor';
 }
 
 function describeResetVote(room: RoomState): string {
@@ -930,25 +1213,26 @@ function describeResetVote(room: RoomState): string {
   return `${vote.mode === 'reset-teams' ? 'Change teams' : 'Rematch'} vote: ${vote.voteCount}/${vote.requiredVotes}${voters ? ` (${voters})` : ''}.`;
 }
 
-function formatScoreLine(room: RoomState): string {
-  if (room.match.mode === '2v2') {
-    return room.match.teamIds
-      .map((teamId) => {
-        const lives = Object.values(room.players)
-          .filter((player) => player.teamId === teamId)
-          .reduce((total, player) => total + Math.max(0, player.lives), 0);
-        return `${teamId.toUpperCase()} ${lives}L`;
-      })
-      .join(' - ');
-  }
+/** Series result as rounds won per team (the unified win metric for both formats). */
+function formatRoundLine(room: RoomState): string {
   return room.match.teamIds
-    .map((teamId) => `${teamId.toUpperCase()} ${room.match.scoreByTeamId[teamId] ?? 0}`)
+    .map((teamId) => `${teamId.toUpperCase()} ${room.match.roundsWonByTeamId[teamId] ?? 0}`)
     .join(' - ');
 }
 
+/**
+ * A key identifying "a report card the player should see": it changes on match completion AND on
+ * each round end (intermission), so the menu auto-opens to show the round/match result each time.
+ */
 function completedMatchKey(room: RoomState | null): string | null {
-  if (!room || room.match.status !== 'complete') return null;
-  return `${room.id}:${room.resetVote.resetSerial}:${room.match.winnerTeamId ?? 'none'}:${room.match.mode}`;
+  if (!room) return null;
+  if (room.match.status === 'complete') {
+    return `complete:${room.id}:${room.resetVote.resetSerial}:${room.match.winnerTeamId ?? 'none'}:${room.match.mode}`;
+  }
+  if (room.match.status === 'intermission') {
+    return `intermission:${room.id}:${room.resetVote.resetSerial}:${room.match.currentRound}`;
+  }
+  return null;
 }
 
 function escapeHtml(value: string): string {
