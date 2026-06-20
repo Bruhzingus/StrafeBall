@@ -37,6 +37,15 @@ interface PlayerVisual {
   hitbox: Mesh;
   leftArm: ArmVisual;
   rightArm: ArmVisual;
+  name: string;
+  teamId: string;
+}
+
+export interface PlayerNametagInfo {
+  id: string;
+  name: string;
+  teamId: string;
+  headPosition: Vector3;
 }
 
 interface ArmVisual {
@@ -280,6 +289,15 @@ export class NetworkRenderer {
     this.debugStats.ballPredictionMediumCorrections = ballPredictionStats.mediumCorrectionCount;
     this.debugStats.ballPredictionSnapReasonCounts = ballPredictionStats.snapReasonCounts;
     return this.debugStats;
+  }
+
+  /** Current remote players' head world positions + identity, for nametag rendering. */
+  getPlayerNametagInfo(): PlayerNametagInfo[] {
+    const result: PlayerNametagInfo[] = [];
+    for (const [id, visual] of this.players) {
+      result.push({ id, name: visual.name, teamId: visual.teamId, headPosition: visual.head.getAbsolutePosition() });
+    }
+    return result;
   }
 
   clear(): void {
@@ -529,6 +547,8 @@ export class NetworkRenderer {
       if (player.connected === false) continue;
       seen.add(player.id);
       const visual = this.ensurePlayer(player);
+      visual.name = player.name;
+      visual.teamId = player.teamId;
       this.updateRemoteArmAnimations(player, dt);
       const target = player.movement.position;
       const recoil = this.advanceCatchRecoil(player.id, dt);
@@ -909,7 +929,9 @@ export class NetworkRenderer {
       facing,
       hitbox,
       leftArm: this.buildArm(player.id, 'left', root),
-      rightArm: this.buildArm(player.id, 'right', root)
+      rightArm: this.buildArm(player.id, 'right', root),
+      name: player.name,
+      teamId: player.teamId
     };
     this.players.set(player.id, visual);
     this.playerDebug.set(player.id, { logTimer: 0 });

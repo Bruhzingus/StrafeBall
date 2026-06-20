@@ -9,6 +9,7 @@ import { BallManager } from '../ball/BallManager';
 import { BallVisualEffects } from '../ball/BallVisualEffects';
 import { BallState } from '../ball/BallState';
 import { Hud } from '../ui/Hud';
+import { Nametags } from '../ui/Nametags';
 import { BackflipQteController } from '../player/BackflipQteController';
 import { BackflipQteHud } from '../ui/BackflipQteHud';
 import { GAME_CONSTANTS } from '../../../shared/constants';
@@ -68,6 +69,7 @@ export class ArenaScene {
   private readonly ballManager: BallManager;
   private readonly player: PlayerController;
   private readonly hud: Hud;
+  private readonly nametags: Nametags;
   private readonly rules = new MatchRules();
   private readonly targetDummies: Mesh[] = [];
   private readonly sound: SoundManager;
@@ -255,6 +257,7 @@ export class ArenaScene {
     const hudRoot = document.getElementById('hud-root');
     if (!hudRoot) throw new Error('Missing HUD root.');
     this.hud = new Hud(hudRoot);
+    this.nametags = new Nametags(hudRoot);
     this.backflipQteHud = new BackflipQteHud(hudRoot);
     this.settingsPanel = new SettingsPanel();
     this.multiplayerOverlay = new MultiplayerOverlay(this.multiplayer);
@@ -282,6 +285,7 @@ export class ArenaScene {
       this.music.setBattleSyncState(this.multiplayer.battleMusicSync);
       this.music.setLobbyMusicActive(matchStatus !== 'playing');
       this.stepOnline(dt);
+      this.nametags.update(this.networkRenderer.getPlayerNametagInfo(), this.scene);
       if (this.multiplayer.latestSnapshot) {
         const connectionDebug = this.multiplayer.getConnectionDebug();
         this.hud.updateNetwork(
@@ -317,6 +321,7 @@ export class ArenaScene {
       this.music.setLobbyMusicActive(true);
       this.step(dt);
       this.hud.update(this.player, this.rules, this.ballManager, engine.getFps(), frameMs);
+      this.nametags.update([], this.scene);
     }
     this.music.update(dt);
     this.hud.updateMusic(this.music.getHudState());
@@ -326,6 +331,7 @@ export class ArenaScene {
   dispose(): void {
     this.input.dispose();
     this.hud.dispose();
+    this.nametags.dispose();
     this.multiplayerOverlay.dispose();
     this.multiplayer.dispose();
     this.networkRenderer.dispose();
