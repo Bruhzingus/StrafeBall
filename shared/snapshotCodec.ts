@@ -97,11 +97,11 @@ function packPlayer(player: PlayerState): unknown[] {
     player.spawnSide,
     player.teamSlotIndex,
     player.legalHalf,
-    packVec(player.movement.position),
-    packVec(player.movement.velocity),
+    packPos(player.movement.position),
+    packVel(player.movement.velocity),
     player.movement.yawRadians,
     player.movement.pitchRadians,
-    packVec(player.movement.facing),
+    packUnit(player.movement.facing),
     b(player.movement.grounded),
     b(player.movement.crouching),
     b(player.movement.sliding),
@@ -157,11 +157,11 @@ function unpackPlayer(packed: unknown[]): PlayerState {
     teamSlotIndex: packed[3] as number,
     legalHalf: packed[4] as PlayerState['legalHalf'],
     movement: {
-      position: unpackVec(packed[5] as unknown[]),
-      velocity: unpackVec(packed[6] as unknown[]),
+      position: unpackPos(packed[5] as unknown[]),
+      velocity: unpackVel(packed[6] as unknown[]),
       yawRadians: packed[7] as number,
       pitchRadians: packed[8] as number,
-      facing: unpackVec(packed[9] as unknown[]),
+      facing: unpackUnit(packed[9] as unknown[]),
       grounded: Boolean(packed[10]),
       crouching: Boolean(packed[11]),
       sliding: Boolean(packed[12]),
@@ -238,8 +238,8 @@ function packBall(ball: BallState): unknown[] {
   return [
     ball.id,
     ball.phase,
-    packVec(ball.position),
-    packVec(ball.velocity),
+    packPos(ball.position),
+    packVel(ball.velocity),
     ball.ownerKind,
     ball.ownerId,
     ball.heldByPlayerId,
@@ -247,7 +247,7 @@ function packBall(ball: BallState): unknown[] {
     ball.bounceCount,
     b(ball.isSuper),
     ball.dropScale,
-    packVec(ball.curveAccel),
+    packVel(ball.curveAccel),
     ball.lastTouchedByPlayerId,
     ball.throwId
   ];
@@ -257,8 +257,8 @@ function unpackBall(packed: unknown[]): BallState {
   return {
     id: packed[0] as string,
     phase: packed[1] as BallState['phase'],
-    position: unpackVec(packed[2] as unknown[]),
-    velocity: unpackVec(packed[3] as unknown[]),
+    position: unpackPos(packed[2] as unknown[]),
+    velocity: unpackVel(packed[3] as unknown[]),
     ownerKind: packed[4] as BallState['ownerKind'],
     ownerId: packed[5] as string | null,
     heldByPlayerId: packed[6] as string | null,
@@ -266,18 +266,77 @@ function unpackBall(packed: unknown[]): BallState {
     bounceCount: packed[8] as number,
     isSuper: Boolean(packed[9]),
     dropScale: packed[10] as number,
-    curveAccel: unpackVec(packed[11] as unknown[]),
+    curveAccel: unpackVel(packed[11] as unknown[]),
     lastTouchedByPlayerId: packed[12] as string | null,
     throwId: packed[13] as number
   };
 }
 
-function packVec(v: Vec3): unknown[] {
-  return [v.x, v.y, v.z];
+/**
+ * Fixed-point vector quantization (Quake/Source-style). World coordinates are sent as integers
+ * scaled by a per-domain factor instead of full 8-byte msgpack doubles, roughly halving the bytes
+ * for every position/velocity/facing on every player and ball, every snapshot. This is a pure,
+ * stateless ENCODING change — no per-client baseline, no delta chain — so a dropped/backpressure-
+ * skipped snapshot can never corrupt anything: each snapshot still carries every entity in full.
+ *
+ * Ranges are sized with generous headroom and CLAMPED (never wrapped) so an out-of-arena glitch ball
+ * degrades to a clamped visual position rather than overflowing to a garbage one. The server stays
+ * authoritative; these values only drive remote-entity interpolation. Precision at these scales:
+ *   position: 1/512 m ≈ 2 mm   velocity: 1/128 (m/s) ≈ 8 mm/s   unit: 1/16384 ≈ 6e-5
+ * all far below the interpolation snap thresholds (HUGE_ERROR_SNAP_METERS=5, reconcile 0.5 m).
+ *
+ * The full-precision encoder path (SNAPSHOT_ENCODING=full → not compact) never calls these, so it
+ * remains lossless for debugging.
+ */
+const INT16_MIN = -32768;
+const INT16_MAX = 32767;
+
+/** Position/world coords: ±64 m covers the ±13×±18×8.5 arena plus huge out-of-bounds headroom. */
+const POSITION_SCALE = 512; // 32768 / 64
+/** Velocities: ±256 m/s covers the fastest super throw (~85 m/s) with 3× headroom. */
+const VELOCITY_SCALE = 128; // 32768 / 256
+/** Unit-ish vectors (facing) and small accelerations: ±2 range, fine precision. */
+const UNIT_SCALE = 16384; // 32768 / 2
+
+function quantizeScalar(n: number, scale: number): number {
+  if (!Number.isFinite(n)) return 0;
+  const scaled = Math.round(n * scale);
+  return scaled < INT16_MIN ? INT16_MIN : scaled > INT16_MAX ? INT16_MAX : scaled;
 }
 
-function unpackVec(v: unknown[]): Vec3 {
-  return { x: v[0] as number, y: v[1] as number, z: v[2] as number };
+function dequantizeScalar(n: unknown, scale: number): number {
+  return typeof n === 'number' && Number.isFinite(n) ? n / scale : 0;
+}
+
+function packVecScaled(v: Vec3, scale: number): number[] {
+  return [quantizeScalar(v.x, scale), quantizeScalar(v.y, scale), quantizeScalar(v.z, scale)];
+}
+
+function unpackVecScaled(v: unknown[], scale: number): Vec3 {
+  return {
+    x: dequantizeScalar(v[0], scale),
+    y: dequantizeScalar(v[1], scale),
+    z: dequantizeScalar(v[2], scale)
+  };
+}
+
+function packPos(v: Vec3): number[] {
+  return packVecScaled(v, POSITION_SCALE);
+}
+function unpackPos(v: unknown[]): Vec3 {
+  return unpackVecScaled(v, POSITION_SCALE);
+}
+function packVel(v: Vec3): number[] {
+  return packVecScaled(v, VELOCITY_SCALE);
+}
+function unpackVel(v: unknown[]): Vec3 {
+  return unpackVecScaled(v, VELOCITY_SCALE);
+}
+function packUnit(v: Vec3): number[] {
+  return packVecScaled(v, UNIT_SCALE);
+}
+function unpackUnit(v: unknown[]): Vec3 {
+  return unpackVecScaled(v, UNIT_SCALE);
 }
 
 function b(value: boolean): 0 | 1 {
