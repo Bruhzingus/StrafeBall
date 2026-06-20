@@ -805,6 +805,29 @@ describe('ServerGameLoop', () => {
       expect(loop.state.players.a.matchStats.hitsTaken).toBe(1);
     });
 
+    it('ticks the half-court penalty while a player STAYS across (no cross-back required)', () => {
+      const loop = create2v2Loop();
+      const offender = loop.state.players.a;
+      const across = offender.legalHalf === 'negativeZ'
+        ? vec3(0, 0, GAME_CONSTANTS.match.halfCourtLineZ + 1)
+        : vec3(0, 0, -GAME_CONSTANTS.match.halfCourtLineZ - 1);
+
+      // Cross once and NEVER move back. First tick spends the warning; the penalty must then tick on
+      // its own. (The old bug only started damage after the player crossed back and re-crossed.)
+      offender.movement.position = { ...across };
+      loop.step();
+      expect(loop.state.players.a.matchStats.hitsTaken).toBe(0); // warning tick only
+
+      const steps = Math.ceil(GAME_CONSTANTS.match.illegalCrossPenaltyIntervalSeconds * loop.tickRate) + 2;
+      for (let i = 0; i < steps; i += 1) {
+        offender.movement.position = { ...across }; // hold position across the line
+        loop.step();
+      }
+
+      expect(loop.state.players.a.matchStats.hitsTaken).toBeGreaterThanOrEqual(1);
+      expect(loop.state.players.a.lives).toBeLessThan(GAME_CONSTANTS.match.playerLives);
+    });
+
     it('eliminated players become cover that blocks balls but cannot take more damage', () => {
       const loop = create2v2Loop();
       loop.state.players.b.lives = 1;
@@ -936,6 +959,39 @@ describe('ServerGameLoop', () => {
       expect(loop.state.players.a.lives).toBe(1);
       expect(loop.state.players.a.combatState).toBe('eliminated');
       expect(loop.state.players.a.connected).toBe(true);
+    });
+
+    it('joins a mid-match late arrival as a 0-life spectator so leaving and rejoining cannot refill lives', () => {
+      const loop = create2v2Loop();
+      // 'a' burns down to elimination, then fully leaves (terminal departure, frees the slot).
+      loop.state.players.a.lives = 0;
+      loop.state.players.a.combatState = 'eliminated';
+      loop.removePlayer('a');
+
+      // Rejoin as a brand-new session into the still-live match: must NOT come back with full lives.
+      const rejoined = loop.addPlayer('a2', 'A');
+      expect(rejoined).toBeTruthy();
+      expect(rejoined!.lives).toBe(0);
+      expect(rejoined!.combatState).toBe('eliminated');
+      // The spectator is not an active fighter, so they can't keep a forfeit alive.
+      expect(loop.state.match.status).not.toBe('warmup');
+
+      // A full room reset rebuilds every roster member with full lives — they fight the next match.
+      loop.handleReset('a2', 'reset-teams');
+      loop.handleReset('b', 'reset-teams');
+      loop.handleReset('c', 'reset-teams');
+      loop.handleReset('d', 'reset-teams');
+      expect(loop.state.players.a2.lives).toBe(GAME_CONSTANTS.match.playerLives);
+      expect(loop.state.players.a2.combatState).toBe('alive');
+    });
+
+    it('joins a warmup arrival as a normal full-lives fighter', () => {
+      const loop = new ServerGameLoop('room', { mode: '2v2', playersPerTeam: 2 });
+      loop.addPlayer('a', 'A');
+      const joined = loop.addPlayer('b', 'B');
+      expect(loop.state.match.status).toBe('warmup');
+      expect(joined!.lives).toBe(GAME_CONSTANTS.match.playerLives);
+      expect(joined!.combatState).toBe('alive');
     });
 
     it('starts the last-player buff on teammate disconnect and clears it on reconnect', () => {

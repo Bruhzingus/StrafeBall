@@ -497,10 +497,13 @@ describe('shared half-court rules', () => {
     expect(match.scoreByTeamId.red).toBe(0);
   });
 
-  it('staying across after the first warning does not start penalty hits', () => {
+  it('staying across after the warning starts the penalty countdown without a cross-back', () => {
     let match = createMatchState('m1', ['blue', 'red']);
 
+    // Tick 1: cross spends the warning. No penalty yet, but the countdown is now armed.
     match = applyHalfCourtRule(match, 'p1', 'blue', 'negativeZ', vec3(0, 0, GAME_CONSTANTS.match.halfCourtLineZ + 0.1));
+    // Tick 2: still across — the penalty countdown must now ACTIVATE on its own (the old behavior
+    // left it dormant until the player crossed back and re-crossed, so damage never ticked).
     match = applyHalfCourtRule(
       match,
       'p1',
@@ -511,15 +514,17 @@ describe('shared half-court rules', () => {
     );
 
     expect(match.boundary.lastEvent.type).toBe('none');
-    expect(match.boundary.illegalCrossByPlayerId.p1.deathCountdownActive).toBe(false);
-    expect(match.boundary.illegalCrossByPlayerId.p1.countdownSeconds).toBe(GAME_CONSTANTS.match.illegalCrossPenaltyIntervalSeconds);
-    expect(match.scoreByTeamId.red).toBe(0);
-
-    match = applyHalfCourtRule(match, 'p1', 'blue', 'negativeZ', vec3(0, 0, GAME_CONSTANTS.match.halfCourtLineZ + 0.1), 0.11);
-
-    expect(match.boundary.lastEvent.type).toBe('none');
+    expect(match.boundary.illegalCrossByPlayerId.p1.deathCountdownActive).toBe(true);
+    expect(match.boundary.illegalCrossByPlayerId.p1.countdownSeconds).toBeCloseTo(0.1, 5);
     expect(match.boundary.illegalCrossByPlayerId.p1.penaltiesIssued).toBe(0);
     expect(match.scoreByTeamId.red).toBe(0);
+
+    // Tick 3: the remaining countdown elapses while still across → one penalty hit, no cross-back.
+    match = applyHalfCourtRule(match, 'p1', 'blue', 'negativeZ', vec3(0, 0, GAME_CONSTANTS.match.halfCourtLineZ + 0.1), 0.11);
+
+    expect(match.boundary.lastEvent.type).toBe('half-court-penalty');
+    expect(match.boundary.illegalCrossByPlayerId.p1.penaltiesIssued).toBe(1);
+    expect(match.scoreByTeamId.red).toBe(1);
   });
 
   it('re-crossing after the warning applies one penalty hit per second', () => {

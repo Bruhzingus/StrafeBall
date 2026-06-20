@@ -190,7 +190,11 @@ export function applyHalfCourtRule(
     existing.warningsIssued < constants.match.illegalCrossWarningsBeforePenalty;
   const warningsIssued = shouldWarn ? existing.warningsIssued + 1 : existing.warningsIssued;
   const penaltyIntervalSeconds = Math.max(0.001, constants.match.illegalCrossPenaltyIntervalSeconds);
-  const penaltyActive = !shouldWarn && (existing.deathCountdownActive || !existing.wasAcross);
+  // The player is across (checked above) and has spent their warning, so the penalty must tick. The
+  // old `(deathCountdownActive || !wasAcross)` guard meant a player who crossed, got warned, and then
+  // STAYED across never started taking damage — the countdown only began on the tick right after a
+  // re-cross (when !wasAcross was briefly true). That's the "won't tick unless you cross back" bug.
+  const penaltyActive = !shouldWarn;
   const startingCountdown = existing.deathCountdownActive ? existing.countdownSeconds : penaltyIntervalSeconds;
   const countdownSeconds = !penaltyActive
     ? penaltyIntervalSeconds
