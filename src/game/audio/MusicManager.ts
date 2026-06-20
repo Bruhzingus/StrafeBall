@@ -18,7 +18,8 @@ const IGNORE_DRIFT_SECONDS = 0.12;
 const SOFT_CORRECT_DRIFT_SECONDS = 0.5;
 const SEEK_DRIFT_SECONDS = 0.9;
 const LOBBY_MUSIC_OUTPUT_SCALE = 0.06;
-const BATTLE_MUSIC_OUTPUT_SCALE = LOBBY_MUSIC_OUTPUT_SCALE * 0.3;
+// Battle music sits at 30% of the lobby scale, boosted a further 35% so battles read louder.
+const BATTLE_MUSIC_OUTPUT_SCALE = LOBBY_MUSIC_OUTPUT_SCALE * 0.3 * 1.35;
 
 type MusicSource = 'none' | 'battle' | 'lobby';
 
@@ -275,15 +276,15 @@ export class MusicManager {
     }
   }
 
-  private outputScaleForActiveSource(): number {
+  // Per-source user volume (battle vs lobby) × the fixed engineering scale for that source.
+  private userVolumeForActiveSource(): number {
     const source = this.expectedPlayback()?.source ?? this.loadedSource;
-    if (source === 'battle') return BATTLE_MUSIC_OUTPUT_SCALE;
-    if (source === 'lobby') return LOBBY_MUSIC_OUTPUT_SCALE;
-    return LOBBY_MUSIC_OUTPUT_SCALE;
+    if (source === 'battle') return clamp(settings.battleMusicVolume, 0, 1) * BATTLE_MUSIC_OUTPUT_SCALE;
+    return clamp(settings.lobbyMusicVolume, 0, 1) * LOBBY_MUSIC_OUTPUT_SCALE;
   }
 
   private applyOutputVolume(): void {
-    this.audio.volume = clamp(settings.musicVolume, 0, 1) * this.fadeLevel * this.outputScaleForActiveSource();
+    this.audio.volume = this.fadeLevel * this.userVolumeForActiveSource();
   }
 
   private enablePitchPreservation(): void {

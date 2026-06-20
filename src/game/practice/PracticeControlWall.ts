@@ -2,7 +2,7 @@ import {
   Color3, DynamicTexture, Mesh, MeshBuilder, PBRMaterial, Scene,
   StandardMaterial, Vector3
 } from '@babylonjs/core';
-import type { PracticeState, BotDifficulty } from './PracticeState';
+import type { PracticeState } from './PracticeState';
 import type { BallManager } from '../ball/BallManager';
 import { TUNING } from '../config/tuning';
 import type { Ball } from '../ball/Ball';

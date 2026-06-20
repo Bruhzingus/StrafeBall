@@ -1,4 +1,4 @@
-import { Matrix, Vector3, Camera } from '@babylonjs/core';
+import { Vector3, Camera } from '@babylonjs/core';
 import { safeNormalize } from './math';
 
 export function yawForward(yawRadians: number): Vector3 {

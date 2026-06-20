@@ -23,7 +23,7 @@ describe('settings music volume', () => {
     vi.resetModules();
   });
 
-  it('defaults to 20 percent and persists clamped values', async () => {
+  it('defaults lobby and battle music to 20 percent and persists clamped values', async () => {
     const storage = createStorage();
     Object.defineProperty(globalThis, 'localStorage', {
       configurable: true,
@@ -31,18 +31,25 @@ describe('settings music volume', () => {
     });
 
     const { settings } = await import('../src/game/config/Settings');
-    expect(settings.musicVolume).toBe(0.2);
+    expect(settings.lobbyMusicVolume).toBe(0.2);
+    expect(settings.battleMusicVolume).toBe(0.2);
 
-    settings.setMusicVolume(2);
-    expect(settings.musicVolume).toBe(1);
+    settings.setLobbyMusicVolume(2);
+    settings.setBattleMusicVolume(-1);
+    expect(settings.lobbyMusicVolume).toBe(1);
+    expect(settings.battleMusicVolume).toBe(0);
 
-    const stored = JSON.parse(storage.getItem('strafeball.settings.v1') ?? '{}') as { musicVolume?: number };
-    expect(stored.musicVolume).toBe(1);
+    const stored = JSON.parse(storage.getItem('strafeball.settings.v1') ?? '{}') as {
+      lobbyMusicVolume?: number;
+      battleMusicVolume?: number;
+    };
+    expect(stored.lobbyMusicVolume).toBe(1);
+    expect(stored.battleMusicVolume).toBe(0);
   });
 
-  it('loads persisted music volume on boot', async () => {
+  it('loads persisted split music volumes on boot', async () => {
     const storage = createStorage({
-      'strafeball.settings.v1': JSON.stringify({ musicVolume: 0.35 })
+      'strafeball.settings.v1': JSON.stringify({ lobbyMusicVolume: 0.35, battleMusicVolume: 0.5 })
     });
     Object.defineProperty(globalThis, 'localStorage', {
       configurable: true,
@@ -50,6 +57,21 @@ describe('settings music volume', () => {
     });
 
     const { settings } = await import('../src/game/config/Settings');
-    expect(settings.musicVolume).toBe(0.35);
+    expect(settings.lobbyMusicVolume).toBe(0.35);
+    expect(settings.battleMusicVolume).toBe(0.5);
+  });
+
+  it('migrates the old single musicVolume to both split sliders', async () => {
+    const storage = createStorage({
+      'strafeball.settings.v1': JSON.stringify({ musicVolume: 0.42 })
+    });
+    Object.defineProperty(globalThis, 'localStorage', {
+      configurable: true,
+      value: storage
+    });
+
+    const { settings } = await import('../src/game/config/Settings');
+    expect(settings.lobbyMusicVolume).toBe(0.42);
+    expect(settings.battleMusicVolume).toBe(0.42);
   });
 });

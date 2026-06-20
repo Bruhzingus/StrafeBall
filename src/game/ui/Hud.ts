@@ -558,9 +558,6 @@ export class Hud {
       speed: local?.movement.speed ?? 0,
       dt: Math.max(0, frameMs / 1000)
     });
-    const staminaHtml = local
-      ? this.staminaBar(local.dash.charges, TUNING.dash.maxCharges, local.dash.charges >= TUNING.dash.maxCharges ? 'full' : `+1 in ${Math.max(0, TUNING.dash.rechargeSeconds - local.dash.rechargeTimerSeconds).toFixed(1)}s`)
-      : this.staminaBar(0, TUNING.dash.maxCharges, '-');
     this.updateStaminaWidget(
       local ? this.staminaWidgetValue(local.dash.charges, local.dash.rechargeTimerSeconds) : 0,
       TUNING.dash.maxCharges
@@ -948,15 +945,6 @@ function compareHudPlayers(a: PlayerState, b: PlayerState): number {
   if (a.teamId !== b.teamId) return a.teamId.localeCompare(b.teamId);
   if (a.teamSlotIndex !== b.teamSlotIndex) return a.teamSlotIndex - b.teamSlotIndex;
   return a.id.localeCompare(b.id);
-}
-
-function formatHudRoster(players: PlayerState[], playersPerTeam: number, localPlayerId: string): string {
-  const names = players.map((player) => {
-    const suffix = player.id === localPlayerId ? ' (You)' : player.combatState === 'eliminated' ? ' (OUT)' : player.connected === false ? ' (DC)' : '';
-    return escapeHtml(`${player.name}${suffix}`);
-  });
-  while (names.length < playersPerTeam) names.push('Open');
-  return names.join(' / ');
 }
 
 function onlineRoomStatus(room: RoomState): string {

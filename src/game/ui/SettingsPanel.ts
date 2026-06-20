@@ -15,8 +15,10 @@ export class SettingsPanel {
   private readonly sensitivityReadout: HTMLSpanElement;
   private readonly sfxSlider: HTMLInputElement;
   private readonly sfxReadout: HTMLSpanElement;
-  private readonly musicSlider: HTMLInputElement;
-  private readonly musicReadout: HTMLSpanElement;
+  private readonly lobbyMusicSlider: HTMLInputElement;
+  private readonly lobbyMusicReadout: HTMLSpanElement;
+  private readonly battleMusicSlider: HTMLInputElement;
+  private readonly battleMusicReadout: HTMLSpanElement;
   private readonly reducedEffectsToggle: HTMLInputElement;
   private readonly preventKeySteal = (event: KeyboardEvent): void => event.preventDefault();
   private expanded = false;
@@ -49,10 +51,15 @@ export class SettingsPanel {
     this.sfxSlider = this.range(0, 1, 0.05, settings.sfxVolume);
     this.sfxSlider.addEventListener('input', this.onSfxInput);
 
-    const musicLabel = this.row('Music');
-    this.musicReadout = musicLabel.readout;
-    this.musicSlider = this.range(0, 1, 0.05, settings.musicVolume);
-    this.musicSlider.addEventListener('input', this.onMusicInput);
+    const lobbyMusicLabel = this.row('Lobby Music');
+    this.lobbyMusicReadout = lobbyMusicLabel.readout;
+    this.lobbyMusicSlider = this.range(0, 1, 0.05, settings.lobbyMusicVolume);
+    this.lobbyMusicSlider.addEventListener('input', this.onLobbyMusicInput);
+
+    const battleMusicLabel = this.row('Battle Music');
+    this.battleMusicReadout = battleMusicLabel.readout;
+    this.battleMusicSlider = this.range(0, 1, 0.05, settings.battleMusicVolume);
+    this.battleMusicSlider.addEventListener('input', this.onBattleMusicInput);
 
     const effectsLabel = document.createElement('label');
     effectsLabel.className = 'settings-row settings-row--toggle';
@@ -71,8 +78,10 @@ export class SettingsPanel {
       this.sensitivitySlider,
       sfxLabel.label,
       this.sfxSlider,
-      musicLabel.label,
-      this.musicSlider,
+      lobbyMusicLabel.label,
+      this.lobbyMusicSlider,
+      battleMusicLabel.label,
+      this.battleMusicSlider,
       effectsLabel
     );
     this.root.append(this.toggleButton, this.content);
@@ -86,11 +95,13 @@ export class SettingsPanel {
     this.toggleButton.removeEventListener('click', this.toggleExpanded);
     this.sensitivitySlider.removeEventListener('input', this.onSensitivityInput);
     this.sfxSlider.removeEventListener('input', this.onSfxInput);
-    this.musicSlider.removeEventListener('input', this.onMusicInput);
+    this.lobbyMusicSlider.removeEventListener('input', this.onLobbyMusicInput);
+    this.battleMusicSlider.removeEventListener('input', this.onBattleMusicInput);
     this.reducedEffectsToggle.removeEventListener('input', this.onReducedEffectsInput);
     this.sensitivitySlider.removeEventListener('keydown', this.preventKeySteal);
     this.sfxSlider.removeEventListener('keydown', this.preventKeySteal);
-    this.musicSlider.removeEventListener('keydown', this.preventKeySteal);
+    this.lobbyMusicSlider.removeEventListener('keydown', this.preventKeySteal);
+    this.battleMusicSlider.removeEventListener('keydown', this.preventKeySteal);
     this.reducedEffectsToggle.removeEventListener('keydown', this.preventKeySteal);
     this.root.remove();
   }
@@ -105,8 +116,13 @@ export class SettingsPanel {
     this.updateReadout();
   };
 
-  private onMusicInput = (): void => {
-    settings.setMusicVolume(parseFloat(this.musicSlider.value));
+  private onLobbyMusicInput = (): void => {
+    settings.setLobbyMusicVolume(parseFloat(this.lobbyMusicSlider.value));
+    this.updateReadout();
+  };
+
+  private onBattleMusicInput = (): void => {
+    settings.setBattleMusicVolume(parseFloat(this.battleMusicSlider.value));
     this.updateReadout();
   };
 
@@ -128,7 +144,8 @@ export class SettingsPanel {
   private updateReadout(): void {
     this.sensitivityReadout.textContent = (settings.mouseSensitivity * 1000).toFixed(2);
     this.sfxReadout.textContent = `${Math.round(settings.sfxVolume * 100)}%`;
-    this.musicReadout.textContent = `${Math.round(settings.musicVolume * 100)}%`;
+    this.lobbyMusicReadout.textContent = `${Math.round(settings.lobbyMusicVolume * 100)}%`;
+    this.battleMusicReadout.textContent = `${Math.round(settings.battleMusicVolume * 100)}%`;
   }
 
   private row(labelText: string): { label: HTMLLabelElement; readout: HTMLSpanElement } {

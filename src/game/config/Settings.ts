@@ -15,7 +15,8 @@ export const MUSIC_VOLUME_DEFAULT = 0.2;
 class SettingsStore {
   public mouseSensitivity = SENSITIVITY_DEFAULT;
   public sfxVolume = SFX_VOLUME_DEFAULT;
-  public musicVolume = MUSIC_VOLUME_DEFAULT;
+  public lobbyMusicVolume = MUSIC_VOLUME_DEFAULT;
+  public battleMusicVolume = MUSIC_VOLUME_DEFAULT;
   public reducedEffects = false;
 
   constructor() {
@@ -32,8 +33,13 @@ class SettingsStore {
     this.save();
   }
 
-  setMusicVolume(value: number): void {
-    this.musicVolume = clamp(value, 0, 1);
+  setLobbyMusicVolume(value: number): void {
+    this.lobbyMusicVolume = clamp(value, 0, 1);
+    this.save();
+  }
+
+  setBattleMusicVolume(value: number): void {
+    this.battleMusicVolume = clamp(value, 0, 1);
     this.save();
   }
 
@@ -50,6 +56,8 @@ class SettingsStore {
         mouseSensitivity?: unknown;
         sfxVolume?: unknown;
         musicVolume?: unknown;
+        lobbyMusicVolume?: unknown;
+        battleMusicVolume?: unknown;
         reducedEffects?: unknown;
       };
       if (typeof parsed.mouseSensitivity === 'number' && Number.isFinite(parsed.mouseSensitivity)) {
@@ -58,8 +66,17 @@ class SettingsStore {
       if (typeof parsed.sfxVolume === 'number' && Number.isFinite(parsed.sfxVolume)) {
         this.sfxVolume = clamp(parsed.sfxVolume, 0, 1);
       }
+      // Migrate the old single `musicVolume` (pre-split) to both new sliders as a starting point.
       if (typeof parsed.musicVolume === 'number' && Number.isFinite(parsed.musicVolume)) {
-        this.musicVolume = clamp(parsed.musicVolume, 0, 1);
+        const migrated = clamp(parsed.musicVolume, 0, 1);
+        this.lobbyMusicVolume = migrated;
+        this.battleMusicVolume = migrated;
+      }
+      if (typeof parsed.lobbyMusicVolume === 'number' && Number.isFinite(parsed.lobbyMusicVolume)) {
+        this.lobbyMusicVolume = clamp(parsed.lobbyMusicVolume, 0, 1);
+      }
+      if (typeof parsed.battleMusicVolume === 'number' && Number.isFinite(parsed.battleMusicVolume)) {
+        this.battleMusicVolume = clamp(parsed.battleMusicVolume, 0, 1);
       }
       if (typeof parsed.reducedEffects === 'boolean') {
         this.reducedEffects = parsed.reducedEffects;
@@ -74,7 +91,8 @@ class SettingsStore {
       localStorage.setItem(STORAGE_KEY, JSON.stringify({
         mouseSensitivity: this.mouseSensitivity,
         sfxVolume: this.sfxVolume,
-        musicVolume: this.musicVolume,
+        lobbyMusicVolume: this.lobbyMusicVolume,
+        battleMusicVolume: this.battleMusicVolume,
         reducedEffects: this.reducedEffects
       }));
     } catch {

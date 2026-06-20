@@ -30,7 +30,7 @@ export class BallVisualEffects {
   private rng = 0x7f4a7c15;
   private disposed = false;
 
-  constructor(private readonly scene: Scene, maxParticles = 48) {
+  constructor(scene: Scene, maxParticles = 48) {
     this.trailMaterial = new StandardMaterial('ball_trail_particle_mat', scene);
     this.trailMaterial.diffuseColor = new Color3(0.65, 0.95, 1);
     this.trailMaterial.emissiveColor = new Color3(0.22, 0.7, 0.95);
