@@ -47,6 +47,9 @@ export class InputManager {
     document.removeEventListener('mouseup', this.onMouseUp);
     document.removeEventListener('pointerlockchange', this.onPointerLockChange);
     document.removeEventListener('pointerlockerror', this.onPointerLockError);
+    document.removeEventListener('visibilitychange', this.onFocusStateChange);
+    window.removeEventListener('blur', this.onFocusStateChange);
+    window.removeEventListener('focus', this.onFocusStateChange);
     if (this.pointerLockErrorTimer !== null) window.clearTimeout(this.pointerLockErrorTimer);
   }
 
@@ -124,11 +127,15 @@ export class InputManager {
     document.addEventListener('mouseup', this.onMouseUp);
     document.addEventListener('pointerlockchange', this.onPointerLockChange);
     document.addEventListener('pointerlockerror', this.onPointerLockError);
+    document.addEventListener('visibilitychange', this.onFocusStateChange);
+    window.addEventListener('blur', this.onFocusStateChange);
+    window.addEventListener('focus', this.onFocusStateChange);
   }
 
   private onKeyDown = (event: KeyboardEvent): void => {
     // Suppress browser shortcuts during play so in-game key combos can't trigger them.
-    const preserveGameFocus = event.code === 'Tab' && !isEditableTarget(event.target);
+    const suppressOverlay = document.body.getAttribute(LOCK_OVERLAY_SUPPRESSED_ATTR) === '1';
+    const preserveGameFocus = !suppressOverlay && event.code === 'Tab' && !isEditableTarget(event.target);
     if ((this.pointerLocked && !KEY_DEFAULT_ALLOWLIST.has(event.code)) || preserveGameFocus) {
       event.preventDefault();
     }
@@ -196,6 +203,7 @@ export class InputManager {
 
   private onPointerLockChange = (): void => {
     this.pointerLocked = document.pointerLockElement === this.canvas;
+    if (!this.pointerLocked) this.clearTransientInputState();
     // Show the "click to play" prompt whenever the cursor isn't locked (start, or after Esc).
     const suppressOverlay = document.body.getAttribute(LOCK_OVERLAY_SUPPRESSED_ATTR) === '1';
     const lockOverlay = document.getElementById('lock-overlay');
@@ -205,6 +213,13 @@ export class InputManager {
 
   private onPointerLockError = (): void => {
     this.showLockOverlayMessage('Mouse lock was blocked. Click the canvas directly and try again.');
+  };
+
+  private onFocusStateChange = (): void => {
+    this.onPointerLockChange();
+    if (document.hidden || document.pointerLockElement !== this.canvas) {
+      this.clearTransientInputState();
+    }
   };
 
   private showLockOverlayMessage(detail: string): void {
@@ -251,6 +266,17 @@ export class InputManager {
       if (isDown && !wasDown) this.recordMouseDown(button);
       else if (!isDown && wasDown) this.recordMouseUp(button);
     }
+  }
+
+  private clearTransientInputState(): void {
+    this.keysDown.clear();
+    this.keysPressed.clear();
+    this.keysReleased.clear();
+    this.mouseDown.clear();
+    this.mousePressed.clear();
+    this.mouseReleased.clear();
+    this.mouseDeltaX = 0;
+    this.mouseDeltaY = 0;
   }
 }
 

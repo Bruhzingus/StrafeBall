@@ -21,6 +21,7 @@ export class MultiplayerOverlay {
   private readonly pingValue: HTMLSpanElement;
   private readonly rosterValue: HTMLDivElement;
   private readonly controlsValue: HTMLDivElement;
+  private readonly settingsValue: HTMLDivElement;
   private readonly pregameValue: HTMLDivElement;
   private readonly resetValue: HTMLDivElement;
   private readonly postmatchValue: HTMLDivElement;
@@ -115,10 +116,12 @@ export class MultiplayerOverlay {
         <div class="multiplayer-room-summary"></div>
         <div class="multiplayer-pregame"></div>
         <div class="multiplayer-reset"></div>
-        <div class="multiplayer-postmatch"></div>
         <div class="multiplayer-room-notice"></div>
         <div class="multiplayer-error"></div>
       </div>
+
+      <div class="multiplayer-settings-host"></div>
+      <div class="multiplayer-postmatch multiplayer-postmatch-host"></div>
 
       <div class="fullscreen-prompt fullscreen-prompt--hidden">
         <div class="fullscreen-prompt__card">
@@ -142,6 +145,7 @@ export class MultiplayerOverlay {
     this.pingValue = this.mustQuery<HTMLSpanElement>('.multiplayer-ping');
     this.rosterValue = this.mustQuery<HTMLDivElement>('.multiplayer-room-summary');
     this.controlsValue = this.mustQuery<HTMLDivElement>('.multiplayer-controls');
+    this.settingsValue = this.mustQuery<HTMLDivElement>('.multiplayer-settings-host');
     this.pregameValue = this.mustQuery<HTMLDivElement>('.multiplayer-pregame');
     this.resetValue = this.mustQuery<HTMLDivElement>('.multiplayer-reset');
     this.postmatchValue = this.mustQuery<HTMLDivElement>('.multiplayer-postmatch');
@@ -264,6 +268,7 @@ export class MultiplayerOverlay {
     this.pingValue.textContent = this.client.pingMs === null ? '-' : `${this.client.pingMs} ms`;
     this.rosterValue.innerHTML = roomSummary.rosterHtml;
     this.controlsValue.innerHTML = roomSummary.controlsHtml;
+    this.settingsValue.innerHTML = roomSummary.settingsHtml;
     this.pregameValue.innerHTML = roomSummary.pregameHtml;
     this.resetValue.innerHTML = roomSummary.resetHtml;
     this.postmatchValue.innerHTML = roomSummary.postmatchHtml;
@@ -292,16 +297,16 @@ export class MultiplayerOverlay {
     this.joinButton.textContent = busy ? 'Joining...' : 'Join';
     this.joinInput.disabled = connected || busy;
 
-    const postmatch = connected && snapshot?.room.match.status === 'complete';
+    const reportOpen = connected && (snapshot?.room.match.status === 'complete' || snapshot?.room.match.status === 'intermission');
     // Compact HUD only while the menu is CLOSED. When the player deliberately reopens it (modalOpen),
     // show the full control surface so settings/vote controls are clearly interactive — even mid-match.
-    const compact = connected && !busy && this.client.status !== 'error' && !postmatch && !liveMatch && !this.modalOpen && !this.settingsOpen;
+    const compact = connected && !busy && this.client.status !== 'error' && !reportOpen && !liveMatch && !this.modalOpen && !this.settingsOpen;
     this.root.classList.toggle('multiplayer-modal--compact', compact);
     this.root.classList.toggle('multiplayer-modal--live', liveMatch);
-    this.root.classList.toggle('multiplayer-modal--postmatch', postmatch);
+    this.root.classList.toggle('multiplayer-modal--postmatch', reportOpen);
     this.root.classList.toggle('multiplayer-modal--connected', connected);
     this.root.classList.toggle('multiplayer-modal--settings-open', this.settingsOpen);
-    const shouldShow = (!liveMatch && (this.settingsOpen || this.modalOpen || connected)) || busy || this.client.status === 'error' || postmatch;
+    const shouldShow = (!liveMatch && (this.settingsOpen || this.modalOpen || connected)) || busy || this.client.status === 'error' || reportOpen;
     this.root.classList.toggle('multiplayer-modal--hidden', !shouldShow);
     this.syncLockOverlaySuppression();
   }
@@ -544,8 +549,13 @@ export class MultiplayerOverlay {
   }
 
   private syncLockOverlaySuppression(): void {
-    const suppress = this.modalOpen || this.settingsOpen || !this.fullscreenPrompt.classList.contains('fullscreen-prompt--hidden');
+    const reportOpen = this.client.connected &&
+      (this.client.latestSnapshot?.room.match.status === 'complete' || this.client.latestSnapshot?.room.match.status === 'intermission');
+    const suppress = this.modalOpen || this.settingsOpen || reportOpen || !this.fullscreenPrompt.classList.contains('fullscreen-prompt--hidden');
     document.body.setAttribute(LOCK_OVERLAY_SUPPRESSED_ATTR, suppress ? '1' : '0');
+    if (suppress && document.pointerLockElement) {
+      document.exitPointerLock?.();
+    }
     const lockOverlay = document.getElementById('lock-overlay');
     if (!lockOverlay) return;
     if (suppress) {
@@ -628,6 +638,7 @@ function summarizeRoom(room: RoomState | null, localPlayerId: string): {
   capacityLabel: string;
   rosterHtml: string;
   controlsHtml: string;
+  settingsHtml: string;
   pregameHtml: string;
   resetHtml: string;
   postmatchHtml: string;
@@ -640,6 +651,7 @@ function summarizeRoom(room: RoomState | null, localPlayerId: string): {
       capacityLabel: '0 / 0',
       rosterHtml: '',
       controlsHtml: '',
+      settingsHtml: '',
       pregameHtml: '',
       resetHtml: '',
       postmatchHtml: '',
@@ -694,6 +706,7 @@ function summarizeRoom(room: RoomState | null, localPlayerId: string): {
   const resetHtml = buildResetControlsHtml(room, localPlayerId);
   const postmatchHtml = buildPostmatchHtml(room, localPlayerId);
   const controlsHtml = buildControlsHtml(room, localPlayerId);
+  const settingsHtml = buildSettingsHtml(room, localPlayerId);
 
   const s = room.settings;
   return {
@@ -759,6 +772,7 @@ function summarizeRoom(room: RoomState | null, localPlayerId: string): {
     capacityLabel: `${players.length} / ${maxPlayers}`,
     rosterHtml,
     controlsHtml,
+    settingsHtml,
     pregameHtml,
     resetHtml,
     postmatchHtml,
@@ -916,16 +930,6 @@ function buildControlsHtml(room: RoomState, localPlayerId: string): string {
     ? `<button class="multiplayer-control multiplayer-control--settings" data-action="open-settings" type="button">Settings</button>`
     : '';
   const compactSummary = `${escapeHtml(s.format.toUpperCase())} - ${s.livesPerPlayer} lives - ${s.dodgeballCount} balls - ${s.roundCount} round${s.roundCount === 1 ? '' : 's'}`;
-  const settingsMenu = buildSettingsMenuHtml({
-    room,
-    permission,
-    rows,
-    presetBtn,
-    startBtn,
-    lockNote,
-    roundInfo,
-    editable
-  });
 
   return `
     <div class="multiplayer-controls__panel multiplayer-controls__panel--compact" data-editable="${editable ? '1' : '0'}">
@@ -938,8 +942,48 @@ function buildControlsHtml(room: RoomState, localPlayerId: string): string {
       <div class="multiplayer-controls__actions">${settingsButton}${startBtn}${endVoteHtml}</div>
       ${lockNote}
     </div>
-    ${settingsMenu}
   `;
+}
+
+function buildSettingsHtml(room: RoomState, localPlayerId: string): string {
+  if (room.match.status !== 'warmup') return '';
+  const isHost = !!room.hostPlayerId && room.hostPlayerId === localPlayerId;
+  const hostName = room.hostPlayerId ? (room.players[room.hostPlayerId]?.name ?? '—') : '—';
+  const s = room.settings;
+  const editable = isHost;
+  const permission = isHost
+    ? `<span class="multiplayer-host-badge">You are the host</span>`
+    : `<span class="multiplayer-guest-badge">Host: ${escapeHtml(hostName)} · view only</span>`;
+  const rows = [
+    textRow('Format', escapeHtml(s.format.toUpperCase())),
+    textRow('Preset', presetLabel(s.preset)),
+    stepRow(SETTING_FIELDS.livesPerPlayer.label, s.livesPerPlayer, 'livesPerPlayer', editable, ''),
+    stepRow(SETTING_FIELDS.dodgeballCount.label, s.dodgeballCount, 'dodgeballCount', editable, ''),
+    stepRow(SETTING_FIELDS.maxLiveBallBounces.label, s.maxLiveBallBounces, 'maxLiveBallBounces', editable, ''),
+    stepRow(SETTING_FIELDS.roundCount.label, s.roundCount, 'roundCount', editable, ''),
+    stepRow(SETTING_FIELDS.halfCourtTimerSeconds.label, s.halfCourtTimerSeconds, 'halfCourtTimerSeconds', editable, 's'),
+    matRow(s.matPreset, editable)
+  ].join('');
+  const presetId: MatchPresetId = s.format === '2v2' ? '2v2-recommended' : '1v1-recommended';
+  const presetBtn = editable && s.preset === 'custom'
+    ? `<button class="multiplayer-control" data-action="preset" data-preset="${presetId}" type="button">Reset to ${escapeHtml(s.format)} recommended</button>`
+    : '';
+  const startBtn = isHost
+    ? `<button class="multiplayer-control multiplayer-control--primary" data-action="start-match" type="button">Start Match</button>`
+    : '';
+  const lockNote = !isHost
+    ? `<div class="multiplayer-controls__hint">Only the host can change settings.</div>`
+    : '';
+  return buildSettingsMenuHtml({
+    room,
+    permission,
+    rows,
+    presetBtn,
+    startBtn,
+    lockNote,
+    roundInfo: `Round ${room.match.currentRound} / ${room.match.roundCount}`,
+    editable
+  });
 }
 
 function buildSettingsMenuHtml(args: {
