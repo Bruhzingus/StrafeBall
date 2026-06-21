@@ -264,7 +264,7 @@ export class ArenaScene {
     this.nametags = new Nametags(hudRoot);
     this.backflipQteHud = new BackflipQteHud(hudRoot);
     this.settingsPanel = new SettingsPanel();
-    this.multiplayerOverlay = new MultiplayerOverlay(this.multiplayer);
+    this.multiplayerOverlay = new MultiplayerOverlay(this.multiplayer, this.input);
     this.networkRenderer = new NetworkRenderer(this.scene, this.ballVisualEffects);
     this.onlineTeamSelector = new OnlineTeamSelectorPads(this.scene);
   }

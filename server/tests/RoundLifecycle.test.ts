@@ -307,4 +307,21 @@ describe('Stage 4 — early-end vote + host start', () => {
     expect(loop.handleStartMatch('a').ok).toBe(true);
     expect(loop.state.match.status).toBe('countdown');
   });
+
+  it('a full 1v1 lobby waits in warmup and starts only once both players vote', () => {
+    const loop = new ServerGameLoop('room');
+    loop.addPlayer('a', 'A');
+    loop.addPlayer('b', 'B');
+
+    // Filling the lobby must NOT silently start the match.
+    expect(loop.state.match.status).toBe('warmup');
+
+    expect(loop.handleStartVote('a').ok).toBe(true);
+    expect(loop.state.startVote.voteCount).toBe(1);
+    expect(loop.state.startVote.requiredVotes).toBe(2);
+    expect(loop.state.match.status).toBe('warmup');
+
+    expect(loop.handleStartVote('b').ok).toBe(true);
+    expect(loop.state.match.status).toBe('countdown');
+  });
 });

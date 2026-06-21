@@ -839,9 +839,8 @@ export class ServerGameLoop {
   handleStartVote(playerId: string): ActionResult {
     const player = this.state.players[playerId];
     if (!player) return { ok: false, reason: 'unknown-player' };
-    if (this.matchMode !== '2v2') return { ok: false, reason: 'unsupported-mode' };
     if (this.state.match.status !== 'warmup') return { ok: false, reason: 'match-already-started' };
-    if (!this.allConnectedPlayersChoseTeams()) return { ok: false, reason: 'teams-not-chosen' };
+    if (this.matchMode === '2v2' && !this.allConnectedPlayersChoseTeams()) return { ok: false, reason: 'teams-not-chosen' };
     if (!this.canVoteStart()) return { ok: false, reason: 'start-not-available' };
 
     this.pruneStartVotes(this.now());
@@ -3096,8 +3095,6 @@ export class ServerGameLoop {
 
     if (this.state.match.status === 'countdown' || this.state.match.status === 'playing') {
       this.resolveForfeitIfNeeded(reason);
-    } else if (this.matchMode === '1v1' && this.shouldAutoStart()) {
-      this.beginPregameCountdown('auto');
     } else {
       this.state.match = { ...this.state.match, status: 'warmup', countdownSeconds: 0, winnerTeamId: null };
       this.syncStartVoteState();
@@ -3140,10 +3137,9 @@ export class ServerGameLoop {
   }
 
   private canVoteStart(players: PlayerState[] = Object.values(this.state.players)): boolean {
-    if (this.matchMode !== '2v2') return false;
     const connectedPlayers = players.filter((player) => player.connected !== false);
     if (connectedPlayers.length < 2) return false;
-    if (!this.allConnectedPlayersChoseTeams(connectedPlayers)) return false;
+    if (this.matchMode === '2v2' && !this.allConnectedPlayersChoseTeams(connectedPlayers)) return false;
     return this.connectedTeamCount(connectedPlayers) >= this.teamsRequiredToPlay;
   }
 

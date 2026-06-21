@@ -3042,6 +3042,26 @@ html, body {
   box-shadow: 1px 1px 0 var(--ink);
 }
 
+.multiplayer-start-vote-wrap {
+  margin-top: 10px;
+  text-align: center;
+}
+
+.multiplayer-start-vote-hint {
+  margin-top: 6px;
+  color: rgba(255, 255, 255, 0.78);
+  font-size: 11px;
+  font-weight: 800;
+}
+
+.multiplayer-pregame-card--solo {
+  text-align: center;
+}
+
+.multiplayer-pregame-card--solo .multiplayer-start-vote-wrap {
+  margin-top: 0;
+}
+
 .multiplayer-room-summary__line + .multiplayer-room-summary__line {
   margin-top: 3px;
 }
@@ -3175,14 +3195,10 @@ html, body {
 
 .multiplayer-modal--postmatch {
   box-sizing: border-box;
-  display: block;
-  padding: 0;
-  pointer-events: none;
-  background: transparent;
-}
-
-.multiplayer-modal--postmatch .multiplayer-modal__shade {
-  display: none;
+  display: grid;
+  place-items: center;
+  padding: 16px;
+  pointer-events: auto;
 }
 
 .multiplayer-modal--postmatch .multiplayer-panel--lobby {
@@ -3204,33 +3220,28 @@ html, body {
 }
 
 .multiplayer-modal--postmatch .multiplayer-postmatch {
-  position: fixed;
-  top: 12px;
-  left: 50%;
+  position: relative;
   z-index: 1;
-  display: grid;
-  width: min(1180px, calc(100vw - 32px));
-  max-width: calc(100vw - 32px);
-  height: auto;
-  min-height: 0;
+  display: block;
+  width: min(640px, calc(100vw - 32px));
+  max-height: calc(100vh - 32px);
   margin: 0;
-  transform: translateX(-50%);
+  overflow: auto;
   pointer-events: auto;
 }
 
 .multiplayer-modal--postmatch .multiplayer-report-card {
-  display: grid;
-  grid-template-columns: minmax(220px, 1.15fr) minmax(280px, 1fr) minmax(360px, 1.35fr);
-  align-items: center;
+  display: flex;
+  flex-direction: column;
   gap: 14px;
   box-sizing: border-box;
   min-height: 0;
   height: auto;
   max-height: none;
-  padding: 12px 14px 12px 24px;
+  padding: 22px 22px 18px 30px;
   overflow: visible;
   border-width: 3px;
-  box-shadow: 5px 5px 0 rgba(0, 0, 0, 0.32);
+  box-shadow: 6px 6px 0 rgba(0, 0, 0, 0.32);
 }
 
 .multiplayer-modal--postmatch .multiplayer-report-card::before {
@@ -3252,7 +3263,7 @@ html, body {
 
 .multiplayer-modal--postmatch .multiplayer-report-card__title {
   margin-top: 4px;
-  font-size: 30px;
+  font-size: 38px;
   line-height: 0.95;
 }
 
@@ -3290,38 +3301,24 @@ html, body {
 
 .multiplayer-modal--postmatch .multiplayer-report-card--compact .multiplayer-report-card__actions {
   grid-template-columns: repeat(3, minmax(0, 1fr));
-  gap: 7px;
-  margin-top: 0;
+  gap: 12px;
+  margin-top: 4px;
 }
 
 .multiplayer-modal--postmatch .multiplayer-report-card--compact .multiplayer-postmatch-action {
-  min-height: 42px;
-  padding: 8px 9px;
-  border-width: 2px;
-  border-radius: 9px;
-  font-size: 12px;
+  min-height: 50px;
+  padding: 12px 14px;
+  border-width: 2.5px;
+  border-radius: 11px;
+  font-size: 14px;
   white-space: normal;
 }
 
 .multiplayer-modal--postmatch .multiplayer-report-card--compact .multiplayer-report-card__vote {
   grid-column: 1 / -1;
-  margin-top: 0;
-  padding: 6px 8px;
-  font-size: 11px;
-}
-
-@media (max-width: 1040px) {
-  .multiplayer-modal--postmatch .multiplayer-report-card {
-    grid-template-columns: minmax(220px, 0.9fr) minmax(320px, 1.1fr);
-  }
-
-  .multiplayer-modal--postmatch .multiplayer-report-card__summary {
-    grid-template-columns: repeat(3, minmax(0, 1fr));
-  }
-
-  .multiplayer-modal--postmatch .multiplayer-report-card--compact .multiplayer-report-card__actions {
-    grid-column: 1 / -1;
-  }
+  margin-top: 4px;
+  padding: 10px 14px;
+  font-size: 15px;
 }
 
 .multiplayer-modal--postmatch .multiplayer-report-card__teams {
@@ -3422,10 +3419,6 @@ html, body {
   grid-template-columns: repeat(3, minmax(0, 1fr));
   gap: 12px;
   margin-top: 0;
-}
-
-.multiplayer-modal--postmatch .multiplayer-report-card[data-mode="1v1"] .multiplayer-report-card__actions {
-  grid-template-columns: repeat(2, minmax(0, 1fr));
 }
 
 .multiplayer-modal--postmatch .multiplayer-postmatch-action {

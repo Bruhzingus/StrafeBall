@@ -1,4 +1,4 @@
-import{S as i}from"./index-B-lXPk8c.js";const e="selectionPixelShader",f=`#ifdef INSTANCES
+import{S as i}from"./index-D45qlY7R.js";const e="selectionPixelShader",f=`#ifdef INSTANCES
 flat varying vSelectionId: f32;
 #else
 uniform selectionId: f32;

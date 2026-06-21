@@ -1103,13 +1103,15 @@ describe('ServerGameLoop', () => {
       expect(loop.state.match.winnerTeamId).toBe('red');
     });
 
-    it('keeps 1v1 fallback behavior by rejecting 2v2-only pregame actions', () => {
+    it('1v1 supports the shared start vote but rejects 2v2-only team switching', () => {
       const loop = new ServerGameLoop('room');
       loop.addPlayer('a', 'A');
       loop.addPlayer('b', 'B');
 
-      expect(loop.handleStartVote('a').ok).toBe(false);
       expect(loop.handleTeamSwitch('a', 'red').ok).toBe(false);
+      expect(loop.state.match.status).toBe('warmup');
+      expect(loop.handleStartVote('a').ok).toBe(true);
+      expect(loop.handleStartVote('b').ok).toBe(true);
       expect(loop.state.match.status).toBe('countdown');
     });
   });
@@ -1379,6 +1381,7 @@ describe('ServerGameLoop', () => {
     const loop = new ServerGameLoop('room');
     loop.addPlayer('a', 'A');
     loop.addPlayer('b', 'B');
+    loop.state.match = { ...loop.state.match, status: 'playing' };
 
     loop.abandon('b');
 
@@ -1388,11 +1391,14 @@ describe('ServerGameLoop', () => {
   });
 
   describe('pre-round countdown (fixes the post-reset freeze)', () => {
-    it('enters a countdown when the second player joins, then flips to playing after it elapses', () => {
+    it('enters a countdown once both players vote to start, then flips to playing after it elapses', () => {
       const loop = new ServerGameLoop('room');
       loop.addPlayer('a', 'A');
       expect(loop.state.match.status).toBe('warmup');
       loop.addPlayer('b', 'B');
+      expect(loop.state.match.status).toBe('warmup');
+      loop.handleStartVote('a');
+      loop.handleStartVote('b');
       expect(loop.state.match.status).toBe('countdown');
       expect(loop.state.match.countdownSeconds).toBeCloseTo(GAME_CONSTANTS.match.countdownSeconds, 5);
 
@@ -1407,6 +1413,8 @@ describe('ServerGameLoop', () => {
       const loop = new ServerGameLoop('room');
       loop.addPlayer('a', 'A');
       loop.addPlayer('b', 'B');
+      loop.handleStartVote('a');
+      loop.handleStartVote('b');
       expect(loop.state.match.status).toBe('countdown');
 
       const spawnZ = loop.state.players.a.movement.position.z;

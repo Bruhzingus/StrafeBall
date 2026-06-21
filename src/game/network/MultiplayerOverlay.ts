@@ -2,10 +2,10 @@ import { GAME_CONSTANTS } from '../../../shared/constants';
 import type { LobbyMode } from '../practice/LobbyModePortals';
 import type { MatchMode, MatchPresetId, PlayerState, RoomState } from '../../../shared/types';
 import { ALLOWED_MAT_PRESETS, ROOM_SETTINGS_LIMITS, type RoomSettingsPatch, votesRequiredForPass } from '../../../shared/roomSettings';
+import type { InputManager } from '../input/InputManager';
 import { MultiplayerClient } from './MultiplayerClient';
 
 type PendingAction = (() => Promise<void>) | null;
-const LOCK_OVERLAY_SUPPRESSED_ATTR = 'data-suppress-lock-overlay';
 
 const MODE_LABEL: Record<LobbyMode, string> = {
   '1v1': '1v1 Private Duel',
@@ -62,7 +62,7 @@ export class MultiplayerOverlay {
     roomSummaryKey: ''
   };
 
-  constructor(private readonly client: MultiplayerClient) {
+  constructor(private readonly client: MultiplayerClient, private readonly input: InputManager) {
     this.root = document.createElement('div');
     this.root.className = 'multiplayer-modal multiplayer-modal--hidden';
     this.root.setAttribute('data-no-lock', 'true');
@@ -209,7 +209,6 @@ export class MultiplayerOverlay {
     this.settingsOpen = false;
     this.awaitingInteractReleaseFocus = true;
     this.syncLockOverlaySuppression();
-    document.exitPointerLock?.();
     this.root.classList.remove('multiplayer-modal--hidden');
     this.update();
   }
@@ -593,19 +592,7 @@ export class MultiplayerOverlay {
     const reportOpen = this.client.connected &&
       (this.client.latestSnapshot?.room.match.status === 'complete' || this.client.latestSnapshot?.room.match.status === 'intermission');
     const suppress = this.modalOpen || this.settingsOpen || reportOpen || !this.fullscreenPrompt.classList.contains('fullscreen-prompt--hidden');
-    document.body.setAttribute(LOCK_OVERLAY_SUPPRESSED_ATTR, suppress ? '1' : '0');
-    if (suppress && document.pointerLockElement) {
-      document.exitPointerLock?.();
-    }
-    const lockOverlay = document.getElementById('lock-overlay');
-    if (!lockOverlay) return;
-    if (suppress) {
-      lockOverlay.classList.add('hidden');
-      return;
-    }
-    if (!document.pointerLockElement) {
-      lockOverlay.classList.remove('hidden');
-    }
+    this.input.setLockSuppressed(suppress);
   }
 
   private flashCopied(): void {
@@ -1080,8 +1067,42 @@ function buildSettingsMenuHtml(args: {
   `;
 }
 
+/**
+ * Single, simple centered "Start Game" button shared by both formats — every connected player
+ * clicks it to cast a start vote; the server is authoritative on when the threshold is met.
+ */
+function buildStartButtonHtml(room: RoomState, localPlayerId: string): string {
+  const choicesReady = room.startVote.requiredTeamChoices === 0 ||
+    room.startVote.teamChoiceCount >= room.startVote.requiredTeamChoices;
+  const localVoted = room.startVote.votesByPlayerId[localPlayerId] === true;
+  const startEnabled = choicesReady && room.startVote.requiredVotes > 0 && !localVoted;
+  const startLabel = localVoted ? 'Waiting...' : 'Start Game';
+  const hint = !choicesReady
+    ? 'Choose teams to unlock Start Game.'
+    : room.startVote.requiredVotes === 0
+      ? 'Waiting for an opponent...'
+      : localVoted
+        ? `Waiting on ${Math.max(0, room.startVote.requiredVotes - room.startVote.voteCount)} more player${room.startVote.requiredVotes - room.startVote.voteCount === 1 ? '' : 's'}...`
+        : '';
+  return `
+    <div class="multiplayer-start-vote-wrap">
+      <button class="multiplayer-start-vote multiplayer-start-vote--big" type="button"${startEnabled ? '' : ' disabled'}>${startLabel}</button>
+      ${hint ? `<div class="multiplayer-start-vote-hint">${escapeHtml(hint)}</div>` : ''}
+    </div>
+  `;
+}
+
 function buildPregameHtml(room: RoomState, localPlayerId: string): string {
-  if (room.match.mode !== '2v2' || room.match.status !== 'warmup') return '';
+  if (room.match.status !== 'warmup') return '';
+
+  if (room.match.mode !== '2v2') {
+    return `
+      <div class="multiplayer-pregame-card multiplayer-pregame-card--solo">
+        ${buildStartButtonHtml(room, localPlayerId)}
+      </div>
+    `;
+  }
+
   const teams = room.match.teamIds.map((teamId) => {
     const rows: string[] = [];
     for (let slotIndex = 0; slotIndex < room.match.playersPerTeam; slotIndex += 1) {
@@ -1112,32 +1133,11 @@ function buildPregameHtml(room: RoomState, localPlayerId: string): string {
     return rows.join('');
   }).join('');
 
-  const choicesReady = room.startVote.requiredTeamChoices > 0 &&
-    room.startVote.teamChoiceCount >= room.startVote.requiredTeamChoices;
-  const choiceVoters = votersLabel(room, room.startVote.teamChoicesByPlayerId);
-  const choiceLine = room.startVote.requiredTeamChoices > 0
-    ? `Teams chosen: ${room.startVote.teamChoiceCount}/${room.startVote.requiredTeamChoices}${choiceVoters ? ` (${choiceVoters})` : ''}`
-    : 'Choose teams to unlock start vote';
-  const startVoters = votersLabel(room, room.startVote.votesByPlayerId);
-  const voteLine = choicesReady && room.startVote.requiredVotes > 0
-    ? `Vote start: ${room.startVote.voteCount}/${room.startVote.requiredVotes}${startVoters ? ` (${startVoters})` : ''}`
-    : choiceLine;
-  const localVoted = room.startVote.votesByPlayerId[localPlayerId] === true;
-  const startEnabled = choicesReady && room.startVote.requiredVotes > 0 && !localVoted;
-  const startLabel = choicesReady
-    ? localVoted
-      ? `Voted${formatVoteTally(room.startVote.voteCount, room.startVote.requiredVotes)}`
-      : `Start Vote${formatVoteTally(room.startVote.voteCount, room.startVote.requiredVotes)}`
-    : 'Choose Teams First';
-
   return `
     <div class="multiplayer-pregame-card">
       <div class="multiplayer-pregame-title">Pre-Game Teams</div>
       <div class="multiplayer-pregame-slots">${teams}</div>
-      <div class="multiplayer-pregame-footer">
-        <span>${voteLine}</span>
-      </div>
-      <button class="multiplayer-start-vote multiplayer-start-vote--big" type="button"${startEnabled ? '' : ' disabled'}>${startLabel}</button>
+      ${buildStartButtonHtml(room, localPlayerId)}
     </div>
   `;
 }

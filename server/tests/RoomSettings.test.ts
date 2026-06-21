@@ -33,7 +33,7 @@ describe('ServerGameLoop host + settings authority', () => {
   it('makes the room creator the host and exposes it in the snapshot', () => {
     const loop = new ServerGameLoop('room');
     expect(loop.getHostPlayerId()).toBeNull();
-    // A single player keeps the room in the lobby (a full 1v1 roster auto-starts the countdown).
+    // A single player keeps the room in the lobby; a full 1v1 roster also waits for a start vote.
     loop.addPlayer('a', 'A');
     expect(loop.getHostPlayerId()).toBe('a');
     const snapshot = loop.snapshot();

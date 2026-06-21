@@ -18,8 +18,8 @@ const IGNORE_DRIFT_SECONDS = 0.12;
 const SOFT_CORRECT_DRIFT_SECONDS = 0.5;
 const SEEK_DRIFT_SECONDS = 0.9;
 const LOBBY_MUSIC_OUTPUT_SCALE = 0.06;
-// Battle music sits at 30% of the lobby scale, boosted a further 35% so battles read louder.
-const BATTLE_MUSIC_OUTPUT_SCALE = LOBBY_MUSIC_OUTPUT_SCALE * 0.3 * 1.35;
+// Battle music sits at 30% of the lobby scale, boosted a further 55% so battles read louder.
+const BATTLE_MUSIC_OUTPUT_SCALE = LOBBY_MUSIC_OUTPUT_SCALE * 0.3 * 1.55;
 
 type MusicSource = 'none' | 'battle' | 'lobby';
 

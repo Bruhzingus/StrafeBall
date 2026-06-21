@@ -1,6 +1,5 @@
 export type MouseButton = 0 | 1 | 2;
 
-const LOCK_OVERLAY_SUPPRESSED_ATTR = 'data-suppress-lock-overlay';
 const TRACKED_MOUSE_BUTTONS: MouseButton[] = [0, 1, 2];
 
 // While the cursor is locked (i.e. you're playing) we swallow the browser's default action for
@@ -21,11 +20,31 @@ export class InputManager {
   private mouseDeltaY = 0;
 
   public pointerLocked = false;
+  // Owned exclusively by setLockSuppressed (called once per frame by whatever UI needs the cursor
+  // free — the multiplayer menu, settings, the postmatch report card). Reading this directly,
+  // rather than relaying it through a DOM attribute someone else also writes, is what keeps the
+  // overlay's hidden/shown state and the actual requestPointerLock() gating from drifting apart.
+  private suppressed = false;
   private pointerLockErrorTimer: number | null = null;
 
   constructor(canvas: HTMLCanvasElement) {
     this.canvas = canvas;
     this.bind();
+  }
+
+  /**
+   * Tell the input layer the cursor must stay free right now (a menu/report-card/settings panel
+   * is up). Synchronously exits pointer lock if it was active and re-syncs the "Click to play"
+   * overlay, instead of relying on the next pointerlockchange event (which won't fire at all if
+   * the cursor was already unlocked) or a separately-written DOM attribute.
+   */
+  setLockSuppressed(suppressed: boolean): void {
+    if (this.suppressed === suppressed) return;
+    this.suppressed = suppressed;
+    if (suppressed && document.pointerLockElement === this.canvas) {
+      document.exitPointerLock?.();
+    }
+    this.syncLockOverlayVisibility();
   }
 
   dispose(): void {
@@ -54,6 +73,7 @@ export class InputManager {
   }
 
   requestPointerLock(): void {
+    if (this.suppressed) return;
     if (document.pointerLockElement === this.canvas) return;
     if (typeof this.canvas.requestPointerLock !== 'function') {
       this.showLockOverlayMessage('Pointer Lock is not available in this browser.');
@@ -134,8 +154,7 @@ export class InputManager {
 
   private onKeyDown = (event: KeyboardEvent): void => {
     // Suppress browser shortcuts during play so in-game key combos can't trigger them.
-    const suppressOverlay = document.body.getAttribute(LOCK_OVERLAY_SUPPRESSED_ATTR) === '1';
-    const preserveGameFocus = !suppressOverlay && event.code === 'Tab' && !isEditableTarget(event.target);
+    const preserveGameFocus = !this.suppressed && event.code === 'Tab' && !isEditableTarget(event.target);
     if ((this.pointerLocked && !KEY_DEFAULT_ALLOWLIST.has(event.code)) || preserveGameFocus) {
       event.preventDefault();
     }
@@ -204,12 +223,17 @@ export class InputManager {
   private onPointerLockChange = (): void => {
     this.pointerLocked = document.pointerLockElement === this.canvas;
     if (!this.pointerLocked) this.clearTransientInputState();
-    // Show the "click to play" prompt whenever the cursor isn't locked (start, or after Esc).
-    const suppressOverlay = document.body.getAttribute(LOCK_OVERLAY_SUPPRESSED_ATTR) === '1';
-    const lockOverlay = document.getElementById('lock-overlay');
-    lockOverlay?.classList.toggle('hidden', this.pointerLocked || suppressOverlay);
+    const lockOverlay = this.syncLockOverlayVisibility();
     if (this.pointerLocked && lockOverlay) this.resetLockOverlayMessage(lockOverlay);
   };
+
+  // Show the "click to play" prompt whenever the cursor isn't locked and nothing is suppressing
+  // it (start, or after Esc); hide it the instant either condition flips the other way.
+  private syncLockOverlayVisibility(): HTMLElement | null {
+    const lockOverlay = document.getElementById('lock-overlay');
+    lockOverlay?.classList.toggle('hidden', this.pointerLocked || this.suppressed);
+    return lockOverlay;
+  }
 
   private onPointerLockError = (): void => {
     this.showLockOverlayMessage('Mouse lock was blocked. Click the canvas directly and try again.');
