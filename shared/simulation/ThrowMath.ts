@@ -26,24 +26,35 @@ export interface ThrowCalculationResult {
  * relative to the thrower's aim — not relative to world X/Z — so the curve is consistent from every
  * spawn side and facing direction. The curve direction is the horizontal vector perpendicular to
  * the aim forward, signed so the ball bends to the side OPPOSITE the throwing hand (a left-hand
- * crouch throw curves to the thrower's right, and vice-versa). Magnitude is `ball.curveStrength`.
+ * crouch throw curves to the thrower's right, and vice-versa).
+ *
+ * Magnitude scales with charge so a quick crouch throw barely curves and a fully-charged one curves
+ * hard: curveStrength = baseCurveStrength + maxCurveStrength * charge01^curveExponent (exponential,
+ * not linear, so the curve stays subtle until charge is well past halfway). Backflip/super throws
+ * never curve, regardless of crouch state.
  *
  * Both the server (authoritative throw) and the client (visual prediction) call this with the same
- * inputs, so the predicted path matches the simulated one. Returns a zero vector when not crouched.
+ * inputs, so the predicted path matches the simulated one. Returns a zero vector when not crouched
+ * or when this is a super throw.
  */
 export function curveAccelForThrow(
   forward: Vec3,
   hand: HandSide,
   crouching: boolean,
+  charge01: number,
+  isSuper: boolean,
   constants: GameConstants = GAME_CONSTANTS
 ): Vec3 {
-  if (!crouching) return vec3();
+  if (!crouching || isSuper) return vec3();
   // Horizontal right vector relative to aim: right = up x forward (normalized, flattened to XZ).
   const right = normalize(cross(vec3(0, 1, 0), forward), vec3(1, 0, 0));
   const flatRight = normalize(vec3(right.x, 0, right.z), vec3(1, 0, 0));
   // Curve toward the side opposite the throwing hand: left hand → +right, right hand → −right.
   const sign = hand === 'left' ? 1 : -1;
-  return scale(flatRight, sign * constants.ball.curveStrength);
+  const { baseCurveStrength, maxCurveStrength, curveExponent } = constants.ball;
+  const normalizedCharge = Math.max(0, Math.min(1, charge01));
+  const curveStrength = baseCurveStrength + maxCurveStrength * Math.pow(normalizedCharge, curveExponent);
+  return scale(flatRight, sign * curveStrength);
 }
 
 /**
@@ -76,7 +87,7 @@ export function calculateThrow(
     scale(forward, speed),
     scale(request.playerVelocity, constants.ball.movementThrowScale)
   );
-  const curveAccel = curveAccelForThrow(forward, request.hand, request.crouching, constants);
+  const curveAccel = curveAccelForThrow(forward, request.hand, request.crouching, charge01, isSuper, constants);
   const dropScale = isSuper
     ? constants.ball.chargedDropScale
     : lerp(constants.ball.quickDropScale, constants.ball.chargedDropScale, charge01);

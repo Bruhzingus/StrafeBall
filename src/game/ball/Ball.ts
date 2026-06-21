@@ -3,6 +3,8 @@ import { BallOwner, BallState, HandSide } from './BallState';
 import { TUNING } from '../config/tuning';
 import { CollisionWorld } from '../map/Collider';
 import { BLEACHER_LAYOUT } from '../../../shared/simulation/MapGeometry';
+import { GAME_CONSTANTS } from '../../../shared/constants';
+import { curveRampFactor } from '../../../shared/simulation/BallSim';
 
 let nextBallId = 1;
 const IMPACT_SQUASH_MIN_SPEED = 8;
@@ -23,6 +25,8 @@ export class Ball {
   // Sustained sideways acceleration (world space) for crouch curve throws; applied only
   // during the first live flight. Zero for straight throws.
   public curveAccel = Vector3.Zero();
+  // Meters traveled since this throw's first live flight began; gates the curve start/ramp.
+  public curveDistance = 0;
   // Visual-only state updated by BallManager. These never feed back into gameplay physics.
   public visualTrailTimer = 0;
   public impactPulse = 0;
@@ -55,6 +59,7 @@ export class Ball {
     this.bounceCount = 0;
     this.isSuper = isSuper;
     this.dropScale = dropScale;
+    this.curveDistance = 0;
     if (curveAccel) this.curveAccel.copyFrom(curveAccel);
     else this.curveAccel.setAll(0);
   }
@@ -82,10 +87,12 @@ export class Ball {
     const firstFlight = this.state === BallState.Live && this.bounceCount === 0;
     const gravityScale = firstFlight ? this.dropScale : 1;
     this.velocity.y -= TUNING.ball.gravity * gravityScale * dt;
-    // Crouch curve: sideways accel only bends the live ball's first flight.
+    // Crouch curve: sideways accel only bends the live ball's first flight, ramped in by
+    // curveRampFactor (flat zero until curveStartDistance, smoothstep up to full strength).
     if (firstFlight) {
-      this.velocity.x += this.curveAccel.x * dt;
-      this.velocity.z += this.curveAccel.z * dt;
+      const rampFactor = curveRampFactor(this.curveDistance, GAME_CONSTANTS);
+      this.velocity.x += this.curveAccel.x * rampFactor * dt;
+      this.velocity.z += this.curveAccel.z * rampFactor * dt;
     }
     if ((this.state === BallState.Dead || this.state === BallState.Loose) && this.mesh.position.y <= TUNING.ball.radius + 0.05) {
       const frictionFactor = Math.max(0, 1 - TUNING.ball.looseFriction * dt);
@@ -96,6 +103,11 @@ export class Ball {
     this.mesh.position.x += this.velocity.x * dt;
     this.mesh.position.y += this.velocity.y * dt;
     this.mesh.position.z += this.velocity.z * dt;
+    if (firstFlight) {
+      this.curveDistance += Math.sqrt(
+        this.velocity.x * this.velocity.x + this.velocity.y * this.velocity.y + this.velocity.z * this.velocity.z
+      ) * dt;
+    }
 
     this.resolveSimpleBounds();
     if (collision) this.resolveBoxCollisions(collision);

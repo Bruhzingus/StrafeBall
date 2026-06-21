@@ -78,5 +78,8 @@
       "Grep",
       "Read"
     ]
+  },
+  "enabledPlugins": {
+    "ponytail@ponytail": true
   }
 }

@@ -142,7 +142,20 @@ exports.GAME_CONSTANTS = {
         chargeMinMultiplier: 0.65,
         chargedDropScale: 0,
         quickDropScale: 0.5,
-        curveStrength: 13.5,
+        // Crouch-throw curve strength (units: lateral accel applied per second of flight) scales with
+        // charge: curveStrength = baseCurveStrength + maxCurveStrength * charge01^curveExponent. A
+        // higher curveExponent keeps quick/half throws closer to base and reserves the big curve for
+        // near-full charge; raise/lower maxCurveStrength to make the strongest curve stronger/weaker.
+        baseCurveStrength: 1,
+        maxCurveStrength: 26,
+        curveExponent: 4,
+        // The curve doesn't start bending the ball until it has traveled this far (a dead-straight
+        // "release window"), then ramps up to full strength over curveRampDistance meters using a
+        // smoothstep (smooth, not an instant shove, but quick because curveRampDistance is short).
+        // Raise curveStartDistance to delay the curve further; shrink curveRampDistance for a sharper
+        // ramp, grow it for a more gradual one.
+        curveStartDistance: 2,
+        curveRampDistance: 1.5,
         movementThrowScale: 0.35,
         secondThrowDelaySeconds: 0.2,
         fastDoubleThrowPenalty: 0.82,
@@ -196,7 +209,8 @@ exports.GAME_CONSTANTS = {
         // Auto-parry stays automatic while aiming within this cone of an incoming live ball. 30° gives
         // enough tolerance that a shot to the head/feet or slightly off-center still parries as long as
         // you're looking in its direction — the old 20° felt broken on anything but a dead-center shot.
-        coneDegrees: 30,
+        // Nerfed 4° (30 -> 26) to tighten it back up.
+        coneDegrees: 26,
         // The ball must come within this distance of your eye to parry. The old 0.925 m meant the ball
         // had to be almost touching your face: a fast throw was only inside that shell for ~1 frame, so
         // parries fired inconsistently or not at all. Matched closer to the catch reach so you can knock

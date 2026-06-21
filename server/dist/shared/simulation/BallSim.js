@@ -13,6 +13,7 @@ exports.catchBall = catchBall;
 exports.deflectBall = deflectBall;
 exports.applyBallBounce = applyBallBounce;
 exports.settleBallIfSlow = settleBallIfSlow;
+exports.curveRampFactor = curveRampFactor;
 exports.advanceBall = advanceBall;
 const constants_1 = require("../constants");
 const CollisionMath_1 = require("./CollisionMath");
@@ -30,6 +31,7 @@ function createBallState(id, position = (0, CollisionMath_1.vec3)(), overrides =
         isSuper: false,
         dropScale: 1,
         curveAccel: (0, CollisionMath_1.vec3)(),
+        curveDistance: 0,
         lastTouchedByPlayerId: null,
         throwId: 0
     };
@@ -88,6 +90,7 @@ function holdBall(ball, playerId, hand) {
         isSuper: false,
         dropScale: 1,
         curveAccel: (0, CollisionMath_1.vec3)(),
+        curveDistance: 0,
         lastTouchedByPlayerId: playerId
     };
 }
@@ -138,6 +141,7 @@ function throwHeldBall(ball, request) {
             isSuper: request.isSuper ?? false,
             dropScale: request.dropScale ?? 1,
             curveAccel: (0, CollisionMath_1.cloneVec3)(request.curveAccel ?? (0, CollisionMath_1.vec3)()),
+            curveDistance: 0,
             lastTouchedByPlayerId: request.playerId,
             throwId: request.throwId ?? ball.throwId
         }
@@ -161,6 +165,7 @@ function deflectBall(ball, defenderPlayerId, forward, constants = constants_1.GA
         bounceCount: 0,
         isSuper: false,
         curveAccel: (0, CollisionMath_1.vec3)(),
+        curveDistance: 0,
         lastTouchedByPlayerId: defenderPlayerId,
         // A deflect is a new live identity — bump throwId so the client snaps its prediction.
         throwId: throwId ?? ball.throwId
@@ -199,14 +204,25 @@ function settleBallIfSlow(ball, constants = constants_1.GAME_CONSTANTS) {
         isSuper: false
     };
 }
+/**
+ * Smooth 0→1 ramp for the crouch curve: flat zero until `curveStartDistance` meters into the
+ * flight, then a smoothstep rise to full strength over the next `curveRampDistance` meters. Short
+ * ramp distance = a sharp snap into the curve; longer = a gentler build-up.
+ */
+function curveRampFactor(distanceTraveled, constants) {
+    const { curveStartDistance, curveRampDistance } = constants.ball;
+    const t = Math.max(0, Math.min(1, (distanceTraveled - curveStartDistance) / curveRampDistance));
+    return t * t * (3 - 2 * t);
+}
 function advanceBall(ball, dt, constants = constants_1.GAME_CONSTANTS) {
     if (ball.phase !== 'live' && ball.phase !== 'dead' && ball.phase !== 'loose' && ball.phase !== 'deflected')
         return ball;
     const firstLiveFlight = ball.phase === 'live' && ball.bounceCount === 0;
     const gravityScale = firstLiveFlight ? ball.dropScale : 1;
     const velocityWithGravity = (0, CollisionMath_1.add)(ball.velocity, (0, CollisionMath_1.vec3)(0, -constants.ball.gravity * gravityScale * dt, 0));
+    const rampFactor = firstLiveFlight ? curveRampFactor(ball.curveDistance, constants) : 0;
     let velocity = firstLiveFlight
-        ? (0, CollisionMath_1.add)(velocityWithGravity, (0, CollisionMath_1.scale)(ball.curveAccel, dt))
+        ? (0, CollisionMath_1.add)(velocityWithGravity, (0, CollisionMath_1.scale)(ball.curveAccel, rampFactor * dt))
         : velocityWithGravity;
     // Apply floor friction to dead/loose balls resting on or near the ground so they don't
     // slide forever. Only damp the XZ plane when the ball is on the floor (y ≈ radius).
@@ -218,6 +234,7 @@ function advanceBall(ball, dt, constants = constants_1.GAME_CONSTANTS) {
     return {
         ...ball,
         velocity,
-        position: (0, CollisionMath_1.add)(ball.position, (0, CollisionMath_1.scale)(velocity, dt))
+        position: (0, CollisionMath_1.add)(ball.position, (0, CollisionMath_1.scale)(velocity, dt)),
+        curveDistance: firstLiveFlight ? ball.curveDistance + (0, CollisionMath_1.length)((0, CollisionMath_1.scale)(velocity, dt)) : ball.curveDistance
     };
 }

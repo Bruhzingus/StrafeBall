@@ -118,7 +118,11 @@ export const TUNING = {
     // charged/super fly straight, a quick tap drops slightly. 1 = full gravity.
     chargedDropScale: GAME_CONSTANTS.ball.chargedDropScale,
     quickDropScale: GAME_CONSTANTS.ball.quickDropScale,
-    curveStrength: GAME_CONSTANTS.ball.curveStrength,
+    baseCurveStrength: GAME_CONSTANTS.ball.baseCurveStrength,
+    maxCurveStrength: GAME_CONSTANTS.ball.maxCurveStrength,
+    curveExponent: GAME_CONSTANTS.ball.curveExponent,
+    curveStartDistance: GAME_CONSTANTS.ball.curveStartDistance,
+    curveRampDistance: GAME_CONSTANTS.ball.curveRampDistance,
     movementThrowScale: GAME_CONSTANTS.ball.movementThrowScale,
     secondThrowDelaySeconds: GAME_CONSTANTS.ball.secondThrowDelaySeconds,
     fastDoubleThrowPenalty: GAME_CONSTANTS.ball.fastDoubleThrowPenalty,

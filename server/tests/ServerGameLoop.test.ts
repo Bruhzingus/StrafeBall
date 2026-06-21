@@ -2181,7 +2181,7 @@ describe('ServerGameLoop', () => {
       expect(loop.handlePickup('a').ok).toBe(true);
       expect(loop.handleThrow('a', { hand: 'left' }).ok).toBe(true);
       const live = Object.values(loop.state.balls).find((b) => b.phase === 'live');
-      expect(live!.curveAccel.x).toBeGreaterThan(1);
+      expect(live!.curveAccel.x).toBeGreaterThan(0);
       expect(Math.abs(live!.curveAccel.z)).toBeLessThan(0.01); // perpendicular to +Z aim
     });
 
@@ -2270,7 +2270,7 @@ describe('ServerGameLoop', () => {
 
       const live = Object.values(loop.state.balls).find((b) => b.phase === 'live');
       expect(live).toBeTruthy();
-      expect(live!.curveAccel.x).toBeGreaterThan(1);
+      expect(live!.curveAccel.x).toBeGreaterThan(0);
       expect(Math.abs(live!.curveAccel.z)).toBeLessThan(0.01);
     });
   });

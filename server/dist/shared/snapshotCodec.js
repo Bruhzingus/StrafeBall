@@ -249,6 +249,9 @@ function unpackBall(packed) {
         isSuper: Boolean(packed[9]),
         dropScale: packed[10],
         curveAccel: unpackVel(packed[11]),
+        // Not wire-synced: each side (server, client prediction) tracks its own curve ramp distance
+        // locally from the throw, so a decoded snapshot ball doesn't need this to drive curve replay.
+        curveDistance: 0,
         lastTouchedByPlayerId: packed[12],
         throwId: packed[13]
     };

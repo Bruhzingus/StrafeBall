@@ -255,6 +255,8 @@ export interface BallState {
   isSuper: boolean;
   dropScale: number;
   curveAccel: Vec3;
+  /** Meters traveled since this throw's first-live-flight began; drives the curve start/ramp gate. */
+  curveDistance: number;
   lastTouchedByPlayerId: string | null;
   /**
    * Monotonic id incremented every time this ball enters `live` from a throw (and on deflect). The
