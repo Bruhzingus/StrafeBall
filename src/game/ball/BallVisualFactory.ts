@@ -59,6 +59,10 @@ export function updateBallBlobShadow(mesh: Mesh): void {
 
 function applyBallMaterial(material: PBRMaterial, variant: BallVisualVariant): void {
   material.metallic = 0;
+  // Keep the hidden HDR environment's response on balls subtle — a soft sheen, never a bright
+  // mirror smear. (Default PBR environmentIntensity is 1.0, which over-responds to the bright gym
+  // environment.) Balls already read via their albedo + emissive glow.
+  material.environmentIntensity = 0.25;
   if (variant === 'live') {
     material.albedoColor = new Color3(1.0, 0.08, 0.055);
     material.emissiveColor = new Color3(0.18, 0.018, 0.008);

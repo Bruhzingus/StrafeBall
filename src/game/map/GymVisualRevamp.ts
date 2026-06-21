@@ -1,6 +1,7 @@
 import {
   Color3,
   DynamicTexture,
+  HDRCubeTexture,
   ImageProcessingConfiguration,
   Material,
   Mesh,
@@ -90,10 +91,13 @@ const GYM_MATERIAL_TUNING = {
     // Bright but lightly-desaturated warm maple — clean maintained court, not orange house flooring.
     albedoTint: [1.55, 1.34, 0.92] as Rgb,
     metallic: 0,
-    roughness: 0.38,
-    // Drives both the cheap gradient environment (fallback) and the real static reflection capture
-    // once CompetitiveLighting's probe is attached — kept in the spec's 0.32-0.40 floor sheen range.
-    environmentIntensity: 0.36,
+    // Flat varnish gloss — a touch lower than before so the maple reads waxed/polished, not a mirror
+    // and not flat matte. Kept in the spec's ~0.34-0.40 waxed-floor band.
+    roughness: 0.36,
+    // Scales how strongly the hidden HDR environment (scene.environmentTexture, applied in
+    // applyGymEnvironment) shows up as a broad soft overhead reflection on the floor. Kept in the
+    // spec's 0.24-0.34 sheen band — bright enough to look waxed, low enough to never mirror players.
+    environmentIntensity: 0.3,
     // Soft, broad sheen — restrained so the floor never reads wet/mirror-like.
     specularIntensity: 0.45,
     // Soft plank seams on a polished floor — restrained, not embossed.
@@ -160,12 +164,13 @@ const GYM_MATERIAL_TUNING = {
 } as const;
 
 /**
- * PBR materials the static gym reflection capture (CompetitiveLighting.ts) applies its cubemap to,
- * and the target `environmentIntensity` for each — wiring lives in ArenaScene.ts (it has to run
- * after the reflection probe exists, which is after this module's applyGymVisualRevamp has already
- * built these materials), but the actual numbers are centralized here alongside every other gym
- * material tunable. Intentionally PBR-only: StandardMaterials (back-wall pads, ceiling, bleacher
- * trim) use a different reflection model (`reflectionTexture.level`, no environmentIntensity) and
+ * PBR surfaces that reflect the hidden HDR environment (scene.environmentTexture, applied in
+ * applyGymEnvironment), and the target `environmentIntensity` for each. These materials leave
+ * `reflectionTexture` unset, so the PBR shader samples scene.environmentTexture directly — no
+ * reflection probe and no per-frame reflection render. The numbers are centralized here alongside
+ * every other gym material tunable; ArenaScene re-applies them once after gym build (after every
+ * material exists) as the single authoritative wiring point. Intentionally PBR-only:
+ * StandardMaterials (back-wall pads, ceiling, bleacher trim) use a different reflection model and
  * are left untouched this pass rather than guessed at.
  */
 export const GYM_REFLECTION_TARGETS: readonly { materialName: string; environmentIntensity: number }[] = [
@@ -221,8 +226,47 @@ const PALETTES = {
   }
 } satisfies Record<string, BannerPalette>;
 
+/**
+ * Build a single visual-only "padded panel" mesh: a core box with a slightly inset, slightly raised
+ * cushion on each broad (±Z) face, merged into ONE mesh sharing ONE material (one draw call). The
+ * recessed border + raised-cushion step give an otherwise flat primitive box believable depth and a
+ * soft edge that catches the key light — no extra material, no transparent overlay, no subdivision.
+ *
+ * Geometry is built only from axis-aligned boxes (guaranteed-correct normals/winding) and the cushion
+ * protrudes slightly in front of the core face, so there is no coplanar z-fighting. The merged mesh is
+ * centred on its own origin exactly like MeshBuilder.CreateBox, so callers position/rotate it the same
+ * way they did the original box. Always non-pickable. This NEVER derives or alters collision — gameplay
+ * AABBs stay authoritative and are owned entirely by the caller.
+ */
+export function createBeveledPanelMesh(
+  scene: Scene,
+  name: string,
+  options: { width: number; height: number; depth: number; material: Material; border?: number; raise?: number }
+): Mesh {
+  const { width, height, depth, material } = options;
+  const border = options.border ?? Math.min(width, height) * 0.06;
+  const raise = options.raise ?? Math.min(depth * 0.4, 0.015);
+  const cushionWidth = Math.max(0.01, width - border * 2);
+  const cushionHeight = Math.max(0.01, height - border * 2);
+
+  const parts: Mesh[] = [MeshBuilder.CreateBox(`${name}_core`, { width, height, depth }, scene)];
+  for (const sign of [-1, 1] as const) {
+    // depth = raise * 2 so the cushion protrudes `raise` past the core face and sinks `raise` inside
+    // it (the inner half is hidden), giving a clean raised step with no coplanar faces.
+    const cushion = MeshBuilder.CreateBox(`${name}_cushion_${sign}`, { width: cushionWidth, height: cushionHeight, depth: raise * 2 }, scene);
+    cushion.position.z = sign * (depth / 2);
+    parts.push(cushion);
+  }
+
+  const merged = Mesh.MergeMeshes(parts, true, true, undefined, false, false) ?? parts[0];
+  merged.name = name;
+  merged.material = material;
+  merged.isPickable = false;
+  return merged;
+}
+
 export function applyGymVisualRevamp(scene: Scene): void {
-  createCheapEnvironmentReflection(scene);
+  applyGymEnvironment(scene);
   enhanceExistingMaterials(scene);
   tuneSceneImageProcessing(scene);
   createWallColorBlocking(scene);
@@ -342,17 +386,84 @@ function enhanceExistingMaterials(scene: Scene): void {
   tuneCeilingMaterials(scene);
 }
 
-/**
- * Cheap stand-in for image-based lighting: a tiny generated gradient (dark floor, neutral walls,
- * warm glow up top) set as the scene's environment texture. This gives the floor's PBR material a
- * soft ambient highlight/reflection so it reads as glossy rather than flat, without the cost of a
- * real cubemap render, reflection probe, or planar reflection pass.
- */
-function createCheapEnvironmentReflection(scene: Scene): void {
-  if (scene.getTextureByName('gym_env_gradient_tex')) return;
+// Hidden HDR environment used purely as the PBR reflection source for the gym's glossy surfaces
+// (mainly the waxed floor). It is NEVER shown as a skybox — the cafeteria panorama is invisible; we
+// only sample it for reflection response. The user dropped the file here manually.
+const HDR_ENVIRONMENT_URL = '/assets/textures/gym/Lighting/newman_cafeteria_2k.hdr';
+const HDR_ENVIRONMENT_NAME = 'gym_hdr_environment';
+const FALLBACK_ENVIRONMENT_NAME = 'gym_env_gradient_tex';
 
-  const texture = new DynamicTexture('gym_env_gradient_tex', { width: 4, height: 64 }, scene, false);
-  texture.name = 'gym_env_gradient_tex';
+/** Debug-only snapshot of which environment is currently driving PBR reflections — never read for gameplay. */
+export interface GymEnvironmentDebugInfo {
+  kind: 'hdr' | 'gradient' | 'none';
+  name: string | null;
+  /** Cubemap face size for the HDR; null for the 2D gradient fallback. */
+  size: number | null;
+  /** False while the HDR is still streaming/prefiltering; true once it (or the fallback) is ready. */
+  loaded: boolean;
+}
+
+let environmentDebugInfo: GymEnvironmentDebugInfo = { kind: 'none', name: null, size: null, loaded: false };
+
+export function getGymEnvironmentDebugInfo(): GymEnvironmentDebugInfo {
+  return environmentDebugInfo;
+}
+
+/**
+ * Image-based reflection environment for the gym's PBR surfaces. Loads the user-supplied cafeteria
+ * HDR exactly once and assigns it as scene.environmentTexture — hidden (no skybox/panorama on
+ * screen), used only so the floor (and to a tiny degree the walls / cover mats / bleachers) pick up
+ * a broad soft overhead reflection and read as a waxed gym floor rather than flat.
+ *
+ * Loaded linear (gammaSpace=false) and prefiltered (prefilterOnLoad=true) so PBR specular is correct
+ * across roughness. Spherical harmonics are deliberately OFF: the HDR contributes reflection sheen
+ * only and adds no diffuse irradiance, so it cannot shift the room's overall brightness — the gym is
+ * still lit entirely by the one HemisphericLight + one DirectionalLight. Cheap 128px faces keep the
+ * one-time prefilter pass inexpensive and there is no per-frame cost (it never re-renders).
+ *
+ * Guarded by texture-name lookups so scene rebuilds, reconnects, or room resets can never start a
+ * second load or leak a duplicate environment. If the HDR is missing/unreadable we fall back to a
+ * tiny generated gradient so the floor still reads glossy rather than flat (no brightness regression).
+ */
+function applyGymEnvironment(scene: Scene): void {
+  if (scene.getTextureByName(HDR_ENVIRONMENT_NAME) || scene.getTextureByName(FALLBACK_ENVIRONMENT_NAME)) return;
+
+  const hdr = new HDRCubeTexture(
+    HDR_ENVIRONMENT_URL,
+    scene,
+    128, // cubemap face size — broad, soft reflections; cheap one-time prefilter, no per-frame cost
+    false, // noMipmap
+    false, // generateHarmonics — OFF: reflection-only, never alters diffuse/room brightness
+    false, // gammaSpace — HDR is linear data for PBR
+    true, // prefilterOnLoad — correct PBR specular across the floor's roughness
+    () => {
+      environmentDebugInfo = { kind: 'hdr', name: HDR_ENVIRONMENT_NAME, size: 128, loaded: true };
+    },
+    (message) => {
+      console.warn(
+        `[gym] HDR environment failed to load (${HDR_ENVIRONMENT_URL}): ${message ?? 'unknown error'} — using gradient fallback.`
+      );
+      if (scene.getTextureByName(HDR_ENVIRONMENT_NAME)) hdr.dispose();
+      createGradientEnvironmentFallback(scene);
+    }
+  );
+  hdr.name = HDR_ENVIRONMENT_NAME;
+  hdr.gammaSpace = false;
+  scene.environmentTexture = hdr;
+  environmentDebugInfo = { kind: 'hdr', name: HDR_ENVIRONMENT_NAME, size: 128, loaded: false };
+}
+
+/**
+ * Cheap stand-in for image-based lighting if the HDR can't load: a tiny generated gradient (dark
+ * floor, neutral walls, warm glow up top) set as the scene's environment texture, giving the floor's
+ * PBR material a soft reflection so it still reads glossy rather than flat — no cubemap render,
+ * reflection probe, or planar pass.
+ */
+function createGradientEnvironmentFallback(scene: Scene): void {
+  if (scene.getTextureByName(FALLBACK_ENVIRONMENT_NAME)) return;
+
+  const texture = new DynamicTexture(FALLBACK_ENVIRONMENT_NAME, { width: 4, height: 64 }, scene, false);
+  texture.name = FALLBACK_ENVIRONMENT_NAME;
   const ctx = texture.getContext() as CanvasRenderingContext2D;
   const gradient = ctx.createLinearGradient(0, 0, 0, 64);
   gradient.addColorStop(0, '#fff6dc');
@@ -369,6 +480,7 @@ function createCheapEnvironmentReflection(scene: Scene): void {
   texture.coordinatesMode = Texture.SPHERICAL_MODE;
 
   scene.environmentTexture = texture;
+  environmentDebugInfo = { kind: 'gradient', name: FALLBACK_ENVIRONMENT_NAME, size: null, loaded: true };
 }
 
 // World size (metres) covered by one repeat of the wall brick texture. All four walls shared one

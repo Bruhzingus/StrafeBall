@@ -3,12 +3,10 @@ import { FxaaPostProcess } from '@babylonjs/core/PostProcesses/fxaaPostProcess';
 import { InputManager } from '../input/InputManager';
 import { PlayerController } from '../player/PlayerController';
 import { GymArena } from '../map/GymArena';
-import { GYM_REFLECTION_TARGETS } from '../map/GymVisualRevamp';
+import { GYM_REFLECTION_TARGETS, getGymEnvironmentDebugInfo } from '../map/GymVisualRevamp';
 import {
   applyCompetitiveLighting,
-  createCompetitiveReflectionCapture,
   createCompetitiveShadowSystem,
-  disposeCompetitiveReflectionCapture,
   disposeCompetitiveShadowSystem,
   getCompetitiveGraphicsDebugStats,
   registerCompetitiveShadowCaster
@@ -246,7 +244,7 @@ export class ArenaScene {
     this.gym = new GymArena(this.scene, loader);
     this.gym.build();
     this.setupGymShadows();
-    this.setupGymReflectionCapture();
+    this.setupGymEnvironmentResponse();
     // All meshes with targetDummy metadata — includes both static and the moving dummy.
     this.targetDummies = this.scene.meshes.filter((mesh): mesh is Mesh => mesh instanceof Mesh && !!mesh.metadata?.targetDummy);
     this.sound = new SoundManager();
@@ -367,7 +365,6 @@ export class ArenaScene {
     this.guideWall.dispose();
     this.effects.dispose();
     disposeCompetitiveShadowSystem();
-    disposeCompetitiveReflectionCapture();
     this.gym.dispose();
     this.music.dispose();
     this.sound.dispose();
@@ -2454,7 +2451,10 @@ export class ArenaScene {
     // generator bound to the key light. Casters (mats / moving dummy / remote players) are
     // registered after they exist; static geometry is never a caster.
     const { key } = applyCompetitiveLighting(this.scene);
-    createCompetitiveShadowSystem(this.scene, key);
+    // Competitive shadow tier: 1024 map (High tier would be 2048 via the same option). Darkness at
+    // the most-visible end of the spec band (0.18) so player/mat/dummy shadows read clearly on the
+    // busy decal-stacked floor without darkening the room overall (only shadowed pixels are tinted).
+    createCompetitiveShadowSystem(this.scene, key, { mapSize: 1024, darkness: 0.18 });
   }
 
   /** Make the floor a shadow receiver and register the gym's dynamic shadow casters. */
@@ -2466,22 +2466,18 @@ export class ArenaScene {
   }
 
   /**
-   * Capture the single static gym reflection probe. Must run after the gym's static meshes exist
-   * (so the render list has something to capture) and before any dynamic mesh that should never
-   * appear in it — balls, the player, remote players, and HUD are all constructed later in this
-   * constructor, so this timing is sufficient on its own; mats/dummies/cones already exist at this
-   * point too but are excluded by name inside createCompetitiveReflectionCapture.
+   * Wire each gym PBR surface's reflection response to the hidden HDR environment
+   * (scene.environmentTexture, loaded in GymVisualRevamp.applyGymEnvironment). These materials leave
+   * `reflectionTexture` unset, so they sample scene.environmentTexture directly — no reflection probe
+   * and no per-frame reflection render. The per-surface `environmentIntensity` values are the single
+   * authoritative source in GYM_REFLECTION_TARGETS; applying them here, after gym build, guarantees
+   * every targeted material exists. The floor gets the broad waxed sheen; walls/mats/bleachers get
+   * only a faint satin response.
    */
-  private setupGymReflectionCapture(): void {
-    const probe = createCompetitiveReflectionCapture(this.scene);
-    // Apply the real captured cubemap only to the specific PBR materials the spec targets (floor,
-    // walls, cover mats, bleachers) instead of replacing scene.environmentTexture wholesale — every
-    // other PBR material keeps using the existing cheap gradient via PBRMaterial's built-in fallback
-    // to scene.environmentTexture when reflectionTexture is unset.
+  private setupGymEnvironmentResponse(): void {
     for (const target of GYM_REFLECTION_TARGETS) {
       const material = this.scene.getMaterialByName(target.materialName);
       if (!(material instanceof PBRMaterial)) continue;
-      material.reflectionTexture = probe.cubeTexture;
       material.environmentIntensity = target.environmentIntensity;
     }
     if (isGraphicsDebugEnabled()) this.logGraphicsDebugReport();
@@ -2493,16 +2489,17 @@ export class ArenaScene {
     console.log(
       `[graphics] shadows: generators=${stats.shadow.activeGeneratorCount}` +
       ` lifetimeCreated=${stats.shadow.lifetimeCreateCount} filtering=${stats.shadow.filteringMode}` +
-      ` mapSize=${stats.shadow.mapSize ?? 'n/a'} casters=${stats.shadow.casterCount}` +
+      ` mapSize=${stats.shadow.mapSize ?? 'n/a'} darkness=${stats.shadow.darkness ?? 'n/a'}` +
+      ` casters=${stats.shadow.casterCount}` +
       ` (remotePlayer=${stats.shadow.casterCountsByCategory.remotePlayer}` +
       ` mat=${stats.shadow.casterCountsByCategory.mat}` +
       ` dummy=${stats.shadow.casterCountsByCategory.dummy}` +
       ` other=${stats.shadow.casterCountsByCategory.other})`
     );
+    const env = getGymEnvironmentDebugInfo();
     console.log(
-      `[graphics] reflection: probes=${stats.reflection.activeProbeCount}` +
-      ` lifetimeCreated=${stats.reflection.lifetimeCreateCount} size=${stats.reflection.size ?? 'n/a'}` +
-      ` renderListCount=${stats.reflection.renderListCount ?? 'n/a'}`
+      `[graphics] environment: kind=${env.kind} name=${env.name ?? 'n/a'}` +
+      ` size=${env.size ?? 'n/a'} loaded=${env.loaded}`
     );
   }
 

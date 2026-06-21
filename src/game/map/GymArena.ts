@@ -4,7 +4,7 @@ import { MatObstacle, MAT_DIMENSIONS } from './MatObstacle';
 import { AABB, CollisionWorld } from './Collider';
 import { ModelLoader } from '../assets/ModelLoader';
 import { Scoreboard3D, createSideScoreboards } from './Scoreboard3D';
-import { applyGymVisualRevamp } from './GymVisualRevamp';
+import { applyGymVisualRevamp, createBeveledPanelMesh } from './GymVisualRevamp';
 import {
   MAT_SPECS,
   createBleacherCollisionBoxes,
@@ -352,8 +352,14 @@ export class GymArena {
     // mat is solid cover for BOTH players and balls: its AABB goes into the player world AND the ball
     // world, so thrown dodgeballs bounce off it. A knocked-over mat is removed from both worlds.
     for (const spec of MAT_SPECS) {
-      const visual = this.loader.createVisual('mat', {
-        size: { width: MAT_DIMENSIONS.width, height: MAT_DIMENSIONS.height, depth: MAT_DIMENSIONS.depth }
+      // Visual-only padded-panel mesh (core box + inset raised cushion on each broad face), merged to
+      // one mesh sharing the tuned navy 'mat_material'. Purely cosmetic depth/edge light-catch — the
+      // mat's collision is the separate MAT_DIMENSIONS AABB below, never derived from this mesh.
+      const visual = createBeveledPanelMesh(this.scene, 'mat', {
+        width: MAT_DIMENSIONS.width,
+        height: MAT_DIMENSIONS.height,
+        depth: MAT_DIMENSIONS.depth,
+        material: this.loader.material('mat')
       });
       const mat = new MatObstacle(spec.id, visual, new Vector3(spec.x, spec.y, spec.z), spec.yawRadians);
       this.mats.push(mat);

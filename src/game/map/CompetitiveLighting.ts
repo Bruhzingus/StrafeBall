@@ -1,11 +1,8 @@
 import {
-  AbstractMesh,
   Color3,
   DirectionalLight,
   HemisphericLight,
   Mesh,
-  ReflectionProbe,
-  RenderTargetTexture,
   Scene,
   ShadowGenerator,
   Vector3
@@ -13,15 +10,16 @@ import {
 import { TUNING } from '../config/tuning';
 
 /**
- * Client-only competitive lighting + shadow + static-reflection system for the gym.
+ * Client-only competitive lighting + dynamic-shadow system for the gym.
  *
  * Replaces the old multi-PointLight rig with a fixed, performance-conscious setup: one ambient
- * HemisphericLight (fill / readability), one DirectionalLight (key light + dynamic shadows), one
- * ShadowGenerator, and one static (render-once) ReflectionProbe. There are zero runtime point/spot
- * lights, no SSR/planar/screen-space reflections, no SSAO, volumetrics, bloom, or any render target
- * that updates every frame (the shadow map renders once per shadow-casting draw call as usual; the
- * reflection probe's cubemap is captured exactly once and never refreshed). Nothing here is imported
- * by server or shared code, and no gameplay state is derived from these meshes.
+ * HemisphericLight (fill / readability), one DirectionalLight (key light + dynamic shadows), and one
+ * ShadowGenerator. There are zero runtime point/spot lights, no SSR/planar/screen-space reflections,
+ * no SSAO, volumetrics, bloom, or any render target that updates every frame (the shadow map renders
+ * once per shadow-casting draw call as usual). Reflection response for the gym's glossy surfaces is
+ * handled separately by a hidden HDR environment texture (see GymVisualRevamp.applyGymEnvironment) —
+ * no reflection probe is used. Nothing here is imported by server or shared code, and no gameplay
+ * state is derived from these meshes.
  */
 
 export interface CompetitiveLights {
@@ -51,26 +49,11 @@ interface ShadowSystemState {
 // generators if lighting setup ever runs twice (scene rebuild / re-init).
 let activeShadowSystem: ShadowSystemState | null = null;
 
-export interface CompetitiveReflectionOptions {
-  /** Cubemap face resolution. Competitive default 256, High default 512. */
-  size?: number;
-  /** World position the probe captures from. Defaults to court-center, half wall height. */
-  position?: Vector3;
-}
-
-interface ReflectionSystemState {
-  probe: ReflectionProbe;
-}
-
-// Same one-per-scene guarding rationale as the shadow system above.
-let activeReflectionSystem: ReflectionSystemState | null = null;
-
-// Lifetime creation counts (never reset), purely so the debug report below can flag whether a
-// reset/rebuild/reconnect ever created a second generator or probe instead of reusing/disposing the
-// first — both create-functions already dispose any prior instance, so these should only ever read
+// Lifetime creation count (never reset), purely so the debug report below can flag whether a
+// reset/rebuild/reconnect ever created a second generator instead of reusing/disposing the first —
+// createCompetitiveShadowSystem already disposes any prior instance, so this should only ever read
 // 0 or 1 in normal operation; >1 would mean a caller bypassed the singleton guard.
 let shadowSystemCreateCount = 0;
-let reflectionSystemCreateCount = 0;
 
 export interface CompetitiveGraphicsDebugStats {
   shadow: {
@@ -79,14 +62,9 @@ export interface CompetitiveGraphicsDebugStats {
     lifetimeCreateCount: number;
     filteringMode: 'pcf' | 'poisson' | 'none';
     mapSize: number | null;
+    darkness: number | null;
     casterCount: number;
     casterCountsByCategory: Record<ShadowCasterCategory, number>;
-  };
-  reflection: {
-    activeProbeCount: number;
-    lifetimeCreateCount: number;
-    size: number | null;
-    renderListCount: number | null;
   };
 }
 
@@ -100,11 +78,13 @@ export function getCompetitiveGraphicsDebugStats(): CompetitiveGraphicsDebugStat
   };
   let filteringMode: 'pcf' | 'poisson' | 'none' = 'none';
   let mapSize: number | null = null;
+  let darkness: number | null = null;
   if (activeShadowSystem) {
     for (const category of activeShadowSystem.casterCategories.values()) casterCountsByCategory[category]++;
     const generator = activeShadowSystem.generator;
     filteringMode = generator.usePercentageCloserFiltering ? 'pcf' : generator.usePoissonSampling ? 'poisson' : 'none';
     mapSize = generator.getShadowMap()?.getRenderSize() ?? null;
+    darkness = generator.getDarkness();
   }
 
   return {
@@ -113,14 +93,9 @@ export function getCompetitiveGraphicsDebugStats(): CompetitiveGraphicsDebugStat
       lifetimeCreateCount: shadowSystemCreateCount,
       filteringMode,
       mapSize,
+      darkness,
       casterCount: activeShadowSystem?.casters.size ?? 0,
       casterCountsByCategory
-    },
-    reflection: {
-      activeProbeCount: activeReflectionSystem ? 1 : 0,
-      lifetimeCreateCount: reflectionSystemCreateCount,
-      size: activeReflectionSystem?.probe.cubeTexture.getRenderSize() ?? null,
-      renderListCount: activeReflectionSystem?.probe.renderList?.length ?? null
     }
   };
 }
@@ -230,8 +205,12 @@ export function createCompetitiveShadowSystem(
 }
 
 /**
- * Register a dynamic shadow caster (remote player body, mat, moving dummy). Safe to call before the
- * system exists (no-op) and idempotent. The mesh is auto-unregistered if it is disposed without an
+ * Register a dynamic shadow caster (remote player body, mat, moving dummy). Pass a mesh that actually
+ * has rendered geometry — Babylon only casts shadows from real submeshes, so a bare TransformNode /
+ * empty parent would silently cast nothing. When the visible geometry lives in child meshes parented
+ * under a root (e.g. the moving dummy: a base capsule + parented head/torso/limbs), pass
+ * `includeDescendants = true` so every child submesh is added, not just the root. Safe to call before
+ * the system exists (no-op) and idempotent; auto-unregistered if the mesh is disposed without an
  * explicit unregister (e.g. a remote player leaving the room).
  */
 export function registerCompetitiveShadowCaster(mesh: Mesh | null | undefined, includeDescendants = false): void {
@@ -261,84 +240,8 @@ export function disposeCompetitiveShadowSystem(): void {
 /** Best-effort caster category, purely for the debug stats below — never used for gameplay. */
 function categorizeShadowCaster(mesh: Mesh): ShadowCasterCategory {
   const name = mesh.name;
-  if (name.startsWith('player_')) return 'remotePlayer';
+  if (name.startsWith('player_') || name.startsWith('remotePlayerBody_')) return 'remotePlayer';
   if (name === 'mat') return 'mat';
   if (name === 'moving_dummy' || name.startsWith('target_dummy')) return 'dummy';
   return 'other';
-}
-
-/**
- * Static (render-once) reflection capture for subtle floor/pad/bleacher sheen. Creates exactly one
- * ReflectionProbe bound to the scene's static gym presentation meshes — never the floor itself,
- * players, balls, HUD, mats, dummies, or any other moving/dynamic mesh. The cubemap is rendered once
- * immediately after creation and then frozen (refreshRate = RENDER_ONCE) so it never costs a
- * per-frame render; call this once, right after the gym's static meshes exist and before any
- * dynamic mesh (player, balls, remote players, mats already exist as standing geometry which is
- * fine — they're excluded by name, not by creation order).
- *
- * Disposes any previous probe first so re-running this (e.g. a future scene rebuild) can never leave
- * a duplicate capture or duplicate render-once pass behind.
- */
-export function createCompetitiveReflectionCapture(
-  scene: Scene,
-  options: CompetitiveReflectionOptions = {}
-): ReflectionProbe {
-  disposeCompetitiveReflectionCapture();
-
-  const { wallHeight } = TUNING.map;
-  const size = options.size ?? 256;
-  const position = options.position ?? new Vector3(0, wallHeight * 0.5, 0);
-
-  const probe = new ReflectionProbe('gym_static_reflection_probe', size, scene, false);
-  probe.position.copyFrom(position);
-  probe.renderList = staticGymPresentationMeshes(scene);
-  // Render exactly once, then never again — no per-frame update, matching the "static capture" spec.
-  probe.refreshRate = RenderTargetTexture.REFRESHRATE_RENDER_ONCE;
-  probe.cubeTexture.render();
-
-  activeReflectionSystem = { probe };
-  reflectionSystemCreateCount++;
-  return probe;
-}
-
-export function disposeCompetitiveReflectionCapture(): void {
-  if (!activeReflectionSystem) return;
-  activeReflectionSystem.probe.dispose();
-  activeReflectionSystem = null;
-}
-
-/**
- * The static gym render list: every currently-built mesh that is gym *presentation* geometry — wall,
- * ceiling/roof, bleacher, banner, fixture, scoreboard, and decorative trim meshes — and explicitly
- * never the floor (it receives the reflection, it shouldn't see itself), the standing mats, the
- * target dummies, half-court cones, or any floor-plane decal (court lines, zone tint, contact-shadow
- * decals, wax sheen, glints) — those sit on the surface that's reflecting, not the surrounding room.
- * Matched by the project's existing naming conventions (see GymArena.ts / GymVisualRevamp.ts) rather
- * than tracked via a second registration API, so this list needs no upkeep as new decor is added —
- * any newly named `decor_*` prop is included unless it matches one of the floor-decal prefixes below.
- */
-function staticGymPresentationMeshes(scene: Scene): AbstractMesh[] {
-  // 'mat' (no suffix) is the actual Babylon-generated name for every standing cover mat — ModelLoader
-  // .createVisual('mat', ...) is called once per MAT_SPECS entry with no per-instance name override,
-  // so all of them share this exact name rather than getting a unique mat_0/mat_1/... suffix.
-  const excludedExact = new Set(['gym_floor', 'center_line', 'mat']);
-  const excludedPrefixes = [
-    'decor_floor_',
-    'decor_contact_',
-    'decor_court_line_',
-    'zone_',
-    'half_court_cone_',
-    'target_dummy',
-    'moving_dummy',
-    // The dummy root meshes are named target_dummy/moving_dummy above, but every body-part child
-    // (head/torso/hips/shoulder/leg/foot) is parented separately under `dummy_${suffix}...` and
-    // would otherwise slip past those two name checks.
-    'dummy_'
-  ];
-
-  return scene.meshes.filter((mesh) => {
-    if (!(mesh instanceof Mesh)) return false;
-    if (excludedExact.has(mesh.name)) return false;
-    return !excludedPrefixes.some((prefix) => mesh.name.startsWith(prefix));
-  });
 }

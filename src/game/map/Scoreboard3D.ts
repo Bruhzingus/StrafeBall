@@ -10,6 +10,7 @@ import {
   Vector3
 } from '@babylonjs/core';
 import { TUNING } from '../config/tuning';
+import { createBeveledPanelMesh } from './GymVisualRevamp';
 
 type SegmentId = 'a' | 'b' | 'c' | 'd' | 'e' | 'f' | 'g';
 
@@ -72,14 +73,21 @@ export class Scoreboard3D {
     // Face into the court: the +Z wall board looks toward −Z and vice-versa.
     this.root.rotation.y = facing > 0 ? Math.PI : 0;
 
-    // Dark backing board.
-    const backing = MeshBuilder.CreateBox(`${name}_backing`, { width: width + 0.2, height: height + 0.2, depth: 0.14 }, scene);
-    backing.parent = this.root;
-    backing.isPickable = false;
+    // Dark backing board. A visual-only beveled panel (recessed outer border + slightly raised center
+    // behind the LED face) gives the casing a defined edge instead of a flat slab — same outer
+    // dimensions, placement, and material, so score behaviour and the LED face are unchanged.
     const backingMat = new StandardMaterial(`${name}_backing_mat`, scene);
     backingMat.diffuseColor = new Color3(0.09, 0.11, 0.16);
     backingMat.specularColor = new Color3(0.05, 0.05, 0.06);
-    backing.material = backingMat;
+    const backing = createBeveledPanelMesh(scene, `${name}_backing`, {
+      width: width + 0.2,
+      height: height + 0.2,
+      depth: 0.14,
+      material: backingMat,
+      border: 0.08,
+      raise: 0.012
+    });
+    backing.parent = this.root;
 
     // Gold rim (flashes during a buzz).
     this.rimMaterial = new StandardMaterial(`${name}_rim_mat`, scene);
