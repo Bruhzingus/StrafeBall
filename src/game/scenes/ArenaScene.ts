@@ -1,8 +1,18 @@
-import { Engine, HemisphericLight, Mesh, Scene, Vector3 } from '@babylonjs/core';
+import { Engine, Mesh, PBRMaterial, Scene, Vector3 } from '@babylonjs/core';
 import { FxaaPostProcess } from '@babylonjs/core/PostProcesses/fxaaPostProcess';
 import { InputManager } from '../input/InputManager';
 import { PlayerController } from '../player/PlayerController';
 import { GymArena } from '../map/GymArena';
+import { GYM_REFLECTION_TARGETS } from '../map/GymVisualRevamp';
+import {
+  applyCompetitiveLighting,
+  createCompetitiveReflectionCapture,
+  createCompetitiveShadowSystem,
+  disposeCompetitiveReflectionCapture,
+  disposeCompetitiveShadowSystem,
+  getCompetitiveGraphicsDebugStats,
+  registerCompetitiveShadowCaster
+} from '../map/CompetitiveLighting';
 import { MatObstacle } from '../map/MatObstacle';
 import { ModelLoader } from '../assets/ModelLoader';
 import { BallManager } from '../ball/BallManager';
@@ -235,6 +245,8 @@ export class ArenaScene {
     const loader = new ModelLoader(this.scene);
     this.gym = new GymArena(this.scene, loader);
     this.gym.build();
+    this.setupGymShadows();
+    this.setupGymReflectionCapture();
     // All meshes with targetDummy metadata — includes both static and the moving dummy.
     this.targetDummies = this.scene.meshes.filter((mesh): mesh is Mesh => mesh instanceof Mesh && !!mesh.metadata?.targetDummy);
     this.sound = new SoundManager();
@@ -354,6 +366,8 @@ export class ArenaScene {
     this.lobbyModePortals.dispose();
     this.guideWall.dispose();
     this.effects.dispose();
+    disposeCompetitiveShadowSystem();
+    disposeCompetitiveReflectionCapture();
     this.gym.dispose();
     this.music.dispose();
     this.sound.dispose();
@@ -2436,8 +2450,60 @@ export class ArenaScene {
   }
 
   private createLighting(): void {
-    const light = new HemisphericLight('gym_hemi_light', new Vector3(0.25, 1, 0.35), this.scene);
-    light.intensity = 1.15;
+    // Competitive lighting: one hemispheric fill + one directional key, and the single shadow
+    // generator bound to the key light. Casters (mats / moving dummy / remote players) are
+    // registered after they exist; static geometry is never a caster.
+    const { key } = applyCompetitiveLighting(this.scene);
+    createCompetitiveShadowSystem(this.scene, key);
+  }
+
+  /** Make the floor a shadow receiver and register the gym's dynamic shadow casters. */
+  private setupGymShadows(): void {
+    const floor = this.scene.getMeshByName('gym_floor');
+    if (floor) floor.receiveShadows = true;
+    for (const mat of this.gym.mats) registerCompetitiveShadowCaster(mat.mesh);
+    if (this.gym.movingDummy) registerCompetitiveShadowCaster(this.gym.movingDummy, true);
+  }
+
+  /**
+   * Capture the single static gym reflection probe. Must run after the gym's static meshes exist
+   * (so the render list has something to capture) and before any dynamic mesh that should never
+   * appear in it — balls, the player, remote players, and HUD are all constructed later in this
+   * constructor, so this timing is sufficient on its own; mats/dummies/cones already exist at this
+   * point too but are excluded by name inside createCompetitiveReflectionCapture.
+   */
+  private setupGymReflectionCapture(): void {
+    const probe = createCompetitiveReflectionCapture(this.scene);
+    // Apply the real captured cubemap only to the specific PBR materials the spec targets (floor,
+    // walls, cover mats, bleachers) instead of replacing scene.environmentTexture wholesale — every
+    // other PBR material keeps using the existing cheap gradient via PBRMaterial's built-in fallback
+    // to scene.environmentTexture when reflectionTexture is unset.
+    for (const target of GYM_REFLECTION_TARGETS) {
+      const material = this.scene.getMaterialByName(target.materialName);
+      if (!(material instanceof PBRMaterial)) continue;
+      material.reflectionTexture = probe.cubeTexture;
+      material.environmentIntensity = target.environmentIntensity;
+    }
+    if (isGraphicsDebugEnabled()) this.logGraphicsDebugReport();
+  }
+
+  /** One-shot graphics setup report — never repeats, so it's safe to leave the flag on. */
+  private logGraphicsDebugReport(): void {
+    const stats = getCompetitiveGraphicsDebugStats();
+    console.log(
+      `[graphics] shadows: generators=${stats.shadow.activeGeneratorCount}` +
+      ` lifetimeCreated=${stats.shadow.lifetimeCreateCount} filtering=${stats.shadow.filteringMode}` +
+      ` mapSize=${stats.shadow.mapSize ?? 'n/a'} casters=${stats.shadow.casterCount}` +
+      ` (remotePlayer=${stats.shadow.casterCountsByCategory.remotePlayer}` +
+      ` mat=${stats.shadow.casterCountsByCategory.mat}` +
+      ` dummy=${stats.shadow.casterCountsByCategory.dummy}` +
+      ` other=${stats.shadow.casterCountsByCategory.other})`
+    );
+    console.log(
+      `[graphics] reflection: probes=${stats.reflection.activeProbeCount}` +
+      ` lifetimeCreated=${stats.reflection.lifetimeCreateCount} size=${stats.reflection.size ?? 'n/a'}` +
+      ` renderListCount=${stats.reflection.renderListCount ?? 'n/a'}`
+    );
   }
 
   private launchTestBallAtPlayer(): void {
@@ -2511,6 +2577,19 @@ function isPerfDebugEnabled(): boolean {
     return window.localStorage.getItem('strafeball.debug.perf') !== '0';
   } catch {
     return true;
+  }
+}
+
+/**
+ * Graphics-debug gate for the one-shot [graphics] shadow/reflection setup report logged right after
+ * the gym builds. OFF by default (it's a one-time print, not a spam risk, but stays opt-in like the
+ * other debug flags); enable with `localStorage.setItem('strafeball.debug.graphics', '1')`.
+ */
+function isGraphicsDebugEnabled(): boolean {
+  try {
+    return window.localStorage.getItem('strafeball.debug.graphics') === '1';
+  } catch {
+    return false;
   }
 }
 

@@ -1,4 +1,4 @@
-import { Color3, Material, Mesh, MeshBuilder, PBRMaterial, PointLight, Scene, StandardMaterial, Vector3 } from '@babylonjs/core';
+import { Color3, Material, Mesh, MeshBuilder, PBRMaterial, Scene, StandardMaterial, Vector3 } from '@babylonjs/core';
 import { TUNING } from '../config/tuning';
 import { MatObstacle, MAT_DIMENSIONS } from './MatObstacle';
 import { AABB, CollisionWorld } from './Collider';
@@ -61,7 +61,7 @@ export class GymArena {
     this.createMats();
     this.createTargetDummies();
     this.createCeiling();
-    this.createCeilingLights();
+    this.createCeilingFixtures();
     applyGymVisualRevamp(this.scene);
     this.scoreboards.push(...createSideScoreboards(this.scene));
 
@@ -497,14 +497,16 @@ export class GymArena {
   }
 
   /**
-   * Six fluorescent fixtures hanging from the ceiling, each paired with a PointLight that
-   * illuminates the court below. Together with the scene's HemisphericLight they produce a
-   * brighter, more directional school-gym feel.
+   * Six fluorescent fixtures hanging from the ceiling. These are emissive visual props only — the
+   * competitive lighting rig (one HemisphericLight + one DirectionalLight, set up by ArenaScene via
+   * CompetitiveLighting) does all the actual lighting, so no runtime PointLights are created here.
+   * The housing meshes stay, lit by a restrained emissive so they read as "on" without a GlowLayer
+   * or fake floor-reflection planes.
    */
-  private createCeilingLights(): void {
+  private createCeilingFixtures(): void {
     const fixtureMat = new StandardMaterial('ceil_fixture_mat', this.scene);
     fixtureMat.diffuseColor = new Color3(0.92, 0.92, 0.88);
-    fixtureMat.emissiveColor = new Color3(0.72, 0.72, 0.65);
+    fixtureMat.emissiveColor = new Color3(0.6, 0.6, 0.54);
 
     const fixtureY = TUNING.map.wallHeight - 0.12; // hang just below ceiling
 
@@ -521,12 +523,6 @@ export class GymArena {
       housing.position.set(x, fixtureY, z);
       housing.material = fixtureMat;
       housing.isPickable = false;
-
-      const pt = new PointLight(`ceil_pt_${x}_${z}`, new Vector3(x, fixtureY - 0.1, z), this.scene);
-      pt.diffuse = new Color3(1.0, 0.97, 0.92);
-      pt.specular = new Color3(0.3, 0.3, 0.28);
-      pt.intensity = 0.42;
-      pt.range = 13;
     }
   }
 

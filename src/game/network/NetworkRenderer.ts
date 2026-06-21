@@ -8,6 +8,7 @@ import { backflipPitchOffset, lookVectorsFromAngles } from '../../../shared/simu
 import { playerAimOriginHeight, playerHitCapsule } from '../../../shared/simulation/PlayerHitbox';
 import { isBallPickupStateEligible } from '../../../shared/simulation/BallSim';
 import { ballVariantForState, createBallMesh, getBallMaterial, updateBallBlobShadow } from '../ball/BallVisualFactory';
+import { registerCompetitiveShadowCaster } from '../map/CompetitiveLighting';
 import type { BallVisualEffects } from '../ball/BallVisualEffects';
 import { BALL_QTE_TRAIL_SPEED_THRESHOLD, BALL_TRAIL_INTERVAL_SECONDS } from '../ball/BallVisualEffects';
 import {
@@ -837,6 +838,9 @@ export class NetworkRenderer {
     body.position.y = TUNING.player.height * 0.5;
     body.material = this.material(player.teamId === 'red' ? 'playerRedSuit' : 'playerBlueSuit');
     body.isPickable = false;
+    // The capsule body is the player's shadow caster — one clean silhouette per remote player
+    // rather than every sub-mesh. Auto-unregisters when the avatar is disposed (player leaves).
+    registerCompetitiveShadowCaster(body);
 
     const torso = MeshBuilder.CreateBox(
       `remotePlayerTorso_${player.id}`,

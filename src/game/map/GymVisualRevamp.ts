@@ -1,13 +1,11 @@
 import {
   Color3,
   DynamicTexture,
-  HemisphericLight,
   ImageProcessingConfiguration,
   Material,
   Mesh,
   MeshBuilder,
   PBRMaterial,
-  PointLight,
   Scene,
   StandardMaterial,
   Texture
@@ -51,11 +49,17 @@ const WALL_PAD_DECAL_INSET = 0.085;
 const DECOR_META = { decorative: true, noGameplay: true };
 const WALL_PAD_HEIGHT = 2.46;
 const GYM_TEXTURES = {
-  // Tuned copies: desaturated/recolored stand-ins for the raw source art so the blue vinyl isn't
-  // neon. Floor keeps the original art (preferred look) — only its material/lighting is tuned.
-  // Originals are kept untouched.
-  floor: '/assets/textures/gym/floor/Wood-Floor.png',
-  wall: '/assets/textures/gym/walls/Wall_Stones.png',
+  // Floor + walls use downloaded PBR map sets (color + normal). The blue vinyl pad art and cover
+  // mats keep their existing tuned stand-ins so the back-wall panels are unchanged. Originals on
+  // disk are left untouched. Tunable material values live in GYM_MATERIAL_TUNING below.
+  floorColor: '/assets/textures/gym/floor/WoodFloor051_1K-JPG_Color.jpg',
+  floorNormal: '/assets/textures/gym/floor/WoodFloor051_1K-JPG_NormalGL.jpg',
+  floorAO: '/assets/textures/gym/floor/WoodFloor051_1K-JPG_AmbientOcclusion.jpg',
+  // A matching floor roughness map (floor/WoodFloor051_1K-JPG_Roughness.jpg) ships alongside these
+  // but is intentionally not wired this pass — the polished floor uses a flat varnish roughness.
+  wallColor: '/assets/textures/gym/walls/Bricks064_2K-JPG_Color.jpg',
+  wallNormal: '/assets/textures/gym/walls/Bricks064_2K-JPG_NormalGL.jpg',
+  wallAO: '/assets/textures/gym/walls/Bricks064_2K-JPG_AmbientOcclusion.jpg',
   wallPad: '/assets/textures/gym/walls/WallMat.png',
   coverMat: '/assets/textures/gym/Obstacles/gym_cover_mat_blue_tuned.png',
   banners: {
@@ -69,6 +73,110 @@ const GYM_TEXTURES = {
     strafeBallLeague: '/assets/textures/gym/banners/StrafeBallLeage.png'
   }
 } as const;
+
+type Rgb = [number, number, number];
+
+/**
+ * Central tunables for every gym surface this client-only visual pass recolors/tunes. Texture paths
+ * live in GYM_TEXTURES above; all the floor/wall/ceiling/fixture/navy material knobs live here so
+ * there are no scattered magic numbers. Never imported by server or shared code, and never read for
+ * collision/gameplay. "Bright School Gym Correction" — no new assets, no new effects.
+ */
+const GYM_MATERIAL_TUNING = {
+  floor: {
+    // ~2.6-2.7 m maple plank repeat across the 26x36 m court (10x13 tiles): realistic, not stretched.
+    uScale: 10,
+    vScale: 13,
+    // Bright but lightly-desaturated warm maple — clean maintained court, not orange house flooring.
+    albedoTint: [1.55, 1.34, 0.92] as Rgb,
+    metallic: 0,
+    roughness: 0.38,
+    // Drives both the cheap gradient environment (fallback) and the real static reflection capture
+    // once CompetitiveLighting's probe is attached — kept in the spec's 0.32-0.40 floor sheen range.
+    environmentIntensity: 0.36,
+    // Soft, broad sheen — restrained so the floor never reads wet/mirror-like.
+    specularIntensity: 0.45,
+    // Soft plank seams on a polished floor — restrained, not embossed.
+    normalLevel: 0.6,
+    // Floor color (and its normal) filtered at 4x max — soft highlights, cheap filtering.
+    colorAnisotropy: 4,
+    // Subtle plank-seam depth only — the bright maple floor must not read darker/dirtier overall.
+    aoStrength: 0.1
+  },
+  wall: {
+    // World metres covered by one block course repeat. Per-wall uScale/vScale are derived from these
+    // so courses run horizontally at the same physical size on the long and short walls alike.
+    tileMetersHorizontal: 5.0,
+    tileMetersVertical: 3.9,
+    // Lighter warm-neutral off-white painted block — clearly above the navy pads, not pure white.
+    albedoTint: [2.98, 2.83, 2.58] as Rgb,
+    metallic: 0,
+    roughness: 0.78,
+    // Walls get the faintest reflection response of any reflective surface (spec range 0.02-0.06) —
+    // just enough that painted block isn't completely flat once the static capture is attached.
+    environmentIntensity: 0.04,
+    // Dropped further so the block seams stay subtle, not deep/rough/dominant.
+    normalLevel: 0.32,
+    // Cinder-block seam depth only — must not darken the painted block toward the navy pads' tone.
+    aoStrength: 0.15
+  },
+  // Ceiling is recolored only (no texture added, layout untouched). Panels become soft warm
+  // light-gray/cream to lift room brightness; the grid stays medium charcoal blue-gray for contrast.
+  // These are StandardMaterials, so the "high roughness / metallic 0" intent is expressed as a
+  // near-matte, very-low specular response.
+  ceiling: {
+    slab: { diffuse: [0.7, 0.69, 0.64] as Rgb, emissive: [0.075, 0.073, 0.066] as Rgb },
+    panel: { diffuse: [0.82, 0.81, 0.75] as Rgb, emissive: [0.11, 0.107, 0.097] as Rgb },
+    // Grid stays dark charcoal navy-gray — nudged darker so contrast holds as panels brighten.
+    beam: { diffuse: [0.24, 0.26, 0.31] as Rgb, emissive: [0.004, 0.005, 0.007] as Rgb },
+    seam: { diffuse: [0.21, 0.23, 0.28] as Rgb },
+    matteSpecular: [0.02, 0.02, 0.018] as Rgb,
+    mattePower: 10,
+    gridSpecular: [0.05, 0.05, 0.05] as Rgb,
+    gridPower: 24,
+    // Fixture housings: bright but restrained emissive so they read as fluorescent/LED gym lights,
+    // not sci-fi glow strips — they complement the hemi/key lights, they don't light the room alone.
+    fixture: { diffuse: [0.95, 0.94, 0.88] as Rgb, emissive: [0.66, 0.65, 0.58] as Rgb }
+  },
+  // Three distinct navy categories. Brightness order: cover mats > back-wall pads > bleachers.
+  navy: {
+    // Back-wall pads (StandardMaterial vinyl): deep, less-saturated navy satin. Roughness ~0.56-0.60
+    // intent realized as a satin (mid-low specular) StandardMaterial response.
+    backPad: { tint: [0.42, 0.45, 0.56] as Rgb, emissive: [0.004, 0.012, 0.04] as Rgb, specular: [0.05, 0.07, 0.1] as Rgb, specularPower: 26 },
+    // Movable cover mats (PBR): slightly brighter, readable navy — less royal saturation. Reflection
+    // target 0.16-0.22 per spec (movable mats get a touch more sheen than bleachers/walls).
+    coverMat: { albedoColor: [0.48, 0.53, 0.66] as Rgb, emissive: [0.003, 0.01, 0.035] as Rgb, metallic: 0, roughness: 0.54, environmentIntensity: 0.19 },
+    // Bleachers (PBR): darkest, least-saturated navy with a rougher painted metal/plastic response.
+    // environmentIntensity explicit (PBR default is 1.0) so the static reflection capture only ever
+    // gives a faint response here, never the brightest of the three navy categories.
+    bleacher: { albedoColor: [0.24, 0.28, 0.36] as Rgb, metallic: 0.06, roughness: 0.7, environmentIntensity: 0.1 }
+  },
+  // PBR back-wall pad values, applied only if a wallPad_material PBR exists (the visible raised pads
+  // are the clamped single-panel StandardMaterials in createRaisedWallPadPanels).
+  bluePadPanel: {
+    metallic: 0,
+    roughness: 0.58
+  }
+} as const;
+
+/**
+ * PBR materials the static gym reflection capture (CompetitiveLighting.ts) applies its cubemap to,
+ * and the target `environmentIntensity` for each — wiring lives in ArenaScene.ts (it has to run
+ * after the reflection probe exists, which is after this module's applyGymVisualRevamp has already
+ * built these materials), but the actual numbers are centralized here alongside every other gym
+ * material tunable. Intentionally PBR-only: StandardMaterials (back-wall pads, ceiling, bleacher
+ * trim) use a different reflection model (`reflectionTexture.level`, no environmentIntensity) and
+ * are left untouched this pass rather than guessed at.
+ */
+export const GYM_REFLECTION_TARGETS: readonly { materialName: string; environmentIntensity: number }[] = [
+  { materialName: 'floor_material', environmentIntensity: GYM_MATERIAL_TUNING.floor.environmentIntensity },
+  { materialName: 'north_wall_brick_mat', environmentIntensity: GYM_MATERIAL_TUNING.wall.environmentIntensity },
+  { materialName: 'south_wall_brick_mat', environmentIntensity: GYM_MATERIAL_TUNING.wall.environmentIntensity },
+  { materialName: 'east_wall_brick_mat', environmentIntensity: GYM_MATERIAL_TUNING.wall.environmentIntensity },
+  { materialName: 'west_wall_brick_mat', environmentIntensity: GYM_MATERIAL_TUNING.wall.environmentIntensity },
+  { materialName: 'mat_material', environmentIntensity: GYM_MATERIAL_TUNING.navy.coverMat.environmentIntensity },
+  { materialName: 'bleacher_material', environmentIntensity: GYM_MATERIAL_TUNING.navy.bleacher.environmentIntensity }
+];
 
 const PALETTES = {
   navy: {
@@ -116,7 +224,7 @@ const PALETTES = {
 export function applyGymVisualRevamp(scene: Scene): void {
   createCheapEnvironmentReflection(scene);
   enhanceExistingMaterials(scene);
-  brightenExistingLighting(scene);
+  tuneSceneImageProcessing(scene);
   createWallColorBlocking(scene);
   createWallBounceGlow(scene);
   createWallPaddingDetails(scene);
@@ -147,16 +255,24 @@ export function applyGymVisualRevamp(scene: Scene): void {
 function enhanceExistingMaterials(scene: Scene): void {
   const floorMaterial = scene.getMaterialByName('floor_material');
   if (floorMaterial instanceof PBRMaterial) {
-    // Tile so each repeat covers ~2.7m of court (26x36m floor / ~2.7 = 10x13 repeats) — bigger,
-    // more readable plank width than the earlier 2.2m tile.
-    const floorTexture = createImageTexture(scene, 'gym_floor_polished_maple_png', GYM_TEXTURES.floor, 10, 13);
-    floorMaterial.albedoTexture = floorTexture;
-    floorMaterial.albedoColor = new Color3(0.78, 0.6, 0.36);
-    floorMaterial.metallic = 0;
-    // Glossy polished maple, not a mirror: roughness in the requested 0.28-0.45 band.
-    floorMaterial.roughness = 0.34;
-    floorMaterial.environmentIntensity = 0.86;
-    floorMaterial.specularIntensity = 0.98;
+    const t = GYM_MATERIAL_TUNING.floor;
+    // Maple color + normal maps share the same tiling so plank seams line up. Color (and normal)
+    // capped at 4x anisotropy per spec; flat varnish roughness keeps it polished, not a mirror.
+    const floorColor = createImageTexture(scene, 'gym_floor_maple_color', GYM_TEXTURES.floorColor, t.uScale, t.vScale, false, t.colorAnisotropy);
+    const floorNormal = createImageTexture(scene, 'gym_floor_maple_normal', GYM_TEXTURES.floorNormal, t.uScale, t.vScale, false, t.colorAnisotropy);
+    const floorAO = createImageTexture(scene, 'gym_floor_maple_ao', GYM_TEXTURES.floorAO, t.uScale, t.vScale, false, t.colorAnisotropy);
+    floorNormal.level = t.normalLevel;
+    floorMaterial.albedoTexture = floorColor;
+    floorMaterial.bumpTexture = floorNormal;
+    // Same UV set as albedo/normal (Babylon defaults ambientTexture to UV channel 0), so AO seams
+    // line up with the plank seams instead of needing a second baked UV set.
+    floorMaterial.ambientTexture = floorAO;
+    floorMaterial.ambientTextureStrength = t.aoStrength;
+    floorMaterial.albedoColor = new Color3(...t.albedoTint);
+    floorMaterial.metallic = t.metallic;
+    floorMaterial.roughness = t.roughness;
+    floorMaterial.environmentIntensity = t.environmentIntensity;
+    floorMaterial.specularIntensity = t.specularIntensity;
   }
 
   setZoneMaterial(scene, 'zone_player_mat', 'blue');
@@ -164,36 +280,42 @@ function enhanceExistingMaterials(scene: Scene): void {
 
   applyWallStoneTexture(scene);
 
-  // Wall pads: darker satin vinyl, low gloss (it's a thick foam-backed pad, not a shiny surface).
+  // Wall pads (PBR): darker satin vinyl, low gloss (a thick foam-backed pad, not a shiny surface).
+  // Single-panel vinyl art, clamped so the stitched border is mapped 1:1 and never tiled. This
+  // material is only attached if a wallPad_material PBR is ever created; the visible back-wall
+  // panels are the clamped StandardMaterials in createRaisedWallPadPanels.
   const wallPadMaterial = scene.getMaterialByName('wallPad_material');
   if (wallPadMaterial instanceof PBRMaterial) {
-    const padTexture = createImageTexture(scene, 'gym_wall_pad_vinyl_png', GYM_TEXTURES.wallPad, 8, 1);
+    const padTexture = createImageTexture(scene, 'gym_wall_pad_vinyl_png', GYM_TEXTURES.wallPad, 1, 1, true);
     wallPadMaterial.albedoTexture = padTexture;
     wallPadMaterial.albedoColor = new Color3(0.6, 0.66, 0.82);
     wallPadMaterial.emissiveColor = new Color3(0.002, 0.008, 0.03);
-    wallPadMaterial.metallic = 0;
-    wallPadMaterial.roughness = 0.55;
+    wallPadMaterial.metallic = GYM_MATERIAL_TUNING.bluePadPanel.metallic;
+    wallPadMaterial.roughness = GYM_MATERIAL_TUNING.bluePadPanel.roughness;
     wallPadMaterial.environmentIntensity = 0.24;
   }
 
-  // Cover mats/blockers: padded vinyl, slightly brighter and glossier than the wall pads.
+  // Cover mats/blockers: readable navy vinyl — the brightest of the three navy categories.
   const coverMatMaterial = scene.getMaterialByName('mat_material');
   if (coverMatMaterial instanceof PBRMaterial) {
+    const cover = GYM_MATERIAL_TUNING.navy.coverMat;
     const coverTexture = createImageTexture(scene, 'gym_cover_mat_png', GYM_TEXTURES.coverMat, 1, 1);
     coverMatMaterial.albedoTexture = coverTexture;
-    coverMatMaterial.albedoColor = new Color3(0.66, 0.73, 0.9);
-    coverMatMaterial.emissiveColor = new Color3(0.003, 0.01, 0.035);
-    coverMatMaterial.metallic = 0;
-    coverMatMaterial.roughness = 0.42;
-    coverMatMaterial.environmentIntensity = 0.3;
+    coverMatMaterial.albedoColor = new Color3(...cover.albedoColor);
+    coverMatMaterial.emissiveColor = new Color3(...cover.emissive);
+    coverMatMaterial.metallic = cover.metallic;
+    coverMatMaterial.roughness = cover.roughness;
+    coverMatMaterial.environmentIntensity = cover.environmentIntensity;
   }
 
-  // Bleachers: painted blue metal/plastic frame — less glossy than vinyl, slightly metallic sheen.
+  // Bleachers: darker, less-saturated navy with a rougher painted metal/plastic response.
   const bleacherMaterial = scene.getMaterialByName('bleacher_material');
   if (bleacherMaterial instanceof PBRMaterial) {
-    bleacherMaterial.albedoColor = new Color3(0.32, 0.39, 0.5);
-    bleacherMaterial.metallic = 0.08;
-    bleacherMaterial.roughness = 0.44;
+    const bleacher = GYM_MATERIAL_TUNING.navy.bleacher;
+    bleacherMaterial.albedoColor = new Color3(...bleacher.albedoColor);
+    bleacherMaterial.metallic = bleacher.metallic;
+    bleacherMaterial.roughness = bleacher.roughness;
+    bleacherMaterial.environmentIntensity = bleacher.environmentIntensity;
   }
 
   const seatMaterial = scene.getMaterialByName('bleacher_seat_mat');
@@ -256,10 +378,8 @@ function createCheapEnvironmentReflection(scene: Scene): void {
 // different scale — they read as a completely different texture. We give each wall its own
 // material+texture and pick uScale/vScale (with a 90° rotation on the side walls) from that wall's
 // real horizontal length so the brick courses run horizontally at the same physical size everywhere.
-const WALL_BRICK_TILE_METERS_HORIZONTAL = 5.0;
-const WALL_BRICK_TILE_METERS_VERTICAL = 3.9;
-
 function applyWallStoneTexture(scene: Scene): void {
+  const t = GYM_MATERIAL_TUNING.wall;
   const h = TUNING.map.wallHeight;
   // `length` = the wall's visible horizontal extent; `rotate` = whether the box's visible face maps
   // the texture U along height instead of along the wall length (true for the thin side walls), in
@@ -271,8 +391,8 @@ function applyWallStoneTexture(scene: Scene): void {
     { name: 'west_wall', length: TUNING.map.halfLength * 2, rotate: true }
   ];
 
-  const horizontalRepeats = (length: number) => length / WALL_BRICK_TILE_METERS_HORIZONTAL;
-  const verticalRepeats = h / WALL_BRICK_TILE_METERS_VERTICAL;
+  const horizontalRepeats = (length: number) => length / t.tileMetersHorizontal;
+  const verticalRepeats = h / t.tileMetersVertical;
 
   for (const wall of walls) {
     const mesh = scene.getMeshByName(wall.name);
@@ -288,17 +408,29 @@ function applyWallStoneTexture(scene: Scene): void {
     // axis always covers the wall height, regardless of which box-face axis that ends up being.
     const uScale = wall.rotate ? verticalRepeats : horizontalRepeats(wall.length);
     const vScale = wall.rotate ? horizontalRepeats(wall.length) : verticalRepeats;
-    const wallTexture = createImageTexture(scene, `${wall.name}_brick_tex`, GYM_TEXTURES.wall, uScale, vScale);
-    if (wall.rotate) wallTexture.wAng = Math.PI / 2;
+    const wallColor = createImageTexture(scene, `${wall.name}_block_color`, GYM_TEXTURES.wallColor, uScale, vScale);
+    const wallNormal = createImageTexture(scene, `${wall.name}_block_normal`, GYM_TEXTURES.wallNormal, uScale, vScale);
+    wallNormal.level = t.normalLevel;
+    if (wall.rotate) {
+      wallColor.wAng = Math.PI / 2;
+      wallNormal.wAng = Math.PI / 2;
+    }
 
     if (material instanceof PBRMaterial) {
-      material.albedoTexture = wallTexture;
-      material.albedoColor = new Color3(0.93, 0.9, 0.83);
-      material.metallic = 0;
-      material.roughness = 0.62;
+      const wallAO = createImageTexture(scene, `${wall.name}_block_ao`, GYM_TEXTURES.wallAO, uScale, vScale);
+      if (wall.rotate) wallAO.wAng = Math.PI / 2;
+      material.albedoTexture = wallColor;
+      material.bumpTexture = wallNormal;
+      material.ambientTexture = wallAO;
+      material.ambientTextureStrength = t.aoStrength;
+      material.albedoColor = new Color3(...t.albedoTint);
+      material.metallic = t.metallic;
+      material.roughness = t.roughness;
+      material.environmentIntensity = t.environmentIntensity;
     } else if (material instanceof StandardMaterial) {
-      material.diffuseTexture = wallTexture;
-      material.diffuseColor = new Color3(0.93, 0.9, 0.83);
+      material.diffuseTexture = wallColor;
+      material.bumpTexture = wallNormal;
+      material.diffuseColor = new Color3(...t.albedoTint);
       material.specularColor = new Color3(0.06, 0.055, 0.048);
       material.specularPower = 20;
     }
@@ -324,55 +456,61 @@ function setZoneMaterial(scene: Scene, name: string, tone: 'blue' | 'red'): void
   void tone;
 }
 
-function brightenExistingLighting(scene: Scene): void {
-  // Cheap global polish: tone mapping + a touch of contrast/exposure makes flat direct lighting
-  // read as more "rendered" without any extra draw calls or render targets.
+function tuneSceneImageProcessing(scene: Scene): void {
+  // Cheap global polish: existing, stable tone mapping + a mild contrast/exposure lift makes flat
+  // direct lighting read as more "rendered" without any extra draw calls or render targets. Light
+  // setup itself lives in CompetitiveLighting (one hemispheric + one directional); this only touches
+  // image processing. Exposure/contrast are deliberately mild — not a crutch for the lighting.
   scene.imageProcessingConfiguration.toneMappingEnabled = true;
   scene.imageProcessingConfiguration.toneMappingType = ImageProcessingConfiguration.TONEMAPPING_ACES;
-  scene.imageProcessingConfiguration.exposure = 1.12;
-  scene.imageProcessingConfiguration.contrast = 1.08;
-
-  for (const light of scene.lights) {
-    if (light instanceof HemisphericLight) {
-      light.intensity = Math.max(light.intensity, 1.24);
-      light.diffuse = new Color3(1.0, 0.97, 0.9);
-      // A non-black ground color stops the underside of geometry (and the ceiling read) from
-      // looking like a flat void — cheap because it's a single extra constant in the same light.
-      light.groundColor = new Color3(0.22, 0.22, 0.25);
-      light.specular = new Color3(0.25, 0.235, 0.19);
-    }
-    if (light instanceof PointLight && light.name.startsWith('ceil_pt_')) {
-      light.diffuse = new Color3(1.0, 0.955, 0.84);
-      light.specular = new Color3(0.24, 0.22, 0.18);
-      light.intensity = 0.78;
-      light.range = 16.5;
-    }
-  }
+  scene.imageProcessingConfiguration.exposure = 1.13;
+  // Near-neutral contrast lifts mids/shadows so navy + ceiling stop reading crushed and dark.
+  scene.imageProcessingConfiguration.contrast = 1.03;
 }
 
 function tuneCeilingMaterials(scene: Scene): void {
+  const c = GYM_MATERIAL_TUNING.ceiling;
+
+  // Broad ceiling faces → soft warm light-gray / cream, near-matte (high roughness intent on a
+  // StandardMaterial). Lifts perceived room brightness without a texture or glow.
   const ceilingMaterial = scene.getMaterialByName('gym_ceiling_mat');
   if (ceilingMaterial instanceof StandardMaterial) {
-    ceilingMaterial.diffuseColor = new Color3(0.18, 0.17, 0.16);
-    ceilingMaterial.emissiveColor = new Color3(0.012, 0.011, 0.01);
-    ceilingMaterial.specularColor = new Color3(0.045, 0.042, 0.038);
-    ceilingMaterial.specularPower = 22;
+    ceilingMaterial.diffuseColor = new Color3(...c.slab.diffuse);
+    ceilingMaterial.emissiveColor = new Color3(...c.slab.emissive);
+    ceilingMaterial.specularColor = new Color3(...c.matteSpecular);
+    ceilingMaterial.specularPower = c.mattePower;
   }
 
   const panelMaterial = scene.getMaterialByName('gym_roof_panel_mat');
   if (panelMaterial instanceof StandardMaterial) {
-    panelMaterial.diffuseColor = new Color3(0.23, 0.22, 0.2);
-    panelMaterial.emissiveColor = new Color3(0.015, 0.014, 0.013);
-    panelMaterial.specularColor = new Color3(0.05, 0.048, 0.044);
-    panelMaterial.specularPower = 24;
+    panelMaterial.diffuseColor = new Color3(...c.panel.diffuse);
+    panelMaterial.emissiveColor = new Color3(...c.panel.emissive);
+    panelMaterial.specularColor = new Color3(...c.matteSpecular);
+    panelMaterial.specularPower = c.mattePower;
   }
 
+  // Grid / support lines → medium charcoal blue-gray (not pure black, not bright white) so the grid
+  // keeps clear contrast against the lifted panels.
   const beamMaterial = scene.getMaterialByName('gym_roof_beam_mat');
   if (beamMaterial instanceof StandardMaterial) {
-    beamMaterial.diffuseColor = new Color3(0.1, 0.13, 0.18);
-    beamMaterial.emissiveColor = new Color3(0.006, 0.009, 0.014);
-    beamMaterial.specularColor = new Color3(0.07, 0.08, 0.09);
-    beamMaterial.specularPower = 28;
+    beamMaterial.diffuseColor = new Color3(...c.beam.diffuse);
+    beamMaterial.emissiveColor = new Color3(...c.beam.emissive);
+    beamMaterial.specularColor = new Color3(...c.gridSpecular);
+    beamMaterial.specularPower = c.gridPower;
+  }
+
+  const seamMaterial = scene.getMaterialByName('gym_roof_seam_mat');
+  if (seamMaterial instanceof StandardMaterial) {
+    seamMaterial.diffuseColor = new Color3(...c.seam.diffuse);
+    seamMaterial.specularColor = new Color3(...c.gridSpecular);
+    seamMaterial.specularPower = c.gridPower;
+  }
+
+  // Fixture housings: bright but restrained emissive — fluorescent/LED gym lights, not glow strips.
+  const fixtureMaterial = scene.getMaterialByName('ceil_fixture_mat');
+  if (fixtureMaterial instanceof StandardMaterial) {
+    fixtureMaterial.diffuseColor = new Color3(...c.fixture.diffuse);
+    fixtureMaterial.emissiveColor = new Color3(...c.fixture.emissive);
   }
 }
 
@@ -471,11 +609,14 @@ function createWallPaddingDetails(scene: Scene): void {
 }
 
 function createRaisedWallPadPanels(scene: Scene): void {
+  // Single-panel vinyl art per pad: clamp U/V so the stitched border + edge lighting map 1:1 to the
+  // panel and are never tiled/repeated. Deep, less-saturated navy satin (see GYM_MATERIAL_TUNING.navy).
+  const pad = GYM_MATERIAL_TUNING.navy.backPad;
   const cushionA = texturedStandardMaterial(
     scene,
     'decor_wall_pad_cushion_deep_blue_mat',
     GYM_TEXTURES.wallPad,
-    { uScale: 1, vScale: 1, diffuse: new Color3(0.8, 0.85, 0.95), emissive: new Color3(0.004, 0.012, 0.04), specular: new Color3(0.06, 0.09, 0.13) }
+    { uScale: 1, vScale: 1, clamp: true, diffuse: new Color3(...pad.tint), emissive: new Color3(...pad.emissive), specular: new Color3(...pad.specular), specularPower: pad.specularPower }
   );
   const bevelMat = solidMaterial(scene, 'decor_wall_pad_bevel_highlight_mat', new Color3(0.16, 0.32, 0.78), {
     emissive: new Color3(0.01, 0.026, 0.082),
@@ -1284,7 +1425,8 @@ function createImageTexture(
   url: string,
   uScale = 1,
   vScale = 1,
-  clamp = false
+  clamp = false,
+  anisotropy = 8
 ): Texture {
   const texture = new Texture(url, scene);
   texture.name = name;
@@ -1292,7 +1434,7 @@ function createImageTexture(
   texture.wrapV = clamp ? Texture.CLAMP_ADDRESSMODE : Texture.WRAP_ADDRESSMODE;
   texture.uScale = uScale;
   texture.vScale = vScale;
-  texture.anisotropicFilteringLevel = 8;
+  texture.anisotropicFilteringLevel = anisotropy;
   texture.updateSamplingMode(Texture.TRILINEAR_SAMPLINGMODE);
   return texture;
 }
