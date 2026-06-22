@@ -11,6 +11,7 @@ import {
   createBleacherPanelSpecs,
   createBleacherTierSpecs
 } from '../../../shared/simulation/MapGeometry';
+import { buildBleacherEndCapCorner, createBleacherEndCapMaterials } from './BleacherEndCap';
 
 /** Y height (metres) of the hanging ceiling fixtures: just under the ceiling slab at wallHeight. */
 export const CEILING_FIXTURE_Y = TUNING.map.wallHeight - 0.12;
@@ -330,10 +331,8 @@ export class GymArena {
     const panelMat = new StandardMaterial('bleacher_panel_mat', this.scene);
     panelMat.diffuseColor = new Color3(0.38, 0.4, 0.42);
 
-    const railMat = new StandardMaterial('bleacher_rail_mat', this.scene);
-    railMat.diffuseColor = new Color3(0.82, 0.84, 0.82);
-
-    for (const tier of createBleacherTierSpecs()) {
+    const tierSpecs = createBleacherTierSpecs();
+    for (const tier of tierSpecs) {
       this.loader.createVisual('bleacher', {
         name: `bleacher_${tier.side}_${tier.step}`,
         size: tier.size,
@@ -350,11 +349,26 @@ export class GymArena {
       seat.isPickable = false;
     }
 
+    // The back panel (outer wall behind the top tier) stays a flat solid panel. The two side panels
+    // (the exposed ends of the stand) are replaced below with a see-through grandstand end-cap — same
+    // collision AABB (added from createBleacherCollisionBoxes() further down, unchanged), different look.
     for (const panel of createBleacherPanelSpecs()) {
+      if (panel.name !== 'back') continue;
       const mesh = MeshBuilder.CreateBox(`bleacher_${panel.name}_${panel.side}`, panel.size, this.scene);
       mesh.position.set(panel.center.x, panel.center.y, panel.center.z);
-      mesh.material = panel.name === 'back' ? panelMat : railMat;
+      mesh.material = panelMat;
       mesh.isPickable = false;
+    }
+
+    const endCapMaterials = createBleacherEndCapMaterials(this.scene);
+    const sidePanels = createBleacherPanelSpecs().filter((panel) => panel.name !== 'back');
+    for (const side of [-1, 1] as const) {
+      const tiersForSide = tierSpecs.filter((tier) => tier.side === side).sort((a, b) => a.step - b.step);
+      for (const zSign of [-1, 1] as const) {
+        const panel = sidePanels.find((p) => p.side === side && p.name === (zSign < 0 ? 'south_side' : 'north_side'));
+        if (!panel) continue;
+        buildBleacherEndCapCorner(this.scene, endCapMaterials, side, zSign, tiersForSide, panel.center.z);
+      }
     }
 
     for (const box of createBleacherCollisionBoxes()) {
