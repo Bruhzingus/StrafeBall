@@ -25,7 +25,8 @@ import {
   setActiveGymShadowRegistrar
 } from '../map/GymShadowCasters';
 import { ShowcasePostFX } from '../effects/ShowcasePostFX';
-import { isShowcaseLightingEnabled, resolveGraphicsMode, resolveShowcaseTier, type ShowcaseTier } from '../config/graphicsConfig';
+import { isNeutralModeEnabled, isShowcaseLightingEnabled, resolveGraphicsMode, resolveShowcaseTier, SHOWCASE_CONFIG, type ShowcaseTier } from '../config/graphicsConfig';
+import { createGymReflectionProbe, disposeGymReflectionProbe, getGymReflectionProbeDebugInfo } from '../map/GymReflectionProbe';
 import { MatObstacle } from '../map/MatObstacle';
 import { ModelLoader } from '../assets/ModelLoader';
 import { BallManager } from '../ball/BallManager';
@@ -120,6 +121,9 @@ export class ArenaScene {
   // bright baseline. The tier only matters in Showcase mode.
   private readonly showcaseEnabled: boolean = isShowcaseLightingEnabled();
   private readonly showcaseTier: ShowcaseTier = resolveShowcaseTier();
+  // Neutral: the diagnostic truth baseline (one hemi + one directional + one ShadowGenerator + FXAA
+  // only, no environment/reflection source, no fake-lighting decal overlays). Opt-in, same as Showcase.
+  private readonly neutralEnabled: boolean = isNeutralModeEnabled();
   // Backflip landing quick-time event: armed when the local player lands from a backflip holding a
   // ball; resolving it throws (tiered speed). Owned here so it works in both offline and online.
   private readonly backflipQte = new BackflipQteController();
@@ -287,15 +291,15 @@ export class ArenaScene {
     this.effects = new Effects(this.scene, this.sound);
 
     this.player = new PlayerController(this.scene, this.input, this.ballManager, this.gym.collision, this.effects);
-    // Post-processing by mode. Showcase: SSAO + restrained bloom + FXAA via ShowcasePostFX (Part 4/5).
-    // Competitive: the existing single lightweight FXAA post, unchanged. Exactly one is created.
-    if (this.showcaseEnabled) {
-      this.fxaaPostProcess = null;
-      this.showcasePostFx = new ShowcasePostFX(this.scene, this.player.camera, this.showcaseTier);
-    } else {
-      this.fxaaPostProcess = new FxaaPostProcess('scene_fxaa', 1.0, this.player.camera);
-      this.showcasePostFx = null;
-    }
+    // Post-processing: FXAA is the standalone post in EVERY mode (no bloom anywhere). Phase 8 adds an
+    // OPTIONAL subtle SSAO-only pass in Showcase, gated by the single SHOWCASE_CONFIG.ssao.enabled kill
+    // switch — disabled in Competitive and Neutral. SSAO coexists with the FXAA post; no bloom, no tone
+    // mapping, no duplicate pipeline.
+    this.fxaaPostProcess = new FxaaPostProcess('scene_fxaa', 1.0, this.player.camera);
+    this.showcasePostFx =
+      this.showcaseEnabled && SHOWCASE_CONFIG.ssao.enabled
+        ? new ShowcasePostFX(this.scene, this.player.camera, this.showcaseTier)
+        : null;
     this.quickBot = new PracticeBot(this.scene, this.ballManager, 'quick');
     this.chargeBot = new PracticeBot(this.scene, this.ballManager, 'charge');
     this.practiceWall = new PracticeControlWall(this.scene, this.practiceState, this.ballManager, (id) => this.handleButtonPress(id));
@@ -403,6 +407,7 @@ export class ArenaScene {
     // registrar so any late registration becomes a safe no-op.
     disposeCompetitiveShadowSystem();
     disposeShowcaseLighting(this.scene);
+    disposeGymReflectionProbe();
     clearActiveGymShadowRegistrar();
     this.gym.dispose();
     this.music.dispose();
@@ -2510,18 +2515,17 @@ export class ArenaScene {
   }
 
   /**
-   * Showcase lighting: four wide roof SpotLights over the corner ceiling fixtures (each with its own
-   * ShadowGenerator) plus up to two unshadowed centre fill spots, a broad hemispheric fill, and an
-   * optional low non-shadowing directional fill. Replaces the competitive fake-sun key+shadow so the
-   * shading direction and shadows originate from the real fixtures. Dynamic caster registration is
-   * routed to the four-generator system.
+   * Showcase lighting (Phase 6 fixture-aligned rig): six broad shadowless SpotLights, one under each
+   * visible ceiling fixture (positions reused from CEILING_FIXTURE_POSITIONS), one hemispheric fill, and
+   * one subtle shadow-casting directional that drives the SINGLE ShadowGenerator. Dynamic caster
+   * registration is routed to that single-generator system.
    */
   private createShowcaseLighting(): void {
-    const { primarySpots } = applyShowcaseLighting(this.scene);
-    createShowcaseShadowSystem(this.scene, primarySpots, this.showcaseTier);
+    const { shadowKey } = applyShowcaseLighting(this.scene);
+    createShowcaseShadowSystem(this.scene, shadowKey, this.showcaseTier);
     setActiveGymShadowRegistrar(registerShowcaseShadowCaster);
-    // Debug-only: marker spheres at each roof spot + a flat marker at each floor target, so the
-    // symmetric grid and aim can be verified by eye. Never present in normal play.
+    // Debug-only: a marker sphere under each fixture + a flat marker on the floor below, so the
+    // fixture-aligned grid can be verified by eye. Never present in normal play.
     if (isGraphicsDebugEnabled()) createShowcaseDebugMarkers(this.scene);
   }
 
@@ -2590,6 +2594,14 @@ export class ArenaScene {
    * only a faint satin response.
    */
   private setupGymEnvironmentResponse(): void {
+    // Neutral has no environment/reflection source (see GymVisualRevamp.applyGymEnvironment), so
+    // there is nothing to wire — leaving each PBR material's default environmentIntensity (1.0)
+    // pointed at an unset scene.environmentTexture contributes zero reflection either way, but
+    // skipping this loop keeps the diagnostic baseline's intent explicit.
+    if (this.neutralEnabled) {
+      if (isGraphicsDebugEnabled()) this.logGraphicsDebugReport();
+      return;
+    }
     for (const target of GYM_REFLECTION_TARGETS) {
       const material = this.scene.getMaterialByName(target.materialName);
       if (!(material instanceof PBRMaterial)) continue;
@@ -2598,7 +2610,13 @@ export class ArenaScene {
     // Showcase overrides the competitive reflection targets just applied: stronger environment response
     // for the .env, roughness inside the spec bands, and a higher PBR simultaneous-light cap so surfaces
     // react to all four roof spots. Applied last so Showcase always wins. No-op in Competitive mode.
-    if (this.showcaseEnabled) applyShowcaseGymMaterials(this.scene);
+    if (this.showcaseEnabled) {
+      applyShowcaseGymMaterials(this.scene);
+      // Phase 7: one static reflection probe gives the floor (+ tiny cover-mat/bleacher) a subtle broad
+      // reflection of the real ceiling fixtures. Created AFTER the materials exist so the receiver wiring
+      // and the explicit static render list are valid; it renders once and never updates per frame.
+      createGymReflectionProbe(this.scene, SHOWCASE_CONFIG.reflectionProbe.resolution);
+    }
     if (isGraphicsDebugEnabled()) this.logGraphicsDebugReport();
   }
 
@@ -2658,28 +2676,30 @@ export class ArenaScene {
     const lights = stats.lights;
     const byRoot = stats.shadow.casterCountsByCategory;
     const byMesh = stats.shadow.renderListCountsByCategory;
-    console.log(`[graphics] Lights: ${lights.hemiCount} hemi + ${lights.fillDirectionalCount} fill-dir` +
-      ` + ${lights.primarySpotCount} primary spots + ${lights.fillSpotCount} fill spots (Showcase)`);
-    for (const s of lights.spotReports) {
-      console.log(`[graphics]   ${s.role} ${s.zone}: pos(${s.x.toFixed(1)},${s.z.toFixed(1)})` +
-        ` → target(${s.targetX.toFixed(1)},${s.targetZ.toFixed(1)}) angle=${s.angle.toFixed(2)}` +
-        ` exp=${s.exponent} range=${s.range} intensity=${s.intensity} shadow=${s.castsShadow ? 'yes' : 'no'}`);
+    console.log(`[graphics] Lights: ${lights.hemiCount} hemi + ${lights.fixtureSpotCount} fixture spots` +
+      ` + ${lights.shadowKeyCount} shadow directional (Showcase) = ` +
+      `${lights.hemiCount + lights.fixtureSpotCount + lights.shadowKeyCount} total`);
+    for (const s of lights.fixtureReports) {
+      console.log(`[graphics]   fixture ${s.zone}: pos(${s.x.toFixed(1)},${s.z.toFixed(1)})` +
+        ` angle=${s.angle.toFixed(2)} exp=${s.exponent} range=${s.range} intensity=${s.intensity}` +
+        ` shadow=${s.castsShadow ? 'yes' : 'no'}`);
     }
     console.log(`[graphics] ShadowGenerators: ${stats.shadow.generatorCount} (lifetimeCreated=${stats.shadow.lifetimeCreateCount})`);
-    console.log(`[graphics] Shadow map: resolution=${stats.shadow.mapSizePerGenerator ?? 'n/a'} per generator` +
+    console.log(`[graphics] Shadow map: resolution=${stats.shadow.mapSize ?? 'n/a'}` +
       ` filtering=${stats.shadow.filteringMode} darkness=${stats.shadow.darkness ?? 'n/a'}`);
     console.log(`[graphics] Floor receives shadows: ${floorReceives ? 'yes' : 'no'}`);
     console.log(`[graphics] Registered casters: ${stats.shadow.casterCount}` +
       ` (mat=${byRoot.mat} dummy=${byRoot.dummy} remotePlayer=${byRoot.remotePlayer} static=${byRoot.static} other=${byRoot.other})`);
     console.log(`[graphics] Shadow render-list meshes (children included): ${stats.shadow.renderListCount}` +
       ` (static=${byMesh.static} mat=${byMesh.mat} dummy=${byMesh.dummy} remotePlayer=${byMesh.remotePlayer})`);
+    const probe = getGymReflectionProbeDebugInfo();
+    console.log(`[graphics] ReflectionProbe: ${probe.active ? 'active' : 'none'}` +
+      ` (count=${probe.active ? 1 : 0} resolution=${probe.resolution ?? 'n/a'} renderListMeshes=${probe.renderListCount ?? 'n/a'})`);
     const ssao = this.showcasePostFx?.getDebugInfo();
-    if (ssao) {
-      console.log(`[graphics] SSAO: ${ssao.ssaoEnabled ? 'enabled' : 'disabled'}` +
-        ` (supported=${ssao.ssaoSupported} strength=${ssao.ssaoStrength} radius=${ssao.ssaoRadius} base=${ssao.ssaoBase})`);
-      console.log(`[graphics] Bloom: ${ssao.bloomEnabled ? 'enabled' : 'disabled'}` +
-        ` (threshold=${ssao.bloomThreshold} weight=${ssao.bloomWeight}) FXAA: ${ssao.fxaaEnabled ? 'on' : 'off'}`);
-    }
+    console.log(`[graphics] SSAO: ${ssao?.ssaoEnabled ? 'enabled' : 'disabled'}` +
+      ` (supported=${ssao?.ssaoSupported ?? 'n/a'} strength=${ssao?.ssaoStrength ?? 'n/a'}` +
+      ` radius=${ssao?.ssaoRadius ?? 'n/a'} base=${ssao?.ssaoBase ?? 'n/a'})` +
+      ` Bloom: disabled Post: FXAA${ssao?.ssaoEnabled ? ' + SSAO' : ' only'}`);
   }
 
   private launchTestBallAtPlayer(): void {

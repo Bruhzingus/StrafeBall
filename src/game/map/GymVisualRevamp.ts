@@ -15,6 +15,7 @@ import {
 import { TUNING } from '../config/tuning';
 import { MAT_SPECS, createBleacherTierSpecs } from '../../../shared/simulation/MapGeometry';
 import {
+  isNeutralModeEnabled,
   isShowcaseLightingEnabled,
   SHOWCASE_CONFIG,
   SHOWCASE_ENV_FILE_URL,
@@ -60,14 +61,21 @@ const GYM_TEXTURES = {
   // Floor + walls use downloaded PBR map sets (color + normal). The blue vinyl pad art and cover
   // mats keep their existing tuned stand-ins so the back-wall panels are unchanged. Originals on
   // disk are left untouched. Tunable material values live in GYM_MATERIAL_TUNING below.
-  floorColor: '/assets/textures/gym/floor/WoodFloor051_1K-JPG_Color.jpg',
-  floorNormal: '/assets/textures/gym/floor/WoodFloor051_1K-JPG_NormalGL.jpg',
-  floorAO: '/assets/textures/gym/floor/WoodFloor051_1K-JPG_AmbientOcclusion.jpg',
-  // A matching floor roughness map (floor/WoodFloor051_1K-JPG_Roughness.jpg) ships alongside these
-  // but is intentionally not wired this pass — the polished floor uses a flat varnish roughness.
+  // Laminate wood floor (2K PNG set). Color is sRGB; normal/roughness/AO are linear non-color (set at
+  // bind time). NormalGL = green-up convention (no Y-flip). Roughness is grayscale, bound via the
+  // packed metallicTexture + useRoughnessFromMetallicTextureGreen workflow (no dedicated PBR slot);
+  // metallic stays scalar 0, so it only feeds real plank-to-plank roughness variation.
+  floorColor: '/assets/textures/gym/floor/textures/laminate_floor_03_diff_2k.png',
+  floorNormal: '/assets/textures/gym/floor/textures/laminate_floor_03_nor_gl_2k.png',
+  floorAO: '/assets/textures/gym/floor/textures/laminate_floor_03_ao_2k.png',
+  floorRoughness: '/assets/textures/gym/floor/textures/laminate_floor_03_rough_2k.png',
   wallColor: '/assets/textures/gym/walls/Bricks064_2K-JPG_Color.jpg',
   wallNormal: '/assets/textures/gym/walls/Bricks064_2K-JPG_NormalGL.jpg',
   wallAO: '/assets/textures/gym/walls/Bricks064_2K-JPG_AmbientOcclusion.jpg',
+  // Grayscale wall roughness map. Bound the same proven way as the floor (packed metallicTexture +
+  // green channel); metallic stays scalar 0 so no false metallic. Gives the painted block real
+  // matte-to-low-satin variation instead of a single flat scalar.
+  wallRoughness: '/assets/textures/gym/walls/Bricks064_2K-JPG_Roughness.jpg',
   wallPad: '/assets/textures/gym/walls/WallMat.png',
   coverMat: '/assets/textures/gym/Obstacles/gym_cover_mat_blue_tuned.png',
   banners: {
@@ -92,16 +100,20 @@ type Rgb = [number, number, number];
  */
 const GYM_MATERIAL_TUNING = {
   floor: {
-    // ~2.6-2.7 m maple plank repeat across the 26x36 m court (10x13 tiles): realistic, not stretched.
-    uScale: 10,
-    vScale: 13,
-    // Bright but lightly-desaturated warm maple — clean maintained court, not orange house flooring.
-    albedoTint: [1.55, 1.34, 0.92] as Rgb,
+    // Laminate plank repeat across the 26x36 m court. Lowered from 10x13 to 6x7.8 (keeping the 10:13
+    // ratio so planks aren't stretched) → ~40% bigger planks, which also spreads the texture-repeat
+    // seams far enough apart that the tiling grid stops reading as obvious lines on the floor.
+    uScale: 6,
+    vScale: 7.8,
+    // Near-neutral tint so the laminate diffuse shows its own true wood color (no warm/yellow push).
+    // A slight lift keeps the court bright; nudge if the floor reads too cool or too dark on hardware.
+    albedoTint: [1.05, 1.04, 1.0] as Rgb,
     metallic: 0,
-    // Recovery baseline: waxed-maple roughness raised into the 0.40-0.44 band while the environment
-    // pipeline is disabled/verified, so the floor reads as a polished court (soft broad sheen) rather
-    // than a wet mirror. Drop back toward ~0.36 only once HDR reflections are re-enabled and verified.
-    roughness: 0.42,
+    // Scalar roughness that MULTIPLIES the bound grayscale roughness map (metallicTexture, green
+    // channel). The map supplies real per-plank variation; this multiplier centres the effective
+    // average near ~0.37 for a polished waxed-court sheen (real grain, soft broad highlight, still no
+    // mirror — metallic stays 0). Lowered from 0.42 to bias toward the glossier "more sheen" target.
+    roughness: 0.37,
     // Scales how strongly the environment texture (the cheap generated gradient by default — the HDR
     // cafeteria env is disabled, see GYM_HDR_ENVIRONMENT_ENABLED) shows up as a broad soft overhead
     // sheen on the floor. Kept low so the floor never mirrors players and never washes out to gray.
@@ -120,17 +132,24 @@ const GYM_MATERIAL_TUNING = {
     // so courses run horizontally at the same physical size on the long and short walls alike.
     tileMetersHorizontal: 5.0,
     tileMetersVertical: 3.9,
-    // Lighter warm-neutral off-white painted block — clearly above the navy pads, not pure white.
-    albedoTint: [2.98, 2.83, 2.58] as Rgb,
+    // Maintained painted cinder block: a lighter, cleaner warm-neutral off-white. Tint nudged up +
+    // slightly toward neutral so the block reads as fresh low-contrast paint (not beige stone, not gray
+    // concrete), clearly above the navy pads but never pure white.
+    albedoTint: [3.18, 3.05, 2.82] as Rgb,
     metallic: 0,
-    roughness: 0.78,
+    // Matte to very-low satin. Scalar multiplies the now-bound roughness map; raised slightly so the
+    // painted block reads matte (no satin glare) while the map still carries subtle block-to-block
+    // variation. Kept well clear of any gloss.
+    roughness: 0.82,
     // Walls get the faintest reflection response of any reflective surface (spec range 0.02-0.06) —
     // just enough that painted block isn't completely flat once the static capture is attached.
     environmentIntensity: 0.04,
-    // Dropped further so the block seams stay subtle, not deep/rough/dominant.
-    normalLevel: 0.32,
-    // Cinder-block seam depth only — must not darken the painted block toward the navy pads' tone.
-    aoStrength: 0.15
+    // Seams pulled subtler still: painted cinder block has soft low-contrast mortar lines, not deep
+    // embossed brick. Lowered so the wall reads as smooth maintained paint over block.
+    normalLevel: 0.24,
+    // Low AO so mortar seams stay a faint low-contrast detail and never darken the painted block
+    // toward grime or the navy pads' tone.
+    aoStrength: 0.1
   },
   // Ceiling is recolored only (no texture added, layout untouched). Panels become soft warm
   // light-gray/cream to lift room brightness; the grid stays medium charcoal blue-gray for contrast.
@@ -156,14 +175,21 @@ const GYM_MATERIAL_TUNING = {
     // the brighter [0.42,0.45,0.56] so the royal-blue pad texture reads as DARK NAVY rather than shiny
     // royal-blue plastic (recovery target). Same asset, just a deeper multiplier. Roughness ~0.56-0.60
     // intent realized as a satin (mid-low specular) StandardMaterial response.
-    backPad: { tint: [0.28, 0.32, 0.46] as Rgb, emissive: [0.003, 0.009, 0.032] as Rgb, specular: [0.04, 0.06, 0.09] as Rgb, specularPower: 26 },
-    // Movable cover mats (PBR): slightly brighter, readable navy — less royal saturation. Reflection
-    // target 0.16-0.22 per spec (movable mats get a touch more sheen than bleachers/walls).
-    coverMat: { albedoColor: [0.48, 0.53, 0.66] as Rgb, emissive: [0.003, 0.01, 0.035] as Rgb, metallic: 0, roughness: 0.54, environmentIntensity: 0.19 },
-    // Bleachers (PBR): darkest, least-saturated navy with a rougher painted metal/plastic response.
-    // environmentIntensity explicit (PBR default is 1.0) so the static reflection capture only ever
-    // gives a faint response here, never the brightest of the three navy categories.
-    bleacher: { albedoColor: [0.24, 0.28, 0.36] as Rgb, metallic: 0.06, roughness: 0.7, environmentIntensity: 0.1 }
+    // Deep navy SATIN vinyl: a thick foam-backed pad, not shiny plastic. Specular pulled down + power
+    // lowered so the highlight is a broad soft satin sheen (no glossy plastic glare). Tint DESATURATED
+    // (channels pulled closer together) so it reads as a muted slate-navy, not vivid royal blue, while
+    // staying clear of near-black crushing.
+    backPad: { tint: [0.30, 0.32, 0.40] as Rgb, emissive: [0.003, 0.008, 0.022] as Rgb, specular: [0.03, 0.045, 0.07] as Rgb, specularPower: 22 },
+    // Movable cover mats (PBR): the LIGHTEST/most readable of the three navies — satin vinyl, not
+    // glossy plastic. Pulled slightly toward neutral navy (less royal) and roughness raised so the
+    // surface reads as matte-satin vinyl rather than a shiny mat; env response kept restrained so it
+    // never glares. emissive trimmed near-zero so the mat is lit by the room, not self-lit.
+    coverMat: { albedoColor: [0.46, 0.5, 0.62] as Rgb, emissive: [0.002, 0.006, 0.022] as Rgb, metallic: 0, roughness: 0.6, environmentIntensity: 0.14 },
+    // Bleachers (PBR): DARKEST, least-saturated, ROUGHEST navy — matte painted surface, fully
+    // dielectric (metallic 0, no metallic glare), non-emissive, and the faintest env response of the
+    // three so they never catch a glossy highlight. Tint DESATURATED toward muted slate so it no longer
+    // reads as vivid blue under the even fixture lighting. environmentIntensity explicit (PBR default 1.0).
+    bleacher: { albedoColor: [0.25, 0.27, 0.32] as Rgb, metallic: 0, roughness: 0.82, environmentIntensity: 0.06 }
   },
   // PBR back-wall pad values, applied only if a wallPad_material PBR exists (the visible raised pads
   // are the clamped single-panel StandardMaterials in createRaisedWallPadPanels).
@@ -276,33 +302,35 @@ export function createBeveledPanelMesh(
 }
 
 export function applyGymVisualRevamp(scene: Scene): void {
+  const neutral = isNeutralModeEnabled();
   applyGymEnvironment(scene);
   enhanceExistingMaterials(scene);
   tuneSceneImageProcessing(scene);
   createWallColorBlocking(scene);
-  createWallBounceGlow(scene);
+  if (!neutral) createWallBounceGlow(scene);
   createWallPaddingDetails(scene);
   createRaisedWallPadPanels(scene);
   createScoreboardWallAccents(scene);
   createScoreboardHardware(scene);
   createUpperWallDetails(scene);
   createGymBanners(scene);
-  createBannerLightCatches(scene);
+  if (!neutral) createBannerLightCatches(scene);
   createBleacherAccents(scene);
   createBleacherSeatDetails(scene);
   createBleacherUnderframes(scene);
-  createCourtLineShadows(scene);
-  createContactDepthDecals(scene);
-  createPropContactShadows(scene);
-  createFloorWaxSheen(scene);
+  if (!neutral) createCourtLineShadows(scene);
+  if (!neutral) createContactDepthDecals(scene);
+  if (!neutral) createPropContactShadows(scene);
+  if (!neutral) createFloorWaxSheen(scene);
   createFloorDetailDecals(scene);
   // FAKE warm floor light decals (broad warm wash + glint streaks + per-fixture reflection streaks +
   // per-fixture falloff pools). These are a COMPETITIVE-mode crutch: Competitive has no real overhead
   // lights, so these baked warm pools sit under the old fixture grid (X=±5, Z=−8/0/+8) to simulate
   // them. In SHOWCASE mode the four real roof SpotLights + the .env already light the floor, so these
   // baked pools just stack on top — misaligned with the new lights and reading as garish yellow floor
-  // circles + a blotchy over-warm court. Skip them in Showcase; keep them exactly as-is in Competitive.
-  if (!isShowcaseLightingEnabled()) {
+  // circles + a blotchy over-warm court. NEUTRAL is the diagnostic truth baseline — never builds them.
+  // Skip them in Showcase and Neutral; keep them exactly as-is in Competitive.
+  if (!isShowcaseLightingEnabled() && !neutral) {
     createCourtAmbientWash(scene);
     createWideFloorGlints(scene);
     createFloorLightReflections(scene);
@@ -310,7 +338,7 @@ export function applyGymVisualRevamp(scene: Scene): void {
   }
   createOverheadLightLenses(scene);
   createOverheadLightFrames(scene);
-  createCeilingRimHighlights(scene);
+  if (!neutral) createCeilingRimHighlights(scene);
   createCeilingConduits(scene);
 }
 
@@ -318,11 +346,28 @@ function enhanceExistingMaterials(scene: Scene): void {
   const floorMaterial = scene.getMaterialByName('floor_material');
   if (floorMaterial instanceof PBRMaterial) {
     const t = GYM_MATERIAL_TUNING.floor;
-    // Maple color + normal maps share the same tiling so plank seams line up. Color (and normal)
-    // capped at 4x anisotropy per spec; flat varnish roughness keeps it polished, not a mirror.
-    const floorColor = createImageTexture(scene, 'gym_floor_maple_color', GYM_TEXTURES.floorColor, t.uScale, t.vScale, false, t.colorAnisotropy);
-    const floorNormal = createImageTexture(scene, 'gym_floor_maple_normal', GYM_TEXTURES.floorNormal, t.uScale, t.vScale, false, t.colorAnisotropy);
-    const floorAO = createImageTexture(scene, 'gym_floor_maple_ao', GYM_TEXTURES.floorAO, t.uScale, t.vScale, false, t.colorAnisotropy);
+    // Laminate color/normal/AO/roughness share one tiling so plank seams line up. Color (and normal)
+    // capped at 4x anisotropy per spec; the bound roughness map keeps it polished, not a mirror.
+    // Planks are rotated 90° (wAng below): the U/V scales are SWAPPED here (vScale→U, uScale→V) so the
+    // rotation turns the plank direction without stretching the planks.
+    const floorColor = createImageTexture(scene, 'gym_floor_maple_color', GYM_TEXTURES.floorColor, t.vScale, t.uScale, false, t.colorAnisotropy);
+    const floorNormal = createImageTexture(scene, 'gym_floor_maple_normal', GYM_TEXTURES.floorNormal, t.vScale, t.uScale, false, t.colorAnisotropy);
+    const floorAO = createImageTexture(scene, 'gym_floor_maple_ao', GYM_TEXTURES.floorAO, t.vScale, t.uScale, false, t.colorAnisotropy);
+    const floorRoughness = createImageTexture(scene, 'gym_floor_maple_roughness', GYM_TEXTURES.floorRoughness, t.vScale, t.uScale, false, t.colorAnisotropy);
+    // Rotate all four floor maps 90° so the planks run the other way across the court. All maps share
+    // the same rotation so grain, normal, AO and roughness stay aligned to the planks.
+    floorColor.wAng = Math.PI / 2;
+    floorNormal.wAng = Math.PI / 2;
+    floorAO.wAng = Math.PI / 2;
+    floorRoughness.wAng = Math.PI / 2;
+    // Color-space by role (Babylon defaults every Texture to gammaSpace=true / sRGB). Albedo IS color
+    // and stays sRGB; the normal, AO and roughness maps are linear non-color data and MUST be flagged
+    // linear or they'd be gamma-decoded and read wrong (this also fixes the normal/AO maps, which were
+    // previously left in sRGB). NormalGL is the GL green-up convention Babylon samples natively — no
+    // Y-flip / invertNormalMapY needed for the current pipeline.
+    floorNormal.gammaSpace = false;
+    floorAO.gammaSpace = false;
+    floorRoughness.gammaSpace = false;
     floorNormal.level = t.normalLevel;
     floorMaterial.albedoTexture = floorColor;
     floorMaterial.bumpTexture = floorNormal;
@@ -330,8 +375,19 @@ function enhanceExistingMaterials(scene: Scene): void {
     // line up with the plank seams instead of needing a second baked UV set.
     floorMaterial.ambientTexture = floorAO;
     floorMaterial.ambientTextureStrength = t.aoStrength;
+    // Real per-plank roughness via Babylon's packed metallicTexture workflow — the ONLY correct way to
+    // bind a standalone grayscale roughness map in the PBRMetallicRoughness path (there is no dedicated
+    // roughnessTexture property). Read roughness from the GREEN channel (grayscale ⇒ R=G=B, so green is
+    // a valid roughness signal); do NOT read metallic from blue, so metallic stays the scalar 0 below —
+    // no false metallic, no tinted response. Alpha-roughness off (JPG has no alpha) so green is used.
+    floorMaterial.metallicTexture = floorRoughness;
+    floorMaterial.useRoughnessFromMetallicTextureGreen = true;
+    floorMaterial.useRoughnessFromMetallicTextureAlpha = false;
+    floorMaterial.useMetallnessFromMetallicTextureBlue = false;
     floorMaterial.albedoColor = new Color3(...t.albedoTint);
     floorMaterial.metallic = t.metallic;
+    // Scalar roughness MULTIPLIES the map. The map's mid-gray average lands the effective roughness
+    // near ~0.40 (polished waxed-court sheen, real variation, well short of a mirror).
     floorMaterial.roughness = t.roughness;
     floorMaterial.environmentIntensity = t.environmentIntensity;
     floorMaterial.specularIntensity = t.specularIntensity;
@@ -382,8 +438,10 @@ function enhanceExistingMaterials(scene: Scene): void {
 
   const seatMaterial = scene.getMaterialByName('bleacher_seat_mat');
   if (seatMaterial instanceof StandardMaterial) {
-    seatMaterial.diffuseColor = new Color3(0.045, 0.15, 0.44);
-    seatMaterial.emissiveColor = new Color3(0.003, 0.01, 0.034);
+    // Desaturated muted slate-navy (was a vivid royal [0.045,0.15,0.44]) so the bleacher seating no
+    // longer reads as bright blue under the even fixture lighting.
+    seatMaterial.diffuseColor = new Color3(0.13, 0.18, 0.32);
+    seatMaterial.emissiveColor = new Color3(0.003, 0.008, 0.022);
     seatMaterial.specularColor = new Color3(0.16, 0.2, 0.28);
     seatMaterial.specularPower = 52;
   }
@@ -463,11 +521,21 @@ function applyGymEnvironment(scene: Scene): void {
     return;
   }
 
-  // SHOWCASE mode: load the prefiltered Babylon .env as hidden image-based lighting (Part 1). This is
-  // the correct prefiltered path (NOT the earlier raw-HDR approach); it never becomes a skybox and the
-  // background is never shown. Competitive mode is untouched and keeps the branches below.
+  // NEUTRAL: the diagnostic truth baseline has no environment/reflection source at all — not even the
+  // cheap gradient fallback, since that still contributes a visible PBR reflection sheen. Leaving
+  // scene.environmentTexture unset means every PBR surface's environment contribution is zero.
+  if (isNeutralModeEnabled()) {
+    environmentDebugInfo = { kind: 'none', name: null, size: null, loaded: true };
+    return;
+  }
+
+  // SHOWCASE mode (Phase 6): NO environment/reflection source at all — the fixture-aligned rig is the
+  // only lighting. The forbidden list bars the warm cafeteria HDR AND any generic global environment
+  // wash (the gradient fallback), so Showcase — like Neutral — leaves scene.environmentTexture unset
+  // (every PBR surface's environment contribution is zero). The .env loader is retained below but no
+  // longer called in any mode.
   if (isShowcaseLightingEnabled()) {
-    loadShowcaseEnvironment(scene);
+    environmentDebugInfo = { kind: 'none', name: null, size: null, loaded: true };
     return;
   }
 
@@ -642,6 +710,10 @@ function applyWallStoneTexture(scene: Scene): void {
     const vScale = wall.rotate ? horizontalRepeats(wall.length) : verticalRepeats;
     const wallColor = createImageTexture(scene, `${wall.name}_block_color`, GYM_TEXTURES.wallColor, uScale, vScale);
     const wallNormal = createImageTexture(scene, `${wall.name}_block_normal`, GYM_TEXTURES.wallNormal, uScale, vScale);
+    // Color-space by role (Babylon defaults every Texture to sRGB). Albedo IS color → stays sRGB; the
+    // normal map is linear non-color data and MUST be flagged linear (was previously left sRGB). The
+    // roughness/AO maps below are flagged the same. NormalGL = native green-up convention, no Y-flip.
+    wallNormal.gammaSpace = false;
     wallNormal.level = t.normalLevel;
     if (wall.rotate) {
       wallColor.wAng = Math.PI / 2;
@@ -650,11 +722,24 @@ function applyWallStoneTexture(scene: Scene): void {
 
     if (material instanceof PBRMaterial) {
       const wallAO = createImageTexture(scene, `${wall.name}_block_ao`, GYM_TEXTURES.wallAO, uScale, vScale);
-      if (wall.rotate) wallAO.wAng = Math.PI / 2;
+      const wallRoughness = createImageTexture(scene, `${wall.name}_block_roughness`, GYM_TEXTURES.wallRoughness, uScale, vScale);
+      wallAO.gammaSpace = false;
+      wallRoughness.gammaSpace = false;
+      if (wall.rotate) {
+        wallAO.wAng = Math.PI / 2;
+        wallRoughness.wAng = Math.PI / 2;
+      }
       material.albedoTexture = wallColor;
       material.bumpTexture = wallNormal;
       material.ambientTexture = wallAO;
       material.ambientTextureStrength = t.aoStrength;
+      // Real matte-block roughness variation via the packed metallicTexture workflow (green channel),
+      // identical to the floor. metallic NOT read from blue → stays scalar 0 (no false metallic). The
+      // scalar roughness below multiplies the map to centre the matte painted-block response.
+      material.metallicTexture = wallRoughness;
+      material.useRoughnessFromMetallicTextureGreen = true;
+      material.useRoughnessFromMetallicTextureAlpha = false;
+      material.useMetallnessFromMetallicTextureBlue = false;
       material.albedoColor = new Color3(...t.albedoTint);
       material.metallic = t.metallic;
       material.roughness = t.roughness;
@@ -1506,13 +1591,8 @@ function createOverheadLightLenses(scene: Scene): void {
     emissive: new Color3(0.96, 0.88, 0.62),
     specular: new Color3(0.22, 0.21, 0.18)
   });
-  const glowMat = solidMaterial(scene, 'decor_overhead_light_soft_glow_mat', new Color3(1.0, 0.9, 0.58), {
-    alpha: 0.16,
-    emissive: new Color3(0.7, 0.56, 0.32)
-  });
 
   const fixtureY = TUNING.map.wallHeight - 0.19;
-  const glowY = TUNING.map.wallHeight - 0.24;
   const positions: [number, number][] = [
     [-5, -8], [5, -8],
     [-5, 0], [5, 0],
@@ -1528,7 +1608,18 @@ function createOverheadLightLenses(scene: Scene): void {
     lens.position.set(x, fixtureY, z);
     lens.material = lensMat;
     markDecorative(lens);
+  });
 
+  // Soft glow plane under each fixture is a FAKE lighting overlay (an alpha-blended emissive plane
+  // standing in for real light falloff), not the fixture geometry itself. Skipped in Neutral, the
+  // diagnostic truth baseline; kept in Competitive/Showcase where it visually softens the housing.
+  if (isNeutralModeEnabled()) return;
+  const glowMat = solidMaterial(scene, 'decor_overhead_light_soft_glow_mat', new Color3(1.0, 0.9, 0.58), {
+    alpha: 0.16,
+    emissive: new Color3(0.7, 0.56, 0.32)
+  });
+  const glowY = TUNING.map.wallHeight - 0.24;
+  positions.forEach(([x, z], index) => {
     const glow = MeshBuilder.CreatePlane(`decor_overhead_light_glow_${index}`, { width: 1.35, height: 2.1 }, scene);
     glow.position.set(x, glowY, z);
     glow.rotation.x = Math.PI / 2;

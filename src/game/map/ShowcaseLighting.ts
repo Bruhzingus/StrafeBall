@@ -11,39 +11,41 @@ import {
   Vector3
 } from '@babylonjs/core';
 import { SHOWCASE_CONFIG, type ShowcaseTier } from '../config/graphicsConfig';
-import { CEILING_FIXTURE_Y } from './GymArena';
+import { CEILING_FIXTURE_POSITIONS, CEILING_FIXTURE_Y } from './GymArena';
 import { TUNING } from '../config/tuning';
 
 /**
  * Client-only SHOWCASE lighting + dynamic-shadow system for the gym (graphics mode "showcase").
  *
- * Replaces the Competitive single-directional "fake sun" with actual roof-source lighting laid out as a
- * symmetric 2×3 grid DERIVED FROM MAP HALF-EXTENTS (TUNING.map) — three columns across the width
- * (left/centre/right) × two rows along the length (front/back), all at the ceiling-fixture height. The
- * four corner cells are wide shadow-casting SpotLights, one per court quadrant, each aimed straight down
- * at its quadrant centre so coverage is even and mirrored left↔right and front↔back. The two
- * centre-column cells are unshadowed fill SpotLights that fill the central seam and remove dead zones.
- * A broad HemisphericLight + a low straight-down DirectionalLight add even fill so the room stays bright
- * and clean. Reflection/IBL response is handled separately by the hidden prefiltered .env
- * (GymVisualRevamp). Every position is computed from map dimensions and the grid fractions in
- * SHOWCASE_CONFIG.lights.roofGrid — no arbitrary hardcoded world coordinates.
+ * Phase 6 — ONE coherent fixture-aligned rig (replaces the old 2×3 derived-grid stack):
+ *   - SIX broad, low-intensity SpotLights, one directly under each VISIBLE ceiling fixture. Positions
+ *     are REUSED from CEILING_FIXTURE_POSITIONS (the single authoritative fixture source in GymArena) —
+ *     never re-derived from map half-extents — so every direct light sits under a real fixture and no
+ *     light exists without a matching fixture. Aimed straight down, very wide soft cones, low specular:
+ *     they read as fluorescent fixture pools, never theatrical circles. They NEVER cast shadows.
+ *   - ONE low HemisphericLight for broad even fill (keeps walls/ceiling bright, shadows off-black).
+ *   - ONE subtle shadow-casting DirectionalLight — the ONLY shadow source — driving exactly ONE
+ *     ShadowGenerator. Mostly straight down with a slight tilt so shadows read with one consistent
+ *     direction (no conflicting shadow directions).
  *
- * Shadows (Part 3): one ShadowGenerator per primary spot (four total). The two fill spots cast no
- * shadows. Nothing here is imported by server or shared code, and no gameplay state is derived from it.
+ * Final runtime: 8 lights (6 fixture spots + 1 hemi + 1 shadow directional) and exactly 1 ShadowGenerator.
+ * No .env IBL, no reflection probe, no SSAO, no bloom (post is FXAA-only, owned by ArenaScene). Nothing
+ * here is imported by server or shared code, and no gameplay state is derived from it.
  */
 
 export interface ShowcaseLights {
   hemi: HemisphericLight;
-  fillDirectional: DirectionalLight | null;
-  primarySpots: SpotLight[];
-  fillSpots: SpotLight[];
+  /** Six shadowless fixture spots, one under each visible ceiling fixture. */
+  fixtureSpots: SpotLight[];
+  /** The single shadow-casting directional — the only light bound to the ShadowGenerator. */
+  shadowKey: DirectionalLight;
 }
 
 type ShadowCasterCategory = 'remotePlayer' | 'mat' | 'dummy' | 'static' | 'other';
 
 interface ShowcaseShadowState {
   scene: Scene;
-  generators: ShadowGenerator[];
+  generator: ShadowGenerator;
   filteringMode: ShadowFilteringMode;
   mapSize: number;
   darkness: number;
@@ -51,12 +53,11 @@ interface ShowcaseShadowState {
   casterCategories: Map<Mesh, ShadowCasterCategory>;
 }
 
-type ShadowFilteringMode = 'pcf' | 'pcfsoft' | 'pcss' | 'poisson' | 'none';
+type ShadowFilteringMode = 'pcf' | 'pcfsoft' | 'poisson' | 'none';
 
 const HEMI_NAME = 'gym_hemi_light';
-const FILL_DIR_NAME = 'gym_showcase_fill_dir';
-const PRIMARY_SPOT_PREFIX = 'gym_showcase_spot_primary_';
-const FILL_SPOT_PREFIX = 'gym_showcase_spot_fill_';
+const SHADOW_KEY_NAME = 'gym_showcase_shadow_key';
+const FIXTURE_SPOT_PREFIX = 'gym_showcase_fixture_';
 const DEBUG_MARKER_PREFIX = 'gym_showcase_debug_';
 
 let activeShadowState: ShowcaseShadowState | null = null;
@@ -64,60 +65,25 @@ let activeLights: ShowcaseLights | null = null;
 // Lifetime create count (never reset) so the debug report can flag an accidental duplicate build.
 let shadowSystemCreateCount = 0;
 
-/** A primary roof spot covers a court quadrant; a fill spot sits in the centre column. */
-type FixtureRole = 'primary' | 'fill';
 interface FixtureLightPlacement {
-  role: FixtureRole;
-  /** Light position on the roof plane (Y = CEILING_FIXTURE_Y). */
+  /** Light position on the fixture plane (Y = CEILING_FIXTURE_Y). */
   x: number;
   z: number;
-  /** Floor aim point directly below (or pulled inward by roofGrid.targetInwardFraction). */
-  targetX: number;
-  targetZ: number;
   /** Human-readable court zone, surfaced only in the debug report. */
   zone: string;
 }
 
 /**
- * Compute the symmetric 2×3 roof-light grid from the map half-extents (TUNING.map) and the grid
- * fractions in SHOWCASE_CONFIG.lights.roofGrid — NOT from hardcoded coordinates. Three X columns
- * (left = −colX, centre = 0, right = +colX) × two Z rows (front = −rowZ, back = +rowZ). The four
- * corners are primary shadow-casting spots (one per court quadrant); the two centre-column cells are
- * fills. Each spot's floor target is its position scaled by targetInwardFraction, so coverage is
- * exactly mirrored left↔right and front↔back. Six placements total (4 primary + 2 fill).
+ * The six fixture placements, taken DIRECTLY from CEILING_FIXTURE_POSITIONS (the same list that builds
+ * the visible fixture housings) so each light sits exactly under a real fixture. No map-half-extent
+ * derivation, no arbitrary coordinates — the lights and the visible fixtures are guaranteed to match.
  */
 export function planFixtureLights(): FixtureLightPlacement[] {
-  const { halfWidth, halfLength } = TUNING.map;
-  const grid = SHOWCASE_CONFIG.lights.roofGrid;
-  const colX = halfWidth * grid.columnFractionX;
-  const rowZ = halfLength * grid.rowFractionZ;
-  const inward = grid.targetInwardFraction;
-
-  const place = (role: FixtureRole, x: number, z: number, zone: string): FixtureLightPlacement => ({
-    role,
-    x,
-    z,
-    targetX: x * inward,
-    targetZ: z * inward,
-    zone
+  return CEILING_FIXTURE_POSITIONS.map(([x, z]) => {
+    const row = z < 0 ? 'south' : z > 0 ? 'north' : 'mid';
+    const col = x < 0 ? 'left' : 'right';
+    return { x, z, zone: `${row}-${col}` };
   });
-
-  const placements: FixtureLightPlacement[] = [];
-  for (const z of [-rowZ, rowZ]) {
-    // -Z is the south/"front" end-wall side in this scene's convention; +Z is north/"back".
-    const row = z < 0 ? 'front' : 'back';
-    placements.push(place('primary', -colX, z, `${row}-left`));
-    placements.push(place('fill', 0, z, `${row}-centre`));
-    placements.push(place('primary', colX, z, `${row}-right`));
-  }
-  return placements;
-}
-
-/** Mathematically derived aim: direction = normalize(floorTarget − roofPosition). No guessed vector. */
-function placementDirection(placement: FixtureLightPlacement): Vector3 {
-  const position = new Vector3(placement.x, CEILING_FIXTURE_Y, placement.z);
-  const target = new Vector3(placement.targetX, 0, placement.targetZ);
-  return target.subtract(position).normalize();
 }
 
 /**
@@ -128,19 +94,10 @@ export function applyShowcaseLighting(scene: Scene): ShowcaseLights {
   disposeShowcaseLightMeshes(scene);
 
   const hemi = configureHemisphericFill(scene);
-  const fillDirectional = SHOWCASE_CONFIG.lights.fillDirectional.enabled ? configureFillDirectional(scene) : null;
+  const fixtureSpots = planFixtureLights().map((placement, index) => createFixtureSpot(scene, placement, index));
+  const shadowKey = configureShadowKey(scene);
 
-  const primarySpots: SpotLight[] = [];
-  const fillSpots: SpotLight[] = [];
-  for (const placement of planFixtureLights()) {
-    if (placement.role === 'primary') {
-      primarySpots.push(createPrimarySpot(scene, placement));
-    } else if (SHOWCASE_CONFIG.lights.fillSpot.enabled) {
-      fillSpots.push(createFillSpot(scene, placement));
-    }
-  }
-
-  activeLights = { hemi, fillDirectional, primarySpots, fillSpots };
+  activeLights = { hemi, fixtureSpots, shadowKey };
   return activeLights;
 }
 
@@ -160,27 +117,13 @@ function configureHemisphericFill(scene: Scene): HemisphericLight {
   return hemi;
 }
 
-function configureFillDirectional(scene: Scene): DirectionalLight {
-  const stale = scene.getLightByName(FILL_DIR_NAME);
-  if (stale) stale.dispose();
-  const c = SHOWCASE_CONFIG.lights.fillDirectional;
-  const dir = new Vector3(...c.direction);
-  dir.normalize();
-  const fill = new DirectionalLight(FILL_DIR_NAME, dir, scene);
-  fill.intensity = c.intensity;
-  fill.diffuse = new Color3(...c.diffuse);
-  fill.specular = new Color3(0.05, 0.05, 0.05);
-  // Broad visual fill ONLY — this light never owns a ShadowGenerator (no fake-sun shadow direction).
-  fill.shadowEnabled = false;
-  return fill;
-}
-
-function createPrimarySpot(scene: Scene, placement: FixtureLightPlacement): SpotLight {
-  const c = SHOWCASE_CONFIG.lights.primarySpot;
+/** One broad shadowless fixture spot, aimed straight down from under a visible ceiling fixture. */
+function createFixtureSpot(scene: Scene, placement: FixtureLightPlacement, index: number): SpotLight {
+  const c = SHOWCASE_CONFIG.lights.fixtureSpot;
   const spot = new SpotLight(
-    `${PRIMARY_SPOT_PREFIX}${placement.zone}`,
+    `${FIXTURE_SPOT_PREFIX}${index}_${placement.zone}`,
     new Vector3(placement.x, CEILING_FIXTURE_Y, placement.z),
-    placementDirection(placement),
+    new Vector3(0, -1, 0), // straight down — even pool directly below the fixture
     c.angleRadians,
     c.exponent,
     scene
@@ -189,37 +132,54 @@ function createPrimarySpot(scene: Scene, placement: FixtureLightPlacement): Spot
   spot.range = c.range;
   spot.diffuse = new Color3(...c.diffuse);
   spot.specular = new Color3(...c.specular);
-  // Depth bounds for the shadow map: casters live between the floor and just under the fixture.
-  spot.shadowMinZ = 0.5;
-  spot.shadowMaxZ = CEILING_FIXTURE_Y + 1;
-  return spot;
-}
-
-function createFillSpot(scene: Scene, placement: FixtureLightPlacement): SpotLight {
-  const c = SHOWCASE_CONFIG.lights.fillSpot;
-  const spot = new SpotLight(
-    `${FILL_SPOT_PREFIX}${placement.zone}`,
-    new Vector3(placement.x, CEILING_FIXTURE_Y, placement.z),
-    placementDirection(placement),
-    c.angleRadians,
-    c.exponent,
-    scene
-  );
-  spot.intensity = c.intensity;
-  spot.range = c.range;
-  spot.diffuse = new Color3(...c.diffuse);
-  spot.specular = new Color3(...c.specular);
-  // Fill only — never gets a ShadowGenerator.
+  // Fixture lights NEVER cast shadows — only the single shadowKey directional does.
   spot.shadowEnabled = false;
   return spot;
 }
 
 /**
- * Create one ShadowGenerator per primary roof spot (four total). Map size + filtering come from the
- * resolved tier / central config. Disposes any prior showcase shadow system first so there is never
- * more than four generators per scene.
+ * The single shadow-casting directional. Mirrors the proven Competitive key-light frustum (fixed
+ * orthographic projection derived from map dimensions so shadows don't shimmer/resize), but at lower
+ * intensity so the fixtures own the room brightness and this only adds a subtle shadow direction.
  */
-export function createShowcaseShadowSystem(scene: Scene, primarySpots: SpotLight[], tier: ShowcaseTier): ShadowGenerator[] {
+function configureShadowKey(scene: Scene): DirectionalLight {
+  const stale = scene.getLightByName(SHADOW_KEY_NAME);
+  if (stale) stale.dispose();
+
+  const c = SHOWCASE_CONFIG.lights.shadowKey;
+  const { halfWidth, halfLength, wallHeight } = TUNING.map;
+  const margin = 5;
+  const extent = Math.max(halfWidth, halfLength) + margin;
+
+  const direction = new Vector3(...c.direction);
+  direction.normalize();
+
+  const key = new DirectionalLight(SHADOW_KEY_NAME, direction, scene);
+  key.intensity = c.intensity;
+  key.diffuse = new Color3(...c.diffuse);
+  key.specular = new Color3(...c.specular);
+
+  // Fixed orthographic frustum covering the full court + margin, placed above court centre opposite
+  // the light direction (autoUpdateExtends off keeps the projection stable as players move).
+  const distance = wallHeight * 1.5 + extent;
+  key.position = direction.scale(-distance);
+  key.autoUpdateExtends = false;
+  key.orthoLeft = -extent;
+  key.orthoRight = extent;
+  key.orthoTop = extent;
+  key.orthoBottom = -extent;
+  key.shadowMinZ = Math.max(1, distance - extent - 5);
+  key.shadowMaxZ = distance + extent + 5;
+
+  return key;
+}
+
+/**
+ * Create the SINGLE Showcase ShadowGenerator, bound to the shadowKey directional. Map size + filtering
+ * come from the resolved tier / central config. Disposes any prior showcase shadow system first so there
+ * is never more than one generator per scene.
+ */
+export function createShowcaseShadowSystem(scene: Scene, shadowKey: DirectionalLight, tier: ShowcaseTier): ShadowGenerator {
   disposeShowcaseShadowSystem();
 
   const cfg = SHOWCASE_CONFIG.shadows;
@@ -228,34 +188,25 @@ export function createShowcaseShadowSystem(scene: Scene, primarySpots: SpotLight
   const webGLVersion = (scene.getEngine() as { webGLVersion?: number }).webGLVersion;
   const supportsPcf = webGLVersion === undefined || webGLVersion > 1;
 
-  let filteringMode: ShadowFilteringMode = 'none';
-  const generators: ShadowGenerator[] = [];
-  for (const spot of primarySpots) {
-    const generator = new ShadowGenerator(mapSize, spot);
-    generator.setDarkness(cfg.darkness);
-    generator.bias = cfg.bias;
-    generator.normalBias = cfg.normalBias;
-    generator.transparencyShadow = false;
+  const generator = new ShadowGenerator(mapSize, shadowKey);
+  generator.setDarkness(cfg.darkness);
+  generator.bias = cfg.bias;
+  generator.normalBias = cfg.normalBias;
+  generator.transparencyShadow = false;
 
-    if (!supportsPcf) {
-      generator.usePoissonSampling = true;
-      filteringMode = 'poisson';
-    } else if (cfg.usePcss) {
-      // Contact-hardening (PCSS) — Showcase-only, opt-in. Soft size relative to the wide fixture.
-      generator.useContactHardeningShadow = true;
-      generator.contactHardeningLightSizeUVRatio = 0.06;
-      filteringMode = 'pcss';
-    } else {
-      generator.usePercentageCloserFiltering = true;
-      generator.filteringQuality = cfg.filter === 'pcfsoft' ? ShadowGenerator.QUALITY_HIGH : ShadowGenerator.QUALITY_MEDIUM;
-      filteringMode = cfg.filter === 'pcfsoft' ? 'pcfsoft' : 'pcf';
-    }
-    generators.push(generator);
+  let filteringMode: ShadowFilteringMode = 'none';
+  if (!supportsPcf) {
+    generator.usePoissonSampling = true;
+    filteringMode = 'poisson';
+  } else {
+    generator.usePercentageCloserFiltering = true;
+    generator.filteringQuality = cfg.filter === 'pcfsoft' ? ShadowGenerator.QUALITY_HIGH : ShadowGenerator.QUALITY_MEDIUM;
+    filteringMode = cfg.filter === 'pcfsoft' ? 'pcfsoft' : 'pcf';
   }
 
   activeShadowState = {
     scene,
-    generators,
+    generator,
     filteringMode,
     mapSize,
     darkness: cfg.darkness,
@@ -263,20 +214,20 @@ export function createShowcaseShadowSystem(scene: Scene, primarySpots: SpotLight
     casterCategories: new Map()
   };
   shadowSystemCreateCount++;
-  return generators;
+  return generator;
 }
 
 /**
- * Register a shadow caster with EVERY primary-spot generator so each fixture casts the mesh's shadow.
- * `includeDescendants` pulls in parented child submeshes (e.g. a dummy's head/torso/limbs). Safe before
- * the system exists (no-op), idempotent, and auto-unregistered if the mesh is disposed.
+ * Register a shadow caster with the single Showcase generator. `includeDescendants` pulls in parented
+ * child submeshes (e.g. a dummy's head/torso/limbs). Safe before the system exists (no-op), idempotent,
+ * and auto-unregistered if the mesh is disposed.
  */
 export function registerShowcaseShadowCaster(mesh: Mesh | null | undefined, includeDescendants = false): void {
   if (!mesh || !activeShadowState) return;
   if (activeShadowState.casters.has(mesh)) return;
   activeShadowState.casters.add(mesh);
   activeShadowState.casterCategories.set(mesh, categorizeShadowCaster(mesh));
-  for (const generator of activeShadowState.generators) generator.addShadowCaster(mesh, includeDescendants);
+  activeShadowState.generator.addShadowCaster(mesh, includeDescendants);
   mesh.onDisposeObservable.addOnce(() => unregisterShowcaseShadowCaster(mesh));
 }
 
@@ -284,19 +235,19 @@ export function unregisterShowcaseShadowCaster(mesh: Mesh | null | undefined): v
   if (!mesh || !activeShadowState) return;
   if (!activeShadowState.casters.delete(mesh)) return;
   activeShadowState.casterCategories.delete(mesh);
-  for (const generator of activeShadowState.generators) generator.removeShadowCaster(mesh, true);
+  activeShadowState.generator.removeShadowCaster(mesh, true);
 }
 
-/** Dispose the showcase shadow generators (lights are disposed separately by disposeShowcaseLightMeshes). */
+/** Dispose the showcase shadow generator (lights are disposed separately by disposeShowcaseLightMeshes). */
 export function disposeShowcaseShadowSystem(): void {
   if (!activeShadowState) return;
   activeShadowState.casters.clear();
   activeShadowState.casterCategories.clear();
-  for (const generator of activeShadowState.generators) generator.dispose();
+  activeShadowState.generator.dispose();
   activeShadowState = null;
 }
 
-/** Dispose generators AND showcase lights — full teardown on scene destruction. */
+/** Dispose generator AND showcase lights — full teardown on scene destruction. */
 export function disposeShowcaseLighting(scene: Scene): void {
   disposeShowcaseShadowSystem();
   disposeShowcaseLightMeshes(scene);
@@ -304,43 +255,38 @@ export function disposeShowcaseLighting(scene: Scene): void {
 }
 
 function disposeShowcaseLightMeshes(scene: Scene): void {
-  const stale = scene.getLightByName(FILL_DIR_NAME);
+  const stale = scene.getLightByName(SHADOW_KEY_NAME);
   if (stale) stale.dispose();
   for (const light of scene.lights.slice()) {
-    if (light.name.startsWith(PRIMARY_SPOT_PREFIX) || light.name.startsWith(FILL_SPOT_PREFIX)) light.dispose();
+    if (light.name.startsWith(FIXTURE_SPOT_PREFIX)) light.dispose();
   }
   disposeShowcaseDebugMarkers(scene);
 }
 
 /**
- * DEBUG-ONLY roof-light visualization (Part: "add temporary debug visualization only if needed"). Drops
- * a coloured marker sphere at every roof spot (primary = warm, fill = cool) and a flat marker at each
- * spot's floor target, so the symmetric grid + aim can be verified by eye. Created ONLY when the caller
- * passes the graphics-debug flag; never present in normal play. Idempotent (clears prior markers first).
+ * DEBUG-ONLY fixture-light visualization. Drops a warm marker sphere at every fixture spot and a flat
+ * marker on the floor directly below it, so the fixture-aligned grid can be verified by eye. Created
+ * ONLY when the caller passes the graphics-debug flag; never present in normal play. Idempotent.
  */
 export function createShowcaseDebugMarkers(scene: Scene): void {
   disposeShowcaseDebugMarkers(scene);
 
-  const primaryMat = new StandardMaterial(`${DEBUG_MARKER_PREFIX}primary_mat`, scene);
-  primaryMat.emissiveColor = new Color3(1, 0.35, 0.1);
-  primaryMat.disableLighting = true;
-  const fillMat = new StandardMaterial(`${DEBUG_MARKER_PREFIX}fill_mat`, scene);
-  fillMat.emissiveColor = new Color3(0.1, 0.7, 1);
-  fillMat.disableLighting = true;
+  const sourceMat = new StandardMaterial(`${DEBUG_MARKER_PREFIX}src_mat`, scene);
+  sourceMat.emissiveColor = new Color3(1, 0.78, 0.4);
+  sourceMat.disableLighting = true;
   const targetMat = new StandardMaterial(`${DEBUG_MARKER_PREFIX}target_mat`, scene);
   targetMat.emissiveColor = new Color3(1, 1, 0.2);
   targetMat.disableLighting = true;
 
   for (const p of planFixtureLights()) {
-    const isPrimary = p.role === 'primary';
-    const source = MeshBuilder.CreateSphere(`${DEBUG_MARKER_PREFIX}src_${p.zone}`, { diameter: isPrimary ? 0.7 : 0.5 }, scene);
+    const source = MeshBuilder.CreateSphere(`${DEBUG_MARKER_PREFIX}src_${p.zone}`, { diameter: 0.6 }, scene);
     source.position.set(p.x, CEILING_FIXTURE_Y, p.z);
-    source.material = isPrimary ? primaryMat : fillMat;
+    source.material = sourceMat;
     source.isPickable = false;
 
     const target = MeshBuilder.CreateDisc(`${DEBUG_MARKER_PREFIX}tgt_${p.zone}`, { radius: 0.6, tessellation: 16 }, scene);
-    target.position.set(p.targetX, 0.06, p.targetZ);
-    target.rotation.x = Math.PI / 2; // lay flat on the floor
+    target.position.set(p.x, 0.06, p.z);
+    target.rotation.x = Math.PI / 2; // lay flat on the floor directly below the fixture
     target.material = targetMat;
     target.isPickable = false;
   }
@@ -372,15 +318,11 @@ function categorizeShadowMeshName(name: string): ShadowCasterCategory {
   return 'other';
 }
 
-export interface ShowcaseSpotReport {
+export interface ShowcaseFixtureReport {
   zone: string;
-  role: FixtureRole;
-  /** Roof position. */
+  /** Fixture (and light) position. */
   x: number;
   z: number;
-  /** Floor aim point where the cone axis meets y = 0 (derived from the light's real direction). */
-  targetX: number;
-  targetZ: number;
   angle: number;
   exponent: number;
   range: number;
@@ -391,17 +333,16 @@ export interface ShowcaseSpotReport {
 export interface ShowcaseGraphicsDebugStats {
   lights: {
     hemiCount: number;
-    fillDirectionalCount: number;
-    primarySpotCount: number;
-    fillSpotCount: number;
-    /** Position, floor target, and cone params for every roof spot (4 primary + 2 fill). */
-    spotReports: ShowcaseSpotReport[];
+    fixtureSpotCount: number;
+    shadowKeyCount: number;
+    /** Position + cone params for every fixture spot (6 total, none casting). */
+    fixtureReports: ShowcaseFixtureReport[];
   };
   shadow: {
     generatorCount: number;
     lifetimeCreateCount: number;
     filteringMode: ShadowFilteringMode;
-    mapSizePerGenerator: number | null;
+    mapSize: number | null;
     darkness: number | null;
     casterCount: number;
     casterCountsByCategory: Record<ShadowCasterCategory, number>;
@@ -410,23 +351,16 @@ export interface ShowcaseGraphicsDebugStats {
   };
 }
 
-/** Project a spot's actual position + direction down to the floor (y = 0) for the report. */
-function describeSpot(spot: SpotLight, role: FixtureRole, prefix: string, castsShadow: boolean): ShowcaseSpotReport {
-  const dirY = spot.direction.y;
-  // Distance along the axis until it reaches the floor plane (dirY is negative — pointing down).
-  const t = dirY < 0 ? spot.position.y / -dirY : 0;
+function describeFixture(spot: SpotLight, zone: string): ShowcaseFixtureReport {
   return {
-    zone: spot.name.replace(prefix, ''),
-    role,
+    zone,
     x: spot.position.x,
     z: spot.position.z,
-    targetX: spot.position.x + spot.direction.x * t,
-    targetZ: spot.position.z + spot.direction.z * t,
     angle: spot.angle,
     exponent: spot.exponent,
     range: spot.range,
     intensity: spot.intensity,
-    castsShadow
+    castsShadow: false
   };
 }
 
@@ -439,30 +373,27 @@ export function getShowcaseGraphicsDebugStats(): ShowcaseGraphicsDebugStats {
 
   if (activeShadowState) {
     for (const category of activeShadowState.casterCategories.values()) casterCountsByCategory[category]++;
-    // All four generators share the same caster list; read generator[0] for the render-list breakdown.
-    const renderList = activeShadowState.generators[0]?.getShadowMap()?.renderList ?? [];
+    const renderList = activeShadowState.generator.getShadowMap()?.renderList ?? [];
     renderListCount = renderList.length;
     for (const mesh of renderList) renderListCountsByCategory[categorizeShadowMeshName(mesh.name)]++;
   }
 
-  const spotReports: ShowcaseSpotReport[] = [
-    ...(activeLights?.primarySpots ?? []).map((spot) => describeSpot(spot, 'primary', PRIMARY_SPOT_PREFIX, true)),
-    ...(activeLights?.fillSpots ?? []).map((spot) => describeSpot(spot, 'fill', FILL_SPOT_PREFIX, false))
-  ];
+  const fixtureReports: ShowcaseFixtureReport[] = (activeLights?.fixtureSpots ?? []).map((spot) =>
+    describeFixture(spot, spot.name.replace(FIXTURE_SPOT_PREFIX, ''))
+  );
 
   return {
     lights: {
       hemiCount: activeLights?.hemi ? 1 : 0,
-      fillDirectionalCount: activeLights?.fillDirectional ? 1 : 0,
-      primarySpotCount: activeLights?.primarySpots.length ?? 0,
-      fillSpotCount: activeLights?.fillSpots.length ?? 0,
-      spotReports
+      fixtureSpotCount: activeLights?.fixtureSpots.length ?? 0,
+      shadowKeyCount: activeLights?.shadowKey ? 1 : 0,
+      fixtureReports
     },
     shadow: {
-      generatorCount: activeShadowState?.generators.length ?? 0,
+      generatorCount: activeShadowState ? 1 : 0,
       lifetimeCreateCount: shadowSystemCreateCount,
       filteringMode: activeShadowState?.filteringMode ?? 'none',
-      mapSizePerGenerator: activeShadowState?.mapSize ?? null,
+      mapSize: activeShadowState?.mapSize ?? null,
       darkness: activeShadowState?.darkness ?? null,
       casterCount: activeShadowState?.casters.size ?? 0,
       casterCountsByCategory,
