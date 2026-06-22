@@ -1,5 +1,6 @@
 import {
   Color3,
+  CubeTexture,
   DynamicTexture,
   HDRCubeTexture,
   ImageProcessingConfiguration,
@@ -13,6 +14,12 @@ import {
 } from '@babylonjs/core';
 import { TUNING } from '../config/tuning';
 import { MAT_SPECS, createBleacherTierSpecs } from '../../../shared/simulation/MapGeometry';
+import {
+  isShowcaseLightingEnabled,
+  SHOWCASE_CONFIG,
+  SHOWCASE_ENV_FILE_URL,
+  SHOWCASE_ENV_TEXTURE_NAME
+} from '../config/graphicsConfig';
 
 type WallSide = 'north' | 'south' | 'east' | 'west';
 type BannerShape = 'rectangle' | 'vertical' | 'pennant';
@@ -287,12 +294,20 @@ export function applyGymVisualRevamp(scene: Scene): void {
   createCourtLineShadows(scene);
   createContactDepthDecals(scene);
   createPropContactShadows(scene);
-  createCourtAmbientWash(scene);
   createFloorWaxSheen(scene);
-  createWideFloorGlints(scene);
   createFloorDetailDecals(scene);
-  createFloorLightReflections(scene);
-  createFixtureFalloffPools(scene);
+  // FAKE warm floor light decals (broad warm wash + glint streaks + per-fixture reflection streaks +
+  // per-fixture falloff pools). These are a COMPETITIVE-mode crutch: Competitive has no real overhead
+  // lights, so these baked warm pools sit under the old fixture grid (X=±5, Z=−8/0/+8) to simulate
+  // them. In SHOWCASE mode the four real roof SpotLights + the .env already light the floor, so these
+  // baked pools just stack on top — misaligned with the new lights and reading as garish yellow floor
+  // circles + a blotchy over-warm court. Skip them in Showcase; keep them exactly as-is in Competitive.
+  if (!isShowcaseLightingEnabled()) {
+    createCourtAmbientWash(scene);
+    createWideFloorGlints(scene);
+    createFloorLightReflections(scene);
+    createFixtureFalloffPools(scene);
+  }
   createOverheadLightLenses(scene);
   createOverheadLightFrames(scene);
   createCeilingRimHighlights(scene);
@@ -409,9 +424,9 @@ const FALLBACK_ENVIRONMENT_NAME = 'gym_env_gradient_tex';
 
 /** Debug-only snapshot of which environment is currently driving PBR reflections — never read for gameplay. */
 export interface GymEnvironmentDebugInfo {
-  kind: 'hdr' | 'gradient' | 'none';
+  kind: 'hdr' | 'env' | 'gradient' | 'none';
   name: string | null;
-  /** Cubemap face size for the HDR; null for the 2D gradient fallback. */
+  /** Cubemap face size for the HDR/.env; null for the 2D gradient fallback. */
   size: number | null;
   /** False while the HDR is still streaming/prefiltering; true once it (or the fallback) is ready. */
   loaded: boolean;
@@ -440,7 +455,21 @@ export function getGymEnvironmentDebugInfo(): GymEnvironmentDebugInfo {
  * tiny generated gradient so the floor still reads glossy rather than flat (no brightness regression).
  */
 function applyGymEnvironment(scene: Scene): void {
-  if (scene.getTextureByName(HDR_ENVIRONMENT_NAME) || scene.getTextureByName(FALLBACK_ENVIRONMENT_NAME)) return;
+  if (
+    scene.getTextureByName(HDR_ENVIRONMENT_NAME) ||
+    scene.getTextureByName(FALLBACK_ENVIRONMENT_NAME) ||
+    scene.getTextureByName(SHOWCASE_ENV_TEXTURE_NAME)
+  ) {
+    return;
+  }
+
+  // SHOWCASE mode: load the prefiltered Babylon .env as hidden image-based lighting (Part 1). This is
+  // the correct prefiltered path (NOT the earlier raw-HDR approach); it never becomes a skybox and the
+  // background is never shown. Competitive mode is untouched and keeps the branches below.
+  if (isShowcaseLightingEnabled()) {
+    loadShowcaseEnvironment(scene);
+    return;
+  }
 
   // Recovery default: skip the cafeteria HDR entirely and use the cheap gradient environment so the
   // floor keeps a soft waxed sheen without the washed-out gray HDR reflection. (See flag comment.)
@@ -502,6 +531,76 @@ function createGradientEnvironmentFallback(scene: Scene): void {
 
   scene.environmentTexture = texture;
   environmentDebugInfo = { kind: 'gradient', name: FALLBACK_ENVIRONMENT_NAME, size: null, loaded: true };
+}
+
+/**
+ * SHOWCASE image-based lighting (Part 1). Loads the prefiltered Babylon .env exactly once via the
+ * supported CubeTexture.CreateFromPrefilteredData path and assigns it as scene.environmentTexture —
+ * hidden (no skybox, the background is never shown, the visible gym walls/ceiling are untouched). PBR
+ * surfaces sample it directly for broad soft ceiling-light streaks and room highlights. Name-guarded
+ * so a scene rebuild / reconnect / room reset can never start a second load. There is no per-frame
+ * cost and no reflection probe (Part 1 forbids dynamic probes here). Disposed with the scene.
+ */
+function loadShowcaseEnvironment(scene: Scene): void {
+  if (scene.getTextureByName(SHOWCASE_ENV_TEXTURE_NAME)) return;
+
+  const env = CubeTexture.CreateFromPrefilteredData(SHOWCASE_ENV_FILE_URL, scene);
+  env.name = SHOWCASE_ENV_TEXTURE_NAME;
+  scene.environmentTexture = env;
+  environmentDebugInfo = { kind: 'env', name: SHOWCASE_ENV_TEXTURE_NAME, size: null, loaded: false };
+  env.onLoadObservable.addOnce(() => {
+    environmentDebugInfo = { kind: 'env', name: SHOWCASE_ENV_TEXTURE_NAME, size: env.getSize().width, loaded: true };
+  });
+}
+
+/**
+ * SHOWCASE material response (Part 1 + Part 6), applied as an override pass ON TOP of the competitive
+ * baseline tuning so the baseline values are never mutated — flipping back to Competitive needs no undo.
+ * Raises each gym PBR surface's roughness into its spec band and its environmentIntensity so the .env
+ * reads as a broad soft sheen (mainly the floor), and lifts maxSimultaneousLights so floor/walls/mats/
+ * bleachers actually react to all four roof spots + the fill lights (PBR defaults to 4, which would drop
+ * lights). The ceiling is a StandardMaterial (no PBR roughness): expressed as a near-zero specular.
+ *
+ * Call AFTER the gym build AND after the competitive reflection-target pass, so Showcase wins. No-op for
+ * any material that does not exist / is not the expected type, and never touches non-gym/UI materials.
+ */
+export function applyShowcaseGymMaterials(scene: Scene): void {
+  const m = SHOWCASE_CONFIG.materials;
+
+  applyShowcasePbrSurface(scene, 'floor_material', m.floor.roughness, m.floor.environmentIntensity, m.maxSimultaneousLights, m.floor.specularIntensity);
+  for (const wall of ['north_wall_brick_mat', 'south_wall_brick_mat', 'east_wall_brick_mat', 'west_wall_brick_mat']) {
+    applyShowcasePbrSurface(scene, wall, m.wall.roughness, m.wall.environmentIntensity, m.maxSimultaneousLights);
+  }
+  applyShowcasePbrSurface(scene, 'mat_material', m.coverMat.roughness, m.coverMat.environmentIntensity, m.maxSimultaneousLights);
+  applyShowcasePbrSurface(scene, 'bleacher_material', m.bleacher.roughness, m.bleacher.environmentIntensity, m.maxSimultaneousLights);
+  // PBR wall-pad material only exists if one was ever created; the visible pads are StandardMaterials
+  // that keep their tuned satin baseline. Safe no-op when absent.
+  applyShowcasePbrSurface(scene, 'wallPad_material', m.wallPad.roughness, m.wallPad.environmentIntensity, m.maxSimultaneousLights);
+
+  for (const name of ['gym_ceiling_mat', 'gym_roof_panel_mat']) {
+    const ceiling = scene.getMaterialByName(name);
+    if (ceiling instanceof StandardMaterial) {
+      ceiling.specularColor = new Color3(...m.ceiling.specular);
+      ceiling.specularPower = m.ceiling.specularPower;
+    }
+  }
+}
+
+function applyShowcasePbrSurface(
+  scene: Scene,
+  materialName: string,
+  roughness: number,
+  environmentIntensity: number,
+  maxSimultaneousLights: number,
+  specularIntensity?: number
+): void {
+  const material = scene.getMaterialByName(materialName);
+  if (!(material instanceof PBRMaterial)) return;
+  material.metallic = 0;
+  material.roughness = roughness;
+  material.environmentIntensity = environmentIntensity;
+  material.maxSimultaneousLights = maxSimultaneousLights;
+  if (specularIntensity !== undefined) material.specularIntensity = specularIntensity;
 }
 
 // World size (metres) covered by one repeat of the wall brick texture. All four walls shared one

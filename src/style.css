@@ -1320,17 +1320,33 @@ html, body {
 .multiplayer-field input {
   width: 100%;
   box-sizing: border-box;
-  border: 2.5px solid var(--ink);
-  border-radius: 8px;
-  padding: 7px 8px;
+  border: 2px solid var(--ink);
+  border-radius: 10px;
+  padding: 10px 12px;
   color: var(--ink);
-  background: var(--paper-2);
+  background: #fff;
   font-weight: 700;
+  font-size: 14px;
 }
 
 .multiplayer-field input:focus {
   outline: none;
   border-color: var(--school-blue);
+  border-width: 3px;
+}
+
+/* Warning text shown above the mode tabs when the player name is empty */
+.multiplayer-name-warning {
+  color: var(--school-red);
+  font-weight: 900;
+  font-size: 12px;
+  margin: 6px 0 4px;
+  text-transform: none;
+  display: none;
+}
+
+.multiplayer-modal:not(.multiplayer-modal--name-ready) .multiplayer-name-warning {
+  display: block;
 }
 
 .multiplayer-actions {
@@ -1877,6 +1893,32 @@ html, body {
   cursor: pointer;
 }
 
+.settings-row--select {
+  align-items: center;
+  gap: 12px;
+  margin-top: 8px;
+}
+
+.settings-select {
+  flex: 1 1 auto;
+  min-width: 0;
+  padding: 4px 6px;
+  border: 2px solid var(--ink);
+  border-radius: 8px;
+  background: rgba(13, 18, 32, 0.85);
+  color: var(--paper);
+  font: inherit;
+  font-weight: 700;
+  cursor: pointer;
+}
+
+.settings-hint {
+  margin-top: 4px;
+  font-size: 11px;
+  font-weight: 700;
+  opacity: 0.7;
+}
+
 .multiplayer-panel {
   top: 18px;
   left: 18px;
@@ -2419,10 +2461,9 @@ html, body {
   font-size: 15px;
 }
 
-/* === Create / Join launch: two toggle buttons that expand a drawer === */
-/* Launch block: Create button + an always-visible "join with a code" row (no toggle drawers). */
+/* === Create / Join launch: side-by-side with OR divider === */
 .multiplayer-launch {
-  margin-top: 6px;
+  margin-top: 0;
   display: flex;
   flex-direction: column;
   gap: 10px;
@@ -2432,16 +2473,55 @@ html, body {
   display: none;
 }
 
+/* Side-by-side layout for create and join options */
+.multiplayer-launch-section {
+  display: grid;
+  grid-template-columns: 1fr auto 1fr;
+  gap: 12px;
+  align-items: start;
+}
+
+/* Each launch option has title, description, and button/input */
+.multiplayer-launch-option {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.multiplayer-launch-option__title {
+  font-size: 11px;
+  font-weight: 900;
+  letter-spacing: 0.05em;
+  text-transform: uppercase;
+  color: var(--school-blue);
+}
+
+.multiplayer-launch-option__desc {
+  font-size: 11px;
+  line-height: 1.3;
+  color: rgba(21, 33, 59, 0.7);
+}
+
+/* OR divider between the two columns */
+.multiplayer-launch-divider {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-weight: 900;
+  color: rgba(21, 33, 59, 0.5);
+  font-size: 11px;
+}
+
 .multiplayer-create,
 .multiplayer-join {
-  border: 3px solid var(--ink);
-  border-radius: 12px;
-  padding: 11px 12px;
+  border: 2px solid var(--ink);
+  border-radius: 10px;
+  padding: 10px 12px;
   color: var(--ink);
   font-weight: 900;
-  font-size: 15px;
+  font-size: 13px;
   text-transform: uppercase;
-  letter-spacing: 0.03em;
+  letter-spacing: 0.04em;
   cursor: pointer;
   box-shadow: 2px 2px 0 var(--ink);
   transition: transform 0.05s ease, box-shadow 0.05s ease;
@@ -2449,9 +2529,11 @@ html, body {
 
 .multiplayer-create {
   width: 100%;
+  background: linear-gradient(180deg, #79f5ff, var(--electric-cyan));
 }
 
 .multiplayer-join {
+  width: 100%;
   background: linear-gradient(180deg, #ffe481, var(--school-gold));
   white-space: nowrap;
 }
@@ -2475,38 +2557,18 @@ html, body {
   box-shadow: 1px 1px 0 var(--ink);
 }
 
-/* "or join with a code" divider between Create and the join row. */
-.multiplayer-launch-or {
-  display: flex;
-  align-items: center;
-  gap: 10px;
-  color: rgba(21, 33, 59, 0.6);
-  font-size: 11px;
-  font-weight: 800;
-  text-transform: uppercase;
-  letter-spacing: 0.06em;
-}
-
-.multiplayer-launch-or::before,
-.multiplayer-launch-or::after {
-  content: '';
-  flex: 1;
-  height: 2px;
-  background: rgba(21, 33, 59, 0.18);
-}
-
-/* Code field + Join button side by side, always visible (no need to open a drawer first). */
+/* Code field + Join button side by side in the join option */
 .multiplayer-join-row {
   display: flex;
-  gap: 10px;
+  gap: 8px;
 }
 
 .multiplayer-join-code {
   flex: 1;
   min-width: 0;
-  border: 3px solid var(--ink);
-  border-radius: 12px;
-  padding: 11px 12px;
+  border: 2px solid var(--ink);
+  border-radius: 10px;
+  padding: 10px 12px;
   font-weight: 800;
   font-size: 14px;
   color: var(--ink);
@@ -3451,45 +3513,67 @@ html, body {
   box-shadow: 2px 2px 0 var(--ink);
 }
 
-/* Mode tabs (left) sit beside the mode description card (right) so the panel reads wide. */
-.multiplayer-setup {
-  display: grid;
-  grid-template-columns: 116px 1fr;
-  gap: 12px;
-  margin: 12px 0;
-  align-items: stretch;
-}
-
-/* Full-width header clarifying the format tabs choose the format only when CREATING a room. */
-.multiplayer-setup-label {
-  grid-column: 1 / -1;
+/* Step label for "1. SELECT MODE" and "2. CHOOSE AN OPTION" */
+.multiplayer-step-label {
   font-size: 11px;
   font-weight: 700;
   letter-spacing: 0.06em;
   text-transform: uppercase;
   color: #6a7890;
+  margin: 12px 0 8px;
+  padding-bottom: 6px;
+  border-bottom: 1px solid rgba(106, 120, 144, 0.3);
 }
 
+/* Mode tabs display horizontally, side-by-side */
 .multiplayer-mode-tabs {
   display: flex;
-  flex-direction: column;
-  gap: 8px;
-  margin: 0;
+  flex-direction: row;
+  gap: 12px;
+  margin: 0 0 12px;
 }
 
+/* Each mode tab is a button with title and subtitle */
 .multiplayer-mode-tab {
+  flex: 1;
   border: 3px solid var(--ink);
   border-radius: 12px;
-  padding: 11px 10px;
+  padding: 12px;
   background: #fff8d8;
   color: var(--ink);
-  font-weight: 900;
-  letter-spacing: 0.08em;
   cursor: pointer;
   box-shadow: 2px 2px 0 var(--ink);
-  flex: 1;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 4px;
+  transition: transform 0.05s ease, box-shadow 0.05s ease;
 }
 
+.multiplayer-mode-tab:hover:not(.multiplayer-mode-tab--active) {
+  transform: translate(-1px, -1px);
+  box-shadow: 3px 3px 0 var(--ink);
+}
+
+.multiplayer-mode-tab:active:not(.multiplayer-mode-tab--active) {
+  transform: translate(2px, 2px);
+  box-shadow: 0 0 0 var(--ink);
+}
+
+.multiplayer-mode-tab__main {
+  font-weight: 900;
+  font-size: 16px;
+  letter-spacing: 0.05em;
+}
+
+.multiplayer-mode-tab__sub {
+  font-size: 11px;
+  font-weight: 700;
+  opacity: 0.8;
+}
+
+/* Active tab styling */
 .multiplayer-mode-tab--active {
   background: linear-gradient(180deg, #79f5ff, var(--electric-cyan));
   transform: translate(-1px, -1px);
@@ -3500,37 +3584,109 @@ html, body {
   background: linear-gradient(180deg, #ffe481, var(--school-gold));
 }
 
+/* Mode info card with icon on left */
 .multiplayer-mode-card {
-  margin: 0;
-  padding: 11px 13px;
-  border: 3px solid var(--ink);
-  border-radius: 14px;
-  background: #101b34;
+  margin: 0 0 12px;
+  padding: 12px;
+  border: 2px solid rgba(106, 120, 144, 0.2);
+  border-radius: 12px;
+  background: rgba(16, 27, 52, 0.4);
   color: var(--paper);
   display: flex;
-  flex-direction: column;
+  gap: 12px;
+  align-items: flex-start;
+}
+
+.multiplayer-mode-card__icon {
+  flex: 0 0 auto;
+  width: 32px;
+  height: 32px;
+  display: flex;
+  align-items: center;
   justify-content: center;
+  border-radius: 50%;
+  background: var(--school-blue);
+  color: var(--paper);
+  font-weight: 900;
+  font-size: 18px;
+  flex-shrink: 0;
+}
+
+.multiplayer-mode-card__content {
+  flex: 1;
+  min-width: 0;
 }
 
 .multiplayer-mode-title {
-  color: var(--school-gold);
-  font-size: 18px;
+  color: var(--paper);
+  font-size: 15px;
   font-weight: 900;
 }
 
 .multiplayer-mode-subtitle {
-  margin-top: 4px;
+  margin-top: 3px;
   color: rgba(255, 255, 255, 0.78);
   font-size: 12px;
   line-height: 1.35;
 }
 
 .multiplayer-mode-notice {
-  margin-top: 8px;
+  margin-top: 6px;
   color: var(--electric-cyan);
   font-size: 11px;
-  font-weight: 900;
+  font-weight: 700;
   line-height: 1.35;
+}
+
+/* Name warning message */
+.multiplayer-name-warning {
+  color: var(--school-red);
+  font-weight: 900;
+  font-size: 11px;
+  margin: 6px 0 8px;
+  text-transform: none;
+  display: none;
+}
+
+.multiplayer-modal:not(.multiplayer-modal--name-ready) .multiplayer-name-warning {
+  display: block;
+}
+
+/* Launch section with side-by-side create/join options */
+.multiplayer-launch-section {
+  display: grid;
+  grid-template-columns: 1fr auto 1fr;
+  gap: 12px;
+  align-items: start;
+}
+
+.multiplayer-launch-option {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.multiplayer-launch-option__title {
+  font-size: 12px;
+  font-weight: 900;
+  letter-spacing: 0.05em;
+  text-transform: uppercase;
+  color: var(--school-blue);
+}
+
+.multiplayer-launch-option__desc {
+  font-size: 11px;
+  line-height: 1.3;
+  color: rgba(21, 33, 59, 0.7);
+}
+
+.multiplayer-launch-divider {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-weight: 900;
+  color: rgba(21, 33, 59, 0.5);
+  font-size: 11px;
 }
 
 .fullscreen-prompt {
@@ -3694,14 +3850,6 @@ html, body {
     top: auto;
     left: auto;
     width: min(560px, calc(100vw - 20px));
-  }
-
-  .multiplayer-setup {
-    grid-template-columns: 1fr;
-  }
-
-  .multiplayer-mode-tabs {
-    flex-direction: row;
   }
 
   .multiplayer-modal--compact .multiplayer-panel--lobby,

@@ -3,7 +3,7 @@ import { FxaaPostProcess } from '@babylonjs/core/PostProcesses/fxaaPostProcess';
 import { InputManager } from '../input/InputManager';
 import { PlayerController } from '../player/PlayerController';
 import { GymArena } from '../map/GymArena';
-import { GYM_REFLECTION_TARGETS, getGymEnvironmentDebugInfo } from '../map/GymVisualRevamp';
+import { GYM_REFLECTION_TARGETS, getGymEnvironmentDebugInfo, applyShowcaseGymMaterials } from '../map/GymVisualRevamp';
 import {
   applyCompetitiveLighting,
   createCompetitiveShadowSystem,
@@ -11,6 +11,21 @@ import {
   getCompetitiveGraphicsDebugStats,
   registerCompetitiveShadowCaster
 } from '../map/CompetitiveLighting';
+import {
+  applyShowcaseLighting,
+  createShowcaseDebugMarkers,
+  createShowcaseShadowSystem,
+  disposeShowcaseLighting,
+  getShowcaseGraphicsDebugStats,
+  registerShowcaseShadowCaster
+} from '../map/ShowcaseLighting';
+import {
+  clearActiveGymShadowRegistrar,
+  registerGymShadowCaster,
+  setActiveGymShadowRegistrar
+} from '../map/GymShadowCasters';
+import { ShowcasePostFX } from '../effects/ShowcasePostFX';
+import { isShowcaseLightingEnabled, resolveGraphicsMode, resolveShowcaseTier, type ShowcaseTier } from '../config/graphicsConfig';
 import { MatObstacle } from '../map/MatObstacle';
 import { ModelLoader } from '../assets/ModelLoader';
 import { BallManager } from '../ball/BallManager';
@@ -96,7 +111,15 @@ export class ArenaScene {
   private readonly multiplayerOverlay: MultiplayerOverlay;
   private readonly networkRenderer: NetworkRenderer;
   private readonly onlineTeamSelector: OnlineTeamSelectorPads;
-  private readonly fxaaPostProcess: FxaaPostProcess;
+  // Anti-aliasing route differs by graphics mode: Competitive uses the lightweight standalone FXAA
+  // post; Showcase uses the DefaultRenderingPipeline (FXAA + bloom) inside ShowcasePostFX instead, so
+  // exactly one of these is ever non-null.
+  private readonly fxaaPostProcess: FxaaPostProcess | null;
+  private readonly showcasePostFx: ShowcasePostFX | null;
+  // Resolved once at construction. Showcase is opt-in (see graphicsConfig); Competitive is the default
+  // bright baseline. The tier only matters in Showcase mode.
+  private readonly showcaseEnabled: boolean = isShowcaseLightingEnabled();
+  private readonly showcaseTier: ShowcaseTier = resolveShowcaseTier();
   // Backflip landing quick-time event: armed when the local player lands from a backflip holding a
   // ball; resolving it throws (tiered speed). Owned here so it works in both offline and online.
   private readonly backflipQte = new BackflipQteController();
@@ -264,7 +287,15 @@ export class ArenaScene {
     this.effects = new Effects(this.scene, this.sound);
 
     this.player = new PlayerController(this.scene, this.input, this.ballManager, this.gym.collision, this.effects);
-    this.fxaaPostProcess = new FxaaPostProcess('scene_fxaa', 1.0, this.player.camera);
+    // Post-processing by mode. Showcase: SSAO + restrained bloom + FXAA via ShowcasePostFX (Part 4/5).
+    // Competitive: the existing single lightweight FXAA post, unchanged. Exactly one is created.
+    if (this.showcaseEnabled) {
+      this.fxaaPostProcess = null;
+      this.showcasePostFx = new ShowcasePostFX(this.scene, this.player.camera, this.showcaseTier);
+    } else {
+      this.fxaaPostProcess = new FxaaPostProcess('scene_fxaa', 1.0, this.player.camera);
+      this.showcasePostFx = null;
+    }
     this.quickBot = new PracticeBot(this.scene, this.ballManager, 'quick');
     this.chargeBot = new PracticeBot(this.scene, this.ballManager, 'charge');
     this.practiceWall = new PracticeControlWall(this.scene, this.practiceState, this.ballManager, (id) => this.handleButtonPress(id));
@@ -360,14 +391,19 @@ export class ArenaScene {
     this.settingsPanel.dispose();
     this.ballManager.clear();
     this.ballVisualEffects.dispose();
-    this.fxaaPostProcess.dispose();
+    this.fxaaPostProcess?.dispose();
+    this.showcasePostFx?.dispose();
     this.quickBot.dispose();
     this.chargeBot.dispose();
     this.practiceWall.dispose();
     this.lobbyModePortals.dispose();
     this.guideWall.dispose();
     this.effects.dispose();
+    // Tear down whichever shadow system this session built; the other is a no-op. Clear the caster
+    // registrar so any late registration becomes a safe no-op.
     disposeCompetitiveShadowSystem();
+    disposeShowcaseLighting(this.scene);
+    clearActiveGymShadowRegistrar();
     this.gym.dispose();
     this.music.dispose();
     this.sound.dispose();
@@ -2456,6 +2492,10 @@ export class ArenaScene {
   }
 
   private createLighting(): void {
+    if (this.showcaseEnabled) {
+      this.createShowcaseLighting();
+      return;
+    }
     // Competitive lighting: one hemispheric fill + one directional key, and the single shadow
     // generator bound to the key light. Casters (mats / moving dummy / remote players) are
     // registered after they exist; static geometry is never a caster.
@@ -2464,6 +2504,25 @@ export class ArenaScene {
     // the most-visible end of the spec band (0.18) so player/mat/dummy shadows read clearly on the
     // busy decal-stacked floor without darkening the room overall (only shadowed pixels are tinted).
     createCompetitiveShadowSystem(this.scene, key, { mapSize: 1024, darkness: 0.18 });
+    // Route dynamic caster registration (mats/dummies here, remote players in NetworkRenderer) to the
+    // competitive single-generator system.
+    setActiveGymShadowRegistrar(registerCompetitiveShadowCaster);
+  }
+
+  /**
+   * Showcase lighting: four wide roof SpotLights over the corner ceiling fixtures (each with its own
+   * ShadowGenerator) plus up to two unshadowed centre fill spots, a broad hemispheric fill, and an
+   * optional low non-shadowing directional fill. Replaces the competitive fake-sun key+shadow so the
+   * shading direction and shadows originate from the real fixtures. Dynamic caster registration is
+   * routed to the four-generator system.
+   */
+  private createShowcaseLighting(): void {
+    const { primarySpots } = applyShowcaseLighting(this.scene);
+    createShowcaseShadowSystem(this.scene, primarySpots, this.showcaseTier);
+    setActiveGymShadowRegistrar(registerShowcaseShadowCaster);
+    // Debug-only: marker spheres at each roof spot + a flat marker at each floor target, so the
+    // symmetric grid and aim can be verified by eye. Never present in normal play.
+    if (isGraphicsDebugEnabled()) createShowcaseDebugMarkers(this.scene);
   }
 
   /**
@@ -2477,14 +2536,46 @@ export class ArenaScene {
   private setupGymShadows(): void {
     const floor = this.scene.getMeshByName('gym_floor');
     if (floor) floor.receiveShadows = true;
-    for (const mat of this.gym.mats) registerCompetitiveShadowCaster(mat.mesh);
-    if (this.gym.movingDummy) registerCompetitiveShadowCaster(this.gym.movingDummy, true);
+    // Dynamic casters route through the mode-agnostic facade (the active system was wired in
+    // createLighting): tipping cover mats + every target dummy. Remote player bodies register the same
+    // way from NetworkRenderer.
+    for (const mat of this.gym.mats) registerGymShadowCaster(mat.mesh);
+    if (this.gym.movingDummy) registerGymShadowCaster(this.gym.movingDummy, true);
     // Static target dummies (name 'target_dummy', metadata.targetDummy) — register with descendants.
     // setEnabled() toggling between practice/online is respected automatically: a disabled caster is
     // simply skipped when the shadow map renders, so this is safe even while they are hidden online.
     for (const mesh of this.scene.meshes) {
       if (mesh instanceof Mesh && mesh.metadata?.targetDummy && mesh !== this.gym.movingDummy) {
-        registerCompetitiveShadowCaster(mesh, true);
+        registerGymShadowCaster(mesh, true);
+      }
+    }
+
+    if (this.showcaseEnabled) this.setupShowcaseStaticShadows();
+  }
+
+  /**
+   * Showcase-only (Part 3): large static occluders cast roof-origin shadows (bleachers, major wall-pad
+   * strips, scoreboard casing) so under-bleacher areas, corners, and pad seams gain real depth; and the
+   * big court surfaces receive shadows (lower walls, bleacher platforms, cover mats). Competitive never
+   * makes static geometry a caster, so this runs only in Showcase mode. Tiny props/cones/decals/HUD/
+   * first-person/UI meshes are deliberately excluded.
+   */
+  private setupShowcaseStaticShadows(): void {
+    for (const mesh of this.scene.meshes) {
+      if (!(mesh instanceof Mesh)) continue;
+      const name = mesh.name;
+      // Static occluders that visibly affect the court.
+      const isBleacherStructure = name.startsWith('bleacher_');
+      const isWallPadStrip = name.startsWith('decor_wall_pad_raised_panel_');
+      const isScoreboardCasing = name.startsWith('decor_scoreboard_back_panel_');
+      if (isBleacherStructure || isWallPadStrip || isScoreboardCasing) {
+        registerGymShadowCaster(mesh);
+      }
+      // Receivers: floor (already set), the four lower walls, bleacher platforms/seats, and cover mats.
+      const isWall = name.endsWith('_wall');
+      const isCoverMat = name === 'mat';
+      if (isBleacherStructure || isWallPadStrip || isWall || isCoverMat) {
+        mesh.receiveShadows = true;
       }
     }
   }
@@ -2504,6 +2595,10 @@ export class ArenaScene {
       if (!(material instanceof PBRMaterial)) continue;
       material.environmentIntensity = target.environmentIntensity;
     }
+    // Showcase overrides the competitive reflection targets just applied: stronger environment response
+    // for the .env, roughness inside the spec bands, and a higher PBR simultaneous-light cap so surfaces
+    // react to all four roof spots. Applied last so Showcase always wins. No-op in Competitive mode.
+    if (this.showcaseEnabled) applyShowcaseGymMaterials(this.scene);
     if (isGraphicsDebugEnabled()) this.logGraphicsDebugReport();
   }
 
@@ -2516,12 +2611,32 @@ export class ArenaScene {
    * visible child submeshes (dummy head/torso/limbs, etc.) are really in the shadow pass.
    */
   private logGraphicsDebugReport(): void {
+    const engine = this.scene.getEngine();
+    const floorMat = this.scene.getMaterialByName('floor_material');
+    const pbrLightLimit = floorMat instanceof PBRMaterial ? floorMat.maxSimultaneousLights : 'n/a';
+    console.log('[graphics] === graphics audit ===');
+    console.log(`[graphics] Active mode: ${resolveGraphicsMode()}${this.showcaseEnabled ? ` (tier=${this.showcaseTier})` : ''}`);
+    console.log(`[graphics] PBR maxSimultaneousLights (floor): ${pbrLightLimit}`);
+    console.log(`[graphics] FPS: ${engine.getFps().toFixed(1)} frameTime: ${engine.getDeltaTime().toFixed(2)}ms`);
+    if (this.showcaseEnabled) {
+      this.logShowcaseGraphicsReport();
+    } else {
+      this.logCompetitiveGraphicsReport();
+    }
+    const env = getGymEnvironmentDebugInfo();
+    console.log(
+      `[graphics] environment: kind=${env.kind} name=${env.name ?? 'n/a'}` +
+      ` size=${env.size ?? 'n/a'} loaded=${env.loaded}`
+    );
+  }
+
+  private logCompetitiveGraphicsReport(): void {
     const stats = getCompetitiveGraphicsDebugStats();
     const floor = this.scene.getMeshByName('gym_floor');
     const floorReceives = floor ? floor.receiveShadows : false;
     const byRoot = stats.shadow.casterCountsByCategory;
     const byMesh = stats.shadow.renderListCountsByCategory;
-    console.log('[graphics] === shadow audit ===');
+    console.log(`[graphics] Lights: 1 hemi + 1 directional key (Competitive)`);
     console.log(`[graphics] ShadowGenerator: ${stats.shadow.activeGeneratorCount === 1 ? 'active' : 'inactive'}` +
       ` (generators=${stats.shadow.activeGeneratorCount}, lifetimeCreated=${stats.shadow.lifetimeCreateCount})`);
     console.log(`[graphics] Shadow map: resolution=${stats.shadow.mapSize ?? 'n/a'} filtering=${stats.shadow.filteringMode}` +
@@ -2533,11 +2648,38 @@ export class ArenaScene {
     console.log(`[graphics] Registered player mesh children: ${byMesh.remotePlayer}`);
     console.log(`[graphics] Registered mat mesh children: ${byMesh.mat}`);
     console.log(`[graphics] Registered dummy mesh children: ${byMesh.dummy}`);
-    const env = getGymEnvironmentDebugInfo();
-    console.log(
-      `[graphics] environment: kind=${env.kind} name=${env.name ?? 'n/a'}` +
-      ` size=${env.size ?? 'n/a'} loaded=${env.loaded}`
-    );
+    console.log(`[graphics] SSAO: disabled (Competitive)`);
+  }
+
+  private logShowcaseGraphicsReport(): void {
+    const stats = getShowcaseGraphicsDebugStats();
+    const floor = this.scene.getMeshByName('gym_floor');
+    const floorReceives = floor ? floor.receiveShadows : false;
+    const lights = stats.lights;
+    const byRoot = stats.shadow.casterCountsByCategory;
+    const byMesh = stats.shadow.renderListCountsByCategory;
+    console.log(`[graphics] Lights: ${lights.hemiCount} hemi + ${lights.fillDirectionalCount} fill-dir` +
+      ` + ${lights.primarySpotCount} primary spots + ${lights.fillSpotCount} fill spots (Showcase)`);
+    for (const s of lights.spotReports) {
+      console.log(`[graphics]   ${s.role} ${s.zone}: pos(${s.x.toFixed(1)},${s.z.toFixed(1)})` +
+        ` → target(${s.targetX.toFixed(1)},${s.targetZ.toFixed(1)}) angle=${s.angle.toFixed(2)}` +
+        ` exp=${s.exponent} range=${s.range} intensity=${s.intensity} shadow=${s.castsShadow ? 'yes' : 'no'}`);
+    }
+    console.log(`[graphics] ShadowGenerators: ${stats.shadow.generatorCount} (lifetimeCreated=${stats.shadow.lifetimeCreateCount})`);
+    console.log(`[graphics] Shadow map: resolution=${stats.shadow.mapSizePerGenerator ?? 'n/a'} per generator` +
+      ` filtering=${stats.shadow.filteringMode} darkness=${stats.shadow.darkness ?? 'n/a'}`);
+    console.log(`[graphics] Floor receives shadows: ${floorReceives ? 'yes' : 'no'}`);
+    console.log(`[graphics] Registered casters: ${stats.shadow.casterCount}` +
+      ` (mat=${byRoot.mat} dummy=${byRoot.dummy} remotePlayer=${byRoot.remotePlayer} static=${byRoot.static} other=${byRoot.other})`);
+    console.log(`[graphics] Shadow render-list meshes (children included): ${stats.shadow.renderListCount}` +
+      ` (static=${byMesh.static} mat=${byMesh.mat} dummy=${byMesh.dummy} remotePlayer=${byMesh.remotePlayer})`);
+    const ssao = this.showcasePostFx?.getDebugInfo();
+    if (ssao) {
+      console.log(`[graphics] SSAO: ${ssao.ssaoEnabled ? 'enabled' : 'disabled'}` +
+        ` (supported=${ssao.ssaoSupported} strength=${ssao.ssaoStrength} radius=${ssao.ssaoRadius} base=${ssao.ssaoBase})`);
+      console.log(`[graphics] Bloom: ${ssao.bloomEnabled ? 'enabled' : 'disabled'}` +
+        ` (threshold=${ssao.bloomThreshold} weight=${ssao.bloomWeight}) FXAA: ${ssao.fxaaEnabled ? 'on' : 'off'}`);
+    }
   }
 
   private launchTestBallAtPlayer(): void {

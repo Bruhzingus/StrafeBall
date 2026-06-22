@@ -12,6 +12,23 @@ import {
   createBleacherTierSpecs
 } from '../../../shared/simulation/MapGeometry';
 
+/** Y height (metres) of the hanging ceiling fixtures: just under the ceiling slab at wallHeight. */
+export const CEILING_FIXTURE_Y = TUNING.map.wallHeight - 0.12;
+
+/**
+ * The gym's ceiling light-fixture grid in floor (X,Z) metres: two columns (X = ±5) × three rows
+ * (Z = −8, 0, +8). createCeilingFixtures() builds the emissive housings from this list, and the
+ * Showcase roof SpotLights derive their positions from the SAME list so every light sits under a real
+ * fixture (no arbitrary world coordinates, and the fixtures visually correspond to the lights above
+ * the court). The four corner fixtures become the primary shadow-casting spots; the two centre
+ * fixtures (Z = 0) become the optional unshadowed fill spots. See ShowcaseLighting.
+ */
+export const CEILING_FIXTURE_POSITIONS: readonly (readonly [number, number])[] = [
+  [-5, -8], [5, -8],
+  [-5, 0], [5, 0],
+  [-5, 8], [5, 8]
+];
+
 /**
  * Builds the gym. Each piece is split into two independent concerns:
  *   - VISUAL: a mesh requested from the ModelLoader by asset key (swappable for a GLB later).
@@ -506,15 +523,9 @@ export class GymArena {
     fixtureMat.diffuseColor = new Color3(0.92, 0.92, 0.88);
     fixtureMat.emissiveColor = new Color3(0.6, 0.6, 0.54);
 
-    const fixtureY = TUNING.map.wallHeight - 0.12; // hang just below ceiling
+    const fixtureY = CEILING_FIXTURE_Y; // hang just below ceiling
 
-    const positions: [number, number][] = [
-      [-5, -8], [5, -8],
-      [-5, 0],  [5, 0],
-      [-5, 8],  [5, 8]
-    ];
-
-    for (const [x, z] of positions) {
+    for (const [x, z] of CEILING_FIXTURE_POSITIONS) {
       const housing = MeshBuilder.CreateBox(`ceil_light_${x}_${z}`, {
         width: 0.28, height: 0.08, depth: 1.1
       }, this.scene);

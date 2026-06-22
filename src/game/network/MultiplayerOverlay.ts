@@ -73,31 +73,53 @@ export class MultiplayerOverlay {
         <div class="multiplayer-kicker">StrafeBall Lobby</div>
         <div class="multiplayer-title">Private Match</div>
 
-        <div class="multiplayer-setup">
-          <div class="multiplayer-setup-label">New room format</div>
-          <div class="multiplayer-mode-tabs">
-            <button class="multiplayer-mode-tab" data-mode="1v1" type="button">1v1</button>
-            <button class="multiplayer-mode-tab" data-mode="2v2" type="button">2v2</button>
-          </div>
+        <label class="multiplayer-field">
+          <span>Player (required)</span>
+          <input class="multiplayer-name" maxlength="24" placeholder="Enter name" />
+        </label>
 
-          <div class="multiplayer-mode-card">
+        <div class="multiplayer-name-warning">Enter a name before joining a game</div>
+
+        <div class="multiplayer-step-label">1. SELECT MODE</div>
+
+        <div class="multiplayer-mode-tabs">
+          <button class="multiplayer-mode-tab" data-mode="1v1" type="button">
+            <div class="multiplayer-mode-tab__main">1v1</div>
+            <div class="multiplayer-mode-tab__sub">One vs One</div>
+          </button>
+          <button class="multiplayer-mode-tab" data-mode="2v2" type="button">
+            <div class="multiplayer-mode-tab__main">2v2</div>
+            <div class="multiplayer-mode-tab__sub">Two vs Two</div>
+          </button>
+        </div>
+
+        <div class="multiplayer-mode-card">
+          <div class="multiplayer-mode-card__icon">ℹ</div>
+          <div class="multiplayer-mode-card__content">
             <div class="multiplayer-mode-title"></div>
             <div class="multiplayer-mode-subtitle"></div>
             <div class="multiplayer-mode-notice"></div>
           </div>
         </div>
 
-        <label class="multiplayer-field">
-          <span>Player</span>
-          <input class="multiplayer-name" maxlength="24" placeholder="Enter name" />
-        </label>
+        <div class="multiplayer-step-label">2. CHOOSE AN OPTION</div>
 
         <div class="multiplayer-launch">
-          <button class="multiplayer-create">Create Room</button>
-          <div class="multiplayer-launch-or"><span>or join with a code</span></div>
-          <div class="multiplayer-join-row">
-            <input class="multiplayer-join-code" placeholder="Room code" aria-label="Room code" />
-            <button class="multiplayer-join">Join</button>
+          <div class="multiplayer-launch-section">
+            <div class="multiplayer-launch-option">
+              <div class="multiplayer-launch-option__title">CREATE ROOM</div>
+              <div class="multiplayer-launch-option__desc">Create a new room with the selected mode and lobby settings.</div>
+              <button class="multiplayer-create">CREATE ROOM</button>
+            </div>
+            <div class="multiplayer-launch-divider">OR</div>
+            <div class="multiplayer-launch-option">
+              <div class="multiplayer-launch-option__title">JOIN WITH CODE</div>
+              <div class="multiplayer-launch-option__desc">Join an existing room using a room code.</div>
+              <div class="multiplayer-join-row">
+                <input class="multiplayer-join-code" placeholder="Room code" aria-label="Room code" />
+                <button class="multiplayer-join">JOIN</button>
+              </div>
+            </div>
           </div>
           <div class="multiplayer-drawer-hint">Create makes a new room with the format above. Join uses the room's existing settings — just the code.</div>
         </div>

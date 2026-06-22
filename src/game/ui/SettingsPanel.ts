@@ -1,4 +1,5 @@
 import { settings, SENSITIVITY_MIN, SENSITIVITY_MAX } from '../config/Settings';
+import { GRAPHICS_PRESETS, getGraphicsPreset, persistGraphicsPreset, type GraphicsPreset } from '../config/graphicsConfig';
 
 /**
  * A tiny always-visible settings panel (top-right) with a mouse-sensitivity slider. Marked
@@ -20,6 +21,7 @@ export class SettingsPanel {
   private readonly battleMusicSlider: HTMLInputElement;
   private readonly battleMusicReadout: HTMLSpanElement;
   private readonly reducedEffectsToggle: HTMLInputElement;
+  private readonly graphicsSelect: HTMLSelectElement;
   private readonly preventKeySteal = (event: KeyboardEvent): void => event.preventDefault();
   private expanded = false;
 
@@ -72,6 +74,29 @@ export class SettingsPanel {
     this.reducedEffectsToggle.addEventListener('keydown', this.preventKeySteal);
     effectsLabel.append(effectsName, this.reducedEffectsToggle);
 
+    // Graphics preset selector. Lighting/post are built once at scene construction, so a change is
+    // persisted and applied with a reload (the dropdown swaps Competitive ↔ Showcase High/Ultra).
+    const graphicsRow = document.createElement('label');
+    graphicsRow.className = 'settings-row settings-row--select';
+    const graphicsName = document.createElement('span');
+    graphicsName.textContent = 'Graphics';
+    this.graphicsSelect = document.createElement('select');
+    this.graphicsSelect.className = 'settings-select';
+    for (const preset of GRAPHICS_PRESETS) {
+      const option = document.createElement('option');
+      option.value = preset.value;
+      option.textContent = preset.label;
+      this.graphicsSelect.append(option);
+    }
+    this.graphicsSelect.value = getGraphicsPreset();
+    this.graphicsSelect.addEventListener('change', this.onGraphicsPresetChange);
+    this.graphicsSelect.addEventListener('keydown', this.preventKeySteal);
+    graphicsRow.append(graphicsName, this.graphicsSelect);
+
+    const graphicsHint = document.createElement('div');
+    graphicsHint.className = 'settings-hint';
+    graphicsHint.textContent = 'Changing graphics reloads the page.';
+
     this.content.append(
       title,
       sensitivityLabel.label,
@@ -82,7 +107,9 @@ export class SettingsPanel {
       this.lobbyMusicSlider,
       battleMusicLabel.label,
       this.battleMusicSlider,
-      effectsLabel
+      effectsLabel,
+      graphicsRow,
+      graphicsHint
     );
     this.root.append(this.toggleButton, this.content);
     parent.appendChild(this.root);
@@ -98,6 +125,8 @@ export class SettingsPanel {
     this.lobbyMusicSlider.removeEventListener('input', this.onLobbyMusicInput);
     this.battleMusicSlider.removeEventListener('input', this.onBattleMusicInput);
     this.reducedEffectsToggle.removeEventListener('input', this.onReducedEffectsInput);
+    this.graphicsSelect.removeEventListener('change', this.onGraphicsPresetChange);
+    this.graphicsSelect.removeEventListener('keydown', this.preventKeySteal);
     this.sensitivitySlider.removeEventListener('keydown', this.preventKeySteal);
     this.sfxSlider.removeEventListener('keydown', this.preventKeySteal);
     this.lobbyMusicSlider.removeEventListener('keydown', this.preventKeySteal);
@@ -129,6 +158,15 @@ export class SettingsPanel {
   private onReducedEffectsInput = (): void => {
     settings.setReducedEffects(this.reducedEffectsToggle.checked);
     this.updateReadout();
+  };
+
+  private onGraphicsPresetChange = (): void => {
+    const preset = this.graphicsSelect.value as GraphicsPreset;
+    if (preset === getGraphicsPreset()) return;
+    persistGraphicsPreset(preset);
+    // Graphics systems (lights, shadows, post-processing, materials) are built once when the scene is
+    // constructed, so the swap takes effect on a fresh scene — reload to apply cleanly.
+    window.location.reload();
   };
 
   private toggleExpanded = (): void => {
