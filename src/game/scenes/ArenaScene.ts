@@ -57,7 +57,7 @@ import {
   PERF_REPORT_INTERVAL_MS,
   SNAPSHOT_RATE
 } from '../../../shared/netConfig';
-import { createPlayerCollisionBoxes, type AABB } from '../../../shared/simulation/MapGeometry';
+import { createPlayerCollisionBoxes, MAT_SPECS, type AABB } from '../../../shared/simulation/MapGeometry';
 import { isIllegalHalfCourtPosition } from '../../../shared/simulation/RuleSim';
 import { sweptBallHitsBody } from '../../../shared/simulation/CollisionMath';
 import { playerBallHitRadius, playerHitCapsule } from '../../../shared/simulation/PlayerHitbox';
@@ -155,6 +155,9 @@ export class ArenaScene {
   private readonly netCollisionScratch: AABB[] = [];
   // Set of mat ids currently reflected in netCollisionBoxes — avoids rebuilding every frame.
   private readonly knockedNetMatIds = new Set<string>();
+  // Knock heading per downed mat (from the snapshot), so the prediction collision can place each
+  // fallen mat's low flat step-on box exactly where the server does.
+  private readonly knockedNetMatDirections = new Map<string, { x: number; z: number }>();
   // Mats hidden by the host mat-preset setting (absent from authoritative room.mats). Excluded from
   // both visuals and the local prediction collision so the client world matches the server's.
   private readonly excludedNetMatIds = new Set<string>();
@@ -605,10 +608,10 @@ export class ArenaScene {
       if (v.x * toMatX + v.z * toMatZ <= 0.01) continue;
 
       const dir = new Vector3(v.x, 0, v.z);
-      // Remove the box BEFORE laying the mat flat (getAABB returns the standing footprint, which is
-      // what was added to the collision worlds). Then it no longer blocks movement or balls.
-      this.gym.removeMatCollision(mat);
+      // Lay the mat flat, then swap its collision to the low flat panel: balls bounce off the fallen
+      // mat (and stay live) and the player steps onto it (a small, noticeable ledge).
       mat.knockOver(dir.lengthSquared() > 1e-4 ? dir : new Vector3(toMatX, 0, toMatZ));
+      this.gym.setMatCollision(mat, 'knocked');
     }
 
     this.updateMatRestore(dt);
@@ -636,7 +639,7 @@ export class ArenaScene {
     if (this.matRestoreHold >= ArenaScene.MAT_RESTORE_HOLD_SECONDS) {
       this.matRestoreHold = 0;
       nearest.reset();
-      this.gym.addMatCollision(nearest);
+      this.gym.setMatCollision(nearest, 'standing');
       this.matPostResetKnockImmunityById.set(nearest.id, TUNING.mat.postResetKnockImmunitySeconds);
     }
   }
@@ -706,6 +709,7 @@ export class ArenaScene {
           this.gym.removeMatCollision(mat);
           mat.mesh.setEnabled(false);
           this.knockedNetMatIds.delete(mat.id);
+          this.knockedNetMatDirections.delete(mat.id);
           this.excludedNetMatIds.add(mat.id);
           knockedChanged = true;
         }
@@ -715,31 +719,36 @@ export class ArenaScene {
       if (this.excludedNetMatIds.has(mat.id)) {
         mat.mesh.setEnabled(true);
         mat.reset();
-        this.gym.addMatCollision(mat);
+        this.gym.setMatCollision(mat, 'standing');
         this.excludedNetMatIds.delete(mat.id);
         knockedChanged = true;
       }
       if (state.knockedOver && !mat.knockedOver) {
-        // Drop the mat's ball-collision box BEFORE tipping it (getAABB returns the standing
-        // footprint that was registered), so balls pass over the downed mat.
-        this.gym.removeMatCollision(mat);
+        // Tip the mat flat, then swap its collision to the low flat panel in BOTH gym worlds so balls
+        // bounce off the fallen mat and the player steps onto it (mirrors the server).
         mat.knockOver(new Vector3(state.knockDirection.x, 0, state.knockDirection.z));
+        this.gym.setMatCollision(mat, 'knocked');
         this.knockedNetMatIds.add(mat.id);
+        this.knockedNetMatDirections.set(mat.id, { x: state.knockDirection.x, z: state.knockDirection.z });
         knockedChanged = true;
       } else if (!state.knockedOver && mat.knockedOver) {
-        // Server reset the mat (e.g. room reset): stand it back up and restore its ball-collision
-        // box so dodgeballs bounce off it again.
+        // Server reset the mat (e.g. room reset): stand it back up and restore its upright cover box.
         mat.reset();
-        this.gym.addMatCollision(mat);
+        this.gym.setMatCollision(mat, 'standing');
         this.knockedNetMatIds.delete(mat.id);
+        this.knockedNetMatDirections.delete(mat.id);
         knockedChanged = true;
       }
     }
 
-    // Keep the prediction collision set in sync with the server: downed AND preset-excluded mats
-    // stop blocking the local player.
+    // Keep the prediction collision set in sync with the server: each downed mat becomes a low flat
+    // step-on box (placed via its knock heading); preset-excluded mats have no box at all.
     if (knockedChanged) {
-      this.netCollisionBoxes = createPlayerCollisionBoxes(new Set([...this.knockedNetMatIds, ...this.excludedNetMatIds]));
+      this.netCollisionBoxes = createPlayerCollisionBoxes(
+        new Set([...this.knockedNetMatIds, ...this.excludedNetMatIds]),
+        MAT_SPECS,
+        this.knockedNetMatDirections
+      );
     }
   }
 
@@ -2457,12 +2466,27 @@ export class ArenaScene {
     createCompetitiveShadowSystem(this.scene, key, { mapSize: 1024, darkness: 0.18 });
   }
 
-  /** Make the floor a shadow receiver and register the gym's dynamic shadow casters. */
+  /**
+   * Make the floor a shadow receiver and register the gym's dynamic shadow casters. Only the three
+   * allowed dynamic categories cast: tipping cover mats, target dummies (the moving dummy AND the
+   * three static ones), and — registered separately in NetworkRenderer — remote player bodies. Each
+   * dummy is registered with descendants so its parented head/torso/limb submeshes cast too (the bare
+   * root capsule alone would otherwise drop most of the silhouette). Static gym geometry (walls,
+   * bleachers, ceiling, props, cones) is never a caster, and balls keep their cheap blob shadows.
+   */
   private setupGymShadows(): void {
     const floor = this.scene.getMeshByName('gym_floor');
     if (floor) floor.receiveShadows = true;
     for (const mat of this.gym.mats) registerCompetitiveShadowCaster(mat.mesh);
     if (this.gym.movingDummy) registerCompetitiveShadowCaster(this.gym.movingDummy, true);
+    // Static target dummies (name 'target_dummy', metadata.targetDummy) — register with descendants.
+    // setEnabled() toggling between practice/online is respected automatically: a disabled caster is
+    // simply skipped when the shadow map renders, so this is safe even while they are hidden online.
+    for (const mesh of this.scene.meshes) {
+      if (mesh instanceof Mesh && mesh.metadata?.targetDummy && mesh !== this.gym.movingDummy) {
+        registerCompetitiveShadowCaster(mesh, true);
+      }
+    }
   }
 
   /**
@@ -2483,19 +2507,32 @@ export class ArenaScene {
     if (isGraphicsDebugEnabled()) this.logGraphicsDebugReport();
   }
 
-  /** One-shot graphics setup report — never repeats, so it's safe to leave the flag on. */
+  /**
+   * Debug-only shadow + environment audit (gated by isGraphicsDebugEnabled). One-shot at gym build,
+   * so it's safe to leave the flag on. Prints the explicit shadow-proof the recovery task asks for:
+   * whether the single generator is active, its map resolution + filtering, whether the floor mesh
+   * actually receives shadows, the registered caster roots, and the true render-list child counts per
+   * dynamic category (mat / dummy / remote player) — the per-category counts are what confirm the
+   * visible child submeshes (dummy head/torso/limbs, etc.) are really in the shadow pass.
+   */
   private logGraphicsDebugReport(): void {
     const stats = getCompetitiveGraphicsDebugStats();
-    console.log(
-      `[graphics] shadows: generators=${stats.shadow.activeGeneratorCount}` +
-      ` lifetimeCreated=${stats.shadow.lifetimeCreateCount} filtering=${stats.shadow.filteringMode}` +
-      ` mapSize=${stats.shadow.mapSize ?? 'n/a'} darkness=${stats.shadow.darkness ?? 'n/a'}` +
-      ` casters=${stats.shadow.casterCount}` +
-      ` (remotePlayer=${stats.shadow.casterCountsByCategory.remotePlayer}` +
-      ` mat=${stats.shadow.casterCountsByCategory.mat}` +
-      ` dummy=${stats.shadow.casterCountsByCategory.dummy}` +
-      ` other=${stats.shadow.casterCountsByCategory.other})`
-    );
+    const floor = this.scene.getMeshByName('gym_floor');
+    const floorReceives = floor ? floor.receiveShadows : false;
+    const byRoot = stats.shadow.casterCountsByCategory;
+    const byMesh = stats.shadow.renderListCountsByCategory;
+    console.log('[graphics] === shadow audit ===');
+    console.log(`[graphics] ShadowGenerator: ${stats.shadow.activeGeneratorCount === 1 ? 'active' : 'inactive'}` +
+      ` (generators=${stats.shadow.activeGeneratorCount}, lifetimeCreated=${stats.shadow.lifetimeCreateCount})`);
+    console.log(`[graphics] Shadow map: resolution=${stats.shadow.mapSize ?? 'n/a'} filtering=${stats.shadow.filteringMode}` +
+      ` darkness=${stats.shadow.darkness ?? 'n/a'}`);
+    console.log(`[graphics] Floor receives shadows: ${floorReceives ? 'yes' : 'no'}`);
+    console.log(`[graphics] Registered casters: ${stats.shadow.casterCount}` +
+      ` (mat=${byRoot.mat} dummy=${byRoot.dummy} remotePlayer=${byRoot.remotePlayer} other=${byRoot.other})`);
+    console.log(`[graphics] Shadow render-list meshes (children included): ${stats.shadow.renderListCount}`);
+    console.log(`[graphics] Registered player mesh children: ${byMesh.remotePlayer}`);
+    console.log(`[graphics] Registered mat mesh children: ${byMesh.mat}`);
+    console.log(`[graphics] Registered dummy mesh children: ${byMesh.dummy}`);
     const env = getGymEnvironmentDebugInfo();
     console.log(
       `[graphics] environment: kind=${env.kind} name=${env.name ?? 'n/a'}` +

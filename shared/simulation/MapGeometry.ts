@@ -88,6 +88,56 @@ export function matCollisionBox(spec: MatSpec): AABB {
   const halfZ = (quarterTurned ? MAT_DIMENSIONS.width : MAT_DIMENSIONS.depth) / 2;
   return aabbFromCenter(spec.x, spec.y, spec.z, halfX, MAT_DIMENSIONS.height / 2, halfZ, { kind: 'mat', id: spec.id });
 }
+
+/**
+ * Collision AABB for a mat that has been KNOCKED OVER (lying flat on the floor). The fallen mat is a
+ * low flat panel: its long axis (the standing 1.75 m height) now lies along the horizontal knock
+ * direction, its 2.6 m broad width runs perpendicular, and its 0.18 m thickness is vertical — so the
+ * top sits ~0.18 m off the floor. Matches the client visual in MatObstacle.knockOver (center shifted
+ * height/2 along the knock heading). This box is added to BOTH worlds: balls bounce off it (and stay
+ * live — a mat is the only floor-level surface that keeps a ball alive), and because its top is well
+ * under player.stepHeight the player STEPS ONTO it (a small but noticeable low ledge) instead of being
+ * walled off. The returned AABB is an axis-aligned bound of the laid panel — exact for cardinal knock
+ * directions, a slightly loose bound for diagonal ones.
+ */
+export function matKnockedOverBox(spec: MatSpec, knockDirection: { x: number; z: number }): AABB {
+  const halfLong = MAT_DIMENSIONS.height / 2; // standing height, now lying along the knock direction
+  const halfBroad = MAT_DIMENSIONS.width / 2; // broad face width, perpendicular to the knock direction
+  const halfThick = MAT_DIMENSIONS.depth / 2; // panel thickness, now vertical
+  const len = Math.hypot(knockDirection.x, knockDirection.z);
+  const dx = len > 1e-4 ? knockDirection.x / len : 0;
+  const dz = len > 1e-4 ? knockDirection.z / len : 1;
+  const cx = spec.x + dx * halfLong;
+  const cz = spec.z + dz * halfLong;
+  // AABB half-extents of the rotated rectangle (|dir| along long axis, |perp(dir)| along broad axis).
+  const halfX = halfLong * Math.abs(dx) + halfBroad * Math.abs(dz);
+  const halfZ = halfLong * Math.abs(dz) + halfBroad * Math.abs(dx);
+  return aabbFromCenter(cx, halfThick, cz, halfX, halfThick, halfZ, { kind: 'mat', id: spec.id });
+}
+
+/**
+ * Mat collision boxes for the current state, shared by the player and ball worlds so they always
+ * agree. A standing mat is its upright cover box; a knocked-over mat becomes the low flat panel from
+ * matKnockedOverBox when its knock direction is known. If a mat is down but no direction was supplied
+ * (legacy callers), it is omitted (the old "fully walkable / pass-through" behavior) rather than
+ * guessed at.
+ */
+function matCollisionBoxesForState(
+  activeMatSpecs: readonly MatSpec[],
+  knockedOverMatIds?: ReadonlySet<string>,
+  knockedOverMatDirections?: ReadonlyMap<string, { x: number; z: number }>
+): AABB[] {
+  const boxes: AABB[] = [];
+  for (const spec of activeMatSpecs) {
+    if (knockedOverMatIds?.has(spec.id)) {
+      const dir = knockedOverMatDirections?.get(spec.id);
+      if (dir) boxes.push(matKnockedOverBox(spec, dir));
+      continue;
+    }
+    boxes.push(matCollisionBox(spec));
+  }
+  return boxes;
+}
 export const BLEACHER_LAYOUT = {
   tierCount: 5,
   tierRun: 0.54,
@@ -236,37 +286,39 @@ export function createGymCollisionBoxes(): AABB[] {
 }
 
 /**
- * Player collision boxes given the live mat state: bleachers always collide; a mat collides only
- * while it is still standing. Knocked-over mats lie flat and become walkable, so they are omitted.
- * `knockedOverMatIds` is the set of mats currently down (empty = all standing).
+ * Player collision boxes given the live mat state: bleachers always collide; a standing mat is its
+ * upright cover box. A knocked-over mat becomes a low flat panel (matKnockedOverBox) the player steps
+ * ONTO — a small but noticeable ledge — instead of being omitted entirely. `knockedOverMatIds` is the
+ * set of mats currently down (empty = all standing); `knockedOverMatDirections` supplies each down
+ * mat's knock heading so the flat box is placed correctly. A down mat with no supplied direction falls
+ * back to the legacy "fully walkable" omission.
  */
 export function createPlayerCollisionBoxes(
   knockedOverMatIds?: ReadonlySet<string>,
   /** The mats that currently exist (active preset). Defaults to the full set for offline/legacy use. */
-  activeMatSpecs: readonly MatSpec[] = MAT_SPECS
+  activeMatSpecs: readonly MatSpec[] = MAT_SPECS,
+  knockedOverMatDirections?: ReadonlyMap<string, { x: number; z: number }>
 ): AABB[] {
-  const boxes: AABB[] = createBleacherCollisionBoxes();
-  for (const spec of activeMatSpecs) {
-    if (knockedOverMatIds?.has(spec.id)) continue;
-    boxes.push(matCollisionBox(spec));
-  }
-  return boxes;
+  return [
+    ...createBleacherCollisionBoxes(),
+    ...matCollisionBoxesForState(activeMatSpecs, knockedOverMatIds, knockedOverMatDirections)
+  ];
 }
 
 /**
- * Collision boxes balls bounce off: bleachers + STANDING mats. A standing mat is solid cover that
- * blocks dodgeballs (they bounce back off it); a knocked-over mat lies flat and is skipped so balls
- * pass over it. Mirrors createPlayerCollisionBoxes so player and ball worlds agree on mat state.
+ * Collision boxes balls bounce off: bleachers + mats. A standing mat is solid cover that blocks
+ * dodgeballs; a knocked-over mat becomes the low flat panel from matKnockedOverBox, so balls bounce
+ * off a fallen mat too (and stay live — see applyMatBounce). Mirrors createPlayerCollisionBoxes so the
+ * player and ball worlds always agree on mat state.
  */
 export function createBallCollisionBoxes(
   knockedOverMatIds?: ReadonlySet<string>,
   /** The mats that currently exist (active preset). Defaults to the full set for offline/legacy use. */
-  activeMatSpecs: readonly MatSpec[] = MAT_SPECS
+  activeMatSpecs: readonly MatSpec[] = MAT_SPECS,
+  knockedOverMatDirections?: ReadonlyMap<string, { x: number; z: number }>
 ): AABB[] {
-  const boxes: AABB[] = createBleacherCollisionBoxes();
-  for (const spec of activeMatSpecs) {
-    if (knockedOverMatIds?.has(spec.id)) continue;
-    boxes.push(matCollisionBox(spec));
-  }
-  return boxes;
+  return [
+    ...createBleacherCollisionBoxes(),
+    ...matCollisionBoxesForState(activeMatSpecs, knockedOverMatIds, knockedOverMatDirections)
+  ];
 }

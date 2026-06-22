@@ -63,9 +63,25 @@ export interface CompetitiveGraphicsDebugStats {
     filteringMode: 'pcf' | 'poisson' | 'none';
     mapSize: number | null;
     darkness: number | null;
+    /** Registered caster ROOTS (one per registerCompetitiveShadowCaster call). */
     casterCount: number;
     casterCountsByCategory: Record<ShadowCasterCategory, number>;
+    /** Total meshes actually in the shadow-map render list — INCLUDES parented child submeshes
+     * (e.g. each dummy's head/torso/limbs), so it is the true count of things casting shadows. */
+    renderListCount: number;
+    /** renderListCount broken down by category (children included). This is what proves remote
+     * player / mat / dummy child meshes are really registered as casters. */
+    renderListCountsByCategory: Record<ShadowCasterCategory, number>;
   };
+}
+
+/** Categorize a shadow-map render-list mesh by name — handles parented child submeshes, not just
+ * registered roots (e.g. 'dummy_head_moving', 'remotePlayerBody_<id>', the merged 'mat'). */
+function categorizeShadowMeshName(name: string): ShadowCasterCategory {
+  if (name.startsWith('player_') || name.startsWith('remotePlayerBody_')) return 'remotePlayer';
+  if (name === 'mat' || name.startsWith('mat_')) return 'mat';
+  if (name.includes('dummy')) return 'dummy';
+  return 'other';
 }
 
 /** Debug-only snapshot for the graphics debug flag — never read for gameplay logic. */
@@ -76,15 +92,28 @@ export function getCompetitiveGraphicsDebugStats(): CompetitiveGraphicsDebugStat
     dummy: 0,
     other: 0
   };
+  const renderListCountsByCategory: Record<ShadowCasterCategory, number> = {
+    remotePlayer: 0,
+    mat: 0,
+    dummy: 0,
+    other: 0
+  };
   let filteringMode: 'pcf' | 'poisson' | 'none' = 'none';
   let mapSize: number | null = null;
   let darkness: number | null = null;
+  let renderListCount = 0;
   if (activeShadowSystem) {
     for (const category of activeShadowSystem.casterCategories.values()) casterCountsByCategory[category]++;
     const generator = activeShadowSystem.generator;
     filteringMode = generator.usePercentageCloserFiltering ? 'pcf' : generator.usePoissonSampling ? 'poisson' : 'none';
     mapSize = generator.getShadowMap()?.getRenderSize() ?? null;
     darkness = generator.getDarkness();
+    // The shadow map's renderList holds every mesh that actually casts — registered roots AND the
+    // child submeshes pulled in via includeDescendants. Counting it (not just the roots) is what
+    // proves the dummies' / remote players' child meshes are truly in the shadow pass.
+    const renderList = generator.getShadowMap()?.renderList ?? [];
+    renderListCount = renderList.length;
+    for (const mesh of renderList) renderListCountsByCategory[categorizeShadowMeshName(mesh.name)]++;
   }
 
   return {
@@ -95,7 +124,9 @@ export function getCompetitiveGraphicsDebugStats(): CompetitiveGraphicsDebugStat
       mapSize,
       darkness,
       casterCount: activeShadowSystem?.casters.size ?? 0,
-      casterCountsByCategory
+      casterCountsByCategory,
+      renderListCount,
+      renderListCountsByCategory
     }
   };
 }

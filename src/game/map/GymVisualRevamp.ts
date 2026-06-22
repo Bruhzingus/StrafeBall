@@ -91,12 +91,13 @@ const GYM_MATERIAL_TUNING = {
     // Bright but lightly-desaturated warm maple — clean maintained court, not orange house flooring.
     albedoTint: [1.55, 1.34, 0.92] as Rgb,
     metallic: 0,
-    // Flat varnish gloss — a touch lower than before so the maple reads waxed/polished, not a mirror
-    // and not flat matte. Kept in the spec's ~0.34-0.40 waxed-floor band.
-    roughness: 0.36,
-    // Scales how strongly the hidden HDR environment (scene.environmentTexture, applied in
-    // applyGymEnvironment) shows up as a broad soft overhead reflection on the floor. Kept in the
-    // spec's 0.24-0.34 sheen band — bright enough to look waxed, low enough to never mirror players.
+    // Recovery baseline: waxed-maple roughness raised into the 0.40-0.44 band while the environment
+    // pipeline is disabled/verified, so the floor reads as a polished court (soft broad sheen) rather
+    // than a wet mirror. Drop back toward ~0.36 only once HDR reflections are re-enabled and verified.
+    roughness: 0.42,
+    // Scales how strongly the environment texture (the cheap generated gradient by default — the HDR
+    // cafeteria env is disabled, see GYM_HDR_ENVIRONMENT_ENABLED) shows up as a broad soft overhead
+    // sheen on the floor. Kept low so the floor never mirrors players and never washes out to gray.
     environmentIntensity: 0.3,
     // Soft, broad sheen — restrained so the floor never reads wet/mirror-like.
     specularIntensity: 0.45,
@@ -144,9 +145,11 @@ const GYM_MATERIAL_TUNING = {
   },
   // Three distinct navy categories. Brightness order: cover mats > back-wall pads > bleachers.
   navy: {
-    // Back-wall pads (StandardMaterial vinyl): deep, less-saturated navy satin. Roughness ~0.56-0.60
+    // Back-wall pads (StandardMaterial vinyl): deep, less-saturated navy satin. Tint pulled down from
+    // the brighter [0.42,0.45,0.56] so the royal-blue pad texture reads as DARK NAVY rather than shiny
+    // royal-blue plastic (recovery target). Same asset, just a deeper multiplier. Roughness ~0.56-0.60
     // intent realized as a satin (mid-low specular) StandardMaterial response.
-    backPad: { tint: [0.42, 0.45, 0.56] as Rgb, emissive: [0.004, 0.012, 0.04] as Rgb, specular: [0.05, 0.07, 0.1] as Rgb, specularPower: 26 },
+    backPad: { tint: [0.28, 0.32, 0.46] as Rgb, emissive: [0.003, 0.009, 0.032] as Rgb, specular: [0.04, 0.06, 0.09] as Rgb, specularPower: 26 },
     // Movable cover mats (PBR): slightly brighter, readable navy — less royal saturation. Reflection
     // target 0.16-0.22 per spec (movable mats get a touch more sheen than bleachers/walls).
     coverMat: { albedoColor: [0.48, 0.53, 0.66] as Rgb, emissive: [0.003, 0.01, 0.035] as Rgb, metallic: 0, roughness: 0.54, environmentIntensity: 0.19 },
@@ -386,6 +389,17 @@ function enhanceExistingMaterials(scene: Scene): void {
   tuneCeilingMaterials(scene);
 }
 
+// RECOVERY FLAG (disabled by default). The cafeteria HDR environment (added in the "caf lighting"
+// pass) is what washes the maple floor out to a flat gray slab on real GPUs — the floor samples it
+// as a broad overhead reflection at environmentIntensity 0.3, and on hardware the prefiltered HDR
+// dominates the albedo at grazing angles far more than in software rendering. Until the environment
+// pipeline is re-verified, leave this OFF so the floor falls back to the cheap generated gradient
+// (the known-good pre-regression behavior) and reads as a clean waxed maple court, not washed gray.
+// The HDR code below is left fully intact and cleanly isolated behind this single flag — flip to
+// true to re-enable the cafeteria HDR once the environment pass is revisited. No HDR/.env/reflection
+// asset is loaded while this is false.
+const GYM_HDR_ENVIRONMENT_ENABLED = false;
+
 // Hidden HDR environment used purely as the PBR reflection source for the gym's glossy surfaces
 // (mainly the waxed floor). It is NEVER shown as a skybox — the cafeteria panorama is invisible; we
 // only sample it for reflection response. The user dropped the file here manually.
@@ -427,6 +441,13 @@ export function getGymEnvironmentDebugInfo(): GymEnvironmentDebugInfo {
  */
 function applyGymEnvironment(scene: Scene): void {
   if (scene.getTextureByName(HDR_ENVIRONMENT_NAME) || scene.getTextureByName(FALLBACK_ENVIRONMENT_NAME)) return;
+
+  // Recovery default: skip the cafeteria HDR entirely and use the cheap gradient environment so the
+  // floor keeps a soft waxed sheen without the washed-out gray HDR reflection. (See flag comment.)
+  if (!GYM_HDR_ENVIRONMENT_ENABLED) {
+    createGradientEnvironmentFallback(scene);
+    return;
+  }
 
   const hdr = new HDRCubeTexture(
     HDR_ENVIRONMENT_URL,

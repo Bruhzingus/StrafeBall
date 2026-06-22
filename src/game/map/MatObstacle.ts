@@ -1,5 +1,6 @@
 import { Mesh, Vector3 } from '@babylonjs/core';
-import { AABB, aabbFromCenter } from './Collider';
+import { AABB } from './Collider';
+import { matCollisionBox, matKnockedOverBox } from '../../../shared/simulation/MapGeometry';
 
 /** Physical dimensions of a dodgeball mat. Source of truth for both visual size and proxy AABB. */
 export const MAT_DIMENSIONS = { width: 2.6, height: 1.75, depth: 0.18 };
@@ -18,6 +19,8 @@ export class MatObstacle {
   public knockedOver = false;
 
   private readonly standingPosition: Vector3;
+  // Horizontal heading the mat fell in (set on knockOver), so its flat collision box can be placed.
+  private readonly knockDir = new Vector3(0, 0, 1);
 
   constructor(
     public readonly id: string,
@@ -30,16 +33,27 @@ export class MatObstacle {
     this.mesh.rotation.set(0, rotationY, 0);
   }
 
+  /** Shared MatSpec view of this mat (same source of truth the server collision uses). */
+  private spec(): { id: string; x: number; y: number; z: number; yawRadians: number } {
+    const p = this.standingPosition;
+    return { id: this.id, x: p.x, y: p.y, z: p.z, yawRadians: this.rotationY };
+  }
+
   /**
-   * World-space AABB while standing. Mats sit at axis-aligned yaws (0 or ±90°), so a quarter-turn
-   * just swaps the width/depth extents — no oriented-box math needed for the greybox proxy.
+   * World-space AABB while standing — the upright cover box (tagged kind 'mat' + id). Built from the
+   * SAME shared helper the server uses so offline and online mat collision agree.
    */
   getAABB(): AABB {
-    const quarterTurned = Math.abs(Math.round(this.rotationY / (Math.PI / 2))) % 2 === 1;
-    const halfX = (quarterTurned ? MAT_DIMENSIONS.depth : MAT_DIMENSIONS.width) / 2;
-    const halfZ = (quarterTurned ? MAT_DIMENSIONS.width : MAT_DIMENSIONS.depth) / 2;
-    const p = this.standingPosition;
-    return aabbFromCenter(p.x, p.y, p.z, halfX, MAT_DIMENSIONS.height / 2, halfZ);
+    return matCollisionBox(this.spec());
+  }
+
+  /**
+   * World-space AABB while knocked over: the low flat panel lying on the floor (top ~0.18 m up).
+   * Balls bounce off it (and stay live) and the player steps onto it. Placed via the recorded knock
+   * heading, matching the visual in knockOver().
+   */
+  getKnockedOverAABB(): AABB {
+    return matKnockedOverBox(this.spec(), { x: this.knockDir.x, z: this.knockDir.z });
   }
 
   /**
@@ -52,6 +66,7 @@ export class MatObstacle {
     this.knockedOver = true;
     const flat = new Vector3(direction.x, 0, direction.z);
     const dir = flat.lengthSquared() > 1e-4 ? flat.normalize() : new Vector3(0, 0, 1);
+    this.knockDir.copyFrom(dir);
 
     // Lay flat: rotate 90° so the broad face is up. Yaw the lying mat to the push heading and pitch
     // it down onto the floor. The fallen panel's top sits at ~depth above the floor.

@@ -12,6 +12,7 @@ exports.throwHeldBall = throwHeldBall;
 exports.catchBall = catchBall;
 exports.deflectBall = deflectBall;
 exports.applyBallBounce = applyBallBounce;
+exports.applyMatBounce = applyMatBounce;
 exports.settleBallIfSlow = settleBallIfSlow;
 exports.curveRampFactor = curveRampFactor;
 exports.advanceBall = advanceBall;
@@ -189,6 +190,17 @@ function applyBallBounce(ball, bounceRule, constants = constants_1.GAME_CONSTANT
         ...ball,
         bounceCount
     };
+}
+/**
+ * Bounce off a mat (standing cover OR a knocked-over mat lying flat). A mat reflects the ball but
+ * NEVER kills it: a live ball stays live (a deflected ball stays deflected), so it can still score
+ * and be caught. A mat is the ONLY surface that keeps a ball alive after a floor-level bounce —
+ * every other surface (floor, back walls, bleachers) still kills via applyBallBounce. bounceCount is
+ * incremented so the throw's first-flight curve/drop ends and impact effects fire, but the phase is
+ * intentionally left untouched.
+ */
+function applyMatBounce(ball) {
+    return { ...ball, bounceCount: ball.bounceCount + 1 };
 }
 function settleBallIfSlow(ball, constants = constants_1.GAME_CONSTANTS) {
     if (ball.phase !== 'dead' || (0, CollisionMath_1.length)(ball.velocity) >= constants.ball.settleSpeed)

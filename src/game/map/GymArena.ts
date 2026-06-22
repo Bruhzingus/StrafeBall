@@ -368,30 +368,30 @@ export class GymArena {
     }
   }
 
-  /**
-   * Remove a knocked-over mat's collision box from BOTH worlds so it becomes walkable and balls pass
-   * over it. Matched by footprint (mats sit at fixed, distinct positions).
-   */
+  /** Remove any collision box belonging to this mat (standing OR knocked-over) from both worlds. */
   removeMatCollision(mat: MatObstacle): void {
-    const box = mat.getAABB();
-    const matches = (b: AABB) =>
-      b.minX === box.minX && b.maxX === box.maxX && b.minZ === box.minZ && b.maxZ === box.maxZ;
     for (const world of [this.collision, this.ballCollision]) {
-      const idx = world.boxes.findIndex(matches);
-      if (idx >= 0) world.boxes.splice(idx, 1);
+      for (let i = world.boxes.length - 1; i >= 0; i -= 1) {
+        if (world.boxes[i].id === mat.id) world.boxes.splice(i, 1);
+      }
     }
   }
 
-  /**
-   * Re-add a (now standing) mat's footprint to both collision worlds. Idempotent: skips a world that
-   * already contains a matching box, so it is safe to call when only one world is missing the mat.
-   */
+  /** Re-add a (now standing) mat's upright cover box to both collision worlds. */
   addMatCollision(mat: MatObstacle): void {
-    const box = mat.getAABB();
-    const matches = (b: AABB) =>
-      b.minX === box.minX && b.maxX === box.maxX && b.minZ === box.minZ && b.maxZ === box.maxZ;
+    this.setMatCollision(mat, 'standing');
+  }
+
+  /**
+   * Set this mat's collision in BOTH worlds to match its pose. 'standing' = the upright cover box;
+   * 'knocked' = the low flat panel lying on the floor — balls bounce off it (and stay live) and the
+   * player steps onto it (a small, noticeable ledge). Any prior box for this mat is removed first, so
+   * it is safe to call on every standing↔knocked transition. Each world gets its own box instance.
+   */
+  setMatCollision(mat: MatObstacle, mode: 'standing' | 'knocked'): void {
+    this.removeMatCollision(mat);
     for (const world of [this.collision, this.ballCollision]) {
-      if (!world.boxes.some(matches)) world.add(mat.getAABB());
+      world.add(mode === 'knocked' ? mat.getKnockedOverAABB() : mat.getAABB());
     }
   }
 
@@ -400,19 +400,11 @@ export class GymArena {
     for (const mat of this.mats) mat.reset();
     // Rebuild both worlds: keep all non-mat boxes, then re-add every (now standing) mat box.
     for (const world of [this.collision, this.ballCollision]) {
-      const nonMat = world.boxes.filter((b) => !this.isMatBox(b));
+      const nonMat = world.boxes.filter((b) => b.kind !== 'mat');
       world.boxes.length = 0;
       for (const b of nonMat) world.boxes.push(b);
       for (const mat of this.mats) world.add(mat.getAABB());
     }
-  }
-
-  private isMatBox(box: AABB): boolean {
-    for (const mat of this.mats) {
-      const m = mat.getAABB();
-      if (m.minX === box.minX && m.maxX === box.maxX && m.minZ === box.minZ && m.maxZ === box.maxZ) return true;
-    }
-    return false;
   }
 
   private createTargetDummies(): void {

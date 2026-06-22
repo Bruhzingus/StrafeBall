@@ -195,8 +195,19 @@ export class Ball {
         this.onWallCeilingBounce(normalImpactSpeed);
         break;
       }
+      if (b.kind === 'mat') {
+        // A mat (standing cover OR a fallen mat on the floor) reflects the ball but never kills it:
+        // a Live ball stays Live. Mirrors the server's applyMatBounce so practice matches online.
+        this.onMatBounce(normalImpactSpeed);
+        continue;
+      }
       this.onBounce(normalImpactSpeed);
     }
+  }
+
+  private onMatBounce(normalImpactSpeed: number): void {
+    this.bounceCount += 1;
+    this.emitImpact(normalImpactSpeed);
   }
 
   private onBounce(normalImpactSpeed: number): void {

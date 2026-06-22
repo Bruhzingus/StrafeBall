@@ -33,6 +33,7 @@ import { TimeRing, type BallSample, type DefenseSample } from './DefenseHistory'
 import {
   advanceBall,
   applyBallBounce,
+  applyMatBounce,
   catchBall,
   createBallState,
   deflectBall,
@@ -1228,10 +1229,19 @@ export class ServerGameLoop {
     this.state.phase = roomPhaseFromMatchStatus(this.state.match.status);
   }
 
-  /** Rebuild both collision worlds from the active mat preset minus any currently knocked-over mats. */
+  /**
+   * Rebuild both collision worlds from the active mat preset. Standing mats are upright cover; each
+   * knocked-over mat becomes a low flat panel (placed via its recorded knockDirection) that players
+   * step onto and balls bounce off — so fallen mats are no longer fully walkable / pass-through.
+   */
   private rebuildCollisionBoxes(): void {
-    this.playerCollisionBoxes = createPlayerCollisionBoxes(this.knockedOverMatIds, this.activeMatSpecs);
-    this.ballCollisionBoxes = createBallCollisionBoxes(this.knockedOverMatIds, this.activeMatSpecs);
+    const knockedOverMatDirections = new Map<string, { x: number; z: number }>();
+    for (const id of this.knockedOverMatIds) {
+      const dir = this.state.mats[id]?.knockDirection;
+      if (dir) knockedOverMatDirections.set(id, { x: dir.x, z: dir.z });
+    }
+    this.playerCollisionBoxes = createPlayerCollisionBoxes(this.knockedOverMatIds, this.activeMatSpecs, knockedOverMatDirections);
+    this.ballCollisionBoxes = createBallCollisionBoxes(this.knockedOverMatIds, this.activeMatSpecs, knockedOverMatDirections);
   }
 
   step(): ServerSnapshot {
@@ -3774,9 +3784,13 @@ function resolveBallStaticBoxes(ball: BallState, boxes: AABB[], logger?: (messag
 
   if (!bounced) return ball;
   const resolvedBall = { ...ball, position, velocity };
+  // A mat (standing cover OR a fallen mat lying flat) reflects the ball but keeps it live; the side
+  // bleachers act like a side wall (survive one); everything else dies on first bounce as before.
   const resolved = isSideWallLikeStaticBounce(hitBox, hitAxis)
     ? applyWallCeilingBounce(resolvedBall, bounceRule)
-    : applyBallBounce(resolvedBall, bounceRule);
+    : hitBox?.kind === 'mat'
+      ? applyMatBounce(resolvedBall)
+      : applyBallBounce(resolvedBall, bounceRule);
   if (hitBox?.kind === 'bleacher') {
     logger?.(
       `bleacher collision ball=${ball.id} box=${hitBox.id ?? 'unknown'}` +
