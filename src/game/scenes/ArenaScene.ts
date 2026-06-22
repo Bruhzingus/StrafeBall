@@ -13,7 +13,6 @@ import {
 } from '../map/CompetitiveLighting';
 import {
   applyShowcaseLighting,
-  createShowcaseDebugMarkers,
   createShowcaseShadowSystem,
   disposeShowcaseLighting,
   getShowcaseGraphicsDebugStats,
@@ -26,7 +25,9 @@ import {
 } from '../map/GymShadowCasters';
 import { ShowcasePostFX } from '../effects/ShowcasePostFX';
 import { isNeutralModeEnabled, isShowcaseLightingEnabled, resolveGraphicsMode, resolveShowcaseTier, SHOWCASE_CONFIG, type ShowcaseTier } from '../config/graphicsConfig';
-import { createGymReflectionProbe, disposeGymReflectionProbe, getGymReflectionProbeDebugInfo } from '../map/GymReflectionProbe';
+// RECOVERY: createGymReflectionProbe is intentionally NOT imported/instantiated this phase (code
+// preserved in GymReflectionProbe). dispose + debug stay so any prior probe is torn down and reported.
+import { disposeGymReflectionProbe, getGymReflectionProbeDebugInfo } from '../map/GymReflectionProbe';
 import { MatObstacle } from '../map/MatObstacle';
 import { ModelLoader } from '../assets/ModelLoader';
 import { BallManager } from '../ball/BallManager';
@@ -2515,18 +2516,15 @@ export class ArenaScene {
   }
 
   /**
-   * Showcase lighting (Phase 6 fixture-aligned rig): six broad shadowless SpotLights, one under each
-   * visible ceiling fixture (positions reused from CEILING_FIXTURE_POSITIONS), one hemispheric fill, and
-   * one subtle shadow-casting directional that drives the SINGLE ShadowGenerator. Dynamic caster
-   * registration is routed to that single-generator system.
+   * Showcase lighting: even ambient room light — one broad HemisphericLight fill (darker cool ground so
+   * corners/under-surfaces fall off naturally for depth) + one angled DirectionalLight key that drives
+   * the SINGLE ShadowGenerator. The ceiling fixtures are emissive housings, not light sources (no
+   * spotlight pools). Dynamic caster registration is routed to that single-generator system.
    */
   private createShowcaseLighting(): void {
-    const { shadowKey } = applyShowcaseLighting(this.scene);
-    createShowcaseShadowSystem(this.scene, shadowKey, this.showcaseTier);
+    const { key } = applyShowcaseLighting(this.scene);
+    createShowcaseShadowSystem(this.scene, key, this.showcaseTier);
     setActiveGymShadowRegistrar(registerShowcaseShadowCaster);
-    // Debug-only: a marker sphere under each fixture + a flat marker on the floor below, so the
-    // fixture-aligned grid can be verified by eye. Never present in normal play.
-    if (isGraphicsDebugEnabled()) createShowcaseDebugMarkers(this.scene);
   }
 
   /**
@@ -2612,10 +2610,9 @@ export class ArenaScene {
     // react to all four roof spots. Applied last so Showcase always wins. No-op in Competitive mode.
     if (this.showcaseEnabled) {
       applyShowcaseGymMaterials(this.scene);
-      // Phase 7: one static reflection probe gives the floor (+ tiny cover-mat/bleacher) a subtle broad
-      // reflection of the real ceiling fixtures. Created AFTER the materials exist so the receiver wiring
-      // and the explicit static render list are valid; it renders once and never updates per frame.
-      createGymReflectionProbe(this.scene, SHOWCASE_CONFIG.reflectionProbe.resolution);
+      // RECOVERY: the static reflection probe is NOT instantiated this phase — the scene must pass a
+      // direct-light/material baseline first. createGymReflectionProbe is preserved (see GymReflectionProbe)
+      // and intentionally not called here; no reflection source is active in any mode.
     }
     if (isGraphicsDebugEnabled()) this.logGraphicsDebugReport();
   }
@@ -2676,14 +2673,8 @@ export class ArenaScene {
     const lights = stats.lights;
     const byRoot = stats.shadow.casterCountsByCategory;
     const byMesh = stats.shadow.renderListCountsByCategory;
-    console.log(`[graphics] Lights: ${lights.hemiCount} hemi + ${lights.fixtureSpotCount} fixture spots` +
-      ` + ${lights.shadowKeyCount} shadow directional (Showcase) = ` +
-      `${lights.hemiCount + lights.fixtureSpotCount + lights.shadowKeyCount} total`);
-    for (const s of lights.fixtureReports) {
-      console.log(`[graphics]   fixture ${s.zone}: pos(${s.x.toFixed(1)},${s.z.toFixed(1)})` +
-        ` angle=${s.angle.toFixed(2)} exp=${s.exponent} range=${s.range} intensity=${s.intensity}` +
-        ` shadow=${s.castsShadow ? 'yes' : 'no'}`);
-    }
+    console.log(`[graphics] Lights: ${lights.hemiCount} hemi + ${lights.keyCount} directional key` +
+      ` (Showcase, even fill) = ${lights.hemiCount + lights.keyCount} total`);
     console.log(`[graphics] ShadowGenerators: ${stats.shadow.generatorCount} (lifetimeCreated=${stats.shadow.lifetimeCreateCount})`);
     console.log(`[graphics] Shadow map: resolution=${stats.shadow.mapSize ?? 'n/a'}` +
       ` filtering=${stats.shadow.filteringMode} darkness=${stats.shadow.darkness ?? 'n/a'}`);

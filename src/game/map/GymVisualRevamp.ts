@@ -132,10 +132,10 @@ const GYM_MATERIAL_TUNING = {
     // so courses run horizontally at the same physical size on the long and short walls alike.
     tileMetersHorizontal: 5.0,
     tileMetersVertical: 3.9,
-    // Maintained painted cinder block: a lighter, cleaner warm-neutral off-white. Tint nudged up +
-    // slightly toward neutral so the block reads as fresh low-contrast paint (not beige stone, not gray
-    // concrete), clearly above the navy pads but never pure white.
-    albedoTint: [3.18, 3.05, 2.82] as Rgb,
+    // RECOVERY: bounded neutral tint, no channel above 1.0 (was an HDR-style [3.18,3.05,2.82] multiplier
+    // forcing the raw gray block toward off-white). This is the honest temporary baseline — the wall now
+    // shows the texture's true value with only a gentle warm-neutral lift, not a faked-bright multiply.
+    albedoTint: [1.0, 0.97, 0.92] as Rgb,
     metallic: 0,
     // Matte to very-low satin. Scalar multiplies the now-bound roughness map; raised slightly so the
     // painted block reads matte (no satin glare) while the map still carries subtle block-to-block
@@ -185,11 +185,11 @@ const GYM_MATERIAL_TUNING = {
     // surface reads as matte-satin vinyl rather than a shiny mat; env response kept restrained so it
     // never glares. emissive trimmed near-zero so the mat is lit by the room, not self-lit.
     coverMat: { albedoColor: [0.46, 0.5, 0.62] as Rgb, emissive: [0.002, 0.006, 0.022] as Rgb, metallic: 0, roughness: 0.6, environmentIntensity: 0.14 },
-    // Bleachers (PBR): DARKEST, least-saturated, ROUGHEST navy — matte painted surface, fully
-    // dielectric (metallic 0, no metallic glare), non-emissive, and the faintest env response of the
-    // three so they never catch a glossy highlight. Tint DESATURATED toward muted slate so it no longer
-    // reads as vivid blue under the even fixture lighting. environmentIntensity explicit (PBR default 1.0).
-    bleacher: { albedoColor: [0.25, 0.27, 0.32] as Rgb, metallic: 0, roughness: 0.82, environmentIntensity: 0.06 }
+    // Bleachers (PBR): least-saturated, ROUGHEST navy — matte painted surface, fully dielectric
+    // (metallic 0, no metallic glare), non-emissive. RECOVERY: lifted to a READABLE slate navy so the
+    // structure never reads near-black; still the darkest of the three navies. environmentIntensity
+    // explicit (PBR default 1.0) and faint — no glossy highlight.
+    bleacher: { albedoColor: [0.31, 0.34, 0.39] as Rgb, metallic: 0, roughness: 0.82, environmentIntensity: 0.06 }
   },
   // PBR back-wall pad values, applied only if a wallPad_material PBR exists (the visible raised pads
   // are the clamped single-panel StandardMaterials in createRaisedWallPadPanels).
@@ -303,34 +303,35 @@ export function createBeveledPanelMesh(
 
 export function applyGymVisualRevamp(scene: Scene): void {
   const neutral = isNeutralModeEnabled();
+  // RECOVERY rule (explicit, not incidental): every fake lighting / decal overlay below is built ONLY in
+  // the legacy Competitive baseline. Neutral (the diagnostic truth baseline) and Showcase (the real
+  // fixture-light rig) must show NONE of them — no fake glow, sheen, glints, pools, bounce, rim, light
+  // catches, court-line shadows, or contact/wax decals. This single flag is the gate.
+  const fakeLightingDisabled = neutral || isShowcaseLightingEnabled();
   applyGymEnvironment(scene);
   enhanceExistingMaterials(scene);
   tuneSceneImageProcessing(scene);
   createWallColorBlocking(scene);
-  if (!neutral) createWallBounceGlow(scene);
+  if (!fakeLightingDisabled) createWallBounceGlow(scene);
   createWallPaddingDetails(scene);
   createRaisedWallPadPanels(scene);
   createScoreboardWallAccents(scene);
   createScoreboardHardware(scene);
   createUpperWallDetails(scene);
   createGymBanners(scene);
-  if (!neutral) createBannerLightCatches(scene);
+  if (!fakeLightingDisabled) createBannerLightCatches(scene);
   createBleacherAccents(scene);
   createBleacherSeatDetails(scene);
   createBleacherUnderframes(scene);
-  if (!neutral) createCourtLineShadows(scene);
-  if (!neutral) createContactDepthDecals(scene);
-  if (!neutral) createPropContactShadows(scene);
-  if (!neutral) createFloorWaxSheen(scene);
+  if (!fakeLightingDisabled) createCourtLineShadows(scene);
+  if (!fakeLightingDisabled) createContactDepthDecals(scene);
+  if (!fakeLightingDisabled) createPropContactShadows(scene);
+  if (!fakeLightingDisabled) createFloorWaxSheen(scene);
   createFloorDetailDecals(scene);
   // FAKE warm floor light decals (broad warm wash + glint streaks + per-fixture reflection streaks +
-  // per-fixture falloff pools). These are a COMPETITIVE-mode crutch: Competitive has no real overhead
-  // lights, so these baked warm pools sit under the old fixture grid (X=±5, Z=−8/0/+8) to simulate
-  // them. In SHOWCASE mode the four real roof SpotLights + the .env already light the floor, so these
-  // baked pools just stack on top — misaligned with the new lights and reading as garish yellow floor
-  // circles + a blotchy over-warm court. NEUTRAL is the diagnostic truth baseline — never builds them.
-  // Skip them in Showcase and Neutral; keep them exactly as-is in Competitive.
-  if (!isShowcaseLightingEnabled() && !neutral) {
+  // per-fixture falloff pools) — a Competitive-only crutch (Competitive has no real overhead lights).
+  // Never built in Neutral or Showcase.
+  if (!fakeLightingDisabled) {
     createCourtAmbientWash(scene);
     createWideFloorGlints(scene);
     createFloorLightReflections(scene);
@@ -338,7 +339,7 @@ export function applyGymVisualRevamp(scene: Scene): void {
   }
   createOverheadLightLenses(scene);
   createOverheadLightFrames(scene);
-  if (!neutral) createCeilingRimHighlights(scene);
+  if (!fakeLightingDisabled) createCeilingRimHighlights(scene);
   createCeilingConduits(scene);
 }
 
@@ -438,18 +439,18 @@ function enhanceExistingMaterials(scene: Scene): void {
 
   const seatMaterial = scene.getMaterialByName('bleacher_seat_mat');
   if (seatMaterial instanceof StandardMaterial) {
-    // Desaturated muted slate-navy (was a vivid royal [0.045,0.15,0.44]) so the bleacher seating no
-    // longer reads as bright blue under the even fixture lighting.
-    seatMaterial.diffuseColor = new Color3(0.13, 0.18, 0.32);
-    seatMaterial.emissiveColor = new Color3(0.003, 0.008, 0.022);
-    seatMaterial.specularColor = new Color3(0.16, 0.2, 0.28);
+    // RECOVERY: readable SLATE NAVY, NO emissive blue (was a vivid royal blue with an emissive lift).
+    seatMaterial.diffuseColor = new Color3(0.2, 0.23, 0.29);
+    seatMaterial.emissiveColor = new Color3(0, 0, 0);
+    seatMaterial.specularColor = new Color3(0.12, 0.14, 0.18);
     seatMaterial.specularPower = 52;
   }
 
   const panelMaterial = scene.getMaterialByName('bleacher_panel_mat');
   if (panelMaterial instanceof StandardMaterial) {
-    panelMaterial.diffuseColor = new Color3(0.18, 0.21, 0.27);
-    panelMaterial.specularColor = new Color3(0.14, 0.15, 0.17);
+    // RECOVERY: lifted out of near-black to a readable slate navy side panel.
+    panelMaterial.diffuseColor = new Color3(0.26, 0.29, 0.34);
+    panelMaterial.specularColor = new Color3(0.12, 0.13, 0.15);
   }
 
   const railMaterial = scene.getMaterialByName('bleacher_rail_mat');
@@ -774,15 +775,21 @@ function setZoneMaterial(scene: Scene, name: string, tone: 'blue' | 'red'): void
 }
 
 function tuneSceneImageProcessing(scene: Scene): void {
-  // Cheap global polish: existing, stable tone mapping + a mild contrast/exposure lift makes flat
-  // direct lighting read as more "rendered" without any extra draw calls or render targets. Light
-  // setup itself lives in CompetitiveLighting (one hemispheric + one directional); this only touches
-  // image processing. Exposure/contrast are deliberately mild — not a crutch for the lighting.
-  scene.imageProcessingConfiguration.toneMappingEnabled = true;
-  scene.imageProcessingConfiguration.toneMappingType = ImageProcessingConfiguration.TONEMAPPING_ACES;
-  scene.imageProcessingConfiguration.exposure = 1.13;
-  // Near-neutral contrast lifts mids/shadows so navy + ceiling stop reading crushed and dark.
-  scene.imageProcessingConfiguration.contrast = 1.03;
+  const ip = scene.imageProcessingConfiguration;
+  // RECOVERY: NEUTRAL is a true diagnostic baseline — tone mapping OFF, exposure = 1.0, contrast = 1.0.
+  // No ACES, no exposure/contrast lift; image processing must NOT compensate for the raw lighting here.
+  if (isNeutralModeEnabled()) {
+    ip.toneMappingEnabled = false;
+    ip.exposure = 1.0;
+    ip.contrast = 1.0;
+    return;
+  }
+  // Competitive / Showcase keep the existing mild ACES tone map + gentle exposure/contrast lift so flat
+  // direct lighting reads as more "rendered" without extra draw calls. Deliberately mild.
+  ip.toneMappingEnabled = true;
+  ip.toneMappingType = ImageProcessingConfiguration.TONEMAPPING_ACES;
+  ip.exposure = 1.13;
+  ip.contrast = 1.03;
 }
 
 function tuneCeilingMaterials(scene: Scene): void {
@@ -1261,28 +1268,22 @@ function createBleacherSeatDetails(scene: Scene): void {
     }
   }
 
-  const seatTopMat = solidMaterial(scene, 'decor_bleacher_satin_seat_top_mat', new Color3(0.045, 0.17, 0.52), {
-    emissive: new Color3(0.002, 0.012, 0.042),
-    specular: new Color3(0.16, 0.2, 0.27)
+  // RECOVERY: seat materials are now SLATE NAVY with NO emissive (was royal-blue + emissive). The cyan
+  // edge-highlight material + its meshes are removed entirely (see below) — they were the glowing cyan
+  // stripes. Seat/roll/trim GEOMETRY is preserved unchanged.
+  const seatTopMat = solidMaterial(scene, 'decor_bleacher_satin_seat_top_mat', new Color3(0.17, 0.2, 0.27), {
+    specular: new Color3(0.12, 0.14, 0.18)
   });
-  const frontRollMat = solidMaterial(scene, 'decor_bleacher_front_roll_mat', new Color3(0.026, 0.105, 0.34), {
-    emissive: new Color3(0.001, 0.008, 0.03),
-    specular: new Color3(0.13, 0.16, 0.22)
+  const frontRollMat = solidMaterial(scene, 'decor_bleacher_front_roll_mat', new Color3(0.13, 0.16, 0.22), {
+    specular: new Color3(0.1, 0.12, 0.16)
   });
-  const edgeHighlightMat = solidMaterial(scene, 'decor_bleacher_soft_edge_highlight_mat', new Color3(0.2, 0.36, 0.68), {
-    alpha: 0.18,
-    emissive: new Color3(0.012, 0.026, 0.055),
-    specular: new Color3(0.12, 0.16, 0.22)
-  });
-  const endTrimMat = solidMaterial(scene, 'decor_bleacher_end_trim_blue_mat', new Color3(0.14, 0.2, 0.29), {
-    emissive: new Color3(0.002, 0.004, 0.008),
-    specular: new Color3(0.1, 0.12, 0.15)
+  const endTrimMat = solidMaterial(scene, 'decor_bleacher_end_trim_blue_mat', new Color3(0.15, 0.18, 0.24), {
+    specular: new Color3(0.09, 0.11, 0.14)
   });
 
   for (const tier of createBleacherTierSpecs()) {
     const topY = tier.center.y + tier.size.height * 0.5;
     const innerX = tier.center.x - tier.side * tier.size.width * 0.5;
-    const outerX = tier.center.x + tier.side * tier.size.width * 0.5;
     const seatDepth = tier.size.depth - 0.34;
 
     const seatTop = MeshBuilder.CreateBox(`decor_bleacher_seat_top_${tier.side}_${tier.step}`, {
@@ -1303,23 +1304,8 @@ function createBleacherSeatDetails(scene: Scene): void {
     frontRoll.material = frontRollMat;
     markDecorative(frontRoll);
 
-    const frontHighlight = MeshBuilder.CreateBox(`decor_bleacher_front_soft_highlight_${tier.side}_${tier.step}`, {
-      width: 0.016,
-      height: 0.02,
-      depth: seatDepth - 0.08
-    }, scene);
-    frontHighlight.position.set(innerX - tier.side * 0.071, topY + 0.076, tier.center.z);
-    frontHighlight.material = edgeHighlightMat;
-    markDecorative(frontHighlight);
-
-    const rearHighlight = MeshBuilder.CreateBox(`decor_bleacher_rear_soft_highlight_${tier.side}_${tier.step}`, {
-      width: 0.014,
-      height: 0.014,
-      depth: seatDepth - 0.16
-    }, scene);
-    rearHighlight.position.set(outerX - tier.side * 0.08, topY + 0.071, tier.center.z);
-    rearHighlight.material = edgeHighlightMat;
-    markDecorative(rearHighlight);
+    // RECOVERY: the front/rear cyan-blue emissive edge-highlight meshes are removed — they were the
+    // glowing cyan bleacher stripes. The physical seat geometry above and end trim below are preserved.
 
     for (const zSign of [-1, 1] as const) {
       const endTrim = MeshBuilder.CreateBox(`decor_bleacher_seat_end_trim_${tier.side}_${tier.step}_${zSign}`, {
@@ -1611,9 +1597,10 @@ function createOverheadLightLenses(scene: Scene): void {
   });
 
   // Soft glow plane under each fixture is a FAKE lighting overlay (an alpha-blended emissive plane
-  // standing in for real light falloff), not the fixture geometry itself. Skipped in Neutral, the
-  // diagnostic truth baseline; kept in Competitive/Showcase where it visually softens the housing.
-  if (isNeutralModeEnabled()) return;
+  // standing in for real light falloff), not the fixture geometry itself. RECOVERY: skipped in BOTH
+  // Neutral and Showcase; only the legacy Competitive baseline keeps it. The lens housing above is real
+  // geometry and always builds.
+  if (isNeutralModeEnabled() || isShowcaseLightingEnabled()) return;
   const glowMat = solidMaterial(scene, 'decor_overhead_light_soft_glow_mat', new Color3(1.0, 0.9, 0.58), {
     alpha: 0.16,
     emissive: new Color3(0.7, 0.56, 0.32)

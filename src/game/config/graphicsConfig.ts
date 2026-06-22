@@ -138,51 +138,40 @@ export const SHOWCASE_ENV_TEXTURE_NAME = 'gym_showcase_env';
  */
 export const SHOWCASE_CONFIG = {
   /**
-   * Phase 6 fixture-aligned rig. Six broad low-intensity SpotLights — one directly under each visible
-   * ceiling fixture (positions REUSED from CEILING_FIXTURE_POSITIONS, never re-derived) — aimed straight
-   * down with a very wide soft cone so they read as fluorescent fixture pools, never a theatrical
-   * circle, and they NEVER cast shadows. One low HemisphericLight fills the room. One subtle
-   * shadow-casting DirectionalLight is the ONLY shadow source (one ShadowGenerator). 6 + 1 + 1 = 8.
+   * Showcase lighting = EVEN ambient room light, not aimed sources (the old 6-spotlight rig pooled
+   * under each fixture and read like stage lights). One broad HemisphericLight is the main fill; one
+   * angled DirectionalLight is the key + the single ShadowGenerator. The visible ceiling fixtures stay
+   * emissive housings — they are NOT light sources, so there are no spotlight pools. 1 hemi + 1 key = 2.
    */
   lights: {
-    /** Broad ambient fill so walls/ceiling stay bright and fixture shadows never go black. */
+    /**
+     * Broad even room fill. Warm-white on upward faces; the GROUND colour is deliberately darker + cool
+     * so downward-facing surfaces, corners, and under-bleacher areas fall off naturally — this is the
+     * main "depth + darker corners" lever, no fake AO needed. Kept moderate so the key still models.
+     */
     hemi: {
-      intensity: 0.5,
-      diffuse: [1.0, 0.985, 0.95] as [number, number, number],
-      ground: [0.44, 0.47, 0.53] as [number, number, number],
-      specular: [0.08, 0.08, 0.085] as [number, number, number]
+      intensity: 0.55,
+      diffuse: [1.0, 0.975, 0.93] as [number, number, number],
+      ground: [0.26, 0.29, 0.36] as [number, number, number], // darker cool ground = natural corner depth
+      specular: [0.06, 0.06, 0.07] as [number, number, number]
     },
     /**
-     * Six fixture SpotLights, one under each visible ceiling fixture, aimed STRAIGHT DOWN. Wide aperture
-     * + low exponent = soft overlapping pools with no visible cone edge; low specular = soft floor
-     * sheen, not a mirror glint. These NEVER cast shadows (only the shadowKey below does). Intensity is
-     * a starting value — six overlapping pools sum to an even court; tune from screenshots if needed.
+     * The single directional KEY (and the only ShadowGenerator). Angled diagonally so it rakes across
+     * the court and casts readable shadows that give the whole map depth — corners away from it stay
+     * darker. Warm-neutral white. This is the dominant brightness source; the hemi is the fill.
      */
-    fixtureSpot: {
-      angleRadians: 1.74, // ~100° — very broad fixture wash; cones overlap into an even field
-      exponent: 2, // soft, slow falloff (no hard bright circle on the floor)
-      intensity: 22, // restrained; six fixtures sum to an even court without hot spots
-      range: 30, // metres before decay — reaches the floor with horizontal spread
-      diffuse: [1.0, 0.985, 0.95] as [number, number, number], // neutral white, faint warm
-      specular: [0.06, 0.06, 0.06] as [number, number, number] // soft sheen only, no mirror
-    },
-    /**
-     * The SINGLE shadow-casting light: a low DirectionalLight, mostly straight down with a slight tilt
-     * so player/mat/dummy + selected static shadows read with ONE consistent direction (no conflicting
-     * shadow directions). Low intensity so it never makes one side brighter than the fixtures' field.
-     */
-    shadowKey: {
-      intensity: 0.32,
-      direction: [-0.22, -1, -0.16] as [number, number, number],
-      diffuse: [1.0, 0.99, 0.96] as [number, number, number],
-      specular: [0.12, 0.12, 0.12] as [number, number, number]
+    key: {
+      intensity: 0.9,
+      direction: [-0.35, -1, -0.25] as [number, number, number],
+      diffuse: [1.0, 0.99, 0.95] as [number, number, number],
+      specular: [0.16, 0.16, 0.16] as [number, number, number]
     }
   },
 
   /**
-   * Showcase shadows (Phase 6): exactly ONE ShadowGenerator, bound to the single shadowKey directional
-   * (the six fixture spots never cast). Map size by tier (2048 Ultra / 1024 High). Darkness in the
-   * 0.14–0.20 band so player/mat/dummy + selected static shadows read as soft indoor shadows.
+   * Showcase shadows: exactly ONE ShadowGenerator, bound to the directional key. Map size by tier
+   * (2048 Ultra / 1024 High). Darkness in the 0.14–0.20 band so player/mat/dummy + selected static
+   * shadows read as soft indoor shadows that give the court depth.
    */
   shadows: {
     mapSizeByTier: { [SHOWCASE_TIER_ULTRA]: 2048, [SHOWCASE_TIER_HIGH]: 1024 } as Record<ShowcaseTier, number>,
@@ -201,8 +190,9 @@ export const SHOWCASE_CONFIG = {
    * turns the bright gym dark/dirty, greys the walls, hazes the room, or halos.
    */
   ssao: {
-    /** THE Phase-8 SSAO kill switch. true = subtle SSAO2 in Showcase; false = no SSAO anywhere. */
-    enabled: true,
+    /** THE SSAO kill switch. RECOVERY: SSAO is OFF — the scene must pass a direct-light/material
+     * baseline before SSAO is reconsidered. true = subtle SSAO2 in Showcase; false = no SSAO anywhere. */
+    enabled: false,
     /** Final occlusion = clamp(base + ssao). A high base keeps it subtle and stops black-out. */
     base: 0.3,
     totalStrength: 0.7, // softened for subtlety (Phase 8): contact darkening only, no dirty haze
@@ -251,12 +241,9 @@ export const SHOWCASE_CONFIG = {
    * an HDR env) — broad blurred fixture response mainly on the floor, never a mirror.
    */
   materials: {
-    /** PBR simultaneous-light cap. The Phase-6 rig has exactly 8 scene lights (6 fixture spots + 1 hemi
-     * + 1 shadow directional), and the large continuous floor/wall meshes sit within range of ALL six
-     * fixtures plus the hemi and directional — so capping below 8 would deterministically drop real
-     * contributors and make a single mesh light unevenly. PBR defaults to 4; 8 is the exact light count,
-     * not a guess, and cannot be lower without losing even illumination across the court. */
-    maxSimultaneousLights: 8,
+    /** PBR simultaneous-light cap. Showcase now has just 2 scene lights (1 hemi + 1 directional key),
+     * so the PBR default of 4 is ample; no surface ever needs more than 2 simultaneously. */
+    maxSimultaneousLights: 4,
     // Phase 7: roughness ~0.40 (0.38–0.42 band) so the probe reflection is a BROAD blur, not a mirror;
     // environmentIntensity is the probe reflection STRENGTH — moderate on the floor, weaker than the
     // visible fixture source. (specularIntensity unchanged.)
@@ -265,7 +252,7 @@ export const SHOWCASE_CONFIG = {
     // none"); these env values are inert without a reflectionTexture and are kept only for completeness.
     wallPad: { roughness: 0.5, environmentIntensity: 0.0 },
     coverMat: { roughness: 0.48, environmentIntensity: 0.08 }, // tiny satin response
-    bleacher: { roughness: 0.6, environmentIntensity: 0.05 }, // less than the mats
+    bleacher: { roughness: 0.8, environmentIntensity: 0.05 }, // matte like Neutral — no glossy highlight
     wall: { roughness: 0.74, environmentIntensity: 0.0 }, // nearly none (no reflectionTexture wired)
     /** Ceiling is a StandardMaterial (no PBR roughness): expressed as a near-zero specular response,
      * the StandardMaterial equivalent of the 0.82–0.90 roughness intent. */
