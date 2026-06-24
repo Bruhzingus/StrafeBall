@@ -107,7 +107,10 @@ function matCollisionBoxesForState(activeMatSpecs, knockedOverMatIds, knockedOve
 exports.BLEACHER_LAYOUT = {
     tierCount: 5,
     tierRun: 0.54,
-    tierRise: 0.32,
+    // A little taller per step than the old 0.32 (1.6m total stand height) — now 1.9m total. This is the
+    // single shared source createBleacherCollisionBoxes() builds from, so the server's authoritative
+    // player/ball collision and the client's visual tiers/end-caps grow in lockstep automatically.
+    tierRise: 0.38,
     wallInset: 0.35,
     lengthScale: 1.45,
     backThickness: 0.16,

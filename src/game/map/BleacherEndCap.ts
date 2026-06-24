@@ -34,7 +34,7 @@ const FRAME_BEAM_SIZE = 0.05;
 const FRAME_BRACE_SIZE = 0.045;
 const FRAME_BAY_SIZE = TIER_RUN; // one bay per tier step, posts at every tier boundary
 
-const RAIL_HEIGHT_ABOVE_NOSING = 0.9;
+const RAIL_HEIGHT_ABOVE_NOSING = 1.1;
 const RAIL_MID_HEIGHT = RAIL_HEIGHT_ABOVE_NOSING * 0.5;
 const RAIL_TOP_RADIUS = 0.024;
 const RAIL_POST_RADIUS = 0.022;
