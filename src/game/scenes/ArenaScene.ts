@@ -826,7 +826,13 @@ export class ArenaScene {
     if (this.quickBot.update(dt, playerPos)) this.effects.botThrow();
     if (this.chargeBot.update(dt, playerPos)) this.effects.botThrow();
     this.practiceWall.update(dt);
-    this.lobbyModePortals.update(dt, this.player.root.position, this.input.isKeyDown(CONTROL_KEYS.interact), (mode) => this.openLobbyMode(mode));
+    this.lobbyModePortals.update(
+      dt,
+      this.player.root.position,
+      this.input.isKeyDown(CONTROL_KEYS.interact),
+      this.multiplayerOverlay.isMenuOpen(),
+      (mode) => this.openLobbyMode(mode)
+    );
 
     this.ballManager.setPickupHighlight(
       this.ballManager.findPickupLookCandidate(this.player.camera.globalPosition, cameraForward(this.player.camera))

@@ -1,0 +1,57 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<svg xmlns="http://www.w3.org/2000/svg" width="512" height="1024" viewBox="0 0 512 1024">
+  <!--
+    Portal interior art for the Private Match portal. Light-blue vertical gradient with a soft brighter
+    core, translucent curved ribbons for "liquid depth", a soft blue edge ring, and sparse white flecks.
+    No text. Symmetric top/bottom so a vertical UV scroll tiles seamlessly. Used as the emissive/alpha
+    source for the portal surface; motion comes from UV offsets.
+  -->
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#3f72cf"/>
+      <stop offset="0.25" stop-color="#5e94ee"/>
+      <stop offset="0.5" stop-color="#82b4ff"/>
+      <stop offset="0.75" stop-color="#5e94ee"/>
+      <stop offset="1" stop-color="#3f72cf"/>
+    </linearGradient>
+    <radialGradient id="core" cx="0.5" cy="0.5" r="0.55">
+      <stop offset="0" stop-color="#7fb0ff" stop-opacity="0.32"/>
+      <stop offset="0.6" stop-color="#5e94ee" stop-opacity="0.12"/>
+      <stop offset="1" stop-color="#3f72cf" stop-opacity="0"/>
+    </radialGradient>
+    <radialGradient id="edge" cx="0.5" cy="0.5" r="0.62">
+      <stop offset="0" stop-color="#3a6cff" stop-opacity="0"/>
+      <stop offset="0.78" stop-color="#3a6cff" stop-opacity="0"/>
+      <stop offset="0.93" stop-color="#bcd6ff" stop-opacity="0.40"/>
+      <stop offset="1" stop-color="#6f9bff" stop-opacity="0.10"/>
+    </radialGradient>
+  </defs>
+
+  <rect width="512" height="1024" fill="url(#bg)"/>
+  <rect width="512" height="1024" fill="url(#core)"/>
+
+  <g fill="none" stroke-linecap="round">
+    <path d="M120,40 C40,260 470,360 150,560 C-20,760 430,830 180,1000" stroke="#d6e6ff" stroke-opacity="0.18" stroke-width="26"/>
+    <path d="M360,30 C470,250 70,360 330,540 C520,720 120,820 300,1010" stroke="#2f63d0" stroke-opacity="0.16" stroke-width="34"/>
+    <path d="M250,10 C190,260 320,420 250,620 C190,820 310,900 250,1020" stroke="#eef5ff" stroke-opacity="0.16" stroke-width="16"/>
+    <path d="M60,120 C200,300 0,520 120,720 C200,860 80,940 140,1020" stroke="#3766c4" stroke-opacity="0.16" stroke-width="40"/>
+    <path d="M440,120 C300,320 512,520 400,720 C320,860 470,940 420,1020" stroke="#3766c4" stroke-opacity="0.16" stroke-width="40"/>
+  </g>
+
+  <rect width="512" height="1024" fill="url(#edge)"/>
+
+  <g fill="#f2f7ff">
+    <circle cx="150" cy="180" r="2.5" opacity="0.6"/>
+    <circle cx="360" cy="240" r="2" opacity="0.5"/>
+    <circle cx="250" cy="430" r="3" opacity="0.55"/>
+    <circle cx="120" cy="560" r="2" opacity="0.45"/>
+    <circle cx="400" cy="600" r="2.5" opacity="0.5"/>
+    <circle cx="300" cy="760" r="2" opacity="0.6"/>
+    <circle cx="180" cy="820" r="3" opacity="0.5"/>
+    <circle cx="330" cy="930" r="2" opacity="0.45"/>
+    <circle cx="220" cy="120" r="1.8" opacity="0.55"/>
+    <circle cx="90" cy="380" r="1.8" opacity="0.5"/>
+    <circle cx="420" cy="430" r="1.8" opacity="0.5"/>
+    <circle cx="270" cy="650" r="1.8" opacity="0.55"/>
+  </g>
+</svg>

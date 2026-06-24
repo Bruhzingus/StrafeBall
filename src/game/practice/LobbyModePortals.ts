@@ -1,4 +1,4 @@
-import { Color3, DynamicTexture, Material, Mesh, MeshBuilder, Scene, StandardMaterial, Vector3 } from '@babylonjs/core';
+import { Color3, DynamicTexture, Material, Mesh, MeshBuilder, Scene, StandardMaterial, Texture, Vector3 } from '@babylonjs/core';
 
 export type LobbyMode = '1v1' | '2v2';
 
@@ -12,32 +12,44 @@ interface ModeZoneDef {
   stationWidth: number;
 }
 
-interface ModeTheme {
-  main: Color3;
-  accent: Color3;
-  gold: Color3;
-  dark: Color3;
+interface SurfaceLayer {
+  mat: StandardMaterial;
+  tex: Texture;
+  baseEmissive: Color3;
+  vSpeed: number;
+  uSpeed: number;
+  uAmplitude: number;
 }
 
 interface ModeZone extends ModeZoneDef {
-  theme: ModeTheme;
-  padMaterial: StandardMaterial;
-  trimMaterial: StandardMaterial;
-  archMaterial: StandardMaterial;
-  energyMaterial: StandardMaterial;
-  energyMesh: Mesh;
-  promptFillMaterial: StandardMaterial;
-  promptFill: Mesh;
-  promptFillWidth: number;
+  surfaceLayers: SurfaceLayer[];
+  edgeMaterial: StandardMaterial;
+  edgeBaseEmissive: Color3;
+  statusMaterial: StandardMaterial;
+  statusBaseEmissive: Color3;
 }
 
 const HOLD_SECONDS = 0.65;
 const ACTIVATE_RADIUS = 2.7;
-const PROMPT_FILL_WIDTH = 0.84;
+const SURFACE_TEXTURE_URL = '/assets/textures/portal/portal_surface.svg';
+
+// Restrained school-gym magical-portal palette. Navy-charcoal frame metal, brushed cool-gray inner
+// trim, electric-blue edge energy, deep midnight-indigo surface. No yellow/gold, no cyan tubes.
+const PORTAL = {
+  frame: new Color3(0.12, 0.135, 0.2),
+  trim: new Color3(0.56, 0.59, 0.64),
+  plinth: new Color3(0.1, 0.11, 0.16),
+  edge: new Color3(0.3, 0.55, 1.0),
+  status: new Color3(0.18, 0.4, 0.8),
+  // Kept deliberately unsaturated-but-NOT-equal-channel: R well below G/B so the ACES tonemap + scene
+  // exposure can't clip this toward white the way a near-equal-RGB bright value would. surfaceBack is
+  // the deeper "blue" base layer; surfaceFront is the lighter "light blue" highlight layer on top.
+  surfaceBack: new Color3(0.1, 0.32, 0.82),
+  surfaceFront: new Color3(0.22, 0.5, 0.95)
+} as const;
 
 // A single unified private-match portal. Format (1v1 / 2v2) is a host setting chosen inside the
-// match menu when CREATING a room — there is no longer a separate portal per format. `mode` here is
-// just the default format the menu opens on; joining a room ignores it (code + name only).
+// match menu when CREATING a room. `mode` here is just the default format the menu opens on.
 const ZONES: ModeZoneDef[] = [
   {
     mode: '1v1',
@@ -76,7 +88,7 @@ export class LobbyModePortals {
       <div class="lobby-mode-prompt__eyebrow">Match Lobby</div>
       <div class="lobby-mode-prompt__title"></div>
       <div class="lobby-mode-prompt__subtitle"></div>
-      <div class="lobby-mode-prompt__hint"><span class="key">E</span> hold to open</div>
+      <div class="lobby-mode-prompt__hint"><span class="key">E</span> hold to enter</div>
       <div class="lobby-mode-prompt__bar"><div></div></div>
     `;
     document.getElementById('hud-root')?.appendChild(this.prompt);
@@ -86,12 +98,27 @@ export class LobbyModePortals {
     this.setPromptVisible(false);
   }
 
-  update(dt: number, playerPosition: Vector3, interactHeld: boolean, onActivate: (mode: LobbyMode) => void): void {
+  /**
+   * `menuOpen` is true while the match menu (the portal flow) is up. While it is, the hold is latched
+   * shut: the portal shows only idle motion and a still-held interact key cannot re-open the menu the
+   * instant it closes — re-arming requires a genuine release first (see the latch handling below).
+   */
+  update(dt: number, playerPosition: Vector3, interactHeld: boolean, menuOpen: boolean, onActivate: (mode: LobbyMode) => void): void {
     this.elapsed += dt;
 
     if (!this.enabled) {
       this.setPromptVisible(false);
       this.updateStationVisuals(null, 0);
+      return;
+    }
+
+    if (menuOpen) {
+      // The portal flow owns input right now. Keep the activation latched and hold timer drained so a
+      // held interact key can't immediately re-trigger when the menu closes; only idle motion plays.
+      this.activatedThisHold = true;
+      this.holdSeconds = 0;
+      this.setPromptVisible(false);
+      this.updateStationVisuals(this.activeMode, 0);
       return;
     }
 
@@ -139,271 +166,192 @@ export class LobbyModePortals {
   }
 
   private createZone(def: ModeZoneDef): void {
-    const theme = createTheme(def.mode);
     const cx = def.position.x;
     const cz = def.position.z;
-    // The portal is a free-standing glowing gateway: a base platform, a tall ring arch with an
-    // animated energy field, and a DOUBLE-SIDED info sign at eye level so it reads from either side.
-    const ringDiameter = 3.35;
-    const ringCenterY = 1.62;
-    const platformRadiusX = 2.0;
-    const platformDepth = 2.0;
-    const signWidth = 2.0;
-    const signHeight = 1.06;
 
-    const padMaterial = this.createSolidMaterial(`lobby_${def.mode}_pad_mat`, theme.main.scale(0.52), theme.accent.scale(0.08));
-    const trimMaterial = this.createSolidMaterial(`lobby_${def.mode}_trim_mat`, theme.gold.scale(0.86), theme.gold.scale(0.2));
-    const darkMaterial = this.createSolidMaterial(`lobby_${def.mode}_body_mat`, theme.dark, theme.main.scale(0.04));
-    const archMaterial = this.createSolidMaterial(`lobby_${def.mode}_arch_mat`, theme.main.scale(0.34), theme.accent.scale(0.55));
-    const promptFillMaterial = this.createSolidMaterial(`lobby_${def.mode}_prompt_fill_mat`, theme.accent, theme.accent.scale(0.55));
-    this.disposables.push(padMaterial, trimMaterial, darkMaterial, archMaterial, promptFillMaterial);
+    // The portal faces the court (+Z). Layers from back to front along Z: surface (deepest), edge
+    // energy, frame plane, inner trim, with the plinth/sign as solid props.
+    const zFrame = cz;
+    const zTrim = cz + 0.012;
+    const zEdge = cz - 0.01;
+    const zSurfaceFront = cz - 0.03;
+    const zSurfaceBack = cz - 0.06;
+    const zSign = cz + 0.02;
 
-    // --- Floor platform pad ---
-    const platform = MeshBuilder.CreateCylinder(`lobby_${def.mode}_platform`, { diameter: 1, height: 0.07, tessellation: 64 }, this.scene);
-    platform.scaling.set(platformRadiusX, 1, platformDepth * 0.55);
-    platform.position.set(cx, 0.035, cz);
-    platform.material = darkMaterial;
-    this.addMesh(platform, true);
+    const baseY = 0.2;        // opening sits on the plinth top
+    const openingWidth = 1.15;
+    const straightHeight = 1.5;
+    const archRadius = openingWidth / 2;
+    const openingTopY = baseY + straightHeight + archRadius;
 
-    const inset = MeshBuilder.CreateCylinder(`lobby_${def.mode}_platform_inset`, { diameter: 1, height: 0.03, tessellation: 64 }, this.scene);
-    inset.scaling.set(platformRadiusX * 0.82, 1, platformDepth * 0.46);
-    inset.position.set(cx, 0.085, cz);
-    inset.material = padMaterial;
-    this.addMesh(inset, true);
+    // --- Materials ---
+    const frameMat = this.solidLit('portal_frame_mat', PORTAL.frame, new Color3(0.16, 0.17, 0.19), 26);
+    const trimMat = this.solidLit('portal_trim_mat', PORTAL.trim, new Color3(0.4, 0.42, 0.46), 64);
+    trimMat.emissiveColor = new Color3(0.05, 0.055, 0.07);
+    const plinthMat = this.solidLit('portal_plinth_mat', PORTAL.plinth, new Color3(0.12, 0.13, 0.15), 22);
 
-    const padRing = MeshBuilder.CreateTorus(`lobby_${def.mode}_pad_ring`, { diameter: platformRadiusX * 1.78, thickness: 0.055, tessellation: 72 }, this.scene);
-    padRing.position.set(cx, 0.1, cz);
-    padRing.scaling.z = (platformDepth * 0.92) / (platformRadiusX * 1.78);
-    padRing.material = trimMaterial;
-    this.addMesh(padRing, true);
+    const edgeMat = this.emissiveMaterial('portal_edge_mat', PORTAL.edge.scale(0.6));
+    const statusMat = this.emissiveMaterial('portal_status_mat', PORTAL.status.scale(0.45));
 
-    // --- Portal arch ring (the glowing gateway frame), stood vertical to face the player ---
-    const arch = MeshBuilder.CreateTorus(`lobby_${def.mode}_arch`, { diameter: ringDiameter, thickness: 0.22, tessellation: 64 }, this.scene);
-    arch.rotation.x = Math.PI / 2;
-    arch.position.set(cx, ringCenterY, cz);
-    arch.material = archMaterial;
-    this.addMesh(arch, true);
+    // --- Plinth (small navy-charcoal block) + cap ---
+    const plinth = MeshBuilder.CreateBox(`portal_${def.mode}_plinth`, { width: 1.5, height: baseY, depth: 0.56 }, this.scene);
+    plinth.position.set(cx, baseY / 2, cz);
+    plinth.material = plinthMat;
+    this.addMesh(plinth, true);
 
-    const archInner = MeshBuilder.CreateTorus(`lobby_${def.mode}_arch_inner`, { diameter: ringDiameter - 0.32, thickness: 0.05, tessellation: 64 }, this.scene);
-    archInner.rotation.x = Math.PI / 2;
-    archInner.position.set(cx, ringCenterY, cz);
-    archInner.material = trimMaterial;
-    this.addMesh(archInner, true);
+    const cap = MeshBuilder.CreateBox(`portal_${def.mode}_plinth_cap`, { width: 1.58, height: 0.05, depth: 0.62 }, this.scene);
+    cap.position.set(cx, baseY + 0.01, cz);
+    cap.material = trimMat;
+    this.addMesh(cap, true);
 
-    // Two grounded feet where the ring meets the platform, so the gateway reads as anchored.
-    for (const side of [-1, 1] as const) {
-      const foot = MeshBuilder.CreateBox(`lobby_${def.mode}_foot_${side}`, { width: 0.4, height: 0.5, depth: 0.46 }, this.scene);
-      foot.position.set(cx + side * (ringDiameter * 0.46), 0.25, cz);
-      foot.material = darkMaterial;
-      this.addMesh(foot, true);
-      const footCap = MeshBuilder.CreateBox(`lobby_${def.mode}_foot_cap_${side}`, { width: 0.48, height: 0.06, depth: 0.54 }, this.scene);
-      footCap.position.set(cx + side * (ringDiameter * 0.46), 0.51, cz);
-      footCap.material = trimMaterial;
-      this.addMesh(footCap, true);
+    // One subtle status panel on the plinth front face.
+    const statusPanel = MeshBuilder.CreatePlane(`portal_${def.mode}_status`, { width: 0.66, height: 0.08 }, this.scene);
+    statusPanel.position.set(cx, baseY * 0.5, cz + 0.29);
+    statusPanel.material = statusMat;
+    this.addMesh(statusPanel, true);
+
+    // --- Portal surface: two scrolling indigo layers (rect body + arched top), behind the frame ---
+    const surfaceLayers: SurfaceLayer[] = [];
+    for (const [name, z, alpha, base, vSpeed, uSpeed, uAmp] of [
+      ['back', zSurfaceBack, 0.95, PORTAL.surfaceBack, 0.05, 0.21, 0.03],
+      ['front', zSurfaceFront, 0.5, PORTAL.surfaceFront, -0.085, 0.33, 0.05]
+    ] as const) {
+      const tex = new Texture(SURFACE_TEXTURE_URL, this.scene, false, false, Texture.TRILINEAR_SAMPLINGMODE);
+      tex.hasAlpha = false;
+      const mat = new StandardMaterial(`portal_${def.mode}_surface_${name}_mat`, this.scene);
+      mat.diffuseColor = new Color3(0, 0, 0);
+      mat.emissiveTexture = tex;
+      mat.emissiveColor = base.clone();
+      mat.disableLighting = true;
+      mat.specularColor = new Color3(0, 0, 0);
+      mat.alpha = alpha;
+      mat.transparencyMode = Material.MATERIAL_ALPHABLEND;
+      mat.backFaceCulling = false;
+      this.disposables.push(tex, mat);
+
+      const surface = this.buildArchedSurface(`portal_${def.mode}_surface_${name}`, cx, z, baseY, openingWidth, straightHeight);
+      surface.material = mat;
+      this.addMesh(surface, true);
+
+      surfaceLayers.push({ mat, tex, baseEmissive: base.clone(), vSpeed, uSpeed, uAmplitude: uAmp });
     }
 
-    // --- Animated energy field that fills the ring behind the sign (translucent swirl) ---
-    const energyTexture = this.createEnergyTexture(`lobby_${def.mode}_energy_tex`, theme);
-    const energyMaterial = new StandardMaterial(`lobby_${def.mode}_energy_mat`, this.scene);
-    energyMaterial.diffuseTexture = energyTexture;
-    energyMaterial.emissiveTexture = energyTexture;
-    energyMaterial.emissiveColor = new Color3(1, 1, 1);
-    energyMaterial.useAlphaFromDiffuseTexture = true;
-    energyMaterial.disableLighting = true;
-    energyMaterial.specularColor = new Color3(0, 0, 0);
-    energyMaterial.alpha = 0.62;
-    energyMaterial.transparencyMode = Material.MATERIAL_ALPHABLEND;
-    energyMaterial.backFaceCulling = false;
-    this.disposables.push(energyTexture, energyMaterial);
+    // --- Thin electric-blue edge energy hugging the opening (brightens on proximity) ---
+    const edgeTube = MeshBuilder.CreateTube(`portal_${def.mode}_edge`, {
+      path: archPath(cx, zEdge, baseY, openingWidth - 0.02, straightHeight),
+      radius: 0.022,
+      tessellation: 8,
+      cap: Mesh.CAP_ALL
+    }, this.scene);
+    edgeTube.material = edgeMat;
+    this.addMesh(edgeTube, true);
 
-    const energy = MeshBuilder.CreateDisc(`lobby_${def.mode}_energy`, { radius: (ringDiameter - 0.34) * 0.5, tessellation: 64 }, this.scene);
-    energy.position.set(cx, ringCenterY, cz);
-    energy.material = energyMaterial;
-    energy.isPickable = false;
-    this.addMesh(energy, false); // not frozen — it spins for the portal effect
+    // --- Inner trim (brushed cool gray) ---
+    const trimTube = MeshBuilder.CreateTube(`portal_${def.mode}_trim`, {
+      path: archPath(cx, zTrim, baseY, openingWidth - 0.05, straightHeight - 0.02),
+      radius: 0.03,
+      tessellation: 8,
+      cap: Mesh.CAP_ALL
+    }, this.scene);
+    trimTube.material = trimMat;
+    this.addMesh(trimTube, true);
 
-    // --- Double-sided info sign (the same explainer texture on both faces) ---
-    const faceTexture = this.createStationTexture(`lobby_${def.mode}_station_tex`, def, theme);
-    const faceMaterial = new StandardMaterial(`lobby_${def.mode}_face_mat`, this.scene);
-    faceMaterial.diffuseTexture = faceTexture;
-    faceMaterial.emissiveTexture = faceTexture;
-    faceMaterial.emissiveColor = new Color3(1, 1, 1);
-    faceMaterial.disableLighting = true;
-    faceMaterial.specularColor = new Color3(0, 0, 0);
-    this.disposables.push(faceTexture, faceMaterial);
+    // --- Main arched frame (navy-charcoal metal) ---
+    const frameTube = MeshBuilder.CreateTube(`portal_${def.mode}_frame`, {
+      path: archPath(cx, zFrame, baseY, openingWidth, straightHeight),
+      radius: 0.08,
+      tessellation: 10,
+      cap: Mesh.CAP_ALL
+    }, this.scene);
+    frameTube.material = frameMat;
+    this.addMesh(frameTube, true);
 
-    const frameThickness = 0.05;
-    for (const [name, side] of [['front', 1], ['back', -1]] as const) {
-      const face = MeshBuilder.CreatePlane(`lobby_${def.mode}_face_${name}`, { width: signWidth, height: signHeight }, this.scene);
-      face.position.set(cx, ringCenterY, cz + side * 0.07);
-      if (side < 0) face.rotation.y = Math.PI; // flip so the back reads correctly, not mirrored
-      face.material = faceMaterial;
-      face.isPickable = false;
-      this.addMesh(face, true);
+    // --- "PRIVATE MATCH" sign above the arch (painted once, never per-frame) ---
+    const signTexture = this.createSignTexture(`portal_${def.mode}_sign_tex`, def.title);
+    const signMat = new StandardMaterial(`portal_${def.mode}_sign_mat`, this.scene);
+    signMat.diffuseTexture = signTexture;
+    signMat.emissiveTexture = signTexture;
+    signMat.emissiveColor = new Color3(0.92, 0.95, 1.0);
+    signMat.opacityTexture = signTexture;
+    signMat.disableLighting = true;
+    signMat.specularColor = new Color3(0, 0, 0);
+    signMat.backFaceCulling = false;
+    signMat.transparencyMode = Material.MATERIAL_ALPHABLEND;
+    this.disposables.push(signTexture, signMat);
 
-      // A slim glowing frame around each face.
-      const horiz = [signHeight * 0.5 + frameThickness, -(signHeight * 0.5 + frameThickness)];
-      for (const y of horiz) {
-        const bar = MeshBuilder.CreateBox(`lobby_${def.mode}_frame_${name}_h_${y > 0 ? 'top' : 'bot'}`, { width: signWidth + frameThickness * 2, height: frameThickness, depth: 0.04 }, this.scene);
-        bar.position.set(cx, ringCenterY + y, cz + side * 0.07);
-        bar.material = trimMaterial;
-        this.addMesh(bar, true);
-      }
-      for (const xSide of [-1, 1] as const) {
-        const bar = MeshBuilder.CreateBox(`lobby_${def.mode}_frame_${name}_v_${xSide}`, { width: frameThickness, height: signHeight + frameThickness * 2, depth: 0.04 }, this.scene);
-        bar.position.set(cx + xSide * (signWidth * 0.5 + frameThickness), ringCenterY, cz + side * 0.07);
-        bar.material = trimMaterial;
-        this.addMesh(bar, true);
-      }
-    }
-
-    // --- Floor "HOLD E" prompt + progress fill (kept from before) ---
-    const promptTexture = this.createPromptTexture(`lobby_${def.mode}_prompt_tex`, def.queueLabel, theme);
-    const promptMaterial = new StandardMaterial(`lobby_${def.mode}_prompt_mat`, this.scene);
-    promptMaterial.diffuseTexture = promptTexture;
-    promptMaterial.emissiveTexture = promptTexture;
-    promptMaterial.emissiveColor = new Color3(1, 1, 1);
-    promptMaterial.disableLighting = true;
-    promptMaterial.specularColor = new Color3(0, 0, 0);
-    promptMaterial.backFaceCulling = false;
-    this.disposables.push(promptTexture, promptMaterial);
-
-    const prompt = MeshBuilder.CreatePlane(`lobby_${def.mode}_prompt`, { width: 1.12, height: 0.3 }, this.scene);
-    prompt.rotation.x = Math.PI / 2.35; // lay it toward the floor so an approaching player reads it
-    prompt.position.set(cx, 0.16, cz + platformDepth * 0.5);
-    prompt.material = promptMaterial;
-    prompt.isPickable = false;
-    this.addMesh(prompt, true);
-
-    const promptFill = MeshBuilder.CreatePlane(`lobby_${def.mode}_prompt_progress`, { width: PROMPT_FILL_WIDTH, height: 0.03 }, this.scene);
-    promptFill.rotation.x = Math.PI / 2.35;
-    promptFill.position.set(cx - PROMPT_FILL_WIDTH * 0.5, 0.116, cz + platformDepth * 0.5 + 0.12);
-    promptFill.scaling.x = 0;
-    promptFill.material = promptFillMaterial;
-    promptFill.isPickable = false;
-    this.addMesh(promptFill, false);
+    const sign = MeshBuilder.CreatePlane(`portal_${def.mode}_sign`, { width: 1.12, height: 0.27 }, this.scene);
+    sign.position.set(cx, openingTopY + 0.2, zSign);
+    sign.material = signMat;
+    this.addMesh(sign, true);
 
     this.zones.push({
       ...def,
-      theme,
-      padMaterial,
-      trimMaterial,
-      archMaterial,
-      energyMaterial,
-      energyMesh: energy,
-      promptFillMaterial,
-      promptFill,
-      promptFillWidth: PROMPT_FILL_WIDTH
+      surfaceLayers,
+      edgeMaterial: edgeMat,
+      edgeBaseEmissive: PORTAL.edge.clone(),
+      statusMaterial: statusMat,
+      statusBaseEmissive: PORTAL.status.clone()
     });
   }
 
-  /** Radial energy texture (glow + curved spokes) so the spinning portal field reads as motion. */
-  private createEnergyTexture(name: string, theme: ModeTheme): DynamicTexture {
-    const size = 256;
-    const tex = new DynamicTexture(name, { width: size, height: size }, this.scene, true);
+  /** Flat arched surface = a rectangle body + a half-disc top, merged into one mesh (faces +Z). */
+  private buildArchedSurface(name: string, cx: number, cz: number, baseY: number, width: number, straightHeight: number): Mesh {
+    const radius = width / 2;
+    const body = MeshBuilder.CreatePlane(`${name}_body`, { width, height: straightHeight }, this.scene);
+    body.position.set(cx, baseY + straightHeight / 2, cz);
+
+    const dome = MeshBuilder.CreateDisc(`${name}_dome`, { radius, tessellation: 28, arc: 0.5 }, this.scene);
+    dome.position.set(cx, baseY + straightHeight, cz);
+
+    const merged = Mesh.MergeMeshes([body, dome], true, true, undefined, false, false);
+    if (!merged) {
+      body.name = name;
+      return body;
+    }
+    merged.name = name;
+    return merged;
+  }
+
+  private createSignTexture(name: string, title: string): DynamicTexture {
+    const tex = new DynamicTexture(name, { width: 512, height: 128 }, this.scene, true);
     tex.hasAlpha = true;
-    const ctx = tex.getContext();
-    ctx.clearRect(0, 0, size, size);
-    const c = size / 2;
+    const ctx = tex.getContext() as CanvasRenderingContext2D;
+    ctx.clearRect(0, 0, 512, 128);
 
-    const grad = ctx.createRadialGradient(c, c, 6, c, c, c);
-    grad.addColorStop(0, colorToRgba(theme.accent.scale(1.5), 0.95));
-    grad.addColorStop(0.45, colorToRgba(theme.accent, 0.55));
-    grad.addColorStop(0.82, colorToRgba(theme.main.scale(1.3), 0.24));
-    grad.addColorStop(1, colorToRgba(theme.main, 0));
-    ctx.fillStyle = grad;
-    ctx.beginPath();
-    ctx.arc(c, c, c, 0, Math.PI * 2);
+    // Restrained navy plate with a soft blue accent underline — white text, no arcade gold.
+    ctx.fillStyle = 'rgba(10, 16, 38, 0.92)';
+    roundedRect(ctx, 14, 22, 484, 84, 16);
     ctx.fill();
-
-    ctx.strokeStyle = colorToRgba(theme.gold, 0.3);
+    ctx.strokeStyle = 'rgba(120, 160, 255, 0.55)';
     ctx.lineWidth = 3;
-    for (let i = 0; i < 7; i += 1) {
-      const a = (i / 7) * Math.PI * 2;
-      ctx.beginPath();
-      ctx.moveTo(c, c);
-      ctx.quadraticCurveTo(
-        c + Math.cos(a + 0.6) * size * 0.26,
-        c + Math.sin(a + 0.6) * size * 0.26,
-        c + Math.cos(a) * size * 0.46,
-        c + Math.sin(a) * size * 0.46
-      );
-      ctx.stroke();
-    }
-    tex.update(true);
-    return tex;
-  }
+    roundedRect(ctx, 14, 22, 484, 84, 16);
+    ctx.stroke();
 
-  private createStationTexture(name: string, def: ModeZoneDef, theme: ModeTheme): DynamicTexture {
-    const tex = new DynamicTexture(name, { width: 900, height: 520 }, this.scene, true);
-    tex.hasAlpha = false;
-    const ctx = tex.getContext();
-    ctx.clearRect(0, 0, 900, 520);
-
-    ctx.fillStyle = colorToHex(theme.dark);
-    ctx.fillRect(0, 0, 900, 520);
-
-    const panelGradient = ctx.createLinearGradient(0, 0, 900, 520);
-    panelGradient.addColorStop(0, colorToRgba(theme.main, 0.28));
-    panelGradient.addColorStop(0.54, colorToRgba(theme.dark, 0.98));
-    panelGradient.addColorStop(1, colorToRgba(theme.main, 0.18));
-    ctx.fillStyle = panelGradient;
-    ctx.fillRect(0, 0, 900, 520);
-
-    ctx.fillStyle = colorToRgba(theme.gold, 0.88);
-    ctx.fillRect(0, 0, 900, 12);
-    ctx.fillRect(0, 508, 900, 12);
-    ctx.fillStyle = colorToRgba(theme.accent, 0.42);
-    ctx.fillRect(46, 52, 808, 4);
-    ctx.fillRect(46, 462, 808, 4);
-
-    ctx.fillStyle = colorToRgba(theme.accent, 0.08);
-    for (let i = 0; i < 9; i += 1) {
-      ctx.fillRect(60 + i * 30, 88, 14, 54);
-      ctx.fillRect(826 - i * 30, 376, 14, 54);
-    }
-
-    drawCentered(ctx, 'STRAFEBALL MATCH', 82, '800 26px Arial', '#fff4ce');
-    drawCentered(ctx, def.title, 206, '900 82px Arial', colorToHex(theme.accent));
-    drawCentered(ctx, def.subtitle.toUpperCase(), 288, '800 36px Arial', '#fff8dc');
-    drawCentered(ctx, def.helper.toUpperCase(), 342, '700 24px Arial', '#d8e7ff');
-
-    ctx.fillStyle = colorToRgba(theme.gold, 0.9);
-    roundedRect(ctx, 318, 392, 264, 58, 9);
-    ctx.fill();
-    drawCentered(ctx, 'HOLD  E', 429, '900 36px Arial', '#07111d');
+    drawCentered(ctx, title, 60, '900 40px Arial', '#eef3ff');
+    ctx.fillStyle = 'rgba(90, 140, 255, 0.85)';
+    ctx.fillRect(176, 86, 160, 5);
 
     tex.update(true);
     return tex;
   }
 
-  private createPromptTexture(name: string, queueLabel: string, theme: ModeTheme): DynamicTexture {
-    const tex = new DynamicTexture(name, { width: 384, height: 128 }, this.scene, true);
-    tex.hasAlpha = false;
-    const ctx = tex.getContext();
-    ctx.clearRect(0, 0, 384, 128);
-    ctx.fillStyle = colorToHex(theme.dark);
-    ctx.fillRect(0, 0, 384, 128);
-    ctx.fillStyle = colorToRgba(theme.gold, 0.92);
-    ctx.fillRect(0, 0, 384, 10);
-    ctx.fillRect(0, 118, 384, 10);
-    drawCentered(ctx, queueLabel, 42, '800 24px Arial', colorToHex(theme.accent), 192);
-    drawCentered(ctx, 'HOLD  E', 90, '900 42px Arial', '#ffffff', 192);
-    tex.update(true);
-    return tex;
-  }
-
-  private createSolidMaterial(name: string, diffuse: Color3, emissive: Color3, alpha?: number): StandardMaterial {
+  private solidLit(name: string, diffuse: Color3, specular: Color3, specularPower: number): StandardMaterial {
     const material = new StandardMaterial(name, this.scene);
-    material.diffuseColor = diffuse;
-    material.emissiveColor = emissive;
-    material.specularColor = new Color3(0.08, 0.08, 0.08);
-    if (alpha !== undefined) {
-      material.alpha = alpha;
-      material.transparencyMode = Material.MATERIAL_ALPHABLEND;
-      material.backFaceCulling = false;
-      material.specularColor = new Color3(0, 0, 0);
-    }
+    material.diffuseColor = diffuse.clone();
+    material.specularColor = specular.clone();
+    material.specularPower = specularPower;
+    material.emissiveColor = new Color3(0, 0, 0);
+    this.disposables.push(material);
+    return material;
+  }
+
+  private emissiveMaterial(name: string, emissive: Color3): StandardMaterial {
+    const material = new StandardMaterial(name, this.scene);
+    material.diffuseColor = new Color3(0, 0, 0);
+    material.emissiveColor = emissive.clone();
+    material.specularColor = new Color3(0, 0, 0);
+    material.disableLighting = true;
+    this.disposables.push(material);
     return material;
   }
 
@@ -443,32 +391,32 @@ export class LobbyModePortals {
     this.setPromptVisible(true);
   }
 
+  /**
+   * Idle: slow interior scroll only. Player nearby: the thin blue edge brightens slightly. Holding E:
+   * a small extra edge lift (the clear progress feedback lives in the HTML prompt bar). The portal never
+   * flashes or out-glows the ceiling fixtures / scoreboard.
+   */
   private updateStationVisuals(activeMode: LobbyMode | null, activeProgress: number): void {
-    const pulse = 0.5 + 0.5 * Math.sin(this.elapsed * 4.2);
-    const slowPulse = 0.5 + 0.5 * Math.sin(this.elapsed * 1.5);
+    const slow = 0.5 + 0.5 * Math.sin(this.elapsed * 1.3);
     for (const zone of this.zones) {
       const active = zone.mode === activeMode;
       const proximity = active ? 1 : 0;
       const progress = active ? Math.max(0, Math.min(1, activeProgress)) : 0;
-      const padGlow = 0.12 + proximity * (0.12 + pulse * 0.08) + progress * 0.18;
-      const trimGlow = 0.28 + proximity * (0.18 + pulse * 0.14) + progress * 0.38;
 
-      zone.padMaterial.emissiveColor.copyFrom(zone.theme.accent.scale(padGlow));
-      zone.trimMaterial.emissiveColor.copyFrom(zone.theme.gold.scale(trimGlow));
-      zone.promptFillMaterial.emissiveColor.copyFrom(zone.theme.accent.scale(active ? 0.55 + progress * 0.45 : 0.25));
+      for (const layer of zone.surfaceLayers) {
+        layer.tex.vOffset = (this.elapsed * layer.vSpeed) % 1;
+        layer.tex.uOffset = Math.sin(this.elapsed * layer.uSpeed) * layer.uAmplitude;
+        // Capped well under 1.0: pushed near-1.0 across all three channels, the scene's ACES tonemap +
+        // exposure lift clips it toward flat white instead of a readable blue.
+        const glow = 0.55 + slow * 0.08 + proximity * 0.08;
+        layer.mat.emissiveColor.copyFrom(layer.baseEmissive.scale(glow));
+      }
 
-      // The gateway ring breathes with a slow ambient pulse and brightens as the player engages it.
-      const archGlow = 0.42 + slowPulse * 0.16 + proximity * (0.2 + pulse * 0.12) + progress * 0.4;
-      zone.archMaterial.emissiveColor.copyFrom(zone.theme.accent.scale(archGlow));
+      const edgeGlow = 0.5 + slow * 0.12 + proximity * 0.4 + progress * 0.2;
+      zone.edgeMaterial.emissiveColor.copyFrom(zone.edgeBaseEmissive.scale(edgeGlow));
 
-      // The energy field slowly swirls (faster while activating) and glows brighter up close.
-      zone.energyMesh.rotation.z = this.elapsed * (0.5 + progress * 1.4);
-      const energyGlow = 0.7 + slowPulse * 0.2 + proximity * 0.25 + progress * 0.5;
-      zone.energyMaterial.emissiveColor.copyFrom(zone.theme.accent.scale(energyGlow));
-      zone.energyMaterial.alpha = 0.5 + slowPulse * 0.12 + proximity * 0.15;
-
-      zone.promptFill.scaling.x = progress;
-      zone.promptFill.position.x = zone.position.x - zone.promptFillWidth * (1 - progress) * 0.5;
+      const statusGlow = 0.4 + slow * 0.1 + proximity * 0.45;
+      zone.statusMaterial.emissiveColor.copyFrom(zone.statusBaseEmissive.scale(statusGlow));
     }
   }
 
@@ -489,50 +437,33 @@ export class LobbyModePortals {
   }
 }
 
-function createTheme(mode: LobbyMode): ModeTheme {
-  if (mode === '1v1') {
-    return {
-      main: new Color3(0.06, 0.28, 0.64),
-      accent: new Color3(0.32, 0.9, 1.0),
-      gold: new Color3(1.0, 0.75, 0.16),
-      dark: new Color3(0.025, 0.055, 0.11)
-    };
+/**
+ * Vertical-plane path tracing a tall arched doorway opening: up the left side, over a semicircular top,
+ * down the right side. Returned bottom-open (the plinth caps it). Tangents are continuous at the spring
+ * line so a tube swept along it has no kink.
+ */
+function archPath(cx: number, cz: number, baseY: number, openingWidth: number, straightHeight: number): Vector3[] {
+  const r = openingWidth / 2;
+  const springY = baseY + straightHeight;
+  const segments = 12;
+  const path: Vector3[] = [new Vector3(cx - r, baseY, cz)];
+  for (let i = 0; i <= segments; i += 1) {
+    const a = Math.PI - (i / segments) * Math.PI; // π (left) → 0 (right), over the top
+    path.push(new Vector3(cx + Math.cos(a) * r, springY + Math.sin(a) * r, cz));
   }
-  return {
-    main: new Color3(0.45, 0.18, 0.045),
-    accent: new Color3(1.0, 0.58, 0.15),
-    gold: new Color3(1.0, 0.83, 0.24),
-    dark: new Color3(0.055, 0.055, 0.07)
-  };
+  path.push(new Vector3(cx + r, baseY, cz));
+  return path;
 }
 
-function drawCentered(
-  ctx: ReturnType<DynamicTexture['getContext']>,
-  text: string,
-  y: number,
-  font: string,
-  color: string,
-  centerX = 450
-): void {
-  const textCtx = ctx as ReturnType<DynamicTexture['getContext']> & {
-    textAlign: CanvasTextAlign;
-    textBaseline: CanvasTextBaseline;
-  };
+function drawCentered(ctx: CanvasRenderingContext2D, text: string, y: number, font: string, color: string): void {
   ctx.font = font;
   ctx.fillStyle = color;
-  textCtx.textAlign = 'center';
-  textCtx.textBaseline = 'middle';
-  ctx.fillText(text, centerX, y);
+  ctx.textAlign = 'center';
+  ctx.textBaseline = 'middle';
+  ctx.fillText(text, 256, y);
 }
 
-function roundedRect(
-  ctx: ReturnType<DynamicTexture['getContext']>,
-  x: number,
-  y: number,
-  width: number,
-  height: number,
-  radius: number
-): void {
+function roundedRect(ctx: CanvasRenderingContext2D, x: number, y: number, width: number, height: number, radius: number): void {
   ctx.beginPath();
   ctx.moveTo(x + radius, y);
   ctx.lineTo(x + width - radius, y);
@@ -544,23 +475,4 @@ function roundedRect(
   ctx.lineTo(x, y + radius);
   ctx.quadraticCurveTo(x, y, x + radius, y);
   ctx.closePath();
-}
-
-function colorToHex(color: Color3): string {
-  const r = channelToHex(color.r);
-  const g = channelToHex(color.g);
-  const b = channelToHex(color.b);
-  return `#${r}${g}${b}`;
-}
-
-function colorToRgba(color: Color3, alpha: number): string {
-  const r = Math.max(0, Math.min(255, Math.round(color.r * 255)));
-  const g = Math.max(0, Math.min(255, Math.round(color.g * 255)));
-  const b = Math.max(0, Math.min(255, Math.round(color.b * 255)));
-  return `rgba(${r}, ${g}, ${b}, ${alpha})`;
-}
-
-function channelToHex(value: number): string {
-  const n = Math.max(0, Math.min(255, Math.round(value * 255)));
-  return n.toString(16).padStart(2, '0');
 }

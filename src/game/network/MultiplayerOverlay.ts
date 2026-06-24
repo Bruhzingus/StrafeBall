@@ -78,7 +78,7 @@ export class MultiplayerOverlay {
           <input class="multiplayer-name" maxlength="24" placeholder="Enter name" />
         </label>
 
-        <div class="multiplayer-name-warning">Enter a name before joining a game</div>
+        <div class="multiplayer-name-warning"><span class="multiplayer-name-warning__icon" aria-hidden="true">!</span><span>Enter your name to continue</span></div>
 
         <div class="multiplayer-step-label">1. SELECT MODE</div>
 
@@ -102,21 +102,21 @@ export class MultiplayerOverlay {
           </div>
         </div>
 
-        <div class="multiplayer-step-label">2. CHOOSE AN OPTION</div>
+        <div class="multiplayer-step-label">2. CREATE A MATCH OR ENTER A CODE</div>
 
         <div class="multiplayer-launch">
           <div class="multiplayer-launch-section">
-            <div class="multiplayer-launch-option">
-              <div class="multiplayer-launch-option__title">CREATE ROOM</div>
-              <div class="multiplayer-launch-option__desc">Create a new room with the selected mode and lobby settings.</div>
+            <div class="multiplayer-launch-option multiplayer-launch-option--create">
+              <div class="multiplayer-launch-option__title">CREATE A MATCH</div>
+              <div class="multiplayer-launch-option__desc">Start a new room with the selected mode and lobby settings.</div>
               <button class="multiplayer-create">CREATE ROOM</button>
             </div>
             <div class="multiplayer-launch-divider">OR</div>
-            <div class="multiplayer-launch-option">
-              <div class="multiplayer-launch-option__title">JOIN WITH CODE</div>
-              <div class="multiplayer-launch-option__desc">Join an existing room using a room code.</div>
+            <div class="multiplayer-launch-option multiplayer-launch-option--join">
+              <div class="multiplayer-launch-option__title">ENTER A CODE</div>
+              <div class="multiplayer-launch-option__desc">Join a friend's room with their room code.</div>
               <div class="multiplayer-join-row">
-                <input class="multiplayer-join-code" placeholder="Room code" aria-label="Room code" />
+                <input class="multiplayer-join-code" placeholder="Enter room code" aria-label="Room code" />
                 <button class="multiplayer-join">JOIN</button>
               </div>
             </div>
@@ -204,8 +204,14 @@ export class MultiplayerOverlay {
     this.root.addEventListener('click', this.onRootClick);
     for (const button of this.modeButtons) button.addEventListener('click', this.onModeClick);
     window.addEventListener('keyup', this.onPortalFocusKeyUp);
+    window.addEventListener('keydown', this.onPortalKeyDown);
     document.body.appendChild(this.root);
     this.update();
+  }
+
+  /** True while the match menu (or its settings sub-panel) is open — the portal flow owns input. */
+  isMenuOpen(): boolean {
+    return this.modalOpen || this.settingsOpen;
   }
 
   dispose(): void {
@@ -222,6 +228,7 @@ export class MultiplayerOverlay {
     this.root.removeEventListener('click', this.onRootClick);
     for (const button of this.modeButtons) button.removeEventListener('click', this.onModeClick);
     window.removeEventListener('keyup', this.onPortalFocusKeyUp);
+    window.removeEventListener('keydown', this.onPortalKeyDown);
     this.root.remove();
   }
 
@@ -253,6 +260,7 @@ export class MultiplayerOverlay {
     if (liveMatch && !this.wasLiveMatch) {
       this.modalOpen = false;
       this.settingsOpen = false;
+      this.blurInputs();
     } else if (!liveMatch && this.wasLiveMatch && matchStatus === 'warmup') {
       // A live→lobby return (early-end vote passed): pop the menu so the host can reconfigure + restart.
       this.modalOpen = true;
@@ -371,8 +379,37 @@ export class MultiplayerOverlay {
     this.modalOpen = false;
     this.settingsOpen = false;
     this.awaitingInteractReleaseFocus = false;
+    this.blurInputs();
     this.hideFullscreenPrompt();
     this.update();
+  };
+
+  /**
+   * Drop focus from the name/code fields so closing the menu hands keyboard control back to gameplay.
+   * Without this a still-focused text field would keep swallowing key presses as text entry, so
+   * gameplay wouldn't resume even after the overlay is hidden.
+   */
+  private blurInputs(): void {
+    this.nameInput.blur();
+    this.joinInput.blur();
+    const active = document.activeElement;
+    if (active instanceof HTMLElement && this.root.contains(active)) active.blur();
+  }
+
+  // Escape closes the portal overlay only (settings sub-panel first, then the menu). It never reaches
+  // gameplay. Other keys are left to the focused field / the gameplay input guard in InputManager.
+  private onPortalKeyDown = (event: KeyboardEvent): void => {
+    if (event.key !== 'Escape') return;
+    if (this.settingsOpen) {
+      event.preventDefault();
+      this.settingsOpen = false;
+      this.update();
+      return;
+    }
+    if (this.modalOpen) {
+      event.preventDefault();
+      this.close();
+    }
   };
 
   private copyRoomCode = (event?: MouseEvent): void => {

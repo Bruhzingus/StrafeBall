@@ -44,6 +44,11 @@ export class InputManager {
     if (suppressed && document.pointerLockElement === this.canvas) {
       document.exitPointerLock?.();
     }
+    // Clear every held key, edge latch and mouse state on BOTH transitions: opening a menu (or focusing
+    // a text field) must not leave gameplay keys stuck down, and closing it must not carry previously
+    // held keys back into play — gameplay only resumes on a fresh press. Pairs with the keydown/keyup
+    // guard below, which stops new presses being recorded as gameplay while a menu/text field owns input.
+    this.clearTransientInputState();
     this.syncLockOverlayVisibility();
   }
 
@@ -153,8 +158,13 @@ export class InputManager {
   }
 
   private onKeyDown = (event: KeyboardEvent): void => {
+    // While a menu owns input (suppressed) or a text field is focused, the keystroke belongs to the UI,
+    // not gameplay: do NOT record it as a gameplay key (and don't preventDefault, so typing works). This
+    // is the gameplay-layer guard the spec requires — preventing browser defaults alone wouldn't stop
+    // movement/action keys from latching while the player types a name or room code.
+    if (this.suppressed || isEditableTarget(event.target)) return;
     // Suppress browser shortcuts during play so in-game key combos can't trigger them.
-    const preserveGameFocus = !this.suppressed && event.code === 'Tab' && !isEditableTarget(event.target);
+    const preserveGameFocus = event.code === 'Tab' && !isEditableTarget(event.target);
     if ((this.pointerLocked && !KEY_DEFAULT_ALLOWLIST.has(event.code)) || preserveGameFocus) {
       event.preventDefault();
     }
@@ -165,7 +175,10 @@ export class InputManager {
   };
 
   private onKeyUp = (event: KeyboardEvent): void => {
+    // Always drop the held flag (defensive), but while a menu/text field owns input, skip the release
+    // EDGE so a key typed into a field can't fire a release-triggered action when the menu closes.
     this.keysDown.delete(event.code);
+    if (this.suppressed || isEditableTarget(event.target)) return;
     this.keysReleased.add(event.code);
   };
 
