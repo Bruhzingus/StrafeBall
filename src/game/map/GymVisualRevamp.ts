@@ -69,14 +69,24 @@ const GYM_TEXTURES = {
   floorNormal: '/assets/textures/gym/floor/textures/laminate_floor_03_nor_gl_2k.png',
   floorAO: '/assets/textures/gym/floor/textures/laminate_floor_03_ao_2k.png',
   floorRoughness: '/assets/textures/gym/floor/textures/laminate_floor_03_rough_2k.png',
-  wallColor: '/assets/textures/gym/walls/Bricks064_2K-JPG_Color.jpg',
-  wallNormal: '/assets/textures/gym/walls/Bricks064_2K-JPG_NormalGL.jpg',
-  wallAO: '/assets/textures/gym/walls/Bricks064_2K-JPG_AmbientOcclusion.jpg',
+  // Painted cinder-block PBR set (local, 2K). Color is sRGB; normal/roughness/AO are linear
+  // non-color (set at bind time). NormalGL = green-up convention (no Y-flip), same as the floor set.
+  wallColor: '/assets/textures/gym/walls/NewWalls/StrafeBall_PaintedCinderBlock_Imperfect_Color_2K.png',
+  wallNormal: '/assets/textures/gym/walls/NewWalls/StrafeBall_PaintedCinderBlock_Imperfect_NormalGL_2K.png',
+  wallAO: '/assets/textures/gym/walls/NewWalls/StrafeBall_PaintedCinderBlock_Imperfect_AmbientOcclusion_2K.png',
   // Grayscale wall roughness map. Bound the same proven way as the floor (packed metallicTexture +
   // green channel); metallic stays scalar 0 so no false metallic. Gives the painted block real
   // matte-to-low-satin variation instead of a single flat scalar.
-  wallRoughness: '/assets/textures/gym/walls/Bricks064_2K-JPG_Roughness.jpg',
+  wallRoughness: '/assets/textures/gym/walls/NewWalls/StrafeBall_PaintedCinderBlock_Imperfect_Roughness_2K.png',
   wallPad: '/assets/textures/gym/walls/WallMat.png',
+  // Deep-navy gym-pad vinyl PBR set (local NewWallMat). Color is sRGB; NormalGL/Roughness/AO are
+  // linear non-color (flagged at bind time). NormalGL = green-up convention (no Y-flip), same as the
+  // floor/wall sets. Surface detail only — never used to fake the pad's physical shape (real geometry
+  // in createRaisedWallPadPanels does that).
+  wallPadNavyColor: '/assets/textures/gym/walls/NewWallMat/NavyVinyl_Color.png',
+  wallPadNavyNormal: '/assets/textures/gym/walls/NewWallMat/NavyVinyl_NormalGL.png',
+  wallPadNavyRoughness: '/assets/textures/gym/walls/NewWallMat/NavyVinyl_Roughness.png',
+  wallPadNavyAO: '/assets/textures/gym/walls/NewWallMat/NavyVinyl_AO.png',
   coverMat: '/assets/textures/gym/Obstacles/gym_cover_mat_blue_tuned.png',
   banners: {
     championshipCourt: '/assets/textures/gym/banners/ChampionshipCourt.png',
@@ -105,48 +115,48 @@ const GYM_MATERIAL_TUNING = {
     // seams far enough apart that the tiling grid stops reading as obvious lines on the floor.
     uScale: 6,
     vScale: 7.8,
-    // Near-neutral tint so the laminate diffuse shows its own true wood color (no warm/yellow push).
-    // A slight lift keeps the court bright; nudge if the floor reads too cool or too dark on hardware.
-    albedoTint: [1.05, 1.04, 1.0] as Rgb,
+    // Calmed maple tint: every channel <= 1.0 (no HDR-style push). Narrows the R/B gap versus the raw
+    // texture's own fairly saturated honey-orange to cut the "residential laminate" orange cast while
+    // keeping R>G>B so the floor still reads as warm wood, not gray/pale/walnut.
+    albedoTint: [0.96, 0.95, 0.89] as Rgb,
     metallic: 0,
     // Scalar roughness that MULTIPLIES the bound grayscale roughness map (metallicTexture, green
     // channel). The map supplies real per-plank variation; this multiplier centres the effective
-    // average near ~0.37 for a polished waxed-court sheen (real grain, soft broad highlight, still no
-    // mirror — metallic stays 0). Lowered from 0.42 to bias toward the glossier "more sheen" target.
-    roughness: 0.37,
+    // average near a softer maintained-court sheen — raised from 0.37 so direct highlights spread out
+    // instead of reading wet/strong up close (still no mirror — metallic stays 0).
+    roughness: 0.54,
     // Scales how strongly the environment texture (the cheap generated gradient by default — the HDR
     // cafeteria env is disabled, see GYM_HDR_ENVIRONMENT_ENABLED) shows up as a broad soft overhead
-    // sheen on the floor. Kept low so the floor never mirrors players and never washes out to gray.
-    environmentIntensity: 0.3,
+    // sheen on the floor. Lowered so the floor never mirrors players and never washes out to gray.
+    environmentIntensity: 0.08,
     // Soft, broad sheen — restrained so the floor never reads wet/mirror-like.
-    specularIntensity: 0.45,
-    // Soft plank seams on a polished floor — restrained, not embossed.
-    normalLevel: 0.6,
+    specularIntensity: 0.26,
+    // Soft plank seams on a polished floor — lowered so the grain reads as real wood texture rather
+    // than embossed relief.
+    normalLevel: 0.3,
     // Floor color (and its normal) filtered at 4x max — soft highlights, cheap filtering.
     colorAnisotropy: 4,
     // Subtle plank-seam depth only — the bright maple floor must not read darker/dirtier overall.
-    aoStrength: 0.1
+    aoStrength: 0.08
   },
   wall: {
     // World metres covered by one block course repeat. Per-wall uScale/vScale are derived from these
-    // so courses run horizontally at the same physical size on the long and short walls alike.
-    tileMetersHorizontal: 5.0,
-    tileMetersVertical: 3.9,
-    // RECOVERY: bounded neutral tint, no channel above 1.0 (was an HDR-style [3.18,3.05,2.82] multiplier
-    // forcing the raw gray block toward off-white). This is the honest temporary baseline — the wall now
-    // shows the texture's true value with only a gentle warm-neutral lift, not a faked-bright multiply.
-    albedoTint: [1.0, 0.97, 0.92] as Rgb,
+    // so courses run horizontally at the same physical size on the long and short walls alike. The
+    // painted cinder-block set reads as a believable ~2m x 2m repeat at normal play distance.
+    tileMetersHorizontal: 2.0,
+    tileMetersVertical: 2.0,
+    // The new color map is already a warm off-white/cream painted block, so only a hair of neutral
+    // lift is needed — no channel above 1.0 (no HDR-style overbrightening).
+    albedoTint: [1.0, 0.99, 0.96] as Rgb,
     metallic: 0,
-    // Matte to very-low satin. Scalar multiplies the now-bound roughness map; raised slightly so the
-    // painted block reads matte (no satin glare) while the map still carries subtle block-to-block
-    // variation. Kept well clear of any gloss.
-    roughness: 0.82,
-    // Walls get the faintest reflection response of any reflective surface (spec range 0.02-0.06) —
-    // just enough that painted block isn't completely flat once the static capture is attached.
-    environmentIntensity: 0.04,
-    // Seams pulled subtler still: painted cinder block has soft low-contrast mortar lines, not deep
-    // embossed brick. Lowered so the wall reads as smooth maintained paint over block.
-    normalLevel: 0.24,
+    // Matte painted block. Scalar multiplies the bound roughness map so the map still carries
+    // subtle block-to-block variation while the average stays well clear of any gloss.
+    roughness: 0.83,
+    // Walls get the faintest reflection response of any reflective surface — just enough that
+    // painted block isn't completely flat once the static capture is attached.
+    environmentIntensity: 0.03,
+    // Soft, low-contrast mortar seams — painted cinder block, not deep embossed brick.
+    normalLevel: 0.2,
     // Low AO so mortar seams stay a faint low-contrast detail and never darken the painted block
     // toward grime or the navy pads' tone.
     aoStrength: 0.1
@@ -196,6 +206,28 @@ const GYM_MATERIAL_TUNING = {
   bluePadPanel: {
     metallic: 0,
     roughness: 0.58
+  },
+  // Real 3D navy-vinyl wall pads (PBR, NewWallMat set). Deep navy athletic vinyl: satin, non-metallic,
+  // slightly more readable than the darkest bleacher surfaces, no cyan/royal-blue plastic look, no
+  // mirror reflection, no emissive. Roughness scalar multiplies the bound grayscale roughness map.
+  wallPadVinyl: {
+    metallic: 0,
+    roughness: 0.62,
+    // Fine vinyl grain only — subtle relief, not embossed fabric.
+    normalLevel: 0.24,
+    aoStrength: 0.09,
+    // Faintest satin reflection response; the pads must never read glossy or mirror-like.
+    environmentIntensity: 0.07,
+    // Texture repeats per ~1.6 m pad face: small enough to read as fine grain, never stretched/noisy.
+    uScale: 2.0,
+    vScale: 2.6,
+    // Brighten + push the deep-navy albedo toward a richer, more readable team blue (the raw texture
+    // reads near-black on the dimly-lit end wall). Multiplier >1 lifts the dark vinyl into a clear navy
+    // gym-mat blue with visible colour, while staying clear of glossy royal-blue plastic.
+    albedoTint: [1.5, 1.62, 2.0] as Rgb,
+    // Subtle blue self-lift so the pads never sink into near-black shadow and the bevels stay readable
+    // — restrained (not a glow).
+    emissive: [0.02, 0.035, 0.08] as Rgb
   }
 } as const;
 
@@ -315,6 +347,7 @@ export function applyGymVisualRevamp(scene: Scene): void {
   if (!fakeLightingDisabled) createWallBounceGlow(scene);
   createWallPaddingDetails(scene);
   createRaisedWallPadPanels(scene);
+  createWallPadWordmark(scene);
   createScoreboardWallAccents(scene);
   createScoreboardHardware(scene);
   createUpperWallDetails(scene);
@@ -672,13 +705,13 @@ function applyShowcasePbrSurface(
   if (specularIntensity !== undefined) material.specularIntensity = specularIntensity;
 }
 
-// World size (metres) covered by one repeat of the wall brick texture. All four walls shared one
+// World size (metres) covered by one repeat of the wall block texture. All four walls shared one
 // material with a fixed uScale, but they have different lengths AND the walls run along different
 // axes (north/south along X, east/west along Z). On a Babylon box the texture U/V axes land on
-// different physical dimensions per face, so the long walls showed the brick rotated 90° and at a
+// different physical dimensions per face, so the long walls showed the blocks rotated 90° and at a
 // different scale — they read as a completely different texture. We give each wall its own
 // material+texture and pick uScale/vScale (with a 90° rotation on the side walls) from that wall's
-// real horizontal length so the brick courses run horizontally at the same physical size everywhere.
+// real horizontal length so the block courses run horizontally at the same physical size everywhere.
 function applyWallStoneTexture(scene: Scene): void {
   const t = GYM_MATERIAL_TUNING.wall;
   const h = TUNING.map.wallHeight;
@@ -884,68 +917,85 @@ function createWallBounceGlow(scene: Scene): void {
 }
 
 function createWallPaddingDetails(scene: Scene): void {
-  const seamMaterial = solidMaterial(scene, 'decor_wall_padding_seam_mat', new Color3(0.022, 0.075, 0.22), {
-    alpha: 0.62,
-    emissive: new Color3(0, 0.005, 0.02)
-  });
-  const topCapMaterial = solidMaterial(scene, 'decor_wall_padding_top_cap_mat', new Color3(0.045, 0.11, 0.3), {
-    emissive: new Color3(0.004, 0.01, 0.032),
-    specular: new Color3(0.1, 0.11, 0.13)
-  });
-  const stitchMaterial = solidMaterial(scene, 'decor_wall_padding_stitch_mat', new Color3(0.22, 0.4, 0.78), {
-    alpha: 0.52,
-    emissive: new Color3(0.012, 0.032, 0.088)
+  // Dark recessed backing board behind the raised pad modules. The real beveled pad meshes
+  // (createRaisedWallPadPanels) project ~0.105 m off the wall; this board sits ~0.065 m off the wall,
+  // so the narrow gaps between modules reveal it as a believable dark recess — no fake stitch lines,
+  // no bright royal-blue decals (those have been removed). Visual-only, never collision.
+  const backingMaterial = solidMaterial(scene, 'decor_wall_pad_backing_mat', new Color3(0.028, 0.045, 0.1), {
+    emissive: new Color3(0.002, 0.004, 0.012),
+    specular: new Color3(0.04, 0.05, 0.07)
   });
 
   for (const side of frontBackWallSides()) {
     const span = wallSpan(side);
     const layout = wallPadLayout(span);
-    createWallPlane(scene, `decor_wall_padding_top_${side}`, side, layout.usedWidth, 0.06, WALL_PAD_HEIGHT, 0, topCapMaterial, WALL_PAD_DECAL_INSET - 0.008);
-
-    for (let i = 0; i <= layout.count; i += 1) {
-      const offset = layout.start - layout.panelWidth * 0.5 - layout.gap * 0.5 + i * (layout.panelWidth + layout.gap);
-      if (i === 0 || i === layout.count) continue;
-      createWallPlane(
-        scene,
-        `decor_wall_padding_seam_${side}_${String(i).padStart(2, '0')}`,
-        side,
-        0.018,
-        WALL_PAD_HEIGHT - 0.08,
-        (WALL_PAD_HEIGHT - 0.08) * 0.5,
-        offset,
-        seamMaterial,
-        WALL_PAD_DECAL_INSET - 0.006
-      );
-    }
-
-    createWallPlane(
+    createWallBox(
       scene,
-      `decor_wall_padding_stitch_${side}`,
+      `decor_wall_pad_backing_${side}`,
       side,
-      layout.usedWidth - 0.12,
-      0.024,
-      WALL_PAD_HEIGHT - 0.24,
+      layout.usedWidth,
+      WALL_PAD_HEIGHT,
+      WALL_PAD_HEIGHT / 2,
       0,
-      stitchMaterial,
-      WALL_PAD_DECAL_INSET - 0.002
+      0.05,
+      backingMaterial,
+      WALL_PAD_DECAL_INSET - 0.045
     );
   }
 }
 
+/**
+ * Deep-navy athletic-vinyl PBR material for the wall pads (NewWallMat set). Albedo is sRGB; NormalGL,
+ * roughness and AO are linear non-color. Roughness is a standalone grayscale map bound via Babylon's
+ * packed metallicTexture + useRoughnessFromMetallicTextureGreen workflow (the only correct way to bind
+ * a lone roughness map in the metallic/roughness path); metallic stays scalar 0 so there is no false
+ * metallic response. Satin, non-metallic, no emissive — see GYM_MATERIAL_TUNING.wallPadVinyl.
+ */
+function createWallPadNavyMaterial(scene: Scene): PBRMaterial {
+  const existing = scene.getMaterialByName('decor_wall_pad_navy_vinyl_mat');
+  if (existing instanceof PBRMaterial) return existing;
+
+  const t = GYM_MATERIAL_TUNING.wallPadVinyl;
+  const color = createImageTexture(scene, 'gym_wall_pad_navy_color', GYM_TEXTURES.wallPadNavyColor, t.uScale, t.vScale);
+  const normal = createImageTexture(scene, 'gym_wall_pad_navy_normal', GYM_TEXTURES.wallPadNavyNormal, t.uScale, t.vScale);
+  const ao = createImageTexture(scene, 'gym_wall_pad_navy_ao', GYM_TEXTURES.wallPadNavyAO, t.uScale, t.vScale);
+  const roughness = createImageTexture(scene, 'gym_wall_pad_navy_roughness', GYM_TEXTURES.wallPadNavyRoughness, t.uScale, t.vScale);
+  // Albedo stays sRGB (Babylon default). Normal/AO/roughness are linear non-color data.
+  normal.gammaSpace = false;
+  ao.gammaSpace = false;
+  roughness.gammaSpace = false;
+  normal.level = t.normalLevel;
+
+  const material = new PBRMaterial('decor_wall_pad_navy_vinyl_mat', scene);
+  material.albedoTexture = color;
+  material.albedoColor = new Color3(...t.albedoTint);
+  material.bumpTexture = normal;
+  material.ambientTexture = ao;
+  material.ambientTextureStrength = t.aoStrength;
+  // Standalone roughness map via the green channel; metallic stays scalar 0 (no metallic from blue).
+  material.metallicTexture = roughness;
+  material.useRoughnessFromMetallicTextureGreen = true;
+  material.useRoughnessFromMetallicTextureAlpha = false;
+  material.useMetallnessFromMetallicTextureBlue = false;
+  material.metallic = t.metallic;
+  material.roughness = t.roughness;
+  material.environmentIntensity = t.environmentIntensity;
+  material.emissiveColor = new Color3(...t.emissive);
+  return material;
+}
+
 function createRaisedWallPadPanels(scene: Scene): void {
-  // Single-panel vinyl art per pad: clamp U/V so the stitched border + edge lighting map 1:1 to the
-  // panel and are never tiled/repeated. Deep, less-saturated navy satin (see GYM_MATERIAL_TUNING.navy).
-  const pad = GYM_MATERIAL_TUNING.navy.backPad;
-  const cushionA = texturedStandardMaterial(
-    scene,
-    'decor_wall_pad_cushion_deep_blue_mat',
-    GYM_TEXTURES.wallPad,
-    { uScale: 1, vScale: 1, clamp: true, diffuse: new Color3(...pad.tint), emissive: new Color3(...pad.emissive), specular: new Color3(...pad.specular), specularPower: pad.specularPower }
-  );
-  const bevelMat = solidMaterial(scene, 'decor_wall_pad_bevel_highlight_mat', new Color3(0.16, 0.32, 0.78), {
-    emissive: new Color3(0.01, 0.026, 0.082),
-    specular: new Color3(0.1, 0.13, 0.18)
-  });
+  // Real 3D pad modules: one merged beveled-panel mesh per module (core box + raised front cushion =
+  // one draw call), navy-vinyl PBR material, frozen static transform, visual-only (no collision). The
+  // raised cushion sits ~0.105 m off the wall and steps up ~0.02 m past the recessed border so the
+  // beveled outer edge catches the existing gym lighting. The dark backing board (createWallPadding
+  // Details) shows through the gaps as a recessed seam.
+  const navyVinyl = createWallPadNavyMaterial(scene);
+  const padDepth = 0.05;        // core box depth
+  const padRaise = 0.02;        // cushion protrusion past the core face (the bevel step)
+  const padBorder = 0.07;       // recessed flat border framing the raised cushion
+  const padCenterInset = WALL_PAD_DECAL_INSET - 0.025; // 0.06 → front cushion face ≈ 0.105 m off wall
+  const halfL = TUNING.map.halfLength;
 
   for (const side of frontBackWallSides()) {
     const span = wallSpan(side);
@@ -954,39 +1004,121 @@ function createRaisedWallPadPanels(scene: Scene): void {
 
     for (let i = 0; i < layout.count; i += 1) {
       const offset = layout.start + i * (layout.panelWidth + layout.gap);
-      const mat = cushionA;
-      createWallBox(
-        scene,
-        `decor_wall_pad_raised_panel_${side}_${String(i).padStart(2, '0')}`,
-        side,
-        layout.panelWidth,
-        panelHeight,
-        panelHeight / 2,
-        offset,
-        0.022,
-        mat,
-        WALL_PAD_DECAL_INSET + 0.004
-      );
+      const pad = createBeveledPanelMesh(scene, `decor_wall_pad_module_${side}_${String(i).padStart(2, '0')}`, {
+        width: layout.panelWidth,
+        height: panelHeight,
+        depth: padDepth,
+        material: navyVinyl,
+        border: padBorder,
+        raise: padRaise
+      });
+      // createBeveledPanelMesh builds along Z (cushions on ±Z), which already matches the front/back
+      // wall normal — no rotation needed. North wall at +Z, south at -Z.
+      pad.position.set(offset, panelHeight / 2, side === 'north' ? halfL - padCenterInset : -halfL + padCenterInset);
+      markDecorative(pad);
+      pad.freezeWorldMatrix();
+    }
+  }
+}
 
-      createWallBox(
+const WALL_PAD_WORDMARK = 'STRAFEBALL';
+
+/**
+ * One varsity-style glyph per pad module — never more than one letter per mat. Each letter is its own
+ * small plane, sized to sit comfortably inside a single module (clear of the seams on either side), and
+ * the run of letters is centered across the module count. Off-white fill, navy drop-shadow underlay,
+ * thin gold outline, no glow. Materials are cached per character (STRAFEBALL repeats A and L) so only
+ * 8 textures are ever generated for the whole wordmark, on both walls.
+ */
+function createWallPadWordmark(scene: Scene): void {
+  const letterMaterials = new Map<string, StandardMaterial>();
+  // Cushion face ≈ 0.105 m off the wall; sit the letters ~4 mm in front of it.
+  const wordmarkInset = (WALL_PAD_DECAL_INSET - 0.025) + 0.025 + 0.02 + 0.004;
+
+  for (const side of frontBackWallSides()) {
+    const layout = wallPadLayout(wallSpan(side));
+    const letterCount = Math.min(WALL_PAD_WORDMARK.length, layout.count);
+    const moduleStart = Math.floor((layout.count - letterCount) / 2);
+    const wordStart = Math.floor((WALL_PAD_WORDMARK.length - letterCount) / 2);
+
+    for (let j = 0; j < letterCount; j += 1) {
+      // createWallPlane positions every module at the SAME world-X offset regardless of side, but a
+      // viewer facing the south wall is turned 180° relative to one facing north, so increasing world-X
+      // reads right-to-left there. Walk the word backwards for south so it reads correctly left-to-right
+      // from each wall's own viewer (this is the one place world-X ordering needs side-awareness; every
+      // other pad/letter measurement above is side-agnostic).
+      const j2 = side === 'south' ? letterCount - 1 - j : j;
+      const letter = WALL_PAD_WORDMARK[wordStart + j2];
+      const moduleIndex = moduleStart + j;
+      const offset = layout.start + moduleIndex * (layout.panelWidth + layout.gap);
+
+      let material = letterMaterials.get(letter);
+      if (!material) {
+        material = createWallPadLetterMaterial(scene, letter);
+        letterMaterials.set(letter, material);
+      }
+
+      // Condensed varsity glyph: comfortably inside the module width, clear of both seams.
+      const width = layout.panelWidth * 0.62;
+      const height = width * 1.35;
+      createWallPlane(
         scene,
-        `decor_wall_pad_panel_top_bevel_${side}_${String(i).padStart(2, '0')}`,
+        `decor_wall_pad_wordmark_${side}_${String(moduleIndex).padStart(2, '0')}`,
         side,
-        layout.panelWidth - 0.06,
-        0.016,
-        panelHeight + 0.03,
+        width,
+        height,
+        WALL_PAD_HEIGHT * 0.52,
         offset,
-        0.016,
-        bevelMat,
-        WALL_PAD_DECAL_INSET + 0.01
+        material,
+        wordmarkInset
       );
     }
   }
 }
 
+function createWallPadLetterMaterial(scene: Scene, letter: string): StandardMaterial {
+  const size = 256;
+  const texture = new DynamicTexture(`decor_wall_pad_letter_${letter}_tex`, { width: size, height: Math.round(size * 1.35) }, scene, true);
+  texture.hasAlpha = true;
+  texture.anisotropicFilteringLevel = 8;
+  texture.updateSamplingMode(Texture.TRILINEAR_SAMPLINGMODE);
+  const w = size;
+  const h = Math.round(size * 1.35);
+  const ctx = texture.getContext() as CanvasRenderingContext2D;
+  ctx.clearRect(0, 0, w, h);
+  ctx.textAlign = 'center';
+  ctx.textBaseline = 'middle';
+  ctx.font = `900 ${Math.round(h * 0.82)}px Impact, "Arial Black", sans-serif`;
+  // Deep-navy drop-shadow underlay, offset down/right for separation against the pad.
+  ctx.fillStyle = '#0a1530';
+  ctx.fillText(letter, w / 2 + 5, h / 2 + 7);
+  // Primary off-white lettering with a thin restrained gold outline.
+  ctx.lineJoin = 'round';
+  ctx.lineWidth = Math.round(h * 0.018);
+  ctx.strokeStyle = '#c79a3a';
+  ctx.strokeText(letter, w / 2, h / 2);
+  ctx.fillStyle = '#f6f1e4';
+  ctx.fillText(letter, w / 2, h / 2);
+  texture.update(true);
+
+  const material = new StandardMaterial(`decor_wall_pad_letter_${letter}_mat`, scene);
+  material.diffuseTexture = texture;
+  material.opacityTexture = texture;
+  material.useAlphaFromDiffuseTexture = true;
+  material.emissiveTexture = texture;
+  // Modest self-lift for readability against the dark navy pads — restrained, not a glow.
+  material.emissiveColor = new Color3(0.12, 0.12, 0.11);
+  material.diffuseColor = new Color3(1, 1, 1);
+  material.specularColor = new Color3(0.04, 0.04, 0.04);
+  material.backFaceCulling = false;
+  material.zOffset = -2;
+  return material;
+}
+
 function wallPadLayout(span: number): { count: number; gap: number; panelWidth: number; start: number; usedWidth: number } {
   const sideInset = 0.24;
-  const gap = 0.006;
+  // Wider gap (was 0.006) so the dark recessed backing reads as a real seam between raised pad modules.
+  const gap = 0.026;
   const targetPanelWidth = 1.64;
   const usableWidth = span - sideInset * 2;
   const count = Math.max(1, Math.floor((usableWidth + gap) / (targetPanelWidth + gap)));
@@ -1049,18 +1181,7 @@ function createUpperWallDetails(scene: Scene): void {
   for (const side of ['north', 'south'] as WallSide[]) {
     createWallPlane(scene, `decor_wall_clock_${side}`, side, 0.68, 0.68, 6.94, side === 'north' ? -4.42 : 4.42, clockMat, WALL_DECAL_INSET + 0.012);
     createWallPlane(scene, `decor_wall_vent_${side}`, side, 1.15, 0.38, 6.92, side === 'north' ? 4.5 : -4.5, ventMat, WALL_DECAL_INSET + 0.012);
-    createGymSign(scene, {
-      name: `decor_exit_sign_${side}`,
-      side,
-      offset: side === 'north' ? -11.95 : 11.95,
-      y: 2.55,
-      width: 0.88,
-      height: 0.34,
-      title: 'EXIT',
-      palette: PALETTES.navy
-    });
   }
-
 }
 
 function createGymBanners(scene: Scene): void {
@@ -2584,33 +2705,6 @@ function createFloorLogoMaterial(scene: Scene, name: string, primary: string, ac
   return material;
 }
 
-function createGymSign(
-  scene: Scene,
-  spec: {
-    name: string;
-    side: WallSide;
-    offset: number;
-    y: number;
-    width: number;
-    height: number;
-    title: string;
-    subtitle?: string;
-    palette: BannerPalette;
-  }
-): void {
-  createDecorBackingPanel(scene, {
-    name: `${spec.name}_backing`,
-    side: spec.side,
-    width: spec.width,
-    height: spec.height,
-    y: spec.y,
-    offset: spec.offset,
-    variant: 'sign'
-  });
-  const material = createGymSignMaterial(scene, spec);
-  createWallPlane(scene, spec.name, spec.side, spec.width, spec.height, spec.y, spec.offset, material, WALL_DECAL_INSET + 0.016);
-}
-
 function createDecorBackingPanel(
   scene: Scene,
   spec: {
@@ -2679,50 +2773,6 @@ function createDecorBackingPanel(
   createWallBox(scene, `${spec.name}_trim_bottom`, spec.side, outerW, trimInset, spec.y - outerH * 0.5 + trimInset * 0.5, spec.offset, trimThickness, trim, trimInsetDepth);
   createWallBox(scene, `${spec.name}_trim_left`, spec.side, trimInset, outerH - trimInset * 2, spec.y, spec.offset - outerW * 0.5 + trimInset * 0.5, trimThickness, trim, trimInsetDepth);
   createWallBox(scene, `${spec.name}_trim_right`, spec.side, trimInset, outerH - trimInset * 2, spec.y, spec.offset + outerW * 0.5 - trimInset * 0.5, trimThickness, trim, trimInsetDepth);
-}
-
-function createGymSignMaterial(
-  scene: Scene,
-  spec: {
-    name: string;
-    side: WallSide;
-    title: string;
-    subtitle?: string;
-    palette: BannerPalette;
-  }
-): StandardMaterial {
-  const texture = createSignageDynamicTexture(scene, `${spec.name}_tex`, 512, 192, {
-    hasAlpha: false,
-    side: spec.side
-  });
-
-  const ctx = texture.getContext() as CanvasRenderingContext2D;
-  const gradient = ctx.createLinearGradient(0, 0, 512, 192);
-  gradient.addColorStop(0, spec.palette.background);
-  gradient.addColorStop(1, spec.palette.background2);
-  ctx.fillStyle = gradient;
-  ctx.fillRect(0, 0, 512, 192);
-  ctx.strokeStyle = spec.palette.border;
-  ctx.lineWidth = 14;
-  ctx.strokeRect(12, 12, 488, 168);
-  ctx.strokeStyle = 'rgba(255,255,255,0.2)';
-  ctx.lineWidth = 3;
-  ctx.strokeRect(30, 30, 452, 132);
-  ctx.textAlign = 'center';
-  ctx.textBaseline = 'middle';
-  drawFittedText(ctx, spec.title, 256, spec.subtitle ? 78 : 96, 390, spec.subtitle ? 58 : 86, spec.palette.text, spec.palette.shadow);
-  if (spec.subtitle) {
-    drawFittedText(ctx, spec.subtitle, 256, 130, 350, 34, spec.palette.accent, spec.palette.shadow);
-  }
-  texture.update(true);
-
-  const material = new StandardMaterial(`${spec.name}_mat`, scene);
-  material.diffuseTexture = texture;
-  material.emissiveTexture = texture;
-  material.emissiveColor = new Color3(0.22, 0.22, 0.2);
-  material.specularColor = new Color3(0.05, 0.05, 0.045);
-  material.backFaceCulling = false;
-  return material;
 }
 
 function createVentMaterial(scene: Scene): StandardMaterial {

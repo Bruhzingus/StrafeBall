@@ -244,10 +244,10 @@ export const SHOWCASE_CONFIG = {
     /** PBR simultaneous-light cap. Showcase now has just 2 scene lights (1 hemi + 1 directional key),
      * so the PBR default of 4 is ample; no surface ever needs more than 2 simultaneously. */
     maxSimultaneousLights: 4,
-    // Phase 7: roughness ~0.40 (0.38–0.42 band) so the probe reflection is a BROAD blur, not a mirror;
-    // environmentIntensity is the probe reflection STRENGTH — moderate on the floor, weaker than the
-    // visible fixture source. (specularIntensity unchanged.)
-    floor: { roughness: 0.40, environmentIntensity: 0.22, specularIntensity: 0.45 },
+    // Calmed maple response (Materials Pass B): roughness raised and environmentIntensity/specularIntensity
+    // lowered so the probe reflection stays a faint blurred response rather than a wet/strong highlight,
+    // matching the Competitive baseline in GYM_MATERIAL_TUNING.floor.
+    floor: { roughness: 0.54, environmentIntensity: 0.08, specularIntensity: 0.26 },
     // wallPad/wall are StandardMaterial-driven in practice and receive NO probe reflection ("nearly
     // none"); these env values are inert without a reflectionTexture and are kept only for completeness.
     wallPad: { roughness: 0.5, environmentIntensity: 0.0 },
