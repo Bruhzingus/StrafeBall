@@ -212,10 +212,12 @@ const GYM_MATERIAL_TUNING = {
   // mirror reflection, no emissive. Roughness scalar multiplies the bound grayscale roughness map.
   wallPadVinyl: {
     metallic: 0,
-    roughness: 0.62,
+    // Lowered slightly within the 0.56–0.68 spec range for a touch more highlight definition along
+    // the raised cushion's bevel edge — the macro shape was reading flat under restrained lighting.
+    roughness: 0.58,
     // Fine vinyl grain only — subtle relief, not embossed fabric.
-    normalLevel: 0.24,
-    aoStrength: 0.09,
+    normalLevel: 0.28,
+    aoStrength: 0.11,
     // Faintest satin reflection response; the pads must never read glossy or mirror-like.
     environmentIntensity: 0.07,
     // Texture repeats per ~1.6 m pad face: small enough to read as fine grain, never stretched/noisy.
@@ -347,6 +349,7 @@ export function applyGymVisualRevamp(scene: Scene): void {
   if (!fakeLightingDisabled) createWallBounceGlow(scene);
   createWallPaddingDetails(scene);
   createRaisedWallPadPanels(scene);
+  createWallPadSeamStraps(scene);
   createWallPadWordmark(scene);
   createScoreboardWallAccents(scene);
   createScoreboardHardware(scene);
@@ -984,17 +987,23 @@ function createWallPadNavyMaterial(scene: Scene): PBRMaterial {
   return material;
 }
 
+// Pad-module geometry, shared between createRaisedWallPadPanels (the pads themselves) and
+// createWallPadSeamStraps (the strap hardware that crosses the gap between them) so the strap can be
+// positioned exactly relative to the cushion face without duplicating/drifting the depth math.
+const PAD_DEPTH = 0.02; // core/mounting-board depth
+const PAD_RAISE = 0.035; // cushion protrusion past the core face (the bevel step)
+const PAD_BORDER = 0.09; // recessed flat border framing the raised cushion
+const PAD_CENTER_INSET = WALL_PAD_DECAL_INSET - 0.025; // 0.06 → front cushion face ≈ 0.105 m off wall
+const PAD_CUSHION_FACE_INSET = PAD_CENTER_INSET + PAD_DEPTH / 2 + PAD_RAISE; // ≈ 0.105 m off wall
+
 function createRaisedWallPadPanels(scene: Scene): void {
   // Real 3D pad modules: one merged beveled-panel mesh per module (core box + raised front cushion =
   // one draw call), navy-vinyl PBR material, frozen static transform, visual-only (no collision). The
-  // raised cushion sits ~0.105 m off the wall and steps up ~0.02 m past the recessed border so the
-  // beveled outer edge catches the existing gym lighting. The dark backing board (createWallPadding
-  // Details) shows through the gaps as a recessed seam.
+  // raised cushion sits ~0.105 m off the wall and steps up ~0.035 m past the recessed border — a thin
+  // mounting board (PAD_DEPTH) with a pronounced cushion bulge reads far more like a real padded mat
+  // than a thick block with a shallow lip, while the TOTAL projection off the wall is unchanged (still
+  // within the 0.07–0.11 m spec) so the bevel step is just a much larger share of the same thickness.
   const navyVinyl = createWallPadNavyMaterial(scene);
-  const padDepth = 0.05;        // core box depth
-  const padRaise = 0.02;        // cushion protrusion past the core face (the bevel step)
-  const padBorder = 0.07;       // recessed flat border framing the raised cushion
-  const padCenterInset = WALL_PAD_DECAL_INSET - 0.025; // 0.06 → front cushion face ≈ 0.105 m off wall
   const halfL = TUNING.map.halfLength;
 
   for (const side of frontBackWallSides()) {
@@ -1007,16 +1016,80 @@ function createRaisedWallPadPanels(scene: Scene): void {
       const pad = createBeveledPanelMesh(scene, `decor_wall_pad_module_${side}_${String(i).padStart(2, '0')}`, {
         width: layout.panelWidth,
         height: panelHeight,
-        depth: padDepth,
+        depth: PAD_DEPTH,
         material: navyVinyl,
-        border: padBorder,
-        raise: padRaise
+        border: PAD_BORDER,
+        raise: PAD_RAISE
       });
       // createBeveledPanelMesh builds along Z (cushions on ±Z), which already matches the front/back
       // wall normal — no rotation needed. North wall at +Z, south at -Z.
-      pad.position.set(offset, panelHeight / 2, side === 'north' ? halfL - padCenterInset : -halfL + padCenterInset);
+      pad.position.set(offset, panelHeight / 2, side === 'north' ? halfL - PAD_CENTER_INSET : -halfL + PAD_CENTER_INSET);
       markDecorative(pad);
       pad.freezeWorldMatrix();
+    }
+  }
+}
+
+/**
+ * Velcro-strap hardware crossing the seam between adjacent pad modules. Real gym wall pads are
+ * velcro-strapped to the wall rather than glued edge-to-edge — the straps are what actually give the
+ * seam visible depth/separation, instead of just a flat painted gap line. Two short strap bands per
+ * seam (clear of the centred wordmark band), each with a small plastic buckle accent, mounted just in
+ * front of the cushion faces so the gap reads as occluded hardware rather than a void showing the wall.
+ * Visual-only, no collision; same low-poly box primitives as the rest of the pad system.
+ */
+function createWallPadSeamStraps(scene: Scene): void {
+  const strapMaterial = solidMaterial(scene, 'decor_wall_pad_strap_mat', new Color3(0.085, 0.09, 0.1), {
+    emissive: new Color3(0.004, 0.004, 0.005),
+    specular: new Color3(0.05, 0.05, 0.055)
+  });
+  const buckleMaterial = solidMaterial(scene, 'decor_wall_pad_buckle_mat', new Color3(0.42, 0.43, 0.46), {
+    emissive: new Color3(0.01, 0.01, 0.011),
+    specular: new Color3(0.22, 0.22, 0.24)
+  });
+
+  const strapThickness = 0.014;
+  const strapFaceInset = PAD_CUSHION_FACE_INSET + strapThickness / 2 + 0.006; // sits just in front of the cushion
+  const strapHeight = 0.16;
+  const buckleSize = 0.05;
+  const buckleInset = strapFaceInset + strapThickness / 2 + buckleSize / 2 + 0.002;
+
+  for (const side of frontBackWallSides()) {
+    const layout = wallPadLayout(wallSpan(side));
+    const panelHeight = WALL_PAD_HEIGHT - 0.02;
+    // Keep clear of the centred wordmark band (≈ 0.61–1.95 m for the current letter size).
+    const strapYs = [panelHeight * 0.14, panelHeight * 0.87];
+
+    for (let i = 0; i < layout.count - 1; i += 1) {
+      const gapCenter = layout.start + (i + 0.5) * (layout.panelWidth + layout.gap);
+      const strapWidth = layout.gap + 0.12; // overlaps onto both neighbouring pad faces
+
+      for (const y of strapYs) {
+        createWallBox(
+          scene,
+          `decor_wall_pad_strap_${side}_${String(i).padStart(2, '0')}_${y === strapYs[0] ? 'lo' : 'hi'}`,
+          side,
+          strapWidth,
+          strapHeight,
+          y,
+          gapCenter,
+          strapThickness,
+          strapMaterial,
+          strapFaceInset
+        );
+        createWallBox(
+          scene,
+          `decor_wall_pad_buckle_${side}_${String(i).padStart(2, '0')}_${y === strapYs[0] ? 'lo' : 'hi'}`,
+          side,
+          buckleSize,
+          buckleSize,
+          y,
+          gapCenter,
+          buckleSize * 0.4,
+          buckleMaterial,
+          buckleInset
+        );
+      }
     }
   }
 }
@@ -1092,9 +1165,9 @@ function createWallPadLetterMaterial(scene: Scene, letter: string): StandardMate
   // Deep-navy drop-shadow underlay, offset down/right for separation against the pad.
   ctx.fillStyle = '#0a1530';
   ctx.fillText(letter, w / 2 + 5, h / 2 + 7);
-  // Primary off-white lettering with a thin restrained gold outline.
+  // Primary off-white lettering with a restrained gold outline.
   ctx.lineJoin = 'round';
-  ctx.lineWidth = Math.round(h * 0.018);
+  ctx.lineWidth = Math.round(h * 0.032);
   ctx.strokeStyle = '#c79a3a';
   ctx.strokeText(letter, w / 2, h / 2);
   ctx.fillStyle = '#f6f1e4';
@@ -1117,8 +1190,9 @@ function createWallPadLetterMaterial(scene: Scene, letter: string): StandardMate
 
 function wallPadLayout(span: number): { count: number; gap: number; panelWidth: number; start: number; usedWidth: number } {
   const sideInset = 0.24;
-  // Wider gap (was 0.006) so the dark recessed backing reads as a real seam between raised pad modules.
-  const gap = 0.026;
+  // Wide enough that the velcro-strap hardware (createWallPadSeamStraps) reads as a real mounted seam
+  // rather than a thin painted line (was 0.006, then 0.026).
+  const gap = 0.045;
   const targetPanelWidth = 1.64;
   const usableWidth = span - sideInset * 2;
   const count = Math.max(1, Math.floor((usableWidth + gap) / (targetPanelWidth + gap)));

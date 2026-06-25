@@ -130,11 +130,13 @@ html, body {
 .hud-top-left { top: 16px; left: 16px; transform: rotate(-1.4deg); }
 .hud-debug-panel {
   position: fixed;
-  /* Sits below the compact multiplayer lobby panel (fixed, top:18px, left:18px) so the two
-     never overlap regardless of how tall the lobby panel's room/status content grows. */
   top: 300px;
   left: 18px;
-  z-index: 40;
+  /* Highest z-index in the app on purpose: this panel is appended directly to <body> (see Hud.ts)
+     specifically so it always wins the top-level stacking comparison — it must never be covered by
+     the multiplayer lobby panel, settings panel, loading screen (z-index: 100), or anything else,
+     regardless of how tall/wide that other UI grows. */
+  z-index: 9999;
   /* Fixed width sized for the widest line (e.g. the Jitter/Pong/Missed/WS row at full values)
      so a growing value (jitter 0 → 12 ms, WS 0 → 573 B) never wraps onto a second row and
      shoves every line below it down. Lines that somehow exceed it scroll, never wrap. */

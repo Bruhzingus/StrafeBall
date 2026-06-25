@@ -64,7 +64,15 @@ export class Hud {
     parent.appendChild(this.root);
 
     this.crosshair = new Crosshair(this.root);
-    this.topLeft = this.panel('hud-debug-panel');
+    // Appended directly to <body>, NOT this.root/#hud-root: #hud-root is `position: fixed`, which
+    // always opens its own stacking context regardless of z-index, so anything nested inside it
+    // (even with a huge z-index of its own) is capped at #hud-root's rank among body's children —
+    // it can never out-rank a sibling overlay like the multiplayer lobby modal. Living directly under
+    // <body> lets the debug panel's own z-index (see .hud-debug-panel) compete at the top level, so it
+    // is never covered by the lobby panel, settings panel, or any other modal.
+    this.topLeft = document.createElement('div');
+    this.topLeft.className = 'hud-panel hud-debug-panel';
+    document.body.appendChild(this.topLeft);
     this.topLeft.style.display = 'none';
     this.topCenter = this.panel('hud-top-center');
     this.bottomLeft = this.panel('hud-bottom-left');
