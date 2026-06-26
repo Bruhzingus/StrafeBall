@@ -86,6 +86,7 @@ const BALL_BOUNCE_DECAY = 0.72;
 const MIN_BALL_BOUNCE_GAIN = 0.00001;
 const BALL_IMPACT_FX_MIN_SPEED = 8;
 const AUDIO_UP = { x: 0, y: 1, z: 0 };
+const PERF_FRAME_BUCKETS_MS = [8, 10, 12, 14, 16, 20, 25, 33, 50, 66, 100, 150, 250, 500, 1000];
 
 export class ArenaScene {
   public readonly scene: Scene;
@@ -236,8 +237,17 @@ export class ArenaScene {
   private perfReportTimer = 0;
   private perfReportFrameCount = 0;
   private perfReportInputCount = 0;
+  private perfReportUnchangedInputCount = 0;
+  private perfReportInputEdgeCount = 0;
+  private perfReportInputJsonBytesTotal = 0;
+  private perfReportInputJsonBytesMax = 0;
+  private perfReportInputJsonByteSamples = 0;
   private perfReportFrameMsTotal = 0;
   private perfReportFrameMsMax = 0;
+  private perfReportFramesOver50Ms = 0;
+  private perfReportFramesOver100Ms = 0;
+  private perfReportFramesOver250Ms = 0;
+  private readonly perfReportFrameBuckets = new Array<number>(PERF_FRAME_BUCKETS_MS.length).fill(0);
   private perfReportCorrectionCount = 0;
   private perfReportSnapCount = 0;
   private perfReportMaxCorrectionM = 0;
@@ -340,7 +350,7 @@ export class ArenaScene {
       const matchStatus = this.multiplayer.latestSnapshot?.room.match.status ?? 'warmup';
       this.music.setBattleSyncState(this.multiplayer.battleMusicSync);
       this.music.setLobbyMusicActive(matchStatus !== 'playing');
-      this.stepOnline(dt);
+      this.stepOnline(dt, frameMs);
       this.nametags.update(this.networkRenderer.getPlayerNametagInfo(), this.scene);
       if (this.multiplayer.latestSnapshot) {
         const connectionDebug = this.multiplayer.getConnectionDebug();
@@ -889,12 +899,11 @@ export class ArenaScene {
     }
   }
 
-  private stepOnline(dt: number): void {
+  private stepOnline(dt: number, rawFrameMs: number): void {
     this.elapsed += dt;
     this.onlineRateLogFrameCount += 1;
     this.perfReportFrameCount += 1;
-    this.perfReportFrameMsTotal += dt * 1000;
-    this.perfReportFrameMsMax = Math.max(this.perfReportFrameMsMax, dt * 1000);
+    this.recordPerfFrame(rawFrameMs);
 
     // --- Latch edge-triggered inputs every render frame so none are lost between fixed ticks ---
     this.latchJumpPressed ||= this.input.wasKeyPressed(CONTROL_KEYS.jump);
@@ -1096,6 +1105,7 @@ export class ArenaScene {
           ` rightReleasePending=${this.pendingOnlineThrowRelease.right?.ballId ?? 'none'}`
         );
       }
+      this.recordOnlineInputPerf(input, prev);
       this.multiplayer.sendInput(input);
       this.onlineRateLogInputCount += 1;
       this.perfReportInputCount += 1;
@@ -1195,14 +1205,23 @@ export class ArenaScene {
       const connectionDebug = this.multiplayer.getConnectionDebug();
       const render = this.networkRenderer.getDebugStats();
       const avgFrameMs = this.perfReportFrameCount > 0 ? this.perfReportFrameMsTotal / this.perfReportFrameCount : 0;
+      const p95FrameMs = percentileFromBuckets(this.perfReportFrameBuckets, this.perfReportFrameCount, 0.95);
       const fps = avgFrameMs > 0 ? 1000 / avgFrameMs : 0;
       const activeMeshes = this.scene.getActiveMeshes ? this.scene.getActiveMeshes().length : this.scene.meshes.length;
       const roomAgeSec = this.onlineModeStartedAtMs > 0 ? (Date.now() - this.onlineModeStartedAtMs) / 1000 : 0;
+      const avgInputJsonBytes = this.perfReportInputJsonByteSamples > 0
+        ? Math.round(this.perfReportInputJsonBytesTotal / this.perfReportInputJsonByteSamples)
+        : 0;
+      const inputJsonBytesPerSec = avgInputJsonBytes * (this.perfReportInputCount / elapsed);
       console.log(
         `[perf] roomAgeSec=${roomAgeSec.toFixed(1)}` +
         ` input=${CLIENT_INPUT_RATE}Hz snapshots=${SNAPSHOT_RATE}Hz` +
-        ` fps=${fps.toFixed(1)} avgFrameMs=${avgFrameMs.toFixed(2)} maxFrameMs=${this.perfReportFrameMsMax.toFixed(2)}` +
+        ` fps=${fps.toFixed(1)} avgFrameMs=${avgFrameMs.toFixed(2)} p95FrameMs=${p95FrameMs.toFixed(2)} maxFrameMs=${this.perfReportFrameMsMax.toFixed(2)}` +
+        ` framesOver={50:${this.perfReportFramesOver50Ms} 100:${this.perfReportFramesOver100Ms} 250:${this.perfReportFramesOver250Ms}}` +
         ` inputSent=${(this.perfReportInputCount / elapsed).toFixed(1)}/s` +
+        ` inputUnchanged=${this.perfReportUnchangedInputCount}` +
+        ` inputEdges=${(this.perfReportInputEdgeCount / elapsed).toFixed(1)}/s` +
+        ` inputJsonBytes avg=${avgInputJsonBytes} max=${this.perfReportInputJsonBytesMax} estimated=${Math.round(inputJsonBytesPerSec)}B/s` +
         ` snapshotsRecv=${snap.receivedPerSecond.toFixed(1)}/s` +
         ` uniqueSnapshots=${snap.uniqueTicksPerSecond.toFixed(1)}/s` +
         ` renderSnapshots=${this.snapshotRateHz.toFixed(1)}/s` +
@@ -1255,11 +1274,52 @@ export class ArenaScene {
     this.perfReportTimer = 0;
     this.perfReportFrameCount = 0;
     this.perfReportInputCount = 0;
+    this.perfReportUnchangedInputCount = 0;
+    this.perfReportInputEdgeCount = 0;
+    this.perfReportInputJsonBytesTotal = 0;
+    this.perfReportInputJsonBytesMax = 0;
+    this.perfReportInputJsonByteSamples = 0;
     this.perfReportFrameMsTotal = 0;
     this.perfReportFrameMsMax = 0;
+    this.perfReportFramesOver50Ms = 0;
+    this.perfReportFramesOver100Ms = 0;
+    this.perfReportFramesOver250Ms = 0;
+    this.perfReportFrameBuckets.fill(0);
     this.perfReportCorrectionCount = 0;
     this.perfReportSnapCount = 0;
     this.perfReportMaxCorrectionM = 0;
+  }
+
+  private recordPerfFrame(frameMs: number): void {
+    this.perfReportFrameMsTotal += frameMs;
+    this.perfReportFrameMsMax = Math.max(this.perfReportFrameMsMax, frameMs);
+    if (frameMs > 50) this.perfReportFramesOver50Ms += 1;
+    if (frameMs > 100) this.perfReportFramesOver100Ms += 1;
+    if (frameMs > 250) this.perfReportFramesOver250Ms += 1;
+    for (let i = 0; i < PERF_FRAME_BUCKETS_MS.length; i += 1) {
+      if (frameMs <= PERF_FRAME_BUCKETS_MS[i]) {
+        this.perfReportFrameBuckets[i] += 1;
+        return;
+      }
+    }
+    this.perfReportFrameBuckets[PERF_FRAME_BUCKETS_MS.length - 1] += 1;
+  }
+
+  private recordOnlineInputPerf(input: PlayerInput, previous: PlayerInput): void {
+    if (networkInputStateEquals(input, previous)) this.perfReportUnchangedInputCount += 1;
+    this.perfReportInputEdgeCount += countInputEdges(input);
+
+    const sampleStride = Math.max(1, Math.floor(CLIENT_INPUT_RATE / 4));
+    if (
+      this.perfReportInputJsonByteSamples < 8 &&
+      (this.perfReportInputCount + 1) % sampleStride === 0 &&
+      isPerfDebugEnabled()
+    ) {
+      const bytes = this.multiplayer.estimateInputCommandJsonBytes(input);
+      this.perfReportInputJsonBytesTotal += bytes;
+      this.perfReportInputJsonBytesMax = Math.max(this.perfReportInputJsonBytesMax, bytes);
+      this.perfReportInputJsonByteSamples += 1;
+    }
   }
 
   private updatePredictionDebugMetrics(local: PlayerState | null): void {
@@ -1750,8 +1810,17 @@ export class ArenaScene {
     this.perfReportTimer = 0;
     this.perfReportFrameCount = 0;
     this.perfReportInputCount = 0;
+    this.perfReportUnchangedInputCount = 0;
+    this.perfReportInputEdgeCount = 0;
+    this.perfReportInputJsonBytesTotal = 0;
+    this.perfReportInputJsonBytesMax = 0;
+    this.perfReportInputJsonByteSamples = 0;
     this.perfReportFrameMsTotal = 0;
     this.perfReportFrameMsMax = 0;
+    this.perfReportFramesOver50Ms = 0;
+    this.perfReportFramesOver100Ms = 0;
+    this.perfReportFramesOver250Ms = 0;
+    this.perfReportFrameBuckets.fill(0);
     this.perfReportCorrectionCount = 0;
     this.perfReportSnapCount = 0;
     this.perfReportMaxCorrectionM = 0;
@@ -2842,6 +2911,71 @@ function formatCountMap(counts: Record<string, number>): string {
   const entries = Object.entries(counts).filter(([, count]) => count > 0);
   if (entries.length === 0) return 'none';
   return entries.map(([key, count]) => `${key}:${count}`).join(',');
+}
+
+function percentileFromBuckets(buckets: readonly number[], totalCount: number, percentile: number): number {
+  if (totalCount <= 0) return 0;
+  const target = Math.max(1, Math.ceil(totalCount * percentile));
+  let seen = 0;
+  for (let i = 0; i < buckets.length; i += 1) {
+    seen += buckets[i];
+    if (seen >= target) return PERF_FRAME_BUCKETS_MS[i];
+  }
+  return PERF_FRAME_BUCKETS_MS[PERF_FRAME_BUCKETS_MS.length - 1];
+}
+
+function networkInputStateEquals(a: PlayerInput, b: PlayerInput): boolean {
+  return (
+    a.moveX === b.moveX &&
+    a.moveZ === b.moveZ &&
+    vec3StateEquals(a.dashDirection, b.dashDirection) &&
+    a.lookYawRadians === b.lookYawRadians &&
+    a.lookPitchRadians === b.lookPitchRadians &&
+    a.jumpPressed === b.jumpPressed &&
+    a.jumpHeld === b.jumpHeld &&
+    a.dashPressed === b.dashPressed &&
+    a.crouchPressed === b.crouchPressed &&
+    a.crouchHeld === b.crouchHeld &&
+    a.slidePressed === b.slidePressed &&
+    a.slideHeld === b.slideHeld &&
+    a.backflipPressed === b.backflipPressed &&
+    a.pickupPressed === b.pickupPressed &&
+    a.dropPressed === b.dropPressed &&
+    a.fakeThrowPressed === b.fakeThrowPressed &&
+    a.fakeThrowHeld === b.fakeThrowHeld &&
+    a.leftHandPressed === b.leftHandPressed &&
+    a.leftHandHeld === b.leftHandHeld &&
+    a.rightHandPressed === b.rightHandPressed &&
+    a.rightHandHeld === b.rightHandHeld &&
+    a.leftHandReleased === b.leftHandReleased &&
+    a.rightHandReleased === b.rightHandReleased &&
+    a.leftCatchAttemptId === b.leftCatchAttemptId &&
+    a.rightCatchAttemptId === b.rightCatchAttemptId &&
+    a.backflipThrowTier === b.backflipThrowTier &&
+    a.resetSerial === b.resetSerial &&
+    a.interactHeld === b.interactHeld
+  );
+}
+
+function vec3StateEquals(a: Vec3, b: Vec3): boolean {
+  return a.x === b.x && a.y === b.y && a.z === b.z;
+}
+
+function countInputEdges(input: PlayerInput): number {
+  let count = 0;
+  if (input.jumpPressed) count += 1;
+  if (input.dashPressed) count += 1;
+  if (input.crouchPressed) count += 1;
+  if (input.slidePressed) count += 1;
+  if (input.backflipPressed) count += 1;
+  if (input.pickupPressed) count += 1;
+  if (input.dropPressed) count += 1;
+  if (input.fakeThrowPressed) count += 1;
+  if (input.leftHandPressed) count += 1;
+  if (input.rightHandPressed) count += 1;
+  if (input.leftHandReleased) count += 1;
+  if (input.rightHandReleased) count += 1;
+  return count;
 }
 
 function neutralNetInput(yawRadians: number, pitchRadians = 0): PlayerInput {

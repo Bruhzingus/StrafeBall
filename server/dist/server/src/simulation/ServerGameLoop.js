@@ -335,6 +335,7 @@ class ServerGameLoop {
         if (rawInput.resetSerial !== undefined) {
             const inputResetSerial = Math.max(0, Math.trunc(Number(rawInput.resetSerial) || 0));
             if (inputResetSerial < this.resetSerial) {
+                this.playerNetWindowStats(playerId).staleResetInputs += 1;
                 if ((rawInput.leftCatchAttemptId ?? 0) > 0 || (rawInput.rightCatchAttemptId ?? 0) > 0) {
                     this.catchTrace(`input-received player=${playerId} seq=${seq} resetSerial=${inputResetSerial}/${this.resetSerial}` +
                         ` left=${rawInput.leftCatchAttemptId ?? 0} right=${rawInput.rightCatchAttemptId ?? 0} result=drop reason=stale-reset`);
@@ -345,6 +346,7 @@ class ServerGameLoop {
         const lastSeq = this.lastEnqueuedSeqByPlayerId.get(playerId) ?? 0;
         const sequence = Number.isFinite(seq) ? seq : 0;
         if (sequence > 0 && sequence <= lastSeq) {
+            this.playerNetWindowStats(playerId).duplicateOrOutOfOrderInputs += 1;
             if ((rawInput.leftCatchAttemptId ?? 0) > 0 || (rawInput.rightCatchAttemptId ?? 0) > 0) {
                 this.catchTrace(`input-received player=${playerId} seq=${sequence} lastSeq=${lastSeq}` +
                     ` left=${rawInput.leftCatchAttemptId ?? 0} right=${rawInput.rightCatchAttemptId ?? 0} result=drop reason=stale-seq`);
@@ -1219,6 +1221,8 @@ class ServerGameLoop {
                 playerId: player.id,
                 lastProcessedInputSeq: player.lastProcessedInputSeq,
                 lastEnqueuedInputSeq: this.lastEnqueuedSeqByPlayerId.get(player.id) ?? 0,
+                duplicateOrOutOfOrderInputs: window?.duplicateOrOutOfOrderInputs ?? 0,
+                staleResetInputs: window?.staleResetInputs ?? 0,
                 inputQueueDepthCurrent: queueDepthCurrent,
                 inputQueueDepthAvg: window && window.inputQueueDepthSamples > 0
                     ? window.inputQueueDepthTotal / window.inputQueueDepthSamples
@@ -1257,7 +1261,9 @@ class ServerGameLoop {
                 inputQueueDepthMax: 0,
                 inputsDrainedTotal: 0,
                 inputsDrainedSamples: 0,
-                inputsDrainedMax: 0
+                inputsDrainedMax: 0,
+                duplicateOrOutOfOrderInputs: 0,
+                staleResetInputs: 0
             };
             this.playerNetWindowStatsByPlayerId.set(playerId, stats);
         }

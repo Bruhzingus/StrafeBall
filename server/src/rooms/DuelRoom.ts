@@ -1,4 +1,4 @@
-import { Client, Room } from 'colyseus';
+import { Client, Room, getMessageBytes, Protocol } from 'colyseus';
 import { monitorEventLoopDelay, performance } from 'node:perf_hooks';
 import type {
   BattleMusicSyncMessage,
@@ -115,10 +115,20 @@ export class DuelRoom extends Room {
   private snapshotFullPayloadBytesMax = 0;
   private snapshotCompactPayloadBytesTotal = 0;
   private snapshotCompactPayloadBytesMax = 0;
+  private snapshotFrameBytesTotal = 0;
+  private snapshotFrameBytesMax = 0;
+  private snapshotFullFrameBytesTotal = 0;
+  private snapshotFullFrameBytesMax = 0;
+  private snapshotCompactFrameBytesTotal = 0;
+  private snapshotCompactFrameBytesMax = 0;
   private snapshotPayloadSamples = 0;
   private snapshotWsBufferedBytesTotal = 0;
   private snapshotWsBufferedBytesMax = 0;
   private snapshotWsBufferedSamples = 0;
+  private loopWakeStallsOver50MsThisWindow = 0;
+  private loopWakeStallsOver100MsThisWindow = 0;
+  private loopWakeStallsOver500MsThisWindow = 0;
+  private loopWakeDelayMsMax = 0;
   private simulationAccumulatorMs = 0;
   private lastLoopWakeAtMs = 0;
   private nextSnapshotDueAtMs = 0;
@@ -136,6 +146,8 @@ export class DuelRoom extends Room {
   private readonly handlerRejectsByType = new Map<string, number>();
   private readonly handlerRejectsByPlayerId = new Map<string, number>();
   private readonly snapshotStatsByPlayerId = new Map<string, ClientWindowSnapshotStats>();
+  private lastCpuUsage = process.cpuUsage();
+  private lastHeapUsedBytes = process.memoryUsage().heapUsed;
 
   onCreate(options: DuelRoomOptions = {}): void {
     activeRoomCount += 1;
@@ -302,10 +314,11 @@ export class DuelRoom extends Room {
         return;
       }
 
-      if (this.lastLoopWakeAtMs === 0) this.lastLoopWakeAtMs = now;
+      const rawElapsedMs = this.lastLoopWakeAtMs === 0 ? 0 : now - this.lastLoopWakeAtMs;
+      if (rawElapsedMs > 0) this.recordLoopWakeDelay(rawElapsedMs);
       if (this.nextSnapshotDueAtMs === 0) this.nextSnapshotDueAtMs = now + SNAPSHOT_INTERVAL_MS;
       // Monotonic clock; clamp the elapsed slice so an alt-tab/GC pause can't dump a huge backlog.
-      const elapsedMs = Math.min(MAX_ACCUMULATOR_CLAMP_MS, now - this.lastLoopWakeAtMs);
+      const elapsedMs = Math.min(MAX_ACCUMULATOR_CLAMP_MS, rawElapsedMs);
       this.lastLoopWakeAtMs = now;
       this.simulationAccumulatorMs += elapsedMs;
 
@@ -448,10 +461,20 @@ export class DuelRoom extends Room {
     this.snapshotFullPayloadBytesMax = 0;
     this.snapshotCompactPayloadBytesTotal = 0;
     this.snapshotCompactPayloadBytesMax = 0;
+    this.snapshotFrameBytesTotal = 0;
+    this.snapshotFrameBytesMax = 0;
+    this.snapshotFullFrameBytesTotal = 0;
+    this.snapshotFullFrameBytesMax = 0;
+    this.snapshotCompactFrameBytesTotal = 0;
+    this.snapshotCompactFrameBytesMax = 0;
     this.snapshotPayloadSamples = 0;
     this.snapshotWsBufferedBytesTotal = 0;
     this.snapshotWsBufferedBytesMax = 0;
     this.snapshotWsBufferedSamples = 0;
+    this.loopWakeStallsOver50MsThisWindow = 0;
+    this.loopWakeStallsOver100MsThisWindow = 0;
+    this.loopWakeStallsOver500MsThisWindow = 0;
+    this.loopWakeDelayMsMax = 0;
     this.incomingMessagesThisWindow = 0;
     this.incomingMessagesByType.clear();
     this.incomingMessagesByPlayerId.clear();
@@ -509,7 +532,12 @@ export class DuelRoom extends Room {
     const avgSnapshotBroadcastMs = this.snapshotsThisWindow > 0 ? this.snapshotBroadcastMsTotal / this.snapshotsThisWindow : 0;
     const avgSnapshotLateMs = this.snapshotsThisWindow > 0 ? this.snapshotLateMsTotal / this.snapshotsThisWindow : 0;
     const eventLoopDelayAvgMs = this.eventLoopDelay.mean > 0 ? this.eventLoopDelay.mean / 1e6 : 0;
+    const eventLoopDelayP95Ms = this.eventLoopDelay.percentile(95) > 0 ? this.eventLoopDelay.percentile(95) / 1e6 : 0;
     const eventLoopDelayMaxMs = this.eventLoopDelay.max > 0 ? this.eventLoopDelay.max / 1e6 : 0;
+    const cpuUsage = process.cpuUsage(this.lastCpuUsage);
+    const cpuMs = (cpuUsage.user + cpuUsage.system) / 1000;
+    const cpuPct = elapsedMs > 0 ? (cpuMs / elapsedMs) * 100 : 0;
+    this.lastCpuUsage = process.cpuUsage();
     const socketBuffer = this.socketBufferStats();
     const wsBufferedAvg = this.snapshotWsBufferedSamples > 0
       ? Math.round(this.snapshotWsBufferedBytesTotal / this.snapshotWsBufferedSamples)
@@ -519,6 +547,18 @@ export class DuelRoom extends Room {
     const playerNetStats = this.game.drainPlayerNetworkStats();
     const roomAgeSec = Math.max(0, (Date.now() - this.createdAtMs) / 1000);
     const incomingRate = this.incomingMessagesThisWindow / elapsedSeconds;
+    const heapGrowthBytes = mem.heapUsed - this.lastHeapUsedBytes;
+    this.lastHeapUsedBytes = mem.heapUsed;
+    const avgFrameBytes = this.snapshotPayloadSamples > 0
+      ? Math.round(this.snapshotFrameBytesTotal / this.snapshotPayloadSamples)
+      : 0;
+    const avgFullFrameBytes = this.snapshotPayloadSamples > 0
+      ? Math.round(this.snapshotFullFrameBytesTotal / this.snapshotPayloadSamples)
+      : 0;
+    const avgCompactFrameBytes = this.snapshotPayloadSamples > 0
+      ? Math.round(this.snapshotCompactFrameBytesTotal / this.snapshotPayloadSamples)
+      : 0;
+    const estimatedSnapshotOutBytesPerSec = avgFrameBytes * (this.snapshotClientSendsThisWindow / elapsedSeconds);
 
     // Combat counters for this window (verify the lag-comp catch fix in production).
     const c = this.game.drainCombatMetrics();
@@ -540,9 +580,12 @@ export class DuelRoom extends Room {
       `combat={catchTry=${c.catchAttemptsOpened} catch=${c.catches} reclaim=${c.reclaimCatches} parry=${c.parries} hit=${c.hits} revert=${c.hitReverts}} ` +
       `accumulatorCaps=${this.stepCapHitsThisWindow} ` +
       `snapshotBytes activeAvg=${avgPayload} activeMax=${this.snapshotPayloadBytesMax} fullAvg=${avgFullPayload} fullMax=${this.snapshotFullPayloadBytesMax} compactAvg=${avgCompactPayload} compactMax=${this.snapshotCompactPayloadBytesMax} ` +
+      `snapshotFrameBytes activeAvg=${avgFrameBytes} activeMax=${this.snapshotFrameBytesMax} fullAvg=${avgFullFrameBytes} fullMax=${this.snapshotFullFrameBytesMax} compactAvg=${avgCompactFrameBytes} compactMax=${this.snapshotCompactFrameBytesMax} estimatedOut=${Math.round(estimatedSnapshotOutBytesPerSec)}B/s ` +
       `wsBuffered avg=${wsBufferedAvg}B max=${wsBufferedMax}B ` +
-      `eventLoopMs avg=${eventLoopDelayAvgMs.toFixed(2)} max=${eventLoopDelayMaxMs.toFixed(2)} ` +
-      `mem heapUsed=${mb(mem.heapUsed)}MB heapTotal=${mb(mem.heapTotal)}MB rss=${mb(mem.rss)}MB`
+      `eventLoopMs avg=${eventLoopDelayAvgMs.toFixed(2)} p95=${eventLoopDelayP95Ms.toFixed(2)} max=${eventLoopDelayMaxMs.toFixed(2)} ` +
+      `loopWakeMs max=${this.loopWakeDelayMsMax.toFixed(2)} stalls50=${this.loopWakeStallsOver50MsThisWindow} stalls100=${this.loopWakeStallsOver100MsThisWindow} stalls500=${this.loopWakeStallsOver500MsThisWindow} ` +
+      `cpu=${cpuPct.toFixed(1)}% ` +
+      `mem heapUsed=${mb(mem.heapUsed)}MB heapTotal=${mb(mem.heapTotal)}MB external=${mb(mem.external)}MB rss=${mb(mem.rss)}MB heapGrowth=${mb(heapGrowthBytes)}MB`
     );
 
     this.log(
@@ -561,7 +604,8 @@ export class DuelRoom extends Room {
         playerNetStats,
         this.incomingMessagesByPlayerIdAndType,
         this.snapshotStatsByPlayerId,
-        elapsedSeconds
+        elapsedSeconds,
+        avgFrameBytes
       )}`
     );
 
@@ -607,14 +651,32 @@ export class DuelRoom extends Room {
       const compactBytes = USE_COMPACT_SNAPSHOTS && payload.type === 'snapshot-compact'
         ? activeBytes
         : JSON.stringify(makeCompactSnapshot(snapshot)).length;
+      const activeFrameBytes = encodedRoomMessageBytes('snapshot', payload);
+      const fullFrameBytes = encodedRoomMessageBytes('snapshot', snapshot);
+      const compactFrameBytes = USE_COMPACT_SNAPSHOTS && payload.type === 'snapshot-compact'
+        ? activeFrameBytes
+        : encodedRoomMessageBytes('snapshot', makeCompactSnapshot(snapshot));
       this.snapshotPayloadBytesTotal += activeBytes;
       this.snapshotPayloadBytesMax = Math.max(this.snapshotPayloadBytesMax, activeBytes);
       this.snapshotFullPayloadBytesTotal += fullBytes;
       this.snapshotFullPayloadBytesMax = Math.max(this.snapshotFullPayloadBytesMax, fullBytes);
       this.snapshotCompactPayloadBytesTotal += compactBytes;
       this.snapshotCompactPayloadBytesMax = Math.max(this.snapshotCompactPayloadBytesMax, compactBytes);
+      this.snapshotFrameBytesTotal += activeFrameBytes;
+      this.snapshotFrameBytesMax = Math.max(this.snapshotFrameBytesMax, activeFrameBytes);
+      this.snapshotFullFrameBytesTotal += fullFrameBytes;
+      this.snapshotFullFrameBytesMax = Math.max(this.snapshotFullFrameBytesMax, fullFrameBytes);
+      this.snapshotCompactFrameBytesTotal += compactFrameBytes;
+      this.snapshotCompactFrameBytesMax = Math.max(this.snapshotCompactFrameBytesMax, compactFrameBytes);
       this.snapshotPayloadSamples += 1;
     }
+  }
+
+  private recordLoopWakeDelay(delayMs: number): void {
+    this.loopWakeDelayMsMax = Math.max(this.loopWakeDelayMsMax, delayMs);
+    if (delayMs > 50) this.loopWakeStallsOver50MsThisWindow += 1;
+    if (delayMs > 100) this.loopWakeStallsOver100MsThisWindow += 1;
+    if (delayMs > 500) this.loopWakeStallsOver500MsThisWindow += 1;
   }
 
   private broadcastStepEvents(): void {
@@ -850,6 +912,10 @@ function readClientMessagesLastSecond(client: Client): number | null {
   return typeof raw._numMessagesLastSecond === 'number' ? raw._numMessagesLastSecond : null;
 }
 
+function encodedRoomMessageBytes(type: string | number, message: unknown): number {
+  return getMessageBytes.raw(Protocol.ROOM_DATA, type, message).byteLength;
+}
+
 function incrementCounter(map: Map<string, number>, key: string, delta = 1): void {
   map.set(key, (map.get(key) ?? 0) + delta);
 }
@@ -888,7 +954,8 @@ function formatPerClientPerfLine(
   playerNetStats: PlayerNetworkDebugStats[],
   incomingByPlayerIdAndType: Map<string, Map<string, number>>,
   snapshotStatsByPlayerId: Map<string, ClientWindowSnapshotStats>,
-  elapsedSeconds: number
+  elapsedSeconds: number,
+  avgSnapshotFrameBytes: number
 ): string {
   if (players.length === 0) return 'none';
   const playerNetById = new Map(playerNetStats.map((stats) => [stats.playerId, stats]));
@@ -903,6 +970,7 @@ function formatPerClientPerfLine(
       const pingRate = (incomingByType.get('ping') ?? 0) / elapsedSeconds;
       const snapshotRate = snapshots ? snapshots.snapshotSends / elapsedSeconds : 0;
       const snapshotSkipRate = snapshots ? snapshots.snapshotSkips / elapsedSeconds : 0;
+      const snapshotBytesPerSecond = Math.round(snapshotRate * avgSnapshotFrameBytes);
       const wsBufferedAvg = snapshots && snapshots.wsBufferedSamples > 0
         ? Math.round(snapshots.wsBufferedBytesTotal / snapshots.wsBufferedSamples)
         : 0;
@@ -911,10 +979,10 @@ function formatPerClientPerfLine(
         `${key}{input=${inputRate.toFixed(1)}/s ping=${pingRate.toFixed(1)}/s ` +
         `q=${(net?.inputQueueDepthAvg ?? 0).toFixed(2)}/${net?.inputQueueDepthMax ?? 0} cur=${net?.inputQueueDepthCurrent ?? 0} ` +
         `drain=${(net?.inputsDrainedAvg ?? 0).toFixed(2)}/${net?.inputsDrainedMax ?? 0} ` +
-        `seq=${net?.lastProcessedInputSeq ?? 0}/${net?.lastEnqueuedInputSeq ?? 0} ` +
+        `seq=${net?.lastProcessedInputSeq ?? 0}/${net?.lastEnqueuedInputSeq ?? 0} dup=${net?.duplicateOrOutOfOrderInputs ?? 0} staleReset=${net?.staleResetInputs ?? 0} ` +
         `ackAgeEst=${formatNullableMs(net?.ackAgeEstimateMs ?? null)} inputAge=${Math.round(net?.lastInputAgeMs ?? 0)}ms ` +
         `snap=${snapshotRate.toFixed(1)}/s skip=${snapshotSkipRate.toFixed(1)}/s ` +
-        `ws=${wsBufferedAvg}/${wsBufferedMax}B colyseusSeenMax=${snapshots?.colyseusMessagesPerSecondMax ?? 0}/s}`
+        `snapBytes~=${snapshotBytesPerSecond}B/s ws=${wsBufferedAvg}/${wsBufferedMax}B colyseusSeenMax=${snapshots?.colyseusMessagesPerSecondMax ?? 0}/s}`
       );
     })
     .join(' ');

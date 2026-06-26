@@ -248,15 +248,23 @@ export class MultiplayerClient {
     // rewind window, and a transient uplink-queue spike (the thing that inflates raw ping to ~3000ms)
     // must not widen lag-comp. The server still clamps/EMA-smooths it, so this only makes the rewind
     // track true network RTT more faithfully during congestion — no balance change.
+    this.room.send('input', this.buildInputCommand(input));
+  }
+
+  estimateInputCommandJsonBytes(input: PlayerInput): number {
+    return JSON.stringify(this.buildInputCommand(input)).length;
+  }
+
+  private buildInputCommand(input: PlayerInput): InputCommand {
     const reportedRtt = this.rttEstimateMs;
-    this.room.send('input', {
+    return {
       type: 'input',
       playerId: this.localPlayerId,
       sequence: input.sequence,
       clientTimeMs: input.clientTimeMs,
       ...(reportedRtt !== null ? { rttMs: reportedRtt } : {}),
       input: toWireInput(input)
-    } satisfies InputCommand);
+    } satisfies InputCommand;
   }
 
   /** Update the rolling peak of the uplink WebSocket send buffer. Cheap (a couple of property reads
