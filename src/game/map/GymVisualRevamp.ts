@@ -10,7 +10,8 @@ import {
   PBRMaterial,
   Scene,
   StandardMaterial,
-  Texture
+  Texture,
+  VertexData
 } from '@babylonjs/core';
 import { TUNING } from '../config/tuning';
 import { MAT_SPECS, createBleacherTierSpecs } from '../../../shared/simulation/MapGeometry';
@@ -214,12 +215,12 @@ const GYM_MATERIAL_TUNING = {
     metallic: 0,
     // Lowered slightly within the 0.56–0.68 spec range for a touch more highlight definition along
     // the raised cushion's bevel edge — the macro shape was reading flat under restrained lighting.
-    roughness: 0.64,
+    roughness: 0.66,
     // Fine vinyl grain only — subtle relief, not embossed fabric.
     normalLevel: 0.2,
     aoStrength: 0.12,
     // Faintest satin reflection response; the pads must never read glossy or mirror-like.
-    environmentIntensity: 0.045,
+    environmentIntensity: 0.04,
     // Texture repeats per ~1.6 m pad face: small enough to read as fine grain, never stretched/noisy.
     uScale: 1.7,
     vScale: 2.25,
@@ -928,13 +929,10 @@ function createWallBounceGlow(scene: Scene): void {
 }
 
 function createWallPaddingDetails(scene: Scene): void {
-  // Dark recessed backing board behind the raised pad modules. The real beveled pad meshes
-  // (createRaisedWallPadPanels) project ~0.105 m off the wall; this board sits ~0.065 m off the wall,
-  // so the narrow gaps between modules reveal it as a believable dark recess — no fake stitch lines,
-  // no bright royal-blue decals (those have been removed). Visual-only, never collision.
-  const backingMaterial = solidMaterial(scene, 'decor_wall_pad_backing_mat', new Color3(0.075, 0.16, 0.38), {
-    emissive: new Color3(0.006, 0.018, 0.055),
-    specular: new Color3(0.04, 0.055, 0.085)
+  // Recessed backing board only. It sits behind the pad faces so the narrow module gaps read as depth.
+  const backingMaterial = solidMaterial(scene, 'decor_wall_pad_backing_mat', new Color3(0.026, 0.04, 0.09), {
+    emissive: new Color3(0.0015, 0.003, 0.009),
+    specular: new Color3(0.025, 0.03, 0.045)
   });
 
   for (const side of frontBackWallSides()) {
@@ -992,18 +990,15 @@ function createWallPadNavyMaterial(scene: Scene): PBRMaterial {
   material.roughness = t.roughness;
   material.environmentIntensity = t.environmentIntensity;
   material.emissiveColor = new Color3(...t.emissive);
+  material.backFaceCulling = false;
   return material;
 }
 
-const WALL_PAD_MODULE_COUNT = 16;
+const WALL_PAD_MODULE_COUNT = 12;
 const WALL_PAD_SIDE_INSET = 0.24;
-const WALL_PAD_SEAM_GAP = 0.014;
-const PAD_BACK_DEPTH = 0.018;
-const PAD_BODY_DEPTH = 0.05;
-const PAD_SHOULDER_DEPTH = 0.016;
-const PAD_FACE_DEPTH = 0.008;
-const PAD_BULGE_DEPTH = 0.002;
-const PAD_TOTAL_DEPTH = PAD_BACK_DEPTH + PAD_BODY_DEPTH + PAD_SHOULDER_DEPTH + PAD_FACE_DEPTH + PAD_BULGE_DEPTH;
+const WALL_PAD_SEAM_GAP = 0.016;
+const PAD_TOTAL_DEPTH = 0.096;
+const PAD_FRONT_BULGE = 0.006;
 const PAD_CENTER_INSET = WALL_PAD_DECAL_INSET - 0.038;
 const PAD_FACE_INSET = PAD_CENTER_INSET + PAD_TOTAL_DEPTH * 0.5;
 
@@ -1013,35 +1008,62 @@ function createWallPadModuleMesh(
   options: { width: number; height: number; material: Material }
 ): Mesh {
   const { width, height, material } = options;
-  const bodyWidth = Math.max(0.01, width - 0.026);
-  const bodyHeight = Math.max(0.01, height - 0.026);
-  const shoulderWidth = Math.max(0.01, width - 0.07);
-  const shoulderHeight = Math.max(0.01, height - 0.068);
-  const faceWidth = Math.max(0.01, width - 0.112);
-  const faceHeight = Math.max(0.01, height - 0.106);
-  const bulgeWidth = Math.max(0.01, width - 0.17);
-  const bulgeHeight = Math.max(0.01, height - 0.164);
   const frontZ = -PAD_TOTAL_DEPTH * 0.5;
   const backZ = frontZ + PAD_TOTAL_DEPTH;
+  const rings = [
+    { insetX: 0, insetY: 0, z: backZ },
+    { insetX: 0, insetY: 0, z: frontZ + 0.034 },
+    { insetX: 0.018, insetY: 0.018, z: frontZ + 0.018 },
+    { insetX: 0.034, insetY: 0.032, z: frontZ + PAD_FRONT_BULGE },
+    { insetX: 0.09, insetY: 0.085, z: frontZ }
+  ];
 
-  const parts: Mesh[] = [];
-  const pushPart = (partName: string, partWidth: number, partHeight: number, partDepth: number, frontFaceZ: number) => {
-    const part = MeshBuilder.CreateBox(partName, { width: partWidth, height: partHeight, depth: partDepth }, scene);
-    part.position.z = frontFaceZ + partDepth * 0.5;
-    parts.push(part);
-  };
+  const positions: number[] = [];
+  const uvs: number[] = [];
+  for (const ring of rings) {
+    const halfWidth = Math.max(0.01, width * 0.5 - ring.insetX);
+    const halfHeight = Math.max(0.01, height * 0.5 - ring.insetY);
+    const points = [
+      [-halfWidth, -halfHeight],
+      [halfWidth, -halfHeight],
+      [halfWidth, halfHeight],
+      [-halfWidth, halfHeight]
+    ] as const;
+    for (const [x, y] of points) {
+      positions.push(x, y, ring.z);
+      uvs.push((x / width) + 0.5, 1 - ((y / height) + 0.5));
+    }
+  }
 
-  pushPart(`${name}_backer`, width, height, PAD_BACK_DEPTH, backZ - PAD_BACK_DEPTH);
-  pushPart(`${name}_body`, bodyWidth, bodyHeight, PAD_BODY_DEPTH, frontZ + PAD_BULGE_DEPTH + PAD_FACE_DEPTH + PAD_SHOULDER_DEPTH);
-  pushPart(`${name}_shoulder`, shoulderWidth, shoulderHeight, PAD_SHOULDER_DEPTH, frontZ + PAD_BULGE_DEPTH + PAD_FACE_DEPTH);
-  pushPart(`${name}_face`, faceWidth, faceHeight, PAD_FACE_DEPTH, frontZ + PAD_BULGE_DEPTH);
-  pushPart(`${name}_bulge`, bulgeWidth, bulgeHeight, PAD_BULGE_DEPTH, frontZ);
+  const indices: number[] = [];
+  indices.push(0, 2, 1, 0, 3, 2);
+  const lastRingStart = (rings.length - 1) * 4;
+  indices.push(lastRingStart, lastRingStart + 2, lastRingStart + 1, lastRingStart, lastRingStart + 3, lastRingStart + 2);
+  for (let ringIndex = 0; ringIndex < rings.length - 1; ringIndex += 1) {
+    const current = ringIndex * 4;
+    const next = current + 4;
+    for (let corner = 0; corner < 4; corner += 1) {
+      const a = current + corner;
+      const b = current + ((corner + 1) % 4);
+      const c = next + ((corner + 1) % 4);
+      const d = next + corner;
+      indices.push(a, b, c, a, c, d);
+    }
+  }
 
-  const merged = Mesh.MergeMeshes(parts, true, true, undefined, false, false) ?? parts[0];
-  merged.name = name;
-  merged.material = material;
-  merged.isPickable = false;
-  return merged;
+  const normals: number[] = [];
+  VertexData.ComputeNormals(positions, indices, normals);
+
+  const mesh = new Mesh(name, scene);
+  const vertexData = new VertexData();
+  vertexData.positions = positions;
+  vertexData.indices = indices;
+  vertexData.normals = normals;
+  vertexData.uvs = uvs;
+  vertexData.applyToMesh(mesh);
+  mesh.material = material;
+  mesh.isPickable = false;
+  return mesh;
 }
 
 function createRaisedWallPadPanels(scene: Scene): void {
@@ -1070,78 +1092,59 @@ function createRaisedWallPadPanels(scene: Scene): void {
 const WALL_PAD_WORDMARK = 'STRAFEBALL';
 
 function createWallPadWordmark(scene: Scene): void {
-  const letterMaterials = new Map<string, StandardMaterial>();
+  const material = createWallPadWordmarkMaterial(scene);
   const wordmarkInset = PAD_FACE_INSET + 0.003;
 
   for (const side of frontBackWallSides()) {
     const layout = wallPadLayout(wallSpan(side));
-    const letterCount = WALL_PAD_WORDMARK.length;
-    const moduleStart = Math.floor((layout.count - letterCount) / 2);
-
-    for (let j = 0; j < letterCount; j += 1) {
-      const letterIndex = side === 'south' ? letterCount - 1 - j : j;
-      const letter = WALL_PAD_WORDMARK[letterIndex];
-      const moduleIndex = moduleStart + j;
-      const offset = layout.start + moduleIndex * (layout.panelWidth + layout.gap);
-
-      let material = letterMaterials.get(letter);
-      if (!material) {
-        material = createWallPadLetterMaterial(scene, letter);
-        letterMaterials.set(letter, material);
-      }
-
-      const width = layout.panelWidth * 0.5;
-      const height = WALL_PAD_HEIGHT * 0.45;
-      createWallPlane(
-        scene,
-        `decor_wall_pad_wordmark_${side}_${String(moduleIndex).padStart(2, '0')}`,
-        side,
-        width,
-        height,
-        WALL_PAD_HEIGHT * 0.525,
-        offset,
-        material,
-        wordmarkInset
-      );
-    }
+    const wordmarkWidth = layout.panelWidth * 10 + layout.gap * 9;
+    createWallPlane(
+      scene,
+      `decor_wall_pad_wordmark_${side}`,
+      side,
+      wordmarkWidth,
+      WALL_PAD_HEIGHT * 0.52,
+      WALL_PAD_HEIGHT * 0.53,
+      0,
+      material,
+      wordmarkInset
+    );
   }
 }
 
-function createWallPadLetterMaterial(scene: Scene, letter: string): StandardMaterial {
-  const existing = scene.getMaterialByName(`decor_wall_pad_letter_${letter}_mat`);
+function createWallPadWordmarkMaterial(scene: Scene): StandardMaterial {
+  const existing = scene.getMaterialByName('decor_wall_pad_wordmark_mat');
   if (existing instanceof StandardMaterial) return existing;
 
-  const width = 256;
-  const height = 344;
-  const texture = new DynamicTexture(`decor_wall_pad_letter_${letter}_tex`, { width, height }, scene, true);
+  const svg = `
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 4096 246">
+  <text x="2062" y="153" text-anchor="middle" dominant-baseline="middle"
+    font-family="Impact, 'Arial Black', sans-serif" font-size="176" font-weight="900"
+    textLength="3380" lengthAdjust="spacingAndGlyphs" fill="#07132d">STRAFEBALL</text>
+  <text x="2048" y="136" text-anchor="middle" dominant-baseline="middle"
+    font-family="Impact, 'Arial Black', sans-serif" font-size="176" font-weight="900"
+    textLength="3380" lengthAdjust="spacingAndGlyphs" fill="#f6f1e4"
+    stroke="#c79a3a" stroke-width="10" stroke-linejoin="round" paint-order="stroke fill">STRAFEBALL</text>
+</svg>`.trim();
+  const texture = new Texture(
+    `data:image/svg+xml;charset=utf-8,${encodeURIComponent(svg)}`,
+    scene,
+    false,
+    false,
+    Texture.TRILINEAR_SAMPLINGMODE
+  );
+  texture.name = 'decor_wall_pad_wordmark_svg_tex';
   texture.hasAlpha = true;
   texture.anisotropicFilteringLevel = 8;
-  texture.updateSamplingMode(Texture.TRILINEAR_SAMPLINGMODE);
-  const ctx = texture.getContext() as CanvasRenderingContext2D;
-  ctx.clearRect(0, 0, width, height);
-  ctx.textAlign = 'center';
-  ctx.textBaseline = 'middle';
-  const fontSize = Math.round(height * 0.78);
-  ctx.font = `900 ${fontSize}px Impact, "Arial Black", sans-serif`;
 
-  ctx.fillStyle = '#0a1530';
-  ctx.fillText(letter, width / 2 + 5, height / 2 + 7);
-  ctx.lineJoin = 'round';
-  ctx.lineWidth = Math.round(fontSize * 0.045);
-  ctx.strokeStyle = '#c79a3a';
-  ctx.strokeText(letter, width / 2, height / 2);
-  ctx.fillStyle = '#f6f1e4';
-  ctx.fillText(letter, width / 2, height / 2);
-  texture.update(true);
-
-  const material = new StandardMaterial(`decor_wall_pad_letter_${letter}_mat`, scene);
+  const material = new StandardMaterial('decor_wall_pad_wordmark_mat', scene);
   material.diffuseTexture = texture;
   material.opacityTexture = texture;
   material.useAlphaFromDiffuseTexture = true;
   material.emissiveTexture = texture;
-  material.emissiveColor = new Color3(0.12, 0.12, 0.11);
+  material.emissiveColor = new Color3(0.1, 0.095, 0.08);
   material.diffuseColor = new Color3(1, 1, 1);
-  material.specularColor = new Color3(0.04, 0.04, 0.04);
+  material.specularColor = new Color3(0.025, 0.025, 0.022);
   material.backFaceCulling = false;
   material.zOffset = -2;
   return material;
