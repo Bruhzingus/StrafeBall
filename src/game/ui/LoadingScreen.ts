@@ -25,6 +25,14 @@ export class LoadingScreen {
   private ready = false;
   private done = false;
   private rafId = 0;
+  private firstRenderableAtMs = 0;
+  private fallbackReadyAtMs = 0;
+  private framesSinceRenderable = 0;
+
+  // If Babylon never flips executeWhenReady() because of one stubborn late resource, but the scene
+  // is already rendering/interactable underneath, don't leave the splash stranded forever.
+  private static readonly FALLBACK_RENDERABLE_HOLD_MS = 300;
+  private static readonly FALLBACK_RENDERABLE_FRAME_COUNT = 10;
 
   private static readonly MESSAGES: ReadonlyArray<readonly [number, string]> = [
     [0, 'Warming up the gym…'],
@@ -62,6 +70,22 @@ export class LoadingScreen {
       // Hold a hair under full until the scene reports ready, so the bar doesn't sit at 100%
       // while the first frame is still compiling shaders.
       this.target = Math.max(this.target, this.ready ? 1 : Math.min(measured, 0.97));
+
+      if (pending === 0 && this.scene.isReady()) {
+        if (this.firstRenderableAtMs === 0) this.firstRenderableAtMs = performance.now();
+        this.framesSinceRenderable += 1;
+        if (
+          this.ready === false &&
+          this.framesSinceRenderable >= LoadingScreen.FALLBACK_RENDERABLE_FRAME_COUNT &&
+          performance.now() - this.firstRenderableAtMs >= LoadingScreen.FALLBACK_RENDERABLE_HOLD_MS
+        ) {
+          this.fallbackReadyAtMs = this.firstRenderableAtMs;
+          this.ready = true;
+        }
+      } else {
+        this.firstRenderableAtMs = 0;
+        this.framesSinceRenderable = 0;
+      }
     }
 
     // Ease the shown value toward the target; snap the last sliver so it always completes.
