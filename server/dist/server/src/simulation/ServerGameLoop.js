@@ -1896,7 +1896,9 @@ class ServerGameLoop {
                 continue;
             // knockDirection = the player's horizontal heading (normalized); fall back to mat→player so it
             // always tips away from the player. No impulse is applied anywhere — the mat simply falls.
-            const dir = (0, CollisionMath_1.normalize)((0, CollisionMath_1.vec3)(preVelocity.x, 0, preVelocity.z), (0, CollisionMath_1.normalize)((0, CollisionMath_1.vec3)(pos.x - spec.x, 0, pos.z - spec.z), (0, CollisionMath_1.vec3)(0, 0, 1)));
+            const pushDir = (0, CollisionMath_1.normalize)((0, CollisionMath_1.vec3)(preVelocity.x, 0, preVelocity.z), (0, CollisionMath_1.normalize)((0, CollisionMath_1.vec3)(pos.x - spec.x, 0, pos.z - spec.z), (0, CollisionMath_1.vec3)(0, 0, 1)));
+            const fallDir = (0, MapGeometry_1.matFallDirection)(pushDir);
+            const dir = (0, CollisionMath_1.vec3)(fallDir.x, 0, fallDir.z);
             this.state.mats[spec.id] = { ...this.state.mats[spec.id], knockedOver: true, knockDirection: dir };
             this.knockedOverMatIds.add(spec.id);
             knockedAny = true;
@@ -3277,8 +3279,14 @@ function resolveBallBounds(ball, bounceRule) {
     // A floor / back-wall contact always wins (kills now). Otherwise it was a side-wall/ceiling-only
     // contact: let the ball survive its first such bounce, die on the second.
     if (hitKillNow)
-        return (0, BallSim_1.applyBallBounce)(resolved, bounceRule);
+        return applySurfaceKillingBounce(resolved);
     return applyWallCeilingBounce(resolved, bounceRule);
+}
+function applySurfaceKillingBounce(ball) {
+    if (ball.phase !== 'live' && ball.phase !== 'deflected') {
+        return { ...ball, bounceCount: ball.bounceCount + 1 };
+    }
+    return { ...(0, BallSim_1.markBallDead)(ball), bounceCount: ball.bounceCount + 1 };
 }
 /**
  * Side-wall / ceiling bounce: a live/deflected ball survives its FIRST such bounce and dies on the
@@ -3359,7 +3367,7 @@ function resolveBallStaticBoxes(ball, boxes, logger, bounceRule) {
 function isSideWallLikeStaticBounce(box, axis) {
     // In the actual gym, the side bleachers occupy the low side-wall lane. A low bank shot hits
     // those X faces before it can reach the arena bounds, so classify that impact like a side wall.
-    return axis === 'x' && box?.kind === 'bleacher';
+    return axis === 'x' && box?.kind === 'bleacher' && box.id?.startsWith('bleacher_tier_') === true;
 }
 const SIDE_BLEACHER_COURT_FACE_X = constants_1.GAME_CONSTANTS.map.halfWidth -
     MapGeometry_1.BLEACHER_LAYOUT.wallInset -

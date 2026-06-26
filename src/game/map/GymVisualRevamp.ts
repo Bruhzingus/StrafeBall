@@ -57,6 +57,7 @@ const WALL_DECAL_INSET = 0.048;
 const WALL_PAD_DECAL_INSET = 0.085;
 const DECOR_META = { decorative: true, noGameplay: true };
 const WALL_PAD_HEIGHT = 2.46;
+const SPONSOR_BANNER_SCALE = 1.3;
 const GYM_TEXTURES = {
   // Floor + walls use downloaded PBR map sets (color + normal). The blue vinyl pad art and cover
   // mats keep their existing tuned stand-ins so the back-wall panels are unchanged. Originals on
@@ -1239,8 +1240,8 @@ function createGymBanners(scene: Scene): void {
     side: 'south',
     offset: -7.05,
     y: 5.82,
-    width: 2.72,
-    height: 1.53,
+    width: 2.72 * SPONSOR_BANNER_SCALE,
+    height: 1.53 * SPONSOR_BANNER_SCALE,
     title: 'SPONSORED BY',
     subtitle: 'TOMADUSTIN',
     palette: PALETTES.white,
@@ -1253,8 +1254,8 @@ function createGymBanners(scene: Scene): void {
     side: 'south',
     offset: 7.05,
     y: 5.82,
-    width: 2.72,
-    height: 1.53,
+    width: 2.72 * SPONSOR_BANNER_SCALE,
+    height: 1.53 * SPONSOR_BANNER_SCALE,
     title: 'SPONSORED BY',
     subtitle: 'JACYVAL',
     palette: PALETTES.white,

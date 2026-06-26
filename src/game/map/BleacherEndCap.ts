@@ -1,12 +1,12 @@
 import { Color3, Mesh, MeshBuilder, PBRMaterial, Scene } from '@babylonjs/core';
-import { BLEACHER_LAYOUT, BleacherTierSpec } from '../../../shared/simulation/MapGeometry';
+import { BLEACHER_ENDCAP_LAYOUT, BLEACHER_LAYOUT, BleacherTierSpec } from '../../../shared/simulation/MapGeometry';
 
 /**
  * Visual-only "retractable grandstand" end-cap for the exposed sides of the gym bleachers (the
  * `south_side`/`north_side` panel slots from createBleacherPanelSpecs). Replaces the old flat opaque
  * panel with a stepped fascia + galvanized guard rail + open support truss, built entirely from boxes
- * and cylinders (no GLB, no high-poly detail). The panel's collision AABB (createBleacherCollisionBoxes,
- * unchanged) is still the full solid wall — only the rendered look changes from solid to see-through.
+ * and cylinders (no GLB, no high-poly detail). createBleacherCollisionBoxes mirrors the visible
+ * fascia and rails, so the open end-cap gaps are playable instead of covered by a hidden wall.
  *
  * One builder function is called once per (side, zSign) corner rather than mirrored via GPU instances:
  * the geometry is cheap (a few dozen primitives) and per-corner merged meshes avoid any multi-material
@@ -23,15 +23,15 @@ const SLOPE = TIER_RISE / TIER_RUN;
 // (0.18) thick, so keeping every new layer within +-0.09 of that plane stays clear of the solid seat-tier
 // boxes behind it (which end at the court's halfLength) while reading as one thin end-cap assembly.
 const FRAME_SET_BACK = 0.05; // truss sits slightly toward the court, behind the fascia
-const RAIL_STAND_OFF = 0.06; // guard rail stands slightly proud on the court-facing side of the fascia
+const RAIL_STAND_OFF = BLEACHER_ENDCAP_LAYOUT.railStandOff; // guard rail stands slightly proud on the court-facing side of the fascia
 
 // Stepped fascia: a thin medium-gray BOARD that hugs the seat-tier silhouette's top edge and steps up
 // with the seats — NOT a solid floor-to-top fill (that read as a giant gray slab / barricade) and NOT a
 // new opaque backing wall. The board is FASCIA_BAND_HEIGHT tall, capping the upper portion of each tier;
 // the lower portion stays open so the support truss reads as retractable-bleacher structure.
-const FASCIA_THICKNESS = 0.06;
-const FASCIA_BAND_HEIGHT = 0.6;
-const FASCIA_GAP = 0.02; // small reveal at each step edge so the staircase silhouette reads cleanly
+const FASCIA_THICKNESS = BLEACHER_ENDCAP_LAYOUT.fasciaThickness;
+const FASCIA_BAND_HEIGHT = BLEACHER_ENDCAP_LAYOUT.fasciaBandHeight;
+const FASCIA_GAP = BLEACHER_ENDCAP_LAYOUT.fasciaGap; // small reveal at each step edge so the staircase silhouette reads cleanly
 
 // Simplified support truss: a small number of readable bays (vertical posts + one floor chord + one
 // X-brace per bay) that suggest gym-bleacher under-structure, not real engineering detail.
@@ -43,12 +43,12 @@ const BAY_WIDTH = TOTAL_RUN / SUPPORT_BAYS;
 
 // Simplified guard rail: one top handrail up the stair slope, three newel posts, and a small number of
 // evenly spaced balusters. Tubes kept thick enough that they don't shimmer at gameplay distance.
-const RAIL_HEIGHT_ABOVE_NOSING = 1.1;
-const RAIL_TOP_RADIUS = 0.026;
-const RAIL_POST_RADIUS = 0.03;
-const BALUSTER_RADIUS = 0.018;
-const BALUSTER_SPACING = 0.34;
-const BALUSTER_CLEARANCE = 0.06; // skip a baluster wherever a (thicker) newel post already stands
+const RAIL_HEIGHT_ABOVE_NOSING = BLEACHER_ENDCAP_LAYOUT.railHeightAboveNosing;
+const RAIL_TOP_RADIUS = BLEACHER_ENDCAP_LAYOUT.railTopRadius;
+const RAIL_POST_RADIUS = BLEACHER_ENDCAP_LAYOUT.railPostRadius;
+const BALUSTER_RADIUS = BLEACHER_ENDCAP_LAYOUT.balusterRadius;
+const BALUSTER_SPACING = BLEACHER_ENDCAP_LAYOUT.balusterSpacing;
+const BALUSTER_CLEARANCE = BLEACHER_ENDCAP_LAYOUT.balusterClearance; // skip a baluster wherever a (thicker) newel post already stands
 const RAIL_NEWEL_RUNS = [0, TOTAL_RUN / 2, TOTAL_RUN]; // front, middle, back
 
 /** Stepped seat-tier silhouette height (metres) at a horizontal distance `run` from the front edge. */

@@ -13,6 +13,12 @@ import {
 import { createRoomState, registerPlayerHit } from '../shared/simulation/MatchSim';
 import { createPlayerState } from '../shared/simulation/PlayerSim';
 import { stepMovement } from '../shared/simulation/MovementSim';
+import {
+  createBleacherCollisionBoxes,
+  createBleacherPanelSpecs,
+  createBleacherTierSpecs,
+  type AABB
+} from '../shared/simulation/MapGeometry';
 import { playerBodyHeight } from '../shared/simulation/PlayerHitbox';
 import { advanceNoBoundariesTimer, applyHalfCourtRule, applyScore, createMatchState } from '../shared/simulation/RuleSim';
 import { vec3 } from '../shared/simulation/CollisionMath';
@@ -64,6 +70,10 @@ function neutralInput(): PlayerInput {
     resetSerial: 0,
     interactHeld: false
   };
+}
+
+function containsPoint(box: AABB, x: number, y: number, z: number): boolean {
+  return x >= box.minX && x <= box.maxX && y >= box.minY && y <= box.maxY && z >= box.minZ && z <= box.maxZ;
 }
 
 describe('shared hand and pickup simulation', () => {
@@ -126,6 +136,31 @@ describe('shared movement simulation', () => {
     expect(next.movement.velocity.z).toBeCloseTo(10, 6);
   });
 
+  it('gains meaningful speed from sustained air-strafing while turning', () => {
+    let player = createPlayerState('p1', 'blue');
+    player.movement.position = vec3(0, 3, 0);
+    player.movement.velocity = vec3(8, 0, 0);
+    player.movement.grounded = false;
+
+    let movement = player.movement;
+    let internal = player.movementInternal;
+    let dash = player.dash;
+    let prev = neutralInput();
+    const dt = 1 / 72;
+
+    for (let i = 0; i < 36; i += 1) {
+      const yaw = Math.atan2(movement.velocity.x, movement.velocity.z);
+      const input = { ...neutralInput(), moveX: 1, lookYawRadians: yaw };
+      const next = stepMovement(movement, internal, dash, input, prev, dt, [], false);
+      movement = next.movement;
+      internal = next.internal;
+      dash = next.dash;
+      prev = input;
+    }
+
+    expect(movement.speed).toBeGreaterThan(8.7);
+  });
+
   it('does not bleed high horizontal speed while airborne', () => {
     const player = createPlayerState('p1', 'blue');
     player.movement.position = vec3(0, 1, 0);
@@ -135,6 +170,32 @@ describe('shared movement simulation', () => {
     const next = stepMovement(player.movement, player.movementInternal, player.dash, neutralInput(), neutralInput(), 1 / 72, [], false);
 
     expect(next.movement.velocity.x).toBeCloseTo(GAME_CONSTANTS.player.softSpeedLimit + 4, 6);
+  });
+
+  it('preserves horizontal momentum during the bhop landing grace window', () => {
+    const player = createPlayerState('p1', 'blue');
+    player.movement.position = vec3(0, 0, 0);
+    player.movement.velocity = vec3(12, -1, 0);
+    player.movement.grounded = false;
+
+    const landed = stepMovement(player.movement, player.movementInternal, player.dash, neutralInput(), neutralInput(), 1 / 72, [], false);
+    expect(landed.movement.grounded).toBe(true);
+    expect(landed.internal.jumpGraceTimer).toBeGreaterThan(0);
+    expect(landed.movement.speed).toBeCloseTo(12, 5);
+
+    const hopped = stepMovement(
+      landed.movement,
+      landed.internal,
+      landed.dash,
+      { ...neutralInput(), jumpPressed: true },
+      neutralInput(),
+      1 / 72,
+      [],
+      false
+    );
+
+    expect(hopped.movement.grounded).toBe(false);
+    expect(hopped.movement.speed).toBeGreaterThan(12);
   });
 
   it('allows one dash-powered double jump before landing', () => {
@@ -628,5 +689,23 @@ describe('backflip QTE tiers', () => {
     const centerWidth = edges[0];                 // top-tier band: [0, edge0]
     const outerWidth = edges[edges.length - 1] - edges[edges.length - 2]; // slowest band
     expect(centerWidth).toBeLessThan(outerWidth);
+  });
+});
+
+describe('shared map geometry', () => {
+  it('uses visible end-cap rail and fascia boxes instead of a hidden solid bleacher side panel', () => {
+    const boxes = createBleacherCollisionBoxes();
+    expect(boxes.some((box) => box.id === 'bleacher_south_side_-1')).toBe(false);
+    expect(boxes.some((box) => box.id?.startsWith('bleacher_endcap_rail_top_'))).toBe(true);
+
+    const southWestPanel = createBleacherPanelSpecs().find((panel) => panel.side === -1 && panel.name === 'south_side');
+    expect(southWestPanel).toBeTruthy();
+    const westTiers = createBleacherTierSpecs().filter((tier) => tier.side === -1).sort((a, b) => a.step - b.step);
+    const innerX = westTiers[0].center.x + westTiers[0].size.width / 2;
+    const openGapX = innerX - 0.85;
+    const openGapY = 0.1;
+    const openGapZ = southWestPanel!.center.z;
+
+    expect(boxes.some((box) => containsPoint(box, openGapX, openGapY, openGapZ))).toBe(false);
   });
 });

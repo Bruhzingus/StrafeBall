@@ -537,6 +537,34 @@ describe('ServerGameLoop', () => {
       expect(b.position.x).toBeLessThan(mat.position.x);
     });
 
+    it('keeps a mat rebound live so it can still hit a player', () => {
+      const loop = new ServerGameLoop('room');
+      loop.addPlayer('a', 'A');
+      loop.addPlayer('b', 'B');
+      playNow(loop);
+      const mat = firstMat(loop);
+
+      loop.state.players.b.movement.position = vec3(mat.position.x - 2.2, 0, mat.position.z);
+      loop.state.balls.ball_0 = {
+        ...loop.state.balls.ball_0,
+        phase: 'live',
+        ownerKind: 'player',
+        ownerId: 'a',
+        heldByPlayerId: null,
+        heldHand: null,
+        position: vec3(mat.position.x - 1.5, GAME_CONSTANTS.player.height * 0.5, mat.position.z),
+        velocity: vec3(14, 0, 0),
+        bounceCount: 0
+      };
+
+      for (let i = 0; i < 90 && loop.state.match.scoreByTeamId.blue === 0; i += 1) {
+        loop.step();
+      }
+
+      expect(loop.state.match.scoreByTeamId.blue).toBe(1);
+      expect(loop.state.balls.ball_0.bounceCount).toBeGreaterThan(0);
+    });
+
     it('lets a ball pass over a knocked-over mat', () => {
       const loop = new ServerGameLoop('room');
       loop.addPlayer('a', 'A');

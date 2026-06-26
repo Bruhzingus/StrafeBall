@@ -1,6 +1,6 @@
 import { Mesh, Vector3 } from '@babylonjs/core';
 import { AABB } from './Collider';
-import { matCollisionBox, matKnockedOverBox } from '../../../shared/simulation/MapGeometry';
+import { matCollisionBox, matFallDirection, matKnockedOverBox } from '../../../shared/simulation/MapGeometry';
 
 /** Physical dimensions of a dodgeball mat. Source of truth for both visual size and proxy AABB. */
 export const MAT_DIMENSIONS = { width: 2.6, height: 1.75, depth: 0.18 };
@@ -65,7 +65,9 @@ export class MatObstacle {
     if (this.knockedOver) return;
     this.knockedOver = true;
     const flat = new Vector3(direction.x, 0, direction.z);
-    const dir = flat.lengthSquared() > 1e-4 ? flat.normalize() : new Vector3(0, 0, 1);
+    const pushed = flat.lengthSquared() > 1e-4 ? flat.normalize() : new Vector3(0, 0, 1);
+    const fall = matFallDirection({ x: pushed.x, z: pushed.z });
+    const dir = new Vector3(fall.x, 0, fall.z);
     this.knockDir.copyFrom(dir);
 
     // Lay flat: rotate 90° so the broad face is up. Yaw the lying mat to the push heading and pitch

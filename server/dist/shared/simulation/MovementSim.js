@@ -330,7 +330,7 @@ function stepMovement(movementIn, internalIn, dashIn, input, prevInput, dt, boxe
         }
     }
     // --- friction (before accel, Quake order) ---
-    if (grounded && !(dashActiveTimer > 0 && !sliding)) {
+    if (grounded && jumpGraceTimer <= 0 && !(dashActiveTimer > 0 && !sliding)) {
         const overholdingSlide = sliding && slideHeldActive && slideTimer >= c.slide.overholdBrakeDelay;
         const slideFrictionMultiplier = overholdingSlide ? c.slide.overholdFrictionMultiplier : c.slide.frictionMultiplier;
         const friction = c.player.friction * (sliding ? slideFrictionMultiplier : 1);

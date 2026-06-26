@@ -14,9 +14,8 @@ export const TUNING = {
     lookPitchLimitRadians: GAME_CONSTANTS.player.lookPitchLimitRadians,
     groundAcceleration: GAME_CONSTANTS.player.groundAcceleration,
     airAcceleration: GAME_CONSTANTS.player.airAcceleration,
-    // Air "wish speed" cap (Source-style airspeedcap). Small on purpose: the projection in
-    // accelerate() means only velocity perpendicular to your current motion can be added,
-    // which is exactly what lets mouse-turning while strafing build speed (air-strafing).
+    // Air "wish speed" cap (Source-style airspeedcap). The projection in accelerate() means mostly
+    // perpendicular strafe input can add speed while forward air input still preserves momentum.
     airStrafeMaxSpeed: GAME_CONSTANTS.player.airStrafeMaxSpeed,
     friction: GAME_CONSTANTS.player.friction,
     // Mirrors GAME_CONSTANTS.player.maxGroundSpeed (strafe top speed −30%). Kept in sync so offline

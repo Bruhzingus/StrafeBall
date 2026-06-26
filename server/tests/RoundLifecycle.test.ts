@@ -232,6 +232,29 @@ describe('Stage 3 — live-ball bounce cap from settings', () => {
     expect(loop.state.balls.ball_0.phase).toBe('dead');
   });
 
+  it('always kills a live ball on the floor even when the bounce cap is higher', () => {
+    const loop = new ServerGameLoop('room', { settings: settings({ format: '1v1', maxLiveBallBounces: 3, matPreset: 0 }) });
+    loop.addPlayer('a', 'A');
+    loop.addPlayer('b', 'B');
+    playNow(loop);
+
+    loop.state.balls.ball_0 = {
+      ...loop.state.balls.ball_0,
+      phase: 'live',
+      ownerKind: 'player',
+      ownerId: 'a',
+      heldByPlayerId: null,
+      heldHand: null,
+      position: vec3(0, GAME_CONSTANTS.ball.radius + 0.02, 0),
+      velocity: vec3(0, -20, 0),
+      bounceCount: 0
+    };
+
+    for (let i = 0; i < 6; i += 1) loop.step();
+    expect(loop.state.balls.ball_0.phase).toBe('dead');
+    expect(loop.state.balls.ball_0.bounceCount).toBe(1);
+  });
+
   it('applies the configured bounce cap to wall and ceiling rebounds', () => {
     const loop = new ServerGameLoop('room', { settings: settings({ format: '1v1', maxLiveBallBounces: 3, matPreset: 0 }) });
     loop.addPlayer('a', 'A');

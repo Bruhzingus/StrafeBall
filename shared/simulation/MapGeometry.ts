@@ -89,6 +89,15 @@ export function matCollisionBox(spec: MatSpec): AABB {
   return aabbFromCenter(spec.x, spec.y, spec.z, halfX, MAT_DIMENSIONS.height / 2, halfZ, { kind: 'mat', id: spec.id });
 }
 
+export function matFallDirection(knockDirection: { x: number; z: number }): { x: number; z: number } {
+  const absX = Math.abs(knockDirection.x);
+  const absZ = Math.abs(knockDirection.z);
+  if (absX <= 1e-4 && absZ <= 1e-4) return { x: 0, z: 1 };
+  return absX > absZ
+    ? { x: knockDirection.x < 0 ? -1 : 1, z: 0 }
+    : { x: 0, z: knockDirection.z < 0 ? -1 : 1 };
+}
+
 /**
  * Collision AABB for a mat that has been KNOCKED OVER (lying flat on the floor). The fallen mat is a
  * low flat panel: its long axis (the standing 1.75 m height) now lies along the horizontal knock
@@ -104,9 +113,7 @@ export function matKnockedOverBox(spec: MatSpec, knockDirection: { x: number; z:
   const halfLong = MAT_DIMENSIONS.height / 2; // standing height, now lying along the knock direction
   const halfBroad = MAT_DIMENSIONS.width / 2; // broad face width, perpendicular to the knock direction
   const halfThick = MAT_DIMENSIONS.depth / 2; // panel thickness, now vertical
-  const len = Math.hypot(knockDirection.x, knockDirection.z);
-  const dx = len > 1e-4 ? knockDirection.x / len : 0;
-  const dz = len > 1e-4 ? knockDirection.z / len : 1;
+  const { x: dx, z: dz } = matFallDirection(knockDirection);
   const cx = spec.x + dx * halfLong;
   const cz = spec.z + dz * halfLong;
   // AABB half-extents of the rotated rectangle (|dir| along long axis, |perp(dir)| along broad axis).
@@ -150,6 +157,19 @@ export const BLEACHER_LAYOUT = {
   backThickness: 0.16,
   backHeight: 2.08,
   sideThickness: 0.18
+} as const;
+
+export const BLEACHER_ENDCAP_LAYOUT = {
+  fasciaThickness: 0.06,
+  fasciaBandHeight: 0.6,
+  fasciaGap: 0.02,
+  railStandOff: 0.06,
+  railHeightAboveNosing: 1.1,
+  railTopRadius: 0.026,
+  railPostRadius: 0.03,
+  balusterRadius: 0.018,
+  balusterSpacing: 0.34,
+  balusterClearance: 0.06
 } as const;
 
 export interface BleacherTierSpec {
@@ -244,10 +264,93 @@ export function createBleacherPanelSpecs(): BleacherPanelSpec[] {
   return specs;
 }
 
+function pushBleacherEndCapCollisionBoxes(
+  boxes: AABB[],
+  panel: BleacherPanelSpec,
+  tiers: readonly BleacherTierSpec[]
+): void {
+  if (panel.name === 'back') {
+    boxes.push(aabbFromCenter(
+      panel.center.x,
+      panel.center.y,
+      panel.center.z,
+      panel.size.width * 0.5,
+      panel.size.height * 0.5,
+      panel.size.depth * 0.5,
+      { kind: 'bleacher', id: `bleacher_${panel.name}_${panel.side}` }
+    ));
+    return;
+  }
+
+  const zSign = panel.center.z < 0 ? -1 : 1;
+  const side = panel.side;
+  const totalRun = BLEACHER_LAYOUT.tierCount * BLEACHER_LAYOUT.tierRun;
+  const slope = BLEACHER_LAYOUT.tierRise / BLEACHER_LAYOUT.tierRun;
+  const innerX = tiers[0].center.x - side * (BLEACHER_LAYOUT.tierRun / 2);
+  const railZ = panel.center.z - zSign * BLEACHER_ENDCAP_LAYOUT.railStandOff;
+
+  for (const tier of tiers) {
+    const top = tier.size.height;
+    const bandHeight = Math.min(BLEACHER_ENDCAP_LAYOUT.fasciaBandHeight, top);
+    boxes.push(aabbFromCenter(
+      tier.center.x,
+      top - bandHeight / 2,
+      panel.center.z,
+      (BLEACHER_LAYOUT.tierRun - BLEACHER_ENDCAP_LAYOUT.fasciaGap) * 0.5,
+      bandHeight * 0.5,
+      BLEACHER_ENDCAP_LAYOUT.fasciaThickness * 0.5,
+      { kind: 'bleacher', id: `bleacher_endcap_fascia_${side}_${zSign}_${tier.step}` }
+    ));
+  }
+
+  const railRadius = BLEACHER_ENDCAP_LAYOUT.railTopRadius;
+  boxes.push(aabbFromCenter(
+    innerX + side * totalRun / 2,
+    (totalRun * slope) / 2 + BLEACHER_ENDCAP_LAYOUT.railHeightAboveNosing,
+    railZ,
+    totalRun * 0.5 + railRadius,
+    totalRun * slope * 0.5 + railRadius,
+    railRadius,
+    { kind: 'bleacher', id: `bleacher_endcap_rail_top_${side}_${zSign}` }
+  ));
+
+  const newelRuns = [0, totalRun / 2, totalRun];
+  for (let i = 0; i < newelRuns.length; i += 1) {
+    const run = newelRuns[i];
+    const radius = BLEACHER_ENDCAP_LAYOUT.railPostRadius;
+    boxes.push(aabbFromCenter(
+      innerX + side * run,
+      run * slope + BLEACHER_ENDCAP_LAYOUT.railHeightAboveNosing / 2,
+      railZ,
+      radius,
+      BLEACHER_ENDCAP_LAYOUT.railHeightAboveNosing / 2,
+      radius,
+      { kind: 'bleacher', id: `bleacher_endcap_rail_post_${side}_${zSign}_${i}` }
+    ));
+  }
+
+  const balusterCount = Math.floor(totalRun / BLEACHER_ENDCAP_LAYOUT.balusterSpacing);
+  for (let i = 1; i < balusterCount; i += 1) {
+    const run = i * BLEACHER_ENDCAP_LAYOUT.balusterSpacing;
+    if (newelRuns.some((newelRun) => Math.abs(newelRun - run) < BLEACHER_ENDCAP_LAYOUT.balusterClearance)) continue;
+    const radius = BLEACHER_ENDCAP_LAYOUT.balusterRadius;
+    boxes.push(aabbFromCenter(
+      innerX + side * run,
+      run * slope + BLEACHER_ENDCAP_LAYOUT.railHeightAboveNosing / 2,
+      railZ,
+      radius,
+      BLEACHER_ENDCAP_LAYOUT.railHeightAboveNosing / 2,
+      radius,
+      { kind: 'bleacher', id: `bleacher_endcap_rail_baluster_${side}_${zSign}_${i}` }
+    ));
+  }
+}
+
 export function createBleacherCollisionBoxes(): AABB[] {
   const boxes: AABB[] = [];
+  const tierSpecs = createBleacherTierSpecs();
 
-  for (const tier of createBleacherTierSpecs()) {
+  for (const tier of tierSpecs) {
     boxes.push(aabbFromCenter(
       tier.center.x,
       tier.center.y,
@@ -260,15 +363,8 @@ export function createBleacherCollisionBoxes(): AABB[] {
   }
 
   for (const panel of createBleacherPanelSpecs()) {
-    boxes.push(aabbFromCenter(
-      panel.center.x,
-      panel.center.y,
-      panel.center.z,
-      panel.size.width * 0.5,
-      panel.size.height * 0.5,
-      panel.size.depth * 0.5,
-      { kind: 'bleacher', id: `bleacher_${panel.name}_${panel.side}` }
-    ));
+    const tiers = tierSpecs.filter((tier) => tier.side === panel.side);
+    pushBleacherEndCapCollisionBoxes(boxes, panel, tiers);
   }
 
   return boxes;

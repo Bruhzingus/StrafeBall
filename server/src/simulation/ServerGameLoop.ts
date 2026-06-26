@@ -74,6 +74,7 @@ import {
   BLEACHER_LAYOUT,
   createBallCollisionBoxes,
   createPlayerCollisionBoxes,
+  matFallDirection,
   matCollisionBox,
   matSpecsForPreset,
   type AABB,
@@ -2231,10 +2232,12 @@ export class ServerGameLoop {
 
       // knockDirection = the player's horizontal heading (normalized); fall back to mat→player so it
       // always tips away from the player. No impulse is applied anywhere — the mat simply falls.
-      const dir = normalize(
+      const pushDir = normalize(
         vec3(preVelocity.x, 0, preVelocity.z),
         normalize(vec3(pos.x - spec.x, 0, pos.z - spec.z), vec3(0, 0, 1))
       );
+      const fallDir = matFallDirection(pushDir);
+      const dir = vec3(fallDir.x, 0, fallDir.z);
       this.state.mats[spec.id] = { ...this.state.mats[spec.id], knockedOver: true, knockDirection: dir };
       this.knockedOverMatIds.add(spec.id);
       knockedAny = true;
@@ -3736,8 +3739,15 @@ function resolveBallBounds(ball: BallState, bounceRule?: BounceRule): BallState 
   const resolved = { ...ball, position, velocity };
   // A floor / back-wall contact always wins (kills now). Otherwise it was a side-wall/ceiling-only
   // contact: let the ball survive its first such bounce, die on the second.
-  if (hitKillNow) return applyBallBounce(resolved, bounceRule);
+  if (hitKillNow) return applySurfaceKillingBounce(resolved);
   return applyWallCeilingBounce(resolved, bounceRule);
+}
+
+function applySurfaceKillingBounce(ball: BallState): BallState {
+  if (ball.phase !== 'live' && ball.phase !== 'deflected') {
+    return { ...ball, bounceCount: ball.bounceCount + 1 };
+  }
+  return { ...markBallDead(ball), bounceCount: ball.bounceCount + 1 };
 }
 
 /**
@@ -3822,7 +3832,7 @@ function resolveBallStaticBoxes(ball: BallState, boxes: AABB[], logger?: (messag
 function isSideWallLikeStaticBounce(box: AABB | null, axis: 'x' | 'y' | 'z' | null): boolean {
   // In the actual gym, the side bleachers occupy the low side-wall lane. A low bank shot hits
   // those X faces before it can reach the arena bounds, so classify that impact like a side wall.
-  return axis === 'x' && box?.kind === 'bleacher';
+  return axis === 'x' && box?.kind === 'bleacher' && box.id?.startsWith('bleacher_tier_') === true;
 }
 
 const SIDE_BLEACHER_COURT_FACE_X =

@@ -190,7 +190,7 @@ export class Ball {
         this.velocity.z *= -e;
         hitAxis = 'z';
       }
-      if (hitAxis === 'x' && b.kind === 'bleacher') {
+      if (hitAxis === 'x' && b.kind === 'bleacher' && b.id?.startsWith('bleacher_tier_') === true) {
         p.x = sideBleacherCourtFaceX(b);
         this.onWallCeilingBounce(normalImpactSpeed);
         break;
