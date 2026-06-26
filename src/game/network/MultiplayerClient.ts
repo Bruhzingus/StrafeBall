@@ -26,6 +26,10 @@ import type {
 } from '../../../shared/protocol';
 import type { HandSide, MatchMode, MatchPresetId, PlayerInput, Vec3 } from '../../../shared/types';
 import type { BattleMusicSyncState } from '../../../shared/music/BattleMusic';
+import type {
+  NetFlightRecorderClientReport,
+  NetFlightRecorderConfigMessage
+} from '../../../shared/netFlightRecorder';
 import { PERF_REPORT_INTERVAL_MS } from '../../../shared/netConfig';
 import {
   hydrateSnapshotRoster,
@@ -138,6 +142,9 @@ export class MultiplayerClient {
   // The bufferedAmount captured at the instant the most recent ping was SENT. If this is large when
   // a slow pong arrives, the "ping" is queue time on our own uplink, not network RTT.
   private lastPingSendBufferedBytes = 0;
+  private netFlightRecorderEnabled = false;
+  private reconnectCount = 0;
+  private hasConnectedOnce = false;
 
   constructor(serverUrl = resolveServerUrl()) {
     this.serverUrl = serverUrl;
@@ -147,6 +154,26 @@ export class MultiplayerClient {
 
   get connected(): boolean {
     return this.status === 'connected' && this.room !== null;
+  }
+
+  get flightRecorderEnabled(): boolean {
+    return this.netFlightRecorderEnabled;
+  }
+
+  get wsReadyState(): number {
+    const room = this.room as Room & {
+      connection?: {
+        ws?: { readyState?: number };
+        transport?: { ws?: { readyState?: number } };
+      };
+    };
+    return room.connection?.ws?.readyState
+      ?? room.connection?.transport?.ws?.readyState
+      ?? WebSocket.CLOSED;
+  }
+
+  get reconnectAttempts(): number {
+    return this.reconnectCount;
   }
 
   /**
@@ -406,6 +433,13 @@ export class MultiplayerClient {
     } satisfies SwitchTeamRequest);
   }
 
+  sendNetAnomalyReport(report: NetFlightRecorderClientReport): boolean {
+    if (!this.room || !this.netFlightRecorderEnabled) return false;
+    if (this.wsReadyState !== WebSocket.OPEN) return false;
+    this.room.send('net-anomaly-report', report);
+    return true;
+  }
+
   private async connect(join: () => Promise<Room>): Promise<void> {
     const gen = ++this.connectGeneration;
     this.leave();
@@ -427,6 +461,8 @@ export class MultiplayerClient {
       this.status = 'connected';
       this.roomId = room.roomId;
       this.localPlayerId = room.sessionId;
+      if (this.hasConnectedOnce) this.reconnectCount += 1;
+      this.hasConnectedOnce = true;
       this.bindRoom(room);
       this.startPing();
     } catch (error) {
@@ -513,6 +549,11 @@ export class MultiplayerClient {
     room.onMessage('request-rejected', (message: Extract<ServerMessage, { type: 'request-rejected' }>) => {
       if (this.room !== room) return;
       this.errorMessage = `${message.request}: ${message.reason}`;
+    });
+
+    room.onMessage('net-flight-recorder-config', (message: NetFlightRecorderConfigMessage) => {
+      if (this.room !== room) return;
+      this.netFlightRecorderEnabled = Boolean(message.enabled);
     });
 
     room.onMessage('pong', (message: Extract<ServerMessage, { type: 'pong' }>) => {
@@ -725,6 +766,7 @@ export class MultiplayerClient {
     this.maxRecentPingWindowStartedAtMs = 0;
     this.lastPingSentAtMs = 0;
     this.pingStale = false;
+    this.netFlightRecorderEnabled = false;
   }
 
   private recordServerTimeSample(serverTimeMs: number, oneWayDelayMs = (this.pingMs ?? 0) * 0.5): void {

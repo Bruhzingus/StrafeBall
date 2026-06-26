@@ -6,6 +6,7 @@ const node_perf_hooks_1 = require("node:perf_hooks");
 const constants_1 = require("../../../shared/constants");
 const roomSettings_1 = require("../../../shared/roomSettings");
 const netConfig_1 = require("../../../shared/netConfig");
+const netFlightRecorder_1 = require("../../../shared/netFlightRecorder");
 const snapshotCodec_1 = require("../../../shared/snapshotCodec");
 const NetworkRateLimits_1 = require("../network/NetworkRateLimits");
 const ServerGameLoop_1 = require("../simulation/ServerGameLoop");
@@ -79,6 +80,7 @@ class DuelRoom extends colyseus_1.Room {
     // is exactly the old coupled behavior — no accumulator drift, lowest latency.
     snapshotCoupledToTick = netConfig_1.SNAPSHOT_RATE === netConfig_1.SERVER_TICK_RATE;
     eventLoopDelay = (0, node_perf_hooks_1.monitorEventLoopDelay)({ resolution: 20 });
+    flightRecorderEventLoopDelay = (0, node_perf_hooks_1.monitorEventLoopDelay)({ resolution: 20 });
     incomingMessagesThisWindow = 0;
     incomingMessagesByType = new Map();
     incomingMessagesByPlayerId = new Map();
@@ -90,9 +92,23 @@ class DuelRoom extends colyseus_1.Room {
     snapshotStatsByPlayerId = new Map();
     lastCpuUsage = process.cpuUsage();
     lastHeapUsedBytes = process.memoryUsage().heapUsed;
+    lastCpuSampleMicros = Number(process.hrtime.bigint() / 1000n);
+    netFlightRecorderEnabled = (0, netFlightRecorder_1.resolveNetFlightRecorderEnabled)();
+    flightRecorderSamples = new FixedRingBuffer(netFlightRecorder_1.NET_FLIGHT_RECORDER_RING_SIZE);
+    flightRecorderClientSecondStats = new Map();
+    flightRecorderSecond = createFlightRecorderSecondAccumulator();
+    flightRecorderNextSampleAtMs = 0;
+    lastFlightRecorderAnomalyAtMs = 0;
+    lastLoggedDisconnectEventKey = '';
+    flightRecorderLoopWakeDelayMsMax = 0;
+    flightRecorderLoopWakeStallsOver50Ms = 0;
+    flightRecorderLoopWakeStallsOver100Ms = 0;
+    flightRecorderLoopWakeStallsOver500Ms = 0;
     onCreate(options = {}) {
         activeRoomCount += 1;
         this.eventLoopDelay.enable();
+        this.flightRecorderEventLoopDelay.enable();
+        this.flightRecorderNextSampleAtMs = Date.now() + netFlightRecorder_1.NET_FLIGHT_RECORDER_SAMPLE_INTERVAL_MS;
         this.setPrivate(true);
         this.patchRate = COLYSEUS_PATCH_RATE_MS;
         // Resolve the host's authoritative settings from the requested format (the `format`/`mode` join
@@ -118,6 +134,9 @@ class DuelRoom extends colyseus_1.Room {
             `snapshotEncoding=${netConfig_1.SNAPSHOT_ENCODING} snapshotBackpressure=${netConfig_1.SNAPSHOT_BACKPRESSURE_BYTES}B ` +
             `colyseusPatchRate=${formatPatchRate(COLYSEUS_PATCH_RATE_MS)} ` +
             `colyseusMaxMessagesPerSecond=${this.maxMessagesPerSecond}/s(per-client inbound, expected~${(0, NetworkRateLimits_1.expectedPerClientMessagesPerSecond)(netConfig_1.CLIENT_INPUT_RATE)}/s)`);
+        if (this.netFlightRecorderEnabled) {
+            this.log(`net flight recorder enabled duration=${netFlightRecorder_1.NET_FLIGHT_RECORDER_DURATION_SECONDS}s sampleInterval=${netFlightRecorder_1.NET_FLIGHT_RECORDER_SAMPLE_INTERVAL_MS}ms reportSamples=${netFlightRecorder_1.NET_FLIGHT_RECORDER_REPORT_SAMPLE_COUNT}`);
+        }
         this.onMessage('input', (client, message) => {
             this.recordIncomingMessage(client, 'input');
             if (!this.allow(client, 'input'))
@@ -255,6 +274,11 @@ class DuelRoom extends colyseus_1.Room {
                 serverTimeMs: Date.now()
             });
         });
+        this.onMessage('net-anomaly-report', (client, message) => {
+            if (!this.netFlightRecorderEnabled || !message || message.type !== 'net-anomaly-report')
+                return;
+            this.handleClientAnomalyReport(client, message);
+        });
         this.setSimulationInterval(() => {
             // Skip the whole step+broadcast when no one is here (#18); empty rooms auto-dispose.
             const now = node_perf_hooks_1.performance.now();
@@ -302,6 +326,7 @@ class DuelRoom extends colyseus_1.Room {
             if (!this.snapshotCoupledToTick) {
                 this.broadcastDueSnapshot(node_perf_hooks_1.performance.now());
             }
+            this.maybeRecordFlightSample();
         }, netConfig_1.ROOM_LOOP_WAKE_INTERVAL_MS);
     }
     onAuth(_client, _options) {
@@ -327,6 +352,7 @@ class DuelRoom extends colyseus_1.Room {
             room: this.game.snapshot().room,
             playerId: player.id
         });
+        this.sendNetFlightRecorderConfig(client);
         this.sendBattleMusicSync(client);
         this.broadcast('player-joined', { type: 'player-joined', playerId: player.id }, { except: client });
         this.broadcastRosterUpdate();
@@ -336,6 +362,7 @@ class DuelRoom extends colyseus_1.Room {
     async onDrop(client, _code) {
         this.game.setConnected(client.sessionId, false, Date.now() + RECONNECT_SECONDS * 1000);
         this.log(`player dropped id=${client.sessionId} — awaiting reconnection`);
+        this.reportServerConnectionEvent('client_drop', client.sessionId);
         try {
             await this.allowReconnection(client, RECONNECT_SECONDS);
         }
@@ -346,8 +373,10 @@ class DuelRoom extends colyseus_1.Room {
     onReconnect(client) {
         this.game.setConnected(client.sessionId, true, null);
         this.log(`player reconnected id=${client.sessionId}`);
+        this.sendNetFlightRecorderConfig(client);
         this.sendBattleMusicSync(client);
         this.broadcastRosterUpdate();
+        this.reportServerConnectionEvent('client_reconnect', client.sessionId);
     }
     // Terminal departure (consented leave, or reconnection window expired) → the remaining player
     // wins by forfeit (#13).
@@ -357,10 +386,12 @@ class DuelRoom extends colyseus_1.Room {
         this.log(`player left id=${client.sessionId}`);
         this.broadcast('player-left', { type: 'player-left', playerId: client.sessionId });
         this.broadcastRosterUpdate();
+        this.reportServerConnectionEvent('client_leave', client.sessionId);
     }
     onDispose() {
         activeRoomCount = Math.max(0, activeRoomCount - 1);
         this.eventLoopDelay.disable();
+        this.flightRecorderEventLoopDelay.disable();
         this.log('room disposed');
         this.game.dispose();
     }
@@ -371,6 +402,8 @@ class DuelRoom extends colyseus_1.Room {
         if (this.rateWindowStartedAtMs === 0)
             this.rateWindowStartedAtMs = now;
         this.simTicksThisWindow += 1;
+        if (this.netFlightRecorderEnabled)
+            this.flightRecorderSecond.simSteps += 1;
         this.simTickMsTotal += simTickMs;
         this.simTickMsMax = Math.max(this.simTickMsMax, simTickMs);
         const elapsedMs = now - this.rateWindowStartedAtMs;
@@ -545,9 +578,17 @@ class DuelRoom extends colyseus_1.Room {
      * The payload-size sample uses JSON.stringify, which is expensive — so it runs at most ONCE per
      * report window, and only when PERF_DEBUG is on. Real playtests with PERF_DEBUG off pay nothing.
      */
-    recordSnapshot(snapshot, payload, buildMs, broadcastMs, lateMs, sentClients) {
+    recordSnapshot(snapshot, payload, buildMs, broadcastMs, lateMs, sentClients, frameBytesEstimate) {
         this.snapshotsThisWindow += 1;
         this.snapshotClientSendsThisWindow += sentClients;
+        if (this.netFlightRecorderEnabled) {
+            this.flightRecorderSecond.snapshotsSent += 1;
+            if (frameBytesEstimate > 0) {
+                this.flightRecorderSecond.snapshotFrameBytesTotal += frameBytesEstimate;
+                this.flightRecorderSecond.snapshotFrameBytesMax = Math.max(this.flightRecorderSecond.snapshotFrameBytesMax, frameBytesEstimate);
+                this.flightRecorderSecond.snapshotFrameByteSamples += 1;
+            }
+        }
         this.snapshotBuildMsTotal += buildMs;
         this.snapshotBuildMsMax = Math.max(this.snapshotBuildMsMax, buildMs);
         this.snapshotBroadcastMsTotal += broadcastMs;
@@ -589,6 +630,13 @@ class DuelRoom extends colyseus_1.Room {
             this.loopWakeStallsOver100MsThisWindow += 1;
         if (delayMs > 500)
             this.loopWakeStallsOver500MsThisWindow += 1;
+        this.flightRecorderLoopWakeDelayMsMax = Math.max(this.flightRecorderLoopWakeDelayMsMax, delayMs);
+        if (delayMs > 50)
+            this.flightRecorderLoopWakeStallsOver50Ms += 1;
+        if (delayMs > 100)
+            this.flightRecorderLoopWakeStallsOver100Ms += 1;
+        if (delayMs > 500)
+            this.flightRecorderLoopWakeStallsOver500Ms += 1;
     }
     broadcastStepEvents() {
         const throwEvents = this.game.drainThrowEvents();
@@ -631,14 +679,20 @@ class DuelRoom extends colyseus_1.Room {
         const encodeStartedAt = node_perf_hooks_1.performance.now();
         const payload = this.encodeSnapshot(snapshot);
         const buildMs = snapshotBuildMs + (node_perf_hooks_1.performance.now() - encodeStartedAt);
+        const frameBytesEstimate = this.netFlightRecorderEnabled ? encodedRoomMessageBytes('snapshot', payload) : 0;
         const broadcastStartedAt = node_perf_hooks_1.performance.now();
         for (const client of sendableClients) {
             this.recordSnapshotClientSend(client.sessionId);
+            if (this.netFlightRecorderEnabled && frameBytesEstimate > 0) {
+                const stats = this.flightRecorderClientSecondStatsForPlayer(client.sessionId);
+                stats.outboundBytes += frameBytesEstimate;
+                this.flightRecorderSecond.outboundBytes += frameBytesEstimate;
+            }
             client.send('snapshot', payload);
         }
         const broadcastMs = node_perf_hooks_1.performance.now() - broadcastStartedAt;
         this.lastSnapshotTickSent = snapshot.tick;
-        this.recordSnapshot(snapshot, payload, buildMs, broadcastMs, Math.max(0, actualNowMs - dueAtMs), sendableClients.length);
+        this.recordSnapshot(snapshot, payload, buildMs, broadcastMs, Math.max(0, actualNowMs - dueAtMs), sendableClients.length, frameBytesEstimate);
     }
     snapshotSendableClients() {
         const sendable = [];
@@ -673,6 +727,209 @@ class DuelRoom extends colyseus_1.Room {
         stats.wsBufferedBytesTotal += buffered;
         stats.wsBufferedBytesMax = Math.max(stats.wsBufferedBytesMax, buffered);
         stats.wsBufferedSamples += 1;
+        if (!this.netFlightRecorderEnabled)
+            return;
+        this.flightRecorderClientSecondStatsForPlayer(playerId).wsBufferedBytesMax = Math.max(this.flightRecorderClientSecondStatsForPlayer(playerId).wsBufferedBytesMax, buffered);
+    }
+    sendNetFlightRecorderConfig(client) {
+        const message = {
+            type: 'net-flight-recorder-config',
+            enabled: this.netFlightRecorderEnabled,
+            sampleIntervalMs: netFlightRecorder_1.NET_FLIGHT_RECORDER_SAMPLE_INTERVAL_MS,
+            durationSeconds: netFlightRecorder_1.NET_FLIGHT_RECORDER_DURATION_SECONDS,
+            reportSampleCount: netFlightRecorder_1.NET_FLIGHT_RECORDER_REPORT_SAMPLE_COUNT
+        };
+        client.send('net-flight-recorder-config', message);
+    }
+    flightRecorderClientSecondStatsForPlayer(playerId) {
+        let stats = this.flightRecorderClientSecondStats.get(playerId);
+        if (!stats) {
+            stats = { inputMessages: 0, snapshotSends: 0, outboundBytes: 0, wsBufferedBytesMax: 0 };
+            this.flightRecorderClientSecondStats.set(playerId, stats);
+        }
+        return stats;
+    }
+    maybeRecordFlightSample() {
+        if (!this.netFlightRecorderEnabled)
+            return;
+        const nowMs = Date.now();
+        if (this.flightRecorderNextSampleAtMs === 0)
+            this.flightRecorderNextSampleAtMs = nowMs + netFlightRecorder_1.NET_FLIGHT_RECORDER_SAMPLE_INTERVAL_MS;
+        if (nowMs < this.flightRecorderNextSampleAtMs)
+            return;
+        this.flightRecorderNextSampleAtMs += netFlightRecorder_1.NET_FLIGHT_RECORDER_SAMPLE_INTERVAL_MS;
+        const elapsedMicros = Number(process.hrtime.bigint() / 1000n);
+        const cpu = process.cpuUsage(this.lastCpuUsage);
+        const cpuElapsedMicros = Math.max(1, elapsedMicros - this.lastCpuSampleMicros);
+        this.lastCpuSampleMicros = elapsedMicros;
+        this.lastCpuUsage = process.cpuUsage();
+        const cpuPct = ((cpu.user + cpu.system) / cpuElapsedMicros) * 100;
+        const mem = process.memoryUsage();
+        const heapGrowthBytes = mem.heapUsed - this.lastHeapUsedBytes;
+        this.lastHeapUsedBytes = mem.heapUsed;
+        const playerStats = this.game.getPlayerNetworkStats(nowMs);
+        const playerStatsById = new Map(playerStats.map((entry) => [entry.playerId, entry]));
+        const room = this.game.snapshot().room;
+        const connectedPlayers = Object.values(room.players).filter((player) => player.connected);
+        const eventLoopAvgMs = nsToMs(this.flightRecorderEventLoopDelay.mean);
+        const eventLoopP95Ms = nsToMs(this.flightRecorderEventLoopDelay.percentile(95));
+        const eventLoopMaxMs = nsToMs(this.flightRecorderEventLoopDelay.max);
+        const sampleClients = connectedPlayers.map((player) => {
+            const stats = playerStatsById.get(player.id);
+            const second = this.flightRecorderClientSecondStats.get(player.id);
+            const buffered = this.readRoomClientBufferedAmount(player.id);
+            return {
+                client: (0, netFlightRecorder_1.shortSessionId)(player.id),
+                inputAgeMs: Math.round(stats?.lastInputAgeMs ?? 0),
+                inputMessages: second?.inputMessages ?? 0,
+                duplicateOrOutOfOrderInputs: stats?.duplicateOrOutOfOrderInputs ?? 0,
+                staleResetInputs: stats?.staleResetInputs ?? 0,
+                inputQueueDepth: stats?.inputQueueDepthCurrent ?? 0,
+                inputQueueDepthMax: stats?.inputQueueDepthMax ?? 0,
+                lastProcessedSeq: stats?.lastProcessedInputSeq ?? 0,
+                lastEnqueuedSeq: stats?.lastEnqueuedInputSeq ?? 0,
+                wsBufferedBytes: buffered,
+                wsBufferedMaxBytes: second?.wsBufferedBytesMax ?? 0,
+                estimatedSnapshotsSent: second?.snapshotSends ?? 0,
+                estimatedOutboundBytes: second?.outboundBytes ?? 0,
+                connectionState: player.connected ? 'connected' : 'disconnected'
+            };
+        });
+        const sample = {
+            atMs: nowMs,
+            room: (0, netFlightRecorder_1.shortSessionId)(this.roomId),
+            activePlayers: connectedPlayers.length,
+            simTargetHz: netConfig_1.SERVER_TICK_RATE,
+            simSteps: this.flightRecorderSecond.simSteps,
+            snapshotsSent: this.flightRecorderSecond.snapshotsSent,
+            snapshotsSkipped: this.flightRecorderSecond.snapshotsSkipped,
+            outboundBytesPerSec: this.flightRecorderSecond.outboundBytes,
+            snapshotFrameBytesAvg: this.flightRecorderSecond.snapshotFrameByteSamples > 0
+                ? Math.round(this.flightRecorderSecond.snapshotFrameBytesTotal / this.flightRecorderSecond.snapshotFrameByteSamples)
+                : 0,
+            snapshotFrameBytesMax: this.flightRecorderSecond.snapshotFrameBytesMax,
+            inputMessages: this.flightRecorderSecond.inputMessages,
+            cpuPct: Number(cpuPct.toFixed(1)),
+            heapUsedBytes: mem.heapUsed,
+            heapGrowthBytes,
+            rssBytes: mem.rss,
+            externalBytes: mem.external,
+            eventLoopAvgMs,
+            eventLoopP95Ms,
+            eventLoopMaxMs,
+            loopWakeMaxMs: Number(this.flightRecorderLoopWakeDelayMsMax.toFixed(2)),
+            loopWakeOver50Ms: this.flightRecorderLoopWakeStallsOver50Ms,
+            loopWakeOver100Ms: this.flightRecorderLoopWakeStallsOver100Ms,
+            loopWakeOver500Ms: this.flightRecorderLoopWakeStallsOver500Ms,
+            clients: sampleClients
+        };
+        this.flightRecorderSamples.push(sample);
+        this.maybeLogServerAnomaly(sample);
+        this.flightRecorderSecond = createFlightRecorderSecondAccumulator(nowMs);
+        this.flightRecorderClientSecondStats.clear();
+        this.flightRecorderLoopWakeDelayMsMax = 0;
+        this.flightRecorderLoopWakeStallsOver50Ms = 0;
+        this.flightRecorderLoopWakeStallsOver100Ms = 0;
+        this.flightRecorderLoopWakeStallsOver500Ms = 0;
+        this.flightRecorderEventLoopDelay.reset();
+    }
+    maybeLogServerAnomaly(sample) {
+        const nowMs = sample.atMs;
+        const severe = sample.eventLoopMaxMs >= netFlightRecorder_1.NET_FLIGHT_RECORDER_SERVER_EVENT_LOOP_SEVERE_THRESHOLD_MS;
+        const shouldLog = severe
+            || sample.eventLoopMaxMs >= netFlightRecorder_1.NET_FLIGHT_RECORDER_SERVER_EVENT_LOOP_THRESHOLD_MS
+            || sample.loopWakeMaxMs >= netFlightRecorder_1.NET_FLIGHT_RECORDER_SERVER_EVENT_LOOP_THRESHOLD_MS
+            || sample.cpuPct >= netFlightRecorder_1.NET_FLIGHT_RECORDER_SERVER_CPU_THRESHOLD_PCT
+            || sample.heapGrowthBytes >= netFlightRecorder_1.NET_FLIGHT_RECORDER_SERVER_HEAP_GROWTH_THRESHOLD_BYTES
+            || sample.clients.some((client) => (client.wsBufferedMaxBytes >= netFlightRecorder_1.NET_FLIGHT_RECORDER_WS_BUFFER_THRESHOLD_BYTES) ||
+                (client.inputAgeMs >= netFlightRecorder_1.NET_FLIGHT_RECORDER_SERVER_INPUT_AGE_THRESHOLD_MS) ||
+                (client.inputQueueDepthMax >= netFlightRecorder_1.NET_FLIGHT_RECORDER_PENDING_INPUT_THRESHOLD))
+            || sample.snapshotsSent < Math.floor(netConfig_1.SNAPSHOT_RATE * netFlightRecorder_1.NET_FLIGHT_RECORDER_SERVER_SNAPSHOT_RATE_FLOOR_RATIO);
+        if (!shouldLog)
+            return;
+        if (!severe && nowMs - this.lastFlightRecorderAnomalyAtMs < netFlightRecorder_1.NET_FLIGHT_RECORDER_SERVER_COOLDOWN_MS)
+            return;
+        this.lastFlightRecorderAnomalyAtMs = nowMs;
+        const recentServerSamples = this.flightRecorderSamples.toArray().slice(-netFlightRecorder_1.NET_FLIGHT_RECORDER_REPORT_SAMPLE_COUNT);
+        const classification = (0, netFlightRecorder_1.classifyNetAnomaly)({
+            trigger: { kind: 'server_anomaly' },
+            server: sample,
+            affectedClientCount: sample.clients.filter((client) => client.inputAgeMs >= netFlightRecorder_1.NET_FLIGHT_RECORDER_SERVER_INPUT_AGE_THRESHOLD_MS || client.wsBufferedMaxBytes >= netFlightRecorder_1.NET_FLIGHT_RECORDER_WS_BUFFER_THRESHOLD_BYTES).length
+        });
+        this.logNetAnomaly({
+            kind: 'server_anomaly',
+            receivedAtServerMs: nowMs,
+            clientEventAtMs: null,
+            room: (0, netFlightRecorder_1.shortSessionId)(this.roomId),
+            client: null,
+            trigger: {
+                eventLoopMaxMs: sample.eventLoopMaxMs,
+                loopWakeMaxMs: sample.loopWakeMaxMs,
+                cpuPct: sample.cpuPct
+            },
+            serverContext: summarizeServerSample(sample),
+            recentServerSamples,
+            recentClientSamples: [],
+            initialClassification: classification
+        });
+    }
+    handleClientAnomalyReport(client, report) {
+        const room = (0, netFlightRecorder_1.shortSessionId)(this.roomId);
+        const clientId = (0, netFlightRecorder_1.shortSessionId)(client.sessionId);
+        const recentServerSamples = this.flightRecorderSamples.toArray().slice(-netFlightRecorder_1.NET_FLIGHT_RECORDER_REPORT_SAMPLE_COUNT);
+        const latestServerSample = recentServerSamples[recentServerSamples.length - 1] ?? null;
+        const latestClientSample = report.recentClientSamples[report.recentClientSamples.length - 1] ?? null;
+        const classification = (0, netFlightRecorder_1.classifyNetAnomaly)({
+            trigger: report.trigger,
+            server: latestServerSample,
+            clientSample: latestClientSample,
+            affectedClientCount: latestServerSample?.clients.filter((entry) => entry.inputAgeMs >= netFlightRecorder_1.NET_FLIGHT_RECORDER_SERVER_INPUT_AGE_THRESHOLD_MS || entry.wsBufferedMaxBytes >= netFlightRecorder_1.NET_FLIGHT_RECORDER_WS_BUFFER_THRESHOLD_BYTES).length ?? 0
+        });
+        this.logNetAnomaly({
+            kind: report.trigger.kind,
+            receivedAtServerMs: Date.now(),
+            clientEventAtMs: report.clientEventAtMs,
+            room,
+            client: clientId,
+            trigger: report.trigger,
+            serverContext: latestServerSample ? summarizeServerSample(latestServerSample) : null,
+            recentServerSamples,
+            recentClientSamples: trimJsonBytes(report.recentClientSamples, netFlightRecorder_1.NET_FLIGHT_RECORDER_MAX_REPORT_BYTES / 2),
+            initialClassification: classification,
+            lastSnapshotTick: report.lastSnapshotTick,
+            lastAckedInputSeq: report.lastAckedInputSeq
+        });
+    }
+    reportServerConnectionEvent(kind, sessionId) {
+        if (!this.netFlightRecorderEnabled)
+            return;
+        if (this.game.state.match.status !== 'playing')
+            return;
+        const eventKey = `${kind}:${sessionId}:${this.game.state.match.status}`;
+        if (eventKey === this.lastLoggedDisconnectEventKey)
+            return;
+        this.lastLoggedDisconnectEventKey = eventKey;
+        const recentServerSamples = this.flightRecorderSamples.toArray().slice(-netFlightRecorder_1.NET_FLIGHT_RECORDER_REPORT_SAMPLE_COUNT);
+        this.logNetAnomaly({
+            kind,
+            receivedAtServerMs: Date.now(),
+            clientEventAtMs: null,
+            room: (0, netFlightRecorder_1.shortSessionId)(this.roomId),
+            client: (0, netFlightRecorder_1.shortSessionId)(sessionId),
+            trigger: { kind },
+            serverContext: recentServerSamples[recentServerSamples.length - 1] ? summarizeServerSample(recentServerSamples[recentServerSamples.length - 1]) : null,
+            recentServerSamples,
+            recentClientSamples: [],
+            initialClassification: 'likely_connection_reconnect_issue'
+        });
+    }
+    readRoomClientBufferedAmount(playerId) {
+        const client = this.clients.find((entry) => entry.sessionId === playerId);
+        return client ? readClientBufferedAmount(client) : null;
+    }
+    logNetAnomaly(payload) {
+        const compact = trimJsonBytes(payload, netFlightRecorder_1.NET_FLIGHT_RECORDER_MAX_REPORT_BYTES);
+        console.log(`[net/anomaly] ${JSON.stringify(compact)}`);
     }
     broadcastRosterUpdate() {
         this.broadcast('roster-update', {
@@ -712,6 +969,10 @@ class DuelRoom extends colyseus_1.Room {
         incrementCounter(this.incomingMessagesByType, type);
         incrementCounter(this.incomingMessagesByPlayerId, client.sessionId);
         incrementNestedCounter(this.incomingMessagesByPlayerIdAndType, client.sessionId, type);
+        if (this.netFlightRecorderEnabled && type === 'input') {
+            this.flightRecorderSecond.inputMessages += 1;
+            this.flightRecorderClientSecondStatsForPlayer(client.sessionId).inputMessages += 1;
+        }
         this.recordObservedColyseusMessageRate(client);
     }
     recordObservedColyseusMessageRate(client) {
@@ -738,9 +999,15 @@ class DuelRoom extends colyseus_1.Room {
     }
     recordSnapshotClientSend(playerId) {
         this.snapshotStatsForPlayer(playerId).snapshotSends += 1;
+        if (!this.netFlightRecorderEnabled)
+            return;
+        const stats = this.flightRecorderClientSecondStatsForPlayer(playerId);
+        stats.snapshotSends += 1;
     }
     recordSnapshotClientSkip(playerId) {
         this.snapshotStatsForPlayer(playerId).snapshotSkips += 1;
+        if (this.netFlightRecorderEnabled)
+            this.flightRecorderSecond.snapshotsSkipped += 1;
     }
     /** Token-bucket rate limit per client per message type (#11). Returns false if over limit. */
     allow(client, type) {
@@ -777,6 +1044,75 @@ class DuelRoom extends colyseus_1.Room {
     }
 }
 exports.DuelRoom = DuelRoom;
+class FixedRingBuffer {
+    capacity;
+    items;
+    nextIndex = 0;
+    count = 0;
+    constructor(capacity) {
+        this.capacity = capacity;
+        this.items = new Array(capacity);
+    }
+    push(value) {
+        this.items[this.nextIndex] = value;
+        this.nextIndex = (this.nextIndex + 1) % this.capacity;
+        this.count = Math.min(this.capacity, this.count + 1);
+    }
+    toArray() {
+        const result = [];
+        for (let i = 0; i < this.count; i += 1) {
+            const index = (this.nextIndex - this.count + i + this.capacity) % this.capacity;
+            const item = this.items[index];
+            if (item !== undefined)
+                result.push(item);
+        }
+        return result;
+    }
+}
+function createFlightRecorderSecondAccumulator(startedAtMs = Date.now()) {
+    return {
+        startedAtMs,
+        simSteps: 0,
+        snapshotsSent: 0,
+        snapshotsSkipped: 0,
+        outboundBytes: 0,
+        snapshotFrameBytesTotal: 0,
+        snapshotFrameBytesMax: 0,
+        snapshotFrameByteSamples: 0,
+        inputMessages: 0
+    };
+}
+function nsToMs(value) {
+    return Number((value / 1_000_000).toFixed(2));
+}
+function summarizeServerSample(sample) {
+    return {
+        eventLoopP95Ms: sample.eventLoopP95Ms,
+        eventLoopMaxMs: sample.eventLoopMaxMs,
+        loopWakeMaxMs: sample.loopWakeMaxMs,
+        cpuPct: sample.cpuPct,
+        snapshotRate: sample.snapshotsSent,
+        outboundBytesPerSec: sample.outboundBytesPerSec,
+        clientWsBufferedBytes: Math.max(0, ...sample.clients.map((client) => client.wsBufferedMaxBytes))
+    };
+}
+function trimJsonBytes(value, maxBytes) {
+    const json = JSON.stringify(value);
+    if (json.length <= maxBytes)
+        return value;
+    if (Array.isArray(value)) {
+        return value.slice(Math.max(0, value.length - Math.floor(value.length / 2)));
+    }
+    if (value && typeof value === 'object') {
+        const clone = { ...value };
+        if (Array.isArray(clone.recentServerSamples))
+            clone.recentServerSamples = clone.recentServerSamples.slice(-12);
+        if (Array.isArray(clone.recentClientSamples))
+            clone.recentClientSamples = clone.recentClientSamples.slice(-12);
+        return clone;
+    }
+    return value;
+}
 function formatPatchRate(patchRateMs) {
     return patchRateMs === null ? 'disabled(manual snapshots)' : `${(1000 / patchRateMs).toFixed(1)}Hz`;
 }

@@ -1,6 +1,7 @@
 import type { HandSide, PlayerInput, RoomState, Vec3 } from './types';
 import type { CompactServerSnapshot, PlayerRoster } from './snapshotCodec';
 import type { BattleMusicSyncState } from './music/BattleMusic';
+import type { NetFlightRecorderClientReport, NetFlightRecorderConfigMessage } from './netFlightRecorder';
 import type { RoomSettingsPatch } from './roomSettings';
 
 export type { RoomSettingsPatch } from './roomSettings';
@@ -232,6 +233,7 @@ export type ClientMessage =
   | EndVoteRequest
   | StartMatchRequest
   | IntermissionVoteRequest
+  | NetFlightRecorderClientReport
   | { type: 'join-room'; roomId: string; playerId: string }
   | { type: 'leave-room'; roomId: string; playerId: string }
   | { type: 'ping'; clientTimeMs: number };
@@ -250,4 +252,5 @@ export type ServerMessage =
   | { type: 'player-left'; playerId: string }
   | { type: 'input-rejected'; sequence: number; reason: string }
   | { type: 'request-rejected'; request: ClientMessage['type']; reason: string }
+  | NetFlightRecorderConfigMessage
   | { type: 'pong'; clientTimeMs: number; serverTimeMs: number };

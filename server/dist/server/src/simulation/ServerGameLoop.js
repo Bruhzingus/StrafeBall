@@ -1211,8 +1211,16 @@ class ServerGameLoop {
         };
     }
     drainPlayerNetworkStats(nowMs = this.now()) {
+        const stats = this.collectPlayerNetworkStats(nowMs);
+        this.playerNetWindowStatsByPlayerId.clear();
+        return stats;
+    }
+    getPlayerNetworkStats(nowMs = this.now()) {
+        return this.collectPlayerNetworkStats(nowMs);
+    }
+    collectPlayerNetworkStats(nowMs) {
         const players = Object.values(this.state.players);
-        const stats = players.map((player) => {
+        return players.map((player) => {
             const window = this.playerNetWindowStatsByPlayerId.get(player.id);
             const queueDepthCurrent = this.inputQueueByPlayerId.get(player.id)?.length ?? 0;
             const lastInputAt = this.lastInputAtByPlayerId.get(player.id) ?? nowMs;
@@ -1236,8 +1244,6 @@ class ServerGameLoop {
                 ackAgeEstimateMs: lastProcessedAt === undefined ? null : Math.max(0, nowMs - lastProcessedAt)
             };
         });
-        this.playerNetWindowStatsByPlayerId.clear();
-        return stats;
     }
     snapshot() {
         const startedAt = node_perf_hooks_1.performance.now();

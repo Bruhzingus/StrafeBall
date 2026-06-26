@@ -3,6 +3,8 @@ import { DuelRoom } from './rooms/DuelRoom';
 
 const DEFAULT_PORT = 2567;
 
+ensureGlobalWebSocket();
+
 function readPort(): number {
   const raw = process.env.PORT ?? process.env.COLYSEUS_PORT;
   if (!raw) return DEFAULT_PORT;
@@ -23,3 +25,29 @@ void server.listen(port).then(() => {
   console.log(`Strafeball Colyseus server listening on ws://localhost:${port}`);
   console.log('Create a private room with client.create("duel", { name }) and join by roomId with client.joinById(roomId, { name }).');
 });
+
+function ensureGlobalWebSocket(): void {
+  const globalScope = globalThis as typeof globalThis & {
+    WebSocket?: unknown;
+  };
+  if (typeof globalScope.WebSocket === 'function') return;
+
+  // Colyseus checks `client.readyState !== WebSocket.OPEN` during join/reconnect. Some droplet/PM2
+  // runtimes have been exposing Node 22 without the expected global WebSocket, so provide the
+  // runtime's existing ws implementation explicitly instead of depending on ambient globals.
+  const wsModule = require('ws') as {
+    WebSocket?: unknown;
+  } | unknown;
+  const candidate = (
+    typeof wsModule === 'object' &&
+    wsModule !== null &&
+    'WebSocket' in wsModule
+      ? (wsModule as { WebSocket?: unknown }).WebSocket
+      : wsModule
+  );
+  if (typeof candidate === 'function') {
+    (globalScope as { WebSocket?: unknown }).WebSocket = candidate;
+  } else {
+    throw new Error('Unable to initialize global WebSocket for Colyseus runtime.');
+  }
+}

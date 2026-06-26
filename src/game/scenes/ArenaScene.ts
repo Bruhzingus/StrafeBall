@@ -53,6 +53,7 @@ import { GuideWall } from '../practice/GuideWall';
 import { createPracticeState } from '../practice/PracticeState';
 import type { PracticeState } from '../practice/PracticeState';
 import { MultiplayerClient } from '../network/MultiplayerClient';
+import { NetFlightRecorder, defaultFlightRecorderGraphicsPreset } from '../network/NetFlightRecorder';
 import { MultiplayerOverlay } from '../network/MultiplayerOverlay';
 import { NetworkRenderer } from '../network/NetworkRenderer';
 import { OnlineTeamSelectorPads } from '../network/OnlineTeamSelectorPads';
@@ -251,6 +252,7 @@ export class ArenaScene {
   private perfReportCorrectionCount = 0;
   private perfReportSnapCount = 0;
   private perfReportMaxCorrectionM = 0;
+  private readonly netFlightRecorder = new NetFlightRecorder();
   private footstepTimer = 0;
   private squeakCooldown = 0;
   private lastBoundaryClockTickSecond: number | null = null;
@@ -904,6 +906,7 @@ export class ArenaScene {
     this.onlineRateLogFrameCount += 1;
     this.perfReportFrameCount += 1;
     this.recordPerfFrame(rawFrameMs);
+    this.netFlightRecorder.recordFrame(rawFrameMs);
 
     // --- Latch edge-triggered inputs every render frame so none are lost between fixed ticks ---
     this.latchJumpPressed ||= this.input.wasKeyPressed(CONTROL_KEYS.jump);
@@ -1184,6 +1187,7 @@ export class ArenaScene {
     this.gym.update(this.elapsed);
     this.gym.updateScoreboards(dt);
     this.logLocalPositionWriters(dt);
+    this.updateNetFlightRecorder(snapshot);
     this.logOnlineRates(dt);
     this.logClientPerf(dt);
   }
@@ -1688,6 +1692,24 @@ export class ArenaScene {
   private ackAgeMs(): number | null {
     if (this.lastAckedInputClientTimeMs <= 0) return this.lastAckReceiveMs > 0 ? Date.now() - this.lastAckReceiveMs : null;
     return Math.max(0, Date.now() - this.lastAckedInputClientTimeMs);
+  }
+
+  private updateNetFlightRecorder(snapshot: ServerSnapshot | null): void {
+    const renderStats = this.networkRenderer.getDebugStats();
+    const local = snapshot?.room.players[this.multiplayer.localPlayerId] ?? null;
+    this.netFlightRecorder.update({
+      multiplayer: this.multiplayer,
+      renderStats,
+      pendingInputs: this.pendingInputs.length,
+      ackAgeMs: this.ackAgeMs(),
+      lastAckedInputSeq: this.lastAckedSeq,
+      lastAuthoritativeTick: snapshot?.tick ?? this.lastSeenSnapshotTick,
+      activePlayers: snapshot ? Object.keys(snapshot.room.players).length : 0,
+      activeBalls: snapshot ? Object.keys(snapshot.room.balls).length : 0,
+      localPlayerAlive: local ? local.combatState === 'alive' : null,
+      graphicsPreset: defaultFlightRecorderGraphicsPreset(),
+      matchPhase: snapshot?.room.match.status ?? 'offline'
+    });
   }
 
   private resetOnlineCatchAudioTracking(): void {
