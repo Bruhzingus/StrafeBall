@@ -25,6 +25,7 @@ export class LoadingScreen {
   private ready = false;
   private done = false;
   private rafId = 0;
+  private startedAtMs = 0;
   private firstRenderableAtMs = 0;
   private fallbackReadyAtMs = 0;
   private framesSinceRenderable = 0;
@@ -33,6 +34,7 @@ export class LoadingScreen {
   // is already rendering/interactable underneath, don't leave the splash stranded forever.
   private static readonly FALLBACK_RENDERABLE_HOLD_MS = 300;
   private static readonly FALLBACK_RENDERABLE_FRAME_COUNT = 10;
+  private static readonly MAX_HOLD_MS = 8000;
 
   private static readonly MESSAGES: ReadonlyArray<readonly [number, string]> = [
     [0, 'Warming up the gym…'],
@@ -54,6 +56,7 @@ export class LoadingScreen {
   track(scene: Scene): void {
     if (!this.root) return;
     this.scene = scene;
+    this.startedAtMs = performance.now();
     scene.executeWhenReady(() => {
       this.ready = true;
     });
@@ -86,6 +89,15 @@ export class LoadingScreen {
         this.firstRenderableAtMs = 0;
         this.framesSinceRenderable = 0;
       }
+    }
+
+    // Final guardrail: if the app has been visibly "loading" for several seconds but the scene
+    // still hasn't satisfied Babylon's strict ready gate, fail open instead of trapping players
+    // behind the splash forever. The live game loop, audio, and controls can already be active
+    // underneath in that state, which is worse than showing the scene a bit early.
+    if (!this.ready && this.startedAtMs > 0 && performance.now() - this.startedAtMs >= LoadingScreen.MAX_HOLD_MS) {
+      this.ready = true;
+      this.target = 1;
     }
 
     // Ease the shown value toward the target; snap the last sliver so it always completes.
