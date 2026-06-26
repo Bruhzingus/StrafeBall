@@ -21,7 +21,7 @@ exports.GAME_CONSTANTS = {
         lookPitchLimitRadians: 1.45,
         eyeHeight: 1.58,
         groundAcceleration: 24,
-        airAcceleration: 14.4,
+        airAcceleration: 12.24,
         airStrafeMaxSpeed: 3.0,
         friction: 10,
         // Strafe/ground top speed reduced 30% (8.5 → 5.95) for tighter, more deliberate movement.
@@ -33,7 +33,7 @@ exports.GAME_CONSTANTS = {
         fallGravityMultiplier: 1.32,
         // Reduced another 15% to cut regular jump hang time while keeping the arc responsive.
         jumpSpeed: 5.08,
-        bhopGraceSeconds: 0.05,
+        bhopGraceSeconds: 0.036,
         bhopSpeedBonus: 1.035,
         crouchHeightMultiplier: 0.62,
         catchStanceSpeedMultiplier: 0.72,

@@ -1173,7 +1173,7 @@ export class ArenaScene {
       this.handleOnlineParryEvents(this.multiplayer.drainParryEvents(), snapshot);
       this.handleOnlineHitEvents(this.multiplayer.drainHitEvents(), snapshot);
       this.handleOnlineHitRevertEvents(this.multiplayer.drainHitRevertEvents());
-      this.networkRenderer.update(snapshot, this.multiplayer.localPlayerId, dt, this.predictedMovement);
+      this.networkRenderer.update(snapshot, this.multiplayer.localPlayerId, dt, this.predictedMovement, this.multiplayer.latestSnapshotLanes ?? undefined);
       this.applyOnlineMats(snapshot);
       this.handleOnlineScoreEvents(snapshot);
       this.flushPendingOnlineScoreEvents(snapshot);
@@ -1219,6 +1219,7 @@ export class ArenaScene {
       const inputJsonBytesPerSec = avgInputJsonBytes * (this.perfReportInputCount / elapsed);
       console.log(
         `[perf] roomAgeSec=${roomAgeSec.toFixed(1)}` +
+        ` snapshotMode=${this.multiplayer.snapshotTierMode}` +
         ` input=${CLIENT_INPUT_RATE}Hz snapshots=${SNAPSHOT_RATE}Hz` +
         ` fps=${fps.toFixed(1)} avgFrameMs=${avgFrameMs.toFixed(2)} p95FrameMs=${p95FrameMs.toFixed(2)} maxFrameMs=${this.perfReportFrameMsMax.toFixed(2)}` +
         ` framesOver={50:${this.perfReportFramesOver50Ms} 100:${this.perfReportFramesOver100Ms} 250:${this.perfReportFramesOver250Ms}}` +

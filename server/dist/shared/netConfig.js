@@ -19,8 +19,9 @@
  *   E. 30 sim / 30 input / 30 snapshots   (baseline for constrained hosts)
  */
 Object.defineProperty(exports, "__esModule", { value: true });
-exports.LIVE_BALL_COMBAT_SUBSTEPS = exports.PERF_REPORT_INTERVAL_MS = exports.DEBUG_DEFAULTS = exports.SNAPSHOT_BACKPRESSURE_BYTES = exports.USE_COMPACT_SNAPSHOTS = exports.SNAPSHOT_ENCODING = exports.HUGE_ERROR_SNAP_METERS = exports.EXTRAPOLATION_LIMIT_MS = exports.SNAPSHOT_BUFFER_LIMIT_MS = exports.SERVER_INPUT_QUEUE_LIMIT = exports.PENDING_INPUT_LIMIT = exports.MAX_ACCUMULATOR_CLAMP_MS = exports.MAX_ACCUMULATOR_STEPS = exports.ROOM_LOOP_WAKE_INTERVAL_MS = exports.ROOM_LOOP_WAKE_RATE = exports.INTERPOLATION_DELAY_MS = exports.SERVER_STEP_MS = exports.SNAPSHOT_INTERVAL_MS = exports.CLIENT_FIXED_DT = exports.SERVER_FIXED_DT = exports.SNAPSHOT_RATE = exports.CLIENT_INPUT_RATE = exports.SERVER_TICK_RATE = exports.ACTIVE_NET_MODE = exports.DEFAULT_NET_MODE = void 0;
+exports.LIVE_BALL_COMBAT_SUBSTEPS = exports.PERF_REPORT_INTERVAL_MS = exports.DEBUG_DEFAULTS = exports.USE_TIERED_SNAPSHOTS = exports.SNAPSHOT_TIER_MODE = exports.SNAPSHOT_BACKPRESSURE_BYTES = exports.USE_COMPACT_SNAPSHOTS = exports.SNAPSHOT_ENCODING = exports.HUGE_ERROR_SNAP_METERS = exports.EXTRAPOLATION_LIMIT_MS = exports.SNAPSHOT_BUFFER_LIMIT_MS = exports.SERVER_INPUT_QUEUE_LIMIT = exports.PENDING_INPUT_LIMIT = exports.MAX_ACCUMULATOR_CLAMP_MS = exports.MAX_ACCUMULATOR_STEPS = exports.ROOM_LOOP_WAKE_INTERVAL_MS = exports.ROOM_LOOP_WAKE_RATE = exports.INTERPOLATION_DELAY_MS = exports.SERVER_STEP_MS = exports.SNAPSHOT_INTERVAL_MS = exports.CLIENT_FIXED_DT = exports.SERVER_FIXED_DT = exports.SNAPSHOT_RATE = exports.CLIENT_INPUT_RATE = exports.SERVER_TICK_RATE = exports.ACTIVE_NET_MODE = exports.DEFAULT_NET_MODE = void 0;
 exports.netModeConfig = netModeConfig;
+exports.describeSnapshotProfile = describeSnapshotProfile;
 exports.resolveServerDebugFlags = resolveServerDebugFlags;
 exports.describeNetConfig = describeNetConfig;
 const MODES = {
@@ -146,6 +147,18 @@ function resolveSnapshotEncoding(env = processEnv()) {
 exports.SNAPSHOT_ENCODING = resolveSnapshotEncoding();
 exports.USE_COMPACT_SNAPSHOTS = exports.SNAPSHOT_ENCODING === 'compact';
 exports.SNAPSHOT_BACKPRESSURE_BYTES = 64 * 1024;
+function resolveSnapshotTierMode(env = processEnv()) {
+    const explicit = env.SNAPSHOT_TIER_MODE?.toLowerCase();
+    if (explicit === 'tiered_v1')
+        return 'tiered_v1';
+    return 'baseline';
+}
+/** Reversible snapshot payload tiering mode. Baseline is the default and preserves current shape. */
+exports.SNAPSHOT_TIER_MODE = resolveSnapshotTierMode();
+exports.USE_TIERED_SNAPSHOTS = exports.SNAPSHOT_TIER_MODE === 'tiered_v1';
+function describeSnapshotProfile() {
+    return `${exports.ACTIVE_NET_MODE}_${exports.SNAPSHOT_TIER_MODE === 'tiered_v1' ? 'TIERED_V1' : 'BASELINE'}`;
+}
 /**
  * PERF_DEBUG defaults ON: it only drives the throttled (every PERF_REPORT_INTERVAL_MS) server
  * [perf] report, which is cheap and is the one diagnostic worth keeping during a real playtest.
@@ -198,6 +211,7 @@ exports.LIVE_BALL_COMBAT_SUBSTEPS = 2;
 function describeNetConfig() {
     return (`mode=${exports.ACTIVE_NET_MODE} sim=${exports.SERVER_TICK_RATE}Hz input=${exports.CLIENT_INPUT_RATE}Hz ` +
         `snapshots=${exports.SNAPSHOT_RATE}Hz interpDelay=${exports.INTERPOLATION_DELAY_MS}ms ` +
+        `snapshotTier=${exports.SNAPSHOT_TIER_MODE} snapshotProfile=${describeSnapshotProfile()} ` +
         `combatSubsteps=${exports.LIVE_BALL_COMBAT_SUBSTEPS} effectiveCombat=${exports.SERVER_TICK_RATE * exports.LIVE_BALL_COMBAT_SUBSTEPS}Hz ` +
         `loopWake=${exports.ROOM_LOOP_WAKE_RATE}Hz`);
 }

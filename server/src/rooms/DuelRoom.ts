@@ -28,7 +28,10 @@ import {
   SNAPSHOT_ENCODING,
   SNAPSHOT_INTERVAL_MS,
   SNAPSHOT_RATE,
+  SNAPSHOT_TIER_MODE,
   USE_COMPACT_SNAPSHOTS,
+  USE_TIERED_SNAPSHOTS,
+  describeSnapshotProfile,
   describeNetConfig,
   resolveServerDebugFlags,
   type DebugFlags
@@ -56,7 +59,14 @@ import {
   type NetFlightRecorderServerClientSample,
   type NetFlightRecorderServerSample
 } from '../../../shared/netFlightRecorder';
-import { makeCompactSnapshot, rosterFromRoom } from '../../../shared/snapshotCodec';
+import {
+  TIERED_SNAPSHOT_LANES,
+  isTieredCompactSnapshot,
+  makeCompactSnapshot,
+  makeTieredCompactSnapshot,
+  rosterFromRoom,
+  type TieredCompactServerSnapshot
+} from '../../../shared/snapshotCodec';
 import {
   buildInboundRateLimits,
   computeMaxMessagesPerSecondPerClient,
@@ -175,6 +185,22 @@ export class DuelRoom extends Room {
   private lastLoopWakeAtMs = 0;
   private nextSnapshotDueAtMs = 0;
   private lastSnapshotTickSent = -1;
+  private snapshotCadenceCounter = 0;
+  private forceNextTieredFullSnapshot = true;
+  private lastTieredResetSerial = -1;
+  private lastTieredWorldDirtyKey = '';
+  private lastTieredPlayerDirtyKey = '';
+  private tieredFastLaneSnapshotsThisWindow = 0;
+  private tieredPlayerLaneSnapshotsThisWindow = 0;
+  private tieredWorldLaneSnapshotsThisWindow = 0;
+  private tieredBallLaneSnapshotsThisWindow = 0;
+  private tieredFastLaneBytesTotal = 0;
+  private tieredFastLaneBytesMax = 0;
+  private tieredPlayerLaneBytesTotal = 0;
+  private tieredPlayerLaneBytesMax = 0;
+  private tieredWorldLaneBytesTotal = 0;
+  private tieredWorldLaneBytesMax = 0;
+  private tieredLaneByteSamples = 0;
   // When sim and snapshot rates are equal (mode A/C) we broadcast one snapshot per sim step, which
   // is exactly the old coupled behavior — no accumulator drift, lowest latency.
   private readonly snapshotCoupledToTick = SNAPSHOT_RATE === SERVER_TICK_RATE;
@@ -232,7 +258,7 @@ export class DuelRoom extends Room {
     // One-time room-created line describing the active net config + the manual-snapshot patch mode.
     this.log(
       `room created mode=${this.roomMode} playersPerTeam=${this.playersPerTeam} preset=${this.roomSettings.preset} ${describeNetConfig()} ` +
-      `snapshotEncoding=${SNAPSHOT_ENCODING} snapshotBackpressure=${SNAPSHOT_BACKPRESSURE_BYTES}B ` +
+      `snapshotEncoding=${SNAPSHOT_ENCODING} snapshotTierMode=${SNAPSHOT_TIER_MODE} snapshotProfile=${describeSnapshotProfile()} snapshotBackpressure=${SNAPSHOT_BACKPRESSURE_BYTES}B ` +
       `colyseusPatchRate=${formatPatchRate(COLYSEUS_PATCH_RATE_MS)} ` +
       `colyseusMaxMessagesPerSecond=${this.maxMessagesPerSecond}/s(per-client inbound, expected~${expectedPerClientMessagesPerSecond(CLIENT_INPUT_RATE)}/s)`
     );
@@ -378,6 +404,8 @@ export class DuelRoom extends Room {
         this.lastLoopWakeAtMs = now;
         this.nextSnapshotDueAtMs = 0;
         this.lastSnapshotTickSent = -1;
+        this.snapshotCadenceCounter = 0;
+        this.forceNextTieredFullSnapshot = true;
         return;
       }
 
@@ -442,6 +470,7 @@ export class DuelRoom extends Room {
       client.leave(4001);
       return;
     }
+    this.markTieredFullSnapshotDirty();
     this.game.setConnected(client.sessionId, true);
     this.log(`player joined id=${player.id} name="${player.name}" side=${player.spawnSide}`);
 
@@ -461,6 +490,7 @@ export class DuelRoom extends Room {
   // state intact (#12). If the window elapses, the framework proceeds to onLeave.
   async onDrop(client: Client, _code?: number): Promise<void> {
     this.game.setConnected(client.sessionId, false, Date.now() + RECONNECT_SECONDS * 1000);
+    this.markTieredFullSnapshotDirty();
     this.log(`player dropped id=${client.sessionId} — awaiting reconnection`);
     this.reportServerConnectionEvent('client_drop', client.sessionId);
     try {
@@ -472,6 +502,7 @@ export class DuelRoom extends Room {
 
   onReconnect(client: Client): void {
     this.game.setConnected(client.sessionId, true, null);
+    this.markTieredFullSnapshotDirty();
     this.log(`player reconnected id=${client.sessionId}`);
     this.sendNetFlightRecorderConfig(client);
     this.sendBattleMusicSync(client);
@@ -484,6 +515,7 @@ export class DuelRoom extends Room {
   onLeave(client: Client, _code?: number): void {
     this.buckets.delete(client.sessionId);
     this.game.abandon(client.sessionId);
+    this.markTieredFullSnapshotDirty();
     this.log(`player left id=${client.sessionId}`);
     this.broadcast('player-left', { type: 'player-left', playerId: client.sessionId } satisfies ServerMessage);
     this.broadcastRosterUpdate();
@@ -543,6 +575,17 @@ export class DuelRoom extends Room {
     this.snapshotCompactFrameBytesTotal = 0;
     this.snapshotCompactFrameBytesMax = 0;
     this.snapshotPayloadSamples = 0;
+    this.tieredFastLaneSnapshotsThisWindow = 0;
+    this.tieredPlayerLaneSnapshotsThisWindow = 0;
+    this.tieredWorldLaneSnapshotsThisWindow = 0;
+    this.tieredBallLaneSnapshotsThisWindow = 0;
+    this.tieredFastLaneBytesTotal = 0;
+    this.tieredFastLaneBytesMax = 0;
+    this.tieredPlayerLaneBytesTotal = 0;
+    this.tieredPlayerLaneBytesMax = 0;
+    this.tieredWorldLaneBytesTotal = 0;
+    this.tieredWorldLaneBytesMax = 0;
+    this.tieredLaneByteSamples = 0;
     this.snapshotWsBufferedBytesTotal = 0;
     this.snapshotWsBufferedBytesMax = 0;
     this.snapshotWsBufferedSamples = 0;
@@ -586,9 +629,11 @@ export class DuelRoom extends Room {
     }
     let activeBalls = 0;
     let liveBalls = 0;
+    let settledBalls = 0;
     for (const ball of balls) {
       if (ball.phase !== 'dead') activeBalls += 1;
       if (ball.phase === 'live' || ball.phase === 'deflected') liveBalls += 1;
+      if (ball.phase === 'loose') settledBalls += 1;
     }
 
     const mem = process.memoryUsage();
@@ -634,12 +679,25 @@ export class DuelRoom extends Room {
       ? Math.round(this.snapshotCompactFrameBytesTotal / this.snapshotPayloadSamples)
       : 0;
     const estimatedSnapshotOutBytesPerSec = avgFrameBytes * (this.snapshotClientSendsThisWindow / elapsedSeconds);
+    const avgFastLaneBytes = this.tieredLaneByteSamples > 0
+      ? Math.round(this.tieredFastLaneBytesTotal / this.tieredLaneByteSamples)
+      : 0;
+    const avgPlayerLaneBytes = this.tieredLaneByteSamples > 0
+      ? Math.round(this.tieredPlayerLaneBytesTotal / this.tieredLaneByteSamples)
+      : 0;
+    const avgWorldLaneBytes = this.tieredLaneByteSamples > 0
+      ? Math.round(this.tieredWorldLaneBytesTotal / this.tieredLaneByteSamples)
+      : 0;
+    const lanePct = (count: number): string => {
+      return this.snapshotsThisWindow > 0 ? ((count / this.snapshotsThisWindow) * 100).toFixed(1) : '0.0';
+    };
 
     // Combat counters for this window (verify the lag-comp catch fix in production).
     const c = this.game.drainCombatMetrics();
 
     this.log(
       `[perf] roomAgeSec=${roomAgeSec.toFixed(1)} ` +
+      `snapshotMode=${SNAPSHOT_TIER_MODE} profile=${describeSnapshotProfile()} ` +
       `sim=${SERVER_TICK_RATE}Hz input=${CLIENT_INPUT_RATE}Hz snapshots=${SNAPSHOT_RATE}Hz ` +
       `simTicks=${(this.simTicksThisWindow / elapsedSeconds).toFixed(1)}/s ` +
       `snapshotsSent=${(this.snapshotsThisWindow / elapsedSeconds).toFixed(1)}/s snapshotClientSends=${(this.snapshotClientSendsThisWindow / elapsedSeconds).toFixed(1)}/s ` +
@@ -649,13 +707,15 @@ export class DuelRoom extends Room {
       `snapshotLateMs avg=${avgSnapshotLateMs.toFixed(2)} max=${this.snapshotLateMsMax.toFixed(2)} skippedSnapshots=${this.snapshotDeadlineSkipsThisWindow} noNewTickSkips=${this.snapshotNoNewTickSkipsThisWindow} backpressureSkips=${this.snapshotBackpressureSkipsThisWindow} allBackpressureSkips=${this.snapshotAllBackpressureSkipsThisWindow} ` +
       `incoming=${incomingRate.toFixed(1)}/s ` +
       `players total=${playerStates.length} active=${activePlayers} alive=${alivePlayers} eliminated=${eliminatedPlayers} disconnected=${disconnectedPlayers} ` +
-      `balls total=${balls.length} active=${activeBalls} live=${liveBalls} ` +
+      `balls total=${balls.length} active=${activeBalls} live=${liveBalls} settled=${settledBalls} ` +
       `inputDrain={avg=${buffers.inputsDrainedAvg.toFixed(2)} max=${buffers.inputsDrainedMax} maxQueueBefore=${buffers.maxInputQueueBeforeDrain}} ` +
       `buffers={input=${buffers.inputQueues} inputMax=${buffers.maxInputQueue} throw=${buffers.pendingThrowEvents} combat=${buffers.pendingCombatEvents} defenseHist=${buffers.defenseHistoryEntries} ballHist=${buffers.ballHistoryEntries} catch=${buffers.catchAttempts} hit=${buffers.recentHits}} ` +
       `combat={catchTry=${c.catchAttemptsOpened} catch=${c.catches} reclaim=${c.reclaimCatches} parry=${c.parries} hit=${c.hits} revert=${c.hitReverts}} ` +
       `accumulatorCaps=${this.stepCapHitsThisWindow} ` +
       `snapshotBytes activeAvg=${avgPayload} activeMax=${this.snapshotPayloadBytesMax} fullAvg=${avgFullPayload} fullMax=${this.snapshotFullPayloadBytesMax} compactAvg=${avgCompactPayload} compactMax=${this.snapshotCompactPayloadBytesMax} ` +
       `snapshotFrameBytes activeAvg=${avgFrameBytes} activeMax=${this.snapshotFrameBytesMax} fullAvg=${avgFullFrameBytes} fullMax=${this.snapshotFullFrameBytesMax} compactAvg=${avgCompactFrameBytes} compactMax=${this.snapshotCompactFrameBytesMax} estimatedOut=${Math.round(estimatedSnapshotOutBytesPerSec)}B/s ` +
+      `snapshotLanePct fast=${lanePct(this.tieredFastLaneSnapshotsThisWindow)} player=${lanePct(this.tieredPlayerLaneSnapshotsThisWindow)} world=${lanePct(this.tieredWorldLaneSnapshotsThisWindow)} ball=${lanePct(this.tieredBallLaneSnapshotsThisWindow)} ` +
+      `snapshotLaneBytes fastAvg=${avgFastLaneBytes} fastMax=${this.tieredFastLaneBytesMax} playerAvg=${avgPlayerLaneBytes} playerMax=${this.tieredPlayerLaneBytesMax} worldAvg=${avgWorldLaneBytes} worldMax=${this.tieredWorldLaneBytesMax} ` +
       `wsBuffered avg=${wsBufferedAvg}B max=${wsBufferedMax}B ` +
       `eventLoopMs avg=${eventLoopDelayAvgMs.toFixed(2)} p95=${eventLoopDelayP95Ms.toFixed(2)} max=${eventLoopDelayMaxMs.toFixed(2)} ` +
       `loopWakeMs max=${this.loopWakeDelayMsMax.toFixed(2)} stalls50=${this.loopWakeStallsOver50MsThisWindow} stalls100=${this.loopWakeStallsOver100MsThisWindow} stalls500=${this.loopWakeStallsOver500MsThisWindow} ` +
@@ -728,6 +788,7 @@ export class DuelRoom extends Room {
     this.snapshotBroadcastMsMax = Math.max(this.snapshotBroadcastMsMax, broadcastMs);
     this.snapshotLateMsTotal += lateMs;
     this.snapshotLateMsMax = Math.max(this.snapshotLateMsMax, lateMs);
+    this.recordTieredLanePresence(payload);
     const sampleStride = Math.max(1, Math.floor(SNAPSHOT_RATE / 4));
     if (this.debug.PERF_DEBUG && this.snapshotPayloadSamples < 8 && this.snapshotsThisWindow % sampleStride === 1) {
       const activeBytes = JSON.stringify(payload).length;
@@ -753,6 +814,7 @@ export class DuelRoom extends Room {
       this.snapshotCompactFrameBytesTotal += compactFrameBytes;
       this.snapshotCompactFrameBytesMax = Math.max(this.snapshotCompactFrameBytesMax, compactFrameBytes);
       this.snapshotPayloadSamples += 1;
+      if (isTieredCompactSnapshot(payload)) this.recordTieredLaneByteSample(payload);
     }
   }
 
@@ -809,7 +871,9 @@ export class DuelRoom extends Room {
     const snapshot = this.game.snapshot();
     const snapshotBuildMs = this.game.getLastSnapshotBuildMs();
     const encodeStartedAt = performance.now();
-    const payload = this.encodeSnapshot(snapshot);
+    const cadence = this.snapshotCadenceCounter;
+    this.snapshotCadenceCounter += 1;
+    const payload = this.encodeSnapshot(snapshot, cadence);
     const buildMs = snapshotBuildMs + (performance.now() - encodeStartedAt);
     const frameBytesEstimate = this.netFlightRecorderEnabled ? encodedRoomMessageBytes('snapshot', payload) : 0;
     const broadcastStartedAt = performance.now();
@@ -851,8 +915,148 @@ export class DuelRoom extends Room {
     return sendable;
   }
 
-  private encodeSnapshot(snapshot: ServerSnapshot): SnapshotPayload {
-    return USE_COMPACT_SNAPSHOTS ? makeCompactSnapshot(snapshot) : snapshot;
+  private encodeSnapshot(snapshot: ServerSnapshot, cadence: number): SnapshotPayload {
+    if (!USE_TIERED_SNAPSHOTS) return USE_COMPACT_SNAPSHOTS ? makeCompactSnapshot(snapshot) : snapshot;
+
+    const resetSerial = snapshot.room.resetVote.resetSerial;
+    const resetChanged = resetSerial !== this.lastTieredResetSerial;
+    if (resetChanged) {
+      this.forceNextTieredFullSnapshot = true;
+      this.lastTieredResetSerial = resetSerial;
+    }
+
+    const worldDirtyKey = this.tieredWorldDirtyKey(snapshot);
+    const playerDirtyKey = this.tieredPlayerDirtyKey(snapshot);
+    const worldDirty = worldDirtyKey !== this.lastTieredWorldDirtyKey;
+    const playerDirty = playerDirtyKey !== this.lastTieredPlayerDirtyKey;
+    const forceFull = this.forceNextTieredFullSnapshot;
+    const includePlayerLane = forceFull || playerDirty || cadence % 2 === 0;
+    const includeWorldLane = forceFull || worldDirty || cadence % 4 === 0;
+
+    const payload = makeTieredCompactSnapshot(snapshot, {
+      includePlayerLane,
+      includeWorldLane,
+      includeFastPlayerLane: !includePlayerLane,
+      includeBallLane: true
+    });
+
+    if (includeWorldLane) this.lastTieredWorldDirtyKey = worldDirtyKey;
+    if (includePlayerLane) this.lastTieredPlayerDirtyKey = playerDirtyKey;
+    this.forceNextTieredFullSnapshot = false;
+    return payload;
+  }
+
+  private markTieredFullSnapshotDirty(): void {
+    this.forceNextTieredFullSnapshot = true;
+  }
+
+  private tieredWorldDirtyKey(snapshot: ServerSnapshot): string {
+    const room = snapshot.room;
+    const match = room.match;
+    const boundary = match.boundary;
+    const settings = room.settings;
+    const resetVote = room.resetVote;
+    const startVote = room.startVote;
+    const endVote = room.endVote;
+    const intermissionVote = room.intermissionVote;
+    const score = stableNumberRecord(match.scoreByTeamId);
+    const rounds = stableNumberRecord(match.roundsWonByTeamId);
+    const mats = Object.values(room.mats)
+      .sort((a, b) => a.id.localeCompare(b.id))
+      .map((mat) => `${mat.id}:${Number(mat.knockedOver)}:${mat.knockDirection.x.toFixed(2)},${mat.knockDirection.z.toFixed(2)}`)
+      .join(',');
+    const boundaryEvent = boundary.lastEvent;
+    const boundaryEventKey = boundaryEvent.type === 'none'
+      ? 'none'
+      : Object.values(boundaryEvent).join(':');
+    return [
+      room.hostPlayerId ?? '',
+      room.phase,
+      settings.preset,
+      settings.format,
+      settings.livesPerPlayer,
+      settings.dodgeballCount,
+      settings.maxLiveBallBounces,
+      settings.matPreset,
+      settings.roundCount,
+      settings.halfCourtTimerSeconds,
+      match.mode,
+      match.status,
+      match.winnerTeamId ?? '',
+      match.currentRound,
+      match.roundCount,
+      score,
+      rounds,
+      Number(boundary.noBoundaries),
+      boundaryEventKey,
+      resetVote.resetSerial,
+      resetVote.voteCount,
+      resetVote.requiredVotes,
+      resetVote.mode,
+      startVote.voteCount,
+      startVote.requiredVotes,
+      startVote.teamChoiceCount,
+      startVote.requiredTeamChoices,
+      Number(endVote.active),
+      endVote.voteCount,
+      endVote.requiredVotes,
+      Number(intermissionVote.active),
+      intermissionVote.nextRoundCount,
+      intermissionVote.toLobbyCount,
+      intermissionVote.requiredVotes,
+      mats
+    ].join('|');
+  }
+
+  private tieredPlayerDirtyKey(snapshot: ServerSnapshot): string {
+    return Object.values(snapshot.room.players)
+      .sort((a, b) => a.id.localeCompare(b.id))
+      .map((player) => {
+        const left = player.hands.left;
+        const right = player.hands.right;
+        return [
+          player.id,
+          player.teamId,
+          player.spawnSide,
+          player.teamSlotIndex,
+          player.legalHalf,
+          Number(player.connected),
+          player.lives,
+          player.combatState,
+          left.heldBallId ?? '',
+          left.mode,
+          left.lastCatchAttemptId,
+          right.heldBallId ?? '',
+          right.mode,
+          right.lastCatchAttemptId
+        ].join(':');
+      })
+      .join('|');
+  }
+
+  private recordTieredLanePresence(payload: SnapshotPayload): void {
+    if (!isTieredCompactSnapshot(payload)) return;
+    this.tieredFastLaneSnapshotsThisWindow += 1;
+    if ((payload.l & TIERED_SNAPSHOT_LANES.PLAYER) !== 0) this.tieredPlayerLaneSnapshotsThisWindow += 1;
+    if ((payload.l & TIERED_SNAPSHOT_LANES.WORLD) !== 0) this.tieredWorldLaneSnapshotsThisWindow += 1;
+    if ((payload.l & TIERED_SNAPSHOT_LANES.BALL) !== 0) this.tieredBallLaneSnapshotsThisWindow += 1;
+  }
+
+  private recordTieredLaneByteSample(payload: TieredCompactServerSnapshot): void {
+    const fastBytes = JSON.stringify({
+      rs: payload.rs,
+      f: payload.f,
+      b: payload.b
+    }).length;
+    const playerBytes = payload.p ? JSON.stringify(payload.p).length : 0;
+    const worldBytes = payload.w ? JSON.stringify(payload.w).length : 0;
+    this.tieredFastLaneBytesTotal += fastBytes;
+    this.tieredFastLaneBytesMax = Math.max(this.tieredFastLaneBytesMax, fastBytes);
+    this.tieredPlayerLaneBytesTotal += playerBytes;
+    this.tieredPlayerLaneBytesMax = Math.max(this.tieredPlayerLaneBytesMax, playerBytes);
+    this.tieredWorldLaneBytesTotal += worldBytes;
+    this.tieredWorldLaneBytesMax = Math.max(this.tieredWorldLaneBytesMax, worldBytes);
+    this.tieredLaneByteSamples += 1;
   }
 
   private recordSnapshotBufferedAmount(playerId: string, buffered: number): void {
@@ -1370,6 +1574,13 @@ function formatPerClientPerfLine(
 
 function formatNullableMs(value: number | null): string {
   return value === null ? 'n/a' : `${Math.round(value)}ms`;
+}
+
+function stableNumberRecord(record: Record<string, number>): string {
+  return Object.entries(record)
+    .sort(([a], [b]) => a.localeCompare(b))
+    .map(([key, value]) => `${key}:${value}`)
+    .join(',');
 }
 
 function identity(value: string): string {

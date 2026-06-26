@@ -1,5 +1,6 @@
 import { Color3, Mesh, MeshBuilder, PBRMaterial, Quaternion, Scene, TransformNode, Vector3 } from '@babylonjs/core';
 import type { CatchEvent, ServerSnapshot, ThrowEvent } from '../../../shared/protocol';
+import type { SnapshotLaneInfo } from '../../../shared/snapshotCodec';
 import type { BallState, HandSide, PlayerState, Vec3 } from '../../../shared/types';
 import { BallPredictor } from './BallPredictor';
 import { TUNING } from '../config/tuning';
@@ -89,7 +90,7 @@ interface CatchRecoilTrack {
 
 type RemotePlayerDebug = { logTimer: number };
 
-interface BufferedSnapshot {
+interface BufferedPlayerSnapshot {
   tick: number;
   resetSerial: number;
   /** Wall-clock arrival time (Date.now). Used ONLY for buffer aging, never for interpolation. */
@@ -101,8 +102,31 @@ interface BufferedSnapshot {
    */
   serverTimeMs: number;
   players: PlayerState[];
+}
+
+interface BufferedBallSnapshot {
+  tick: number;
+  resetSerial: number;
+  /** Wall-clock arrival time (Date.now). Used ONLY for buffer aging, never for interpolation. */
+  receivedAtMs: number;
+  /**
+   * Monotonic server timeline for this snapshot, in ms. Interpolation samples against THIS, not
+   * arrival time, which is what removes packet-arrival jitter from the visuals.
+   */
+  serverTimeMs: number;
   balls: BallState[];
 }
+
+const FULL_RENDER_LANES: SnapshotLaneInfo = {
+  mode: 'baseline',
+  tiered: false,
+  fullState: true,
+  fastPlayerLane: true,
+  playerLane: true,
+  ballLane: true,
+  worldLane: true,
+  resetSerial: 0
+};
 
 interface BallRenderContinuity {
   phase: BallState['phase'];
@@ -164,11 +188,13 @@ export class NetworkRenderer {
   // Reused per-frame "seen this update" sets — cleared in place each frame instead of reallocated.
   private readonly seenPlayers = new Set<string>();
   private readonly seenBalls = new Set<string>();
-  private readonly snapshotBuffer: BufferedSnapshot[] = [];
+  private readonly playerSnapshotBuffer: BufferedPlayerSnapshot[] = [];
+  private readonly ballSnapshotBuffer: BufferedBallSnapshot[] = [];
   private readonly ballRenderContinuity = new Map<string, BallRenderContinuity>();
-  private lastBufferedTick = -1;
+  private lastBufferedPlayerTick = -1;
+  private lastBufferedBallTick = -1;
   private lastBufferedResetSerial = -1;
-  private latestSnapshotReceivedAtMs = 0;
+  private latestPlayerSampleReceivedAtMs = 0;
 
   // Smoothed render clock. `renderServerTime` is the point on the SERVER timeline we are currently
   // displaying; it advances by real dt every frame and is gently nudged toward
@@ -212,19 +238,24 @@ export class NetworkRenderer {
     snapshot: ServerSnapshot,
     localPlayerId: string,
     dt: number,
-    localPredicted?: PlayerState['movement'] | null
+    localPredicted?: PlayerState['movement'] | null,
+    lanes: SnapshotLaneInfo = FULL_RENDER_LANES
   ): void {
-    this.bufferSnapshot(snapshot);
+    this.bufferSnapshot(snapshot, lanes);
     const targetTimeMs = this.advanceRenderClock(dt);
     if (targetTimeMs === null) return;
-    const renderSnapshot = this.sampleBufferedSnapshot(targetTimeMs);
-    if (!renderSnapshot) return;
+    const renderPlayers = this.samplePlayerSnapshot(targetTimeMs);
+    const renderBalls = this.sampleBallSnapshot(targetTimeMs);
+    if (!renderPlayers && !renderBalls) return;
     this.refreshDebugStats(dt);
-    this.updatePlayers(renderSnapshot.players, localPlayerId, dt);
+    if (renderPlayers) this.updatePlayers(renderPlayers.players, localPlayerId, dt);
     // Live thrown balls render at PRESENT server time via deterministic prediction, reconciled
     // against the newest authoritative snapshot; everything else uses the interpolated render snapshot.
-    const newest = this.snapshotBuffer[this.snapshotBuffer.length - 1];
-    this.updateBalls(renderSnapshot.balls, renderSnapshot.players, localPlayerId, localPredicted ?? null, newest, dt);
+    const newest = this.ballSnapshotBuffer[this.ballSnapshotBuffer.length - 1];
+    const playersForBalls = renderPlayers?.players
+      ?? this.playerSnapshotBuffer[this.playerSnapshotBuffer.length - 1]?.players
+      ?? Object.values(snapshot.room.players);
+    if (renderBalls) this.updateBalls(renderBalls.balls, playersForBalls, localPlayerId, localPredicted ?? null, newest, dt);
   }
 
   /** Seed/refresh live-ball visual prediction from authoritative throw events (called by the scene). */
@@ -269,11 +300,14 @@ export class NetworkRenderer {
 
   getDebugStats(): NetworkRendererDebugStats {
     // Keep the live buffer size / age fields fresh; rate-style metrics come from the rolling window.
-    this.debugStats.remoteInterpolationBufferSize = this.snapshotBuffer.length;
-    this.debugStats.ballInterpolationBufferSize = this.snapshotBuffer.length;
+    this.debugStats.remoteInterpolationBufferSize = this.playerSnapshotBuffer.length;
+    this.debugStats.ballInterpolationBufferSize = this.ballSnapshotBuffer.length;
     this.debugStats.renderDelayMs = this.interpolationDelayMs;
-    const oldest = this.snapshotBuffer[0];
-    const newest = this.snapshotBuffer[this.snapshotBuffer.length - 1];
+    const oldest = olderSample(this.playerSnapshotBuffer[0], this.ballSnapshotBuffer[0]);
+    const newest = newerSample(
+      this.playerSnapshotBuffer[this.playerSnapshotBuffer.length - 1],
+      this.ballSnapshotBuffer[this.ballSnapshotBuffer.length - 1]
+    );
     const now = Date.now();
     // Buffer age is a local wall-clock metric; use receive time so server/client clock skew cannot
     // make the perf HUD report negative or wildly inflated snapshot ages.
@@ -315,12 +349,14 @@ export class NetworkRenderer {
     this.balls.clear();
     this.seenPlayers.clear();
     this.seenBalls.clear();
-    this.snapshotBuffer.length = 0;
+    this.playerSnapshotBuffer.length = 0;
+    this.ballSnapshotBuffer.length = 0;
     this.ballRenderContinuity.clear();
     this.ballPredictor.clear();
-    this.lastBufferedTick = -1;
+    this.lastBufferedPlayerTick = -1;
+    this.lastBufferedBallTick = -1;
     this.lastBufferedResetSerial = -1;
-    this.latestSnapshotReceivedAtMs = 0;
+    this.latestPlayerSampleReceivedAtMs = 0;
     this.resetRenderClock();
     this.resetMetrics();
     this.debugStats = emptyDebugStats();
@@ -338,7 +374,7 @@ export class NetworkRenderer {
     this.wallLeanByPlayerId.clear();
   }
 
-  private bufferSnapshot(snapshot: ServerSnapshot): void {
+  private bufferSnapshot(snapshot: ServerSnapshot, lanes: SnapshotLaneInfo): void {
     const resetSerial = snapshot.room.resetVote.resetSerial;
     if (resetSerial !== this.lastBufferedResetSerial) {
       if (this.lastBufferedResetSerial !== -1 && isNetworkRenderDebugEnabled()) {
@@ -347,42 +383,66 @@ export class NetworkRenderer {
       // resetSerial change: clear buffer + continuity + ball prediction, and resync the render clock
       // so the cursor re-locks to the fresh timeline instead of dragging the old one through the
       // discontinuity. Dropping predictions prevents a stale throwId carrying across the reset.
-      this.snapshotBuffer.length = 0;
+      this.playerSnapshotBuffer.length = 0;
+      this.ballSnapshotBuffer.length = 0;
       this.ballRenderContinuity.clear();
       this.ballPredictor.clear();
-      this.lastBufferedTick = -1;
+      this.lastBufferedPlayerTick = -1;
+      this.lastBufferedBallTick = -1;
       this.lastBufferedResetSerial = resetSerial;
       this.resetRenderClock();
     }
 
-    // Out-of-order / duplicate ticks: ignore anything not strictly newer than the last buffered.
-    if (snapshot.tick <= this.lastBufferedTick) return;
-
     const now = Date.now();
-    if (this.latestSnapshotReceivedAtMs > 0) {
-      const interval = now - this.latestSnapshotReceivedAtMs;
-      this.metricIntervalTotalMs += interval;
-      this.metricIntervalCount += 1;
-      this.metricIntervalMaxMs = Math.max(this.metricIntervalMaxMs, interval);
+    const serverTimeMs = this.deriveServerTime(snapshot);
+    if (lanes.playerLane && snapshot.tick > this.lastBufferedPlayerTick) {
+      if (this.latestPlayerSampleReceivedAtMs > 0) {
+        const interval = now - this.latestPlayerSampleReceivedAtMs;
+        this.metricIntervalTotalMs += interval;
+        this.metricIntervalCount += 1;
+        this.metricIntervalMaxMs = Math.max(this.metricIntervalMaxMs, interval);
+      }
+      this.latestPlayerSampleReceivedAtMs = now;
+      this.lastBufferedPlayerTick = snapshot.tick;
+      this.playerSnapshotBuffer.push({
+        tick: snapshot.tick,
+        resetSerial,
+        receivedAtMs: now,
+        serverTimeMs,
+        players: Object.values(snapshot.room.players).map(clonePlayerState)
+      });
+      this.prunePlayerBuffer(now);
     }
-    this.latestSnapshotReceivedAtMs = now;
-    this.lastBufferedTick = snapshot.tick;
-    this.snapshotBuffer.push({
-      tick: snapshot.tick,
-      resetSerial,
-      receivedAtMs: now,
-      serverTimeMs: this.deriveServerTime(snapshot),
-      players: Object.values(snapshot.room.players).map(clonePlayerState),
-      balls: Object.values(snapshot.room.balls).map(cloneBallState)
-    });
 
-    // Buffer overflow: drop snapshots older than the configured age, always keeping >= 2 so we can
-    // still bracket the render cursor for interpolation.
+    if (lanes.ballLane && snapshot.tick > this.lastBufferedBallTick) {
+      this.lastBufferedBallTick = snapshot.tick;
+      this.ballSnapshotBuffer.push({
+        tick: snapshot.tick,
+        resetSerial,
+        receivedAtMs: now,
+        serverTimeMs,
+        balls: Object.values(snapshot.room.balls).map(cloneBallState)
+      });
+      this.pruneBallBuffer(now);
+    }
+  }
+
+  private prunePlayerBuffer(now: number): void {
     while (
-      this.snapshotBuffer.length > 2 &&
-      now - this.snapshotBuffer[0].receivedAtMs > NetworkRenderer.MAX_BUFFER_MS
+      this.playerSnapshotBuffer.length > 2 &&
+      now - this.playerSnapshotBuffer[0].receivedAtMs > NetworkRenderer.MAX_BUFFER_MS
     ) {
-      this.snapshotBuffer.shift();
+      this.playerSnapshotBuffer.shift();
+      this.metricOverruns += 1;
+    }
+  }
+
+  private pruneBallBuffer(now: number): void {
+    while (
+      this.ballSnapshotBuffer.length > 2 &&
+      now - this.ballSnapshotBuffer[0].receivedAtMs > NetworkRenderer.MAX_BUFFER_MS
+    ) {
+      this.ballSnapshotBuffer.shift();
       this.metricOverruns += 1;
     }
   }
@@ -430,9 +490,12 @@ export class NetworkRenderer {
    * jumping with each packet arrival.
    */
   private advanceRenderClock(dt: number): number | null {
-    if (this.snapshotBuffer.length === 0) return null;
+    const newest = newerSample(
+      this.playerSnapshotBuffer[this.playerSnapshotBuffer.length - 1],
+      this.ballSnapshotBuffer[this.ballSnapshotBuffer.length - 1]
+    );
+    if (!newest) return null;
 
-    const newest = this.snapshotBuffer[this.snapshotBuffer.length - 1];
     const target = newest.serverTimeMs - this.interpolationDelayMs;
 
     if (!this.renderClockInitialized) {
@@ -454,27 +517,22 @@ export class NetworkRenderer {
     return this.renderServerTime;
   }
 
-  private sampleBufferedSnapshot(targetTimeMs: number): BufferedSnapshot | null {
-    if (this.snapshotBuffer.length === 0) return null;
-    if (this.snapshotBuffer.length === 1) return this.snapshotBuffer[0];
+  private samplePlayerSnapshot(targetTimeMs: number): BufferedPlayerSnapshot | null {
+    if (this.playerSnapshotBuffer.length === 0) return null;
+    if (this.playerSnapshotBuffer.length === 1) return this.playerSnapshotBuffer[0];
 
-    const oldest = this.snapshotBuffer[0];
-    const newest = this.snapshotBuffer[this.snapshotBuffer.length - 1];
-
-    // Cursor behind the oldest buffered server time: hold the oldest (nothing older to lerp from).
+    const oldest = this.playerSnapshotBuffer[0];
+    const newest = this.playerSnapshotBuffer[this.playerSnapshotBuffer.length - 1];
     if (targetTimeMs <= oldest.serverTimeMs) return oldest;
-
-    // Buffer underrun: cursor past the newest snapshot. Extrapolate (clamped) for live/deflected
-    // balls and briefly for players, else hold.
     if (targetTimeMs >= newest.serverTimeMs) {
       this.metricUnderruns += 1;
-      return extrapolateSnapshot(newest, targetTimeMs - newest.serverTimeMs);
+      return extrapolatePlayerSnapshot(newest, targetTimeMs - newest.serverTimeMs);
     }
 
-    let before: BufferedSnapshot = oldest;
-    let after: BufferedSnapshot = newest;
-    for (let i = 0; i < this.snapshotBuffer.length; i += 1) {
-      const snapshot = this.snapshotBuffer[i];
+    let before: BufferedPlayerSnapshot = oldest;
+    let after: BufferedPlayerSnapshot = newest;
+    for (let i = 0; i < this.playerSnapshotBuffer.length; i += 1) {
+      const snapshot = this.playerSnapshotBuffer[i];
       if (snapshot.serverTimeMs <= targetTimeMs) before = snapshot;
       if (snapshot.serverTimeMs >= targetTimeMs) {
         after = snapshot;
@@ -486,7 +544,37 @@ export class NetworkRenderer {
 
     const spanMs = Math.max(1, after.serverTimeMs - before.serverTimeMs);
     const t = clamp01((targetTimeMs - before.serverTimeMs) / spanMs);
-    return interpolateSnapshots(before, after, t, targetTimeMs);
+    return interpolatePlayerSnapshots(before, after, t, targetTimeMs);
+  }
+
+  private sampleBallSnapshot(targetTimeMs: number): BufferedBallSnapshot | null {
+    if (this.ballSnapshotBuffer.length === 0) return null;
+    if (this.ballSnapshotBuffer.length === 1) return this.ballSnapshotBuffer[0];
+
+    const oldest = this.ballSnapshotBuffer[0];
+    const newest = this.ballSnapshotBuffer[this.ballSnapshotBuffer.length - 1];
+    if (targetTimeMs <= oldest.serverTimeMs) return oldest;
+    if (targetTimeMs >= newest.serverTimeMs) {
+      this.metricUnderruns += 1;
+      return extrapolateBallSnapshot(newest, targetTimeMs - newest.serverTimeMs);
+    }
+
+    let before: BufferedBallSnapshot = oldest;
+    let after: BufferedBallSnapshot = newest;
+    for (let i = 0; i < this.ballSnapshotBuffer.length; i += 1) {
+      const snapshot = this.ballSnapshotBuffer[i];
+      if (snapshot.serverTimeMs <= targetTimeMs) before = snapshot;
+      if (snapshot.serverTimeMs >= targetTimeMs) {
+        after = snapshot;
+        break;
+      }
+    }
+
+    if (before === after) return before;
+
+    const spanMs = Math.max(1, after.serverTimeMs - before.serverTimeMs);
+    const t = clamp01((targetTimeMs - before.serverTimeMs) / spanMs);
+    return interpolateBallSnapshots(before, after, t, targetTimeMs);
   }
 
   private resetRenderClock(): void {
@@ -689,7 +777,7 @@ export class NetworkRenderer {
     players: PlayerState[],
     localPlayerId: string,
     localPredicted: PlayerState['movement'] | null,
-    newest: BufferedSnapshot | undefined,
+    newest: BufferedBallSnapshot | undefined,
     dt: number
   ): void {
     const seen = this.seenBalls;
@@ -1493,7 +1581,7 @@ function findPickupLookBallId(balls: BallState[], movement: PlayerState['movemen
   return bestId;
 }
 
-function interpolateSnapshots(before: BufferedSnapshot, after: BufferedSnapshot, t: number, targetTimeMs: number): BufferedSnapshot {
+function interpolatePlayerSnapshots(before: BufferedPlayerSnapshot, after: BufferedPlayerSnapshot, t: number, targetTimeMs: number): BufferedPlayerSnapshot {
   // The arrays are tiny (≤2 players, ≤6 balls), so a linear find by id is cheaper per frame than
   // building two Maps (plus their intermediate [id, value] arrays) on every render frame.
   return {
@@ -1504,7 +1592,16 @@ function interpolateSnapshots(before: BufferedSnapshot, after: BufferedSnapshot,
     players: after.players.map((player) => {
       const previous = findById(before.players, player.id);
       return previous ? interpolatePlayerState(previous, player, t) : clonePlayerState(player);
-    }),
+    })
+  };
+}
+
+function interpolateBallSnapshots(before: BufferedBallSnapshot, after: BufferedBallSnapshot, t: number, targetTimeMs: number): BufferedBallSnapshot {
+  return {
+    tick: after.tick,
+    resetSerial: after.resetSerial,
+    receivedAtMs: targetTimeMs,
+    serverTimeMs: lerpNumber(before.serverTimeMs, after.serverTimeMs, t),
     balls: after.balls.map((ball) => {
       const previous = findById(before.balls, ball.id);
       return previous ? interpolateBallState(previous, ball, t) : cloneBallState(ball);
@@ -1519,7 +1616,25 @@ function findById<T extends { id: string }>(items: T[], id: string): T | undefin
   return undefined;
 }
 
-function extrapolateSnapshot(snapshot: BufferedSnapshot, deltaMs: number): BufferedSnapshot {
+function newerSample<T extends { serverTimeMs: number }, U extends { serverTimeMs: number }>(
+  a: T | undefined,
+  b: U | undefined
+): T | U | undefined {
+  if (!a) return b;
+  if (!b) return a;
+  return a.serverTimeMs >= b.serverTimeMs ? a : b;
+}
+
+function olderSample<T extends { receivedAtMs: number }, U extends { receivedAtMs: number }>(
+  a: T | undefined,
+  b: U | undefined
+): T | U | undefined {
+  if (!a) return b;
+  if (!b) return a;
+  return a.receivedAtMs <= b.receivedAtMs ? a : b;
+}
+
+function extrapolatePlayerSnapshot(snapshot: BufferedPlayerSnapshot, deltaMs: number): BufferedPlayerSnapshot {
   // Clamp extrapolation to the configured limit so a buffer underrun never lets entities run away.
   const clampedMs = Math.min(NetworkRenderer.BALL_EXTRAPOLATION_MAX_MS, Math.max(0, deltaMs));
   const dt = clampedMs / 1000;
@@ -1535,7 +1650,19 @@ function extrapolateSnapshot(snapshot: BufferedSnapshot, deltaMs: number): Buffe
         clone.movement.position = addVec3(player.movement.position, scaleVec3(player.movement.velocity, dt));
       }
       return clone;
-    }),
+    })
+  };
+}
+
+function extrapolateBallSnapshot(snapshot: BufferedBallSnapshot, deltaMs: number): BufferedBallSnapshot {
+  // Clamp extrapolation to the configured limit so a buffer underrun never lets entities run away.
+  const clampedMs = Math.min(NetworkRenderer.BALL_EXTRAPOLATION_MAX_MS, Math.max(0, deltaMs));
+  const dt = clampedMs / 1000;
+  return {
+    tick: snapshot.tick,
+    resetSerial: snapshot.resetSerial,
+    receivedAtMs: snapshot.receivedAtMs + deltaMs,
+    serverTimeMs: snapshot.serverTimeMs + clampedMs,
     balls: snapshot.balls.map((ball) => {
       const clone = cloneBallState(ball);
       if (dt > 0 && (ball.phase === 'live' || ball.phase === 'deflected') && !ball.heldByPlayerId) {

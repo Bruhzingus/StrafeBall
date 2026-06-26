@@ -162,6 +162,7 @@ export const EXTRAPOLATION_LIMIT_MS = 120;
 export const HUGE_ERROR_SNAP_METERS = 5;
 
 export type SnapshotEncoding = 'compact' | 'full';
+export type SnapshotTierMode = 'baseline' | 'tiered_v1';
 
 function resolveSnapshotEncoding(env: Record<string, string | undefined> = processEnv()): SnapshotEncoding {
   const explicit = env.SNAPSHOT_ENCODING?.toLowerCase();
@@ -178,6 +179,20 @@ function resolveSnapshotEncoding(env: Record<string, string | undefined> = proce
 export const SNAPSHOT_ENCODING: SnapshotEncoding = resolveSnapshotEncoding();
 export const USE_COMPACT_SNAPSHOTS = SNAPSHOT_ENCODING === 'compact';
 export const SNAPSHOT_BACKPRESSURE_BYTES = 64 * 1024;
+
+function resolveSnapshotTierMode(env: Record<string, string | undefined> = processEnv()): SnapshotTierMode {
+  const explicit = env.SNAPSHOT_TIER_MODE?.toLowerCase();
+  if (explicit === 'tiered_v1') return 'tiered_v1';
+  return 'baseline';
+}
+
+/** Reversible snapshot payload tiering mode. Baseline is the default and preserves current shape. */
+export const SNAPSHOT_TIER_MODE: SnapshotTierMode = resolveSnapshotTierMode();
+export const USE_TIERED_SNAPSHOTS = SNAPSHOT_TIER_MODE === 'tiered_v1';
+
+export function describeSnapshotProfile(): string {
+  return `${ACTIVE_NET_MODE}_${SNAPSHOT_TIER_MODE === 'tiered_v1' ? 'TIERED_V1' : 'BASELINE'}`;
+}
 
 /**
  * Debug flags. Chatty per-tick/per-frame channels default off because they dominate CPU and GC.
@@ -260,6 +275,7 @@ export function describeNetConfig(): string {
   return (
     `mode=${ACTIVE_NET_MODE} sim=${SERVER_TICK_RATE}Hz input=${CLIENT_INPUT_RATE}Hz ` +
     `snapshots=${SNAPSHOT_RATE}Hz interpDelay=${INTERPOLATION_DELAY_MS}ms ` +
+    `snapshotTier=${SNAPSHOT_TIER_MODE} snapshotProfile=${describeSnapshotProfile()} ` +
     `combatSubsteps=${LIVE_BALL_COMBAT_SUBSTEPS} effectiveCombat=${SERVER_TICK_RATE * LIVE_BALL_COMBAT_SUBSTEPS}Hz ` +
     `loopWake=${ROOM_LOOP_WAKE_RATE}Hz`
   );

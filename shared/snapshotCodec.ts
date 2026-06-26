@@ -17,6 +17,47 @@ export interface CompactServerSnapshot {
   };
 }
 
+export const TIERED_SNAPSHOT_LANES = {
+  FAST_PLAYERS: 1,
+  PLAYER: 2,
+  BALL: 4,
+  WORLD: 8
+} as const;
+
+export interface TieredCompactServerSnapshot {
+  type: 'snapshot-tiered-v1';
+  tick: number;
+  serverTimeMs: number;
+  /** Compact lane mask. See TIERED_SNAPSHOT_LANES. */
+  l: number;
+  /** Fast reset serial so reset detection never waits for the world lane. */
+  rs: number;
+  /** Fast local-reconciliation player rows. Clients merge only their own row. */
+  f?: unknown[][];
+  /** 48 Hz full player rows. */
+  p?: unknown[][];
+  /** 96 Hz ball rows. */
+  b?: unknown[][];
+  /** 24 Hz/dirty room metadata without players or balls. */
+  w?: Omit<RoomState, 'players' | 'balls'>;
+}
+
+export interface SnapshotLaneInfo {
+  mode: 'baseline' | 'tiered_v1';
+  tiered: boolean;
+  fullState: boolean;
+  fastPlayerLane: boolean;
+  playerLane: boolean;
+  ballLane: boolean;
+  worldLane: boolean;
+  resetSerial: number;
+}
+
+export interface DecodedSnapshotPayload {
+  snapshot: ServerSnapshot;
+  lanes: SnapshotLaneInfo;
+}
+
 export function rosterFromRoom(room: RoomState): PlayerRoster {
   const roster: PlayerRoster = {};
   for (const playerId in room.players) {
@@ -71,6 +112,42 @@ export function makeCompactSnapshot(snapshot: ServerSnapshot): CompactServerSnap
   };
 }
 
+export interface MakeTieredCompactSnapshotOptions {
+  includeFastPlayerLane?: boolean;
+  includePlayerLane: boolean;
+  includeBallLane?: boolean;
+  includeWorldLane: boolean;
+}
+
+export function makeTieredCompactSnapshot(
+  snapshot: ServerSnapshot,
+  options: MakeTieredCompactSnapshotOptions
+): TieredCompactServerSnapshot {
+  const lean = makeLeanSnapshot(snapshot);
+  const includePlayerLane = options.includePlayerLane;
+  const includeFastPlayerLane = options.includeFastPlayerLane ?? !includePlayerLane;
+  const includeBallLane = options.includeBallLane ?? true;
+  const includeWorldLane = options.includeWorldLane;
+  const { players: _players, balls: _balls, ...world } = lean.room;
+  const lanes =
+    (includeFastPlayerLane ? TIERED_SNAPSHOT_LANES.FAST_PLAYERS : 0) |
+    (includePlayerLane ? TIERED_SNAPSHOT_LANES.PLAYER : 0) |
+    (includeBallLane ? TIERED_SNAPSHOT_LANES.BALL : 0) |
+    (includeWorldLane ? TIERED_SNAPSHOT_LANES.WORLD : 0);
+
+  return {
+    type: 'snapshot-tiered-v1',
+    tick: lean.tick,
+    serverTimeMs: lean.serverTimeMs,
+    l: lanes,
+    rs: lean.room.resetVote.resetSerial,
+    ...(includeFastPlayerLane ? { f: Object.values(lean.room.players).map(packFastPlayer) } : {}),
+    ...(includePlayerLane ? { p: Object.values(lean.room.players).map(packPlayer) } : {}),
+    ...(includeBallLane ? { b: Object.values(lean.room.balls).map(packBall) } : {}),
+    ...(includeWorldLane ? { w: world } : {})
+  };
+}
+
 export function inflateCompactSnapshot(snapshot: CompactServerSnapshot): ServerSnapshot {
   const players: RoomState['players'] = {};
   const balls: RoomState['balls'] = {};
@@ -94,6 +171,92 @@ export function inflateCompactSnapshot(snapshot: CompactServerSnapshot): ServerS
   };
 }
 
+export function mergeTieredCompactSnapshot(
+  snapshot: TieredCompactServerSnapshot,
+  previous: ServerSnapshot | null,
+  localPlayerId: string
+): DecodedSnapshotPayload | null {
+  const lanes = laneInfoFromTieredSnapshot(snapshot);
+  const previousRoom = previous?.room ?? null;
+  const world = snapshot.w ?? (previousRoom ? roomMeta(previousRoom) : null);
+  if (!world) return null;
+
+  const players: RoomState['players'] = snapshot.p
+    ? unpackPlayers(snapshot.p)
+    : previousRoom
+      ? { ...previousRoom.players }
+      : {};
+  if (!snapshot.p && !previousRoom) return null;
+
+  if (!snapshot.p && snapshot.f && localPlayerId) {
+    for (const packedPlayer of snapshot.f) {
+      const playerId = packedPlayer[0] as string | undefined;
+      if (playerId !== localPlayerId) continue;
+      const base = players[playerId];
+      if (base) players[playerId] = mergeFastPlayer(base, packedPlayer);
+      break;
+    }
+  }
+
+  const balls: RoomState['balls'] = snapshot.b
+    ? unpackBalls(snapshot.b)
+    : previousRoom
+      ? { ...previousRoom.balls }
+      : {};
+  if (!snapshot.b && !previousRoom) return null;
+
+  const room: RoomState = {
+    ...world,
+    tick: snapshot.tick,
+    resetVote: {
+      ...world.resetVote,
+      resetSerial: snapshot.rs
+    },
+    players,
+    balls
+  };
+
+  return {
+    snapshot: {
+      type: 'snapshot',
+      tick: snapshot.tick,
+      serverTimeMs: snapshot.serverTimeMs,
+      room
+    },
+    lanes
+  };
+}
+
+export function laneInfoFromFullSnapshot(snapshot: ServerSnapshot): SnapshotLaneInfo {
+  return {
+    mode: 'baseline',
+    tiered: false,
+    fullState: true,
+    fastPlayerLane: true,
+    playerLane: true,
+    ballLane: true,
+    worldLane: true,
+    resetSerial: snapshot.room.resetVote.resetSerial
+  };
+}
+
+export function laneInfoFromTieredSnapshot(snapshot: TieredCompactServerSnapshot): SnapshotLaneInfo {
+  const hasFastPlayerLane = (snapshot.l & TIERED_SNAPSHOT_LANES.FAST_PLAYERS) !== 0;
+  const hasPlayerLane = (snapshot.l & TIERED_SNAPSHOT_LANES.PLAYER) !== 0;
+  const hasBallLane = (snapshot.l & TIERED_SNAPSHOT_LANES.BALL) !== 0;
+  const hasWorldLane = (snapshot.l & TIERED_SNAPSHOT_LANES.WORLD) !== 0;
+  return {
+    mode: 'tiered_v1',
+    tiered: true,
+    fullState: hasPlayerLane && hasBallLane && hasWorldLane,
+    fastPlayerLane: hasFastPlayerLane,
+    playerLane: hasPlayerLane,
+    ballLane: hasBallLane,
+    worldLane: hasWorldLane,
+    resetSerial: snapshot.rs
+  };
+}
+
 function packPlayer(player: PlayerState): unknown[] {
   return [
     player.id,
@@ -112,22 +275,7 @@ function packPlayer(player: PlayerState): unknown[] {
     b(player.movement.wallRunning),
     b(player.movement.dashingThisFrame),
     player.movement.speed,
-    [
-      player.movementInternal.slideTimer,
-      player.movementInternal.slideBufferTimer,
-      player.movementInternal.jumpGraceTimer,
-      player.movementInternal.wallRunTimer,
-      player.movementInternal.wallReattachCooldown,
-      player.movementInternal.dashActiveTimer,
-      b(player.movementInternal.doubleJumpAvailable),
-      player.movementInternal.catchBoostTimer,
-      player.movementInternal.groundHeight,
-      player.movementInternal.lastWallNormalX,
-      player.movementInternal.lastWallNormalZ,
-      b(player.movementInternal.backflipActive),
-      player.movementInternal.backflipTimer,
-      player.movementInternal.backflipCooldown
-    ],
+    packMovementInternal(player.movementInternal),
     [packHand(player.hands.left), packHand(player.hands.right)],
     [player.dash.charges, player.dash.rechargeTimerSeconds, player.dash.cooldownSeconds],
     player.score,
@@ -138,6 +286,33 @@ function packPlayer(player: PlayerState): unknown[] {
       player.matchStats.parries,
       player.matchStats.saves
     ],
+    player.lives,
+    player.combatState,
+    player.eliminatedAtMs,
+    player.lastPlayerBuffUntilMs,
+    b(player.connected),
+    player.reconnectDeadlineAtMs,
+    player.lastProcessedInputSeq
+  ];
+}
+
+function packFastPlayer(player: PlayerState): unknown[] {
+  return [
+    player.id,
+    packPos(player.movement.position),
+    packVel(player.movement.velocity),
+    player.movement.yawRadians,
+    player.movement.pitchRadians,
+    packUnit(player.movement.facing),
+    b(player.movement.grounded),
+    b(player.movement.crouching),
+    b(player.movement.sliding),
+    b(player.movement.wallRunning),
+    b(player.movement.dashingThisFrame),
+    player.movement.speed,
+    packMovementInternal(player.movementInternal),
+    [packHand(player.hands.left), packHand(player.hands.right)],
+    [player.dash.charges, player.dash.rechargeTimerSeconds, player.dash.cooldownSeconds],
     player.lives,
     player.combatState,
     player.eliminatedAtMs,
@@ -173,22 +348,7 @@ function unpackPlayer(packed: unknown[]): PlayerState {
       dashingThisFrame: Boolean(packed[14]),
       speed: packed[15] as number
     },
-    movementInternal: {
-      slideTimer: movementInternal[0] as number,
-      slideBufferTimer: movementInternal.length > 13 ? movementInternal[1] as number : 0,
-      jumpGraceTimer: movementInternal[movementInternal.length > 13 ? 2 : 1] as number,
-      wallRunTimer: movementInternal[movementInternal.length > 13 ? 3 : 2] as number,
-      wallReattachCooldown: movementInternal[movementInternal.length > 13 ? 4 : 3] as number,
-      dashActiveTimer: movementInternal[movementInternal.length > 13 ? 5 : 4] as number,
-      doubleJumpAvailable: Boolean(movementInternal[movementInternal.length > 13 ? 6 : 5]),
-      catchBoostTimer: movementInternal[movementInternal.length > 13 ? 7 : 6] as number,
-      groundHeight: movementInternal[movementInternal.length > 13 ? 8 : 7] as number,
-      lastWallNormalX: movementInternal[movementInternal.length > 13 ? 9 : 8] as number,
-      lastWallNormalZ: movementInternal[movementInternal.length > 13 ? 10 : 9] as number,
-      backflipActive: Boolean(movementInternal[movementInternal.length > 13 ? 11 : 10]),
-      backflipTimer: movementInternal[movementInternal.length > 13 ? 12 : 11] as number,
-      backflipCooldown: movementInternal[movementInternal.length > 13 ? 13 : 12] as number
-    },
+    movementInternal: unpackMovementInternal(movementInternal),
     hands: {
       left: unpackHand('left', hands[0]),
       right: unpackHand('right', hands[1])
@@ -213,6 +373,82 @@ function unpackPlayer(packed: unknown[]): PlayerState {
     connected: Boolean(packed[25]),
     reconnectDeadlineAtMs: packed[26] as number | null,
     lastProcessedInputSeq: packed[27] as number
+  };
+}
+
+function mergeFastPlayer(base: PlayerState, packed: unknown[]): PlayerState {
+  const hands = packed[13] as [unknown[], unknown[]];
+  const dash = packed[14] as unknown[];
+  return {
+    ...base,
+    movement: {
+      position: unpackPos(packed[1] as unknown[]),
+      velocity: unpackVel(packed[2] as unknown[]),
+      yawRadians: packed[3] as number,
+      pitchRadians: packed[4] as number,
+      facing: unpackUnit(packed[5] as unknown[]),
+      grounded: Boolean(packed[6]),
+      crouching: Boolean(packed[7]),
+      sliding: Boolean(packed[8]),
+      wallRunning: Boolean(packed[9]),
+      dashingThisFrame: Boolean(packed[10]),
+      speed: packed[11] as number
+    },
+    movementInternal: unpackMovementInternal(packed[12] as unknown[]),
+    hands: {
+      left: unpackHand('left', hands[0]),
+      right: unpackHand('right', hands[1])
+    },
+    dash: {
+      charges: dash[0] as number,
+      rechargeTimerSeconds: dash[1] as number,
+      cooldownSeconds: dash[2] as number
+    },
+    lives: packed[15] as number,
+    combatState: packed[16] as PlayerState['combatState'],
+    eliminatedAtMs: packed[17] as number | null,
+    lastPlayerBuffUntilMs: packed[18] as number | null,
+    connected: Boolean(packed[19]),
+    reconnectDeadlineAtMs: packed[20] as number | null,
+    lastProcessedInputSeq: packed[21] as number
+  };
+}
+
+function packMovementInternal(movementInternal: PlayerState['movementInternal']): unknown[] {
+  return [
+    movementInternal.slideTimer,
+    movementInternal.slideBufferTimer,
+    movementInternal.jumpGraceTimer,
+    movementInternal.wallRunTimer,
+    movementInternal.wallReattachCooldown,
+    movementInternal.dashActiveTimer,
+    b(movementInternal.doubleJumpAvailable),
+    movementInternal.catchBoostTimer,
+    movementInternal.groundHeight,
+    movementInternal.lastWallNormalX,
+    movementInternal.lastWallNormalZ,
+    b(movementInternal.backflipActive),
+    movementInternal.backflipTimer,
+    movementInternal.backflipCooldown
+  ];
+}
+
+function unpackMovementInternal(movementInternal: unknown[]): PlayerState['movementInternal'] {
+  return {
+    slideTimer: movementInternal[0] as number,
+    slideBufferTimer: movementInternal.length > 13 ? movementInternal[1] as number : 0,
+    jumpGraceTimer: movementInternal[movementInternal.length > 13 ? 2 : 1] as number,
+    wallRunTimer: movementInternal[movementInternal.length > 13 ? 3 : 2] as number,
+    wallReattachCooldown: movementInternal[movementInternal.length > 13 ? 4 : 3] as number,
+    dashActiveTimer: movementInternal[movementInternal.length > 13 ? 5 : 4] as number,
+    doubleJumpAvailable: Boolean(movementInternal[movementInternal.length > 13 ? 6 : 5]),
+    catchBoostTimer: movementInternal[movementInternal.length > 13 ? 7 : 6] as number,
+    groundHeight: movementInternal[movementInternal.length > 13 ? 8 : 7] as number,
+    lastWallNormalX: movementInternal[movementInternal.length > 13 ? 9 : 8] as number,
+    lastWallNormalZ: movementInternal[movementInternal.length > 13 ? 10 : 9] as number,
+    backflipActive: Boolean(movementInternal[movementInternal.length > 13 ? 11 : 10]),
+    backflipTimer: movementInternal[movementInternal.length > 13 ? 12 : 11] as number,
+    backflipCooldown: movementInternal[movementInternal.length > 13 ? 13 : 12] as number
   };
 }
 
@@ -277,6 +513,29 @@ function unpackBall(packed: unknown[]): BallState {
     lastTouchedByPlayerId: packed[12] as string | null,
     throwId: packed[13] as number
   };
+}
+
+function unpackPlayers(packedPlayers: unknown[][]): RoomState['players'] {
+  const players: RoomState['players'] = {};
+  for (const packedPlayer of packedPlayers) {
+    const player = unpackPlayer(packedPlayer);
+    players[player.id] = player;
+  }
+  return players;
+}
+
+function unpackBalls(packedBalls: unknown[][]): RoomState['balls'] {
+  const balls: RoomState['balls'] = {};
+  for (const packedBall of packedBalls) {
+    const ball = unpackBall(packedBall);
+    balls[ball.id] = ball;
+  }
+  return balls;
+}
+
+function roomMeta(room: RoomState): Omit<RoomState, 'players' | 'balls'> {
+  const { players: _players, balls: _balls, ...meta } = room;
+  return meta;
 }
 
 /**
@@ -350,8 +609,16 @@ function b(value: boolean): 0 | 1 {
   return value ? 1 : 0;
 }
 
-export function isCompactSnapshot(snapshot: ServerSnapshot | CompactServerSnapshot): snapshot is CompactServerSnapshot {
+export function isCompactSnapshot(
+  snapshot: ServerSnapshot | CompactServerSnapshot | TieredCompactServerSnapshot
+): snapshot is CompactServerSnapshot {
   return snapshot.type === 'snapshot-compact';
+}
+
+export function isTieredCompactSnapshot(
+  snapshot: ServerSnapshot | CompactServerSnapshot | TieredCompactServerSnapshot
+): snapshot is TieredCompactServerSnapshot {
+  return snapshot.type === 'snapshot-tiered-v1';
 }
 
 export function hydrateSnapshotRoster(snapshot: ServerSnapshot, roster: PlayerRoster): ServerSnapshot {

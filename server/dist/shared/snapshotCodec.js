@@ -1,11 +1,23 @@
 "use strict";
 Object.defineProperty(exports, "__esModule", { value: true });
+exports.TIERED_SNAPSHOT_LANES = void 0;
 exports.rosterFromRoom = rosterFromRoom;
 exports.makeLeanSnapshot = makeLeanSnapshot;
 exports.makeCompactSnapshot = makeCompactSnapshot;
+exports.makeTieredCompactSnapshot = makeTieredCompactSnapshot;
 exports.inflateCompactSnapshot = inflateCompactSnapshot;
+exports.mergeTieredCompactSnapshot = mergeTieredCompactSnapshot;
+exports.laneInfoFromFullSnapshot = laneInfoFromFullSnapshot;
+exports.laneInfoFromTieredSnapshot = laneInfoFromTieredSnapshot;
 exports.isCompactSnapshot = isCompactSnapshot;
+exports.isTieredCompactSnapshot = isTieredCompactSnapshot;
 exports.hydrateSnapshotRoster = hydrateSnapshotRoster;
+exports.TIERED_SNAPSHOT_LANES = {
+    FAST_PLAYERS: 1,
+    PLAYER: 2,
+    BALL: 4,
+    WORLD: 8
+};
 function rosterFromRoom(room) {
     const roster = {};
     for (const playerId in room.players) {
@@ -55,6 +67,29 @@ function makeCompactSnapshot(snapshot) {
         }
     };
 }
+function makeTieredCompactSnapshot(snapshot, options) {
+    const lean = makeLeanSnapshot(snapshot);
+    const includePlayerLane = options.includePlayerLane;
+    const includeFastPlayerLane = options.includeFastPlayerLane ?? !includePlayerLane;
+    const includeBallLane = options.includeBallLane ?? true;
+    const includeWorldLane = options.includeWorldLane;
+    const { players: _players, balls: _balls, ...world } = lean.room;
+    const lanes = (includeFastPlayerLane ? exports.TIERED_SNAPSHOT_LANES.FAST_PLAYERS : 0) |
+        (includePlayerLane ? exports.TIERED_SNAPSHOT_LANES.PLAYER : 0) |
+        (includeBallLane ? exports.TIERED_SNAPSHOT_LANES.BALL : 0) |
+        (includeWorldLane ? exports.TIERED_SNAPSHOT_LANES.WORLD : 0);
+    return {
+        type: 'snapshot-tiered-v1',
+        tick: lean.tick,
+        serverTimeMs: lean.serverTimeMs,
+        l: lanes,
+        rs: lean.room.resetVote.resetSerial,
+        ...(includeFastPlayerLane ? { f: Object.values(lean.room.players).map(packFastPlayer) } : {}),
+        ...(includePlayerLane ? { p: Object.values(lean.room.players).map(packPlayer) } : {}),
+        ...(includeBallLane ? { b: Object.values(lean.room.balls).map(packBall) } : {}),
+        ...(includeWorldLane ? { w: world } : {})
+    };
+}
 function inflateCompactSnapshot(snapshot) {
     const players = {};
     const balls = {};
@@ -77,6 +112,85 @@ function inflateCompactSnapshot(snapshot) {
         }
     };
 }
+function mergeTieredCompactSnapshot(snapshot, previous, localPlayerId) {
+    const lanes = laneInfoFromTieredSnapshot(snapshot);
+    const previousRoom = previous?.room ?? null;
+    const world = snapshot.w ?? (previousRoom ? roomMeta(previousRoom) : null);
+    if (!world)
+        return null;
+    const players = snapshot.p
+        ? unpackPlayers(snapshot.p)
+        : previousRoom
+            ? { ...previousRoom.players }
+            : {};
+    if (!snapshot.p && !previousRoom)
+        return null;
+    if (!snapshot.p && snapshot.f && localPlayerId) {
+        for (const packedPlayer of snapshot.f) {
+            const playerId = packedPlayer[0];
+            if (playerId !== localPlayerId)
+                continue;
+            const base = players[playerId];
+            if (base)
+                players[playerId] = mergeFastPlayer(base, packedPlayer);
+            break;
+        }
+    }
+    const balls = snapshot.b
+        ? unpackBalls(snapshot.b)
+        : previousRoom
+            ? { ...previousRoom.balls }
+            : {};
+    if (!snapshot.b && !previousRoom)
+        return null;
+    const room = {
+        ...world,
+        tick: snapshot.tick,
+        resetVote: {
+            ...world.resetVote,
+            resetSerial: snapshot.rs
+        },
+        players,
+        balls
+    };
+    return {
+        snapshot: {
+            type: 'snapshot',
+            tick: snapshot.tick,
+            serverTimeMs: snapshot.serverTimeMs,
+            room
+        },
+        lanes
+    };
+}
+function laneInfoFromFullSnapshot(snapshot) {
+    return {
+        mode: 'baseline',
+        tiered: false,
+        fullState: true,
+        fastPlayerLane: true,
+        playerLane: true,
+        ballLane: true,
+        worldLane: true,
+        resetSerial: snapshot.room.resetVote.resetSerial
+    };
+}
+function laneInfoFromTieredSnapshot(snapshot) {
+    const hasFastPlayerLane = (snapshot.l & exports.TIERED_SNAPSHOT_LANES.FAST_PLAYERS) !== 0;
+    const hasPlayerLane = (snapshot.l & exports.TIERED_SNAPSHOT_LANES.PLAYER) !== 0;
+    const hasBallLane = (snapshot.l & exports.TIERED_SNAPSHOT_LANES.BALL) !== 0;
+    const hasWorldLane = (snapshot.l & exports.TIERED_SNAPSHOT_LANES.WORLD) !== 0;
+    return {
+        mode: 'tiered_v1',
+        tiered: true,
+        fullState: hasPlayerLane && hasBallLane && hasWorldLane,
+        fastPlayerLane: hasFastPlayerLane,
+        playerLane: hasPlayerLane,
+        ballLane: hasBallLane,
+        worldLane: hasWorldLane,
+        resetSerial: snapshot.rs
+    };
+}
 function packPlayer(player) {
     return [
         player.id,
@@ -95,22 +209,7 @@ function packPlayer(player) {
         b(player.movement.wallRunning),
         b(player.movement.dashingThisFrame),
         player.movement.speed,
-        [
-            player.movementInternal.slideTimer,
-            player.movementInternal.slideBufferTimer,
-            player.movementInternal.jumpGraceTimer,
-            player.movementInternal.wallRunTimer,
-            player.movementInternal.wallReattachCooldown,
-            player.movementInternal.dashActiveTimer,
-            b(player.movementInternal.doubleJumpAvailable),
-            player.movementInternal.catchBoostTimer,
-            player.movementInternal.groundHeight,
-            player.movementInternal.lastWallNormalX,
-            player.movementInternal.lastWallNormalZ,
-            b(player.movementInternal.backflipActive),
-            player.movementInternal.backflipTimer,
-            player.movementInternal.backflipCooldown
-        ],
+        packMovementInternal(player.movementInternal),
         [packHand(player.hands.left), packHand(player.hands.right)],
         [player.dash.charges, player.dash.rechargeTimerSeconds, player.dash.cooldownSeconds],
         player.score,
@@ -121,6 +220,32 @@ function packPlayer(player) {
             player.matchStats.parries,
             player.matchStats.saves
         ],
+        player.lives,
+        player.combatState,
+        player.eliminatedAtMs,
+        player.lastPlayerBuffUntilMs,
+        b(player.connected),
+        player.reconnectDeadlineAtMs,
+        player.lastProcessedInputSeq
+    ];
+}
+function packFastPlayer(player) {
+    return [
+        player.id,
+        packPos(player.movement.position),
+        packVel(player.movement.velocity),
+        player.movement.yawRadians,
+        player.movement.pitchRadians,
+        packUnit(player.movement.facing),
+        b(player.movement.grounded),
+        b(player.movement.crouching),
+        b(player.movement.sliding),
+        b(player.movement.wallRunning),
+        b(player.movement.dashingThisFrame),
+        player.movement.speed,
+        packMovementInternal(player.movementInternal),
+        [packHand(player.hands.left), packHand(player.hands.right)],
+        [player.dash.charges, player.dash.rechargeTimerSeconds, player.dash.cooldownSeconds],
         player.lives,
         player.combatState,
         player.eliminatedAtMs,
@@ -155,22 +280,7 @@ function unpackPlayer(packed) {
             dashingThisFrame: Boolean(packed[14]),
             speed: packed[15]
         },
-        movementInternal: {
-            slideTimer: movementInternal[0],
-            slideBufferTimer: movementInternal.length > 13 ? movementInternal[1] : 0,
-            jumpGraceTimer: movementInternal[movementInternal.length > 13 ? 2 : 1],
-            wallRunTimer: movementInternal[movementInternal.length > 13 ? 3 : 2],
-            wallReattachCooldown: movementInternal[movementInternal.length > 13 ? 4 : 3],
-            dashActiveTimer: movementInternal[movementInternal.length > 13 ? 5 : 4],
-            doubleJumpAvailable: Boolean(movementInternal[movementInternal.length > 13 ? 6 : 5]),
-            catchBoostTimer: movementInternal[movementInternal.length > 13 ? 7 : 6],
-            groundHeight: movementInternal[movementInternal.length > 13 ? 8 : 7],
-            lastWallNormalX: movementInternal[movementInternal.length > 13 ? 9 : 8],
-            lastWallNormalZ: movementInternal[movementInternal.length > 13 ? 10 : 9],
-            backflipActive: Boolean(movementInternal[movementInternal.length > 13 ? 11 : 10]),
-            backflipTimer: movementInternal[movementInternal.length > 13 ? 12 : 11],
-            backflipCooldown: movementInternal[movementInternal.length > 13 ? 13 : 12]
-        },
+        movementInternal: unpackMovementInternal(movementInternal),
         hands: {
             left: unpackHand('left', hands[0]),
             right: unpackHand('right', hands[1])
@@ -195,6 +305,79 @@ function unpackPlayer(packed) {
         connected: Boolean(packed[25]),
         reconnectDeadlineAtMs: packed[26],
         lastProcessedInputSeq: packed[27]
+    };
+}
+function mergeFastPlayer(base, packed) {
+    const hands = packed[13];
+    const dash = packed[14];
+    return {
+        ...base,
+        movement: {
+            position: unpackPos(packed[1]),
+            velocity: unpackVel(packed[2]),
+            yawRadians: packed[3],
+            pitchRadians: packed[4],
+            facing: unpackUnit(packed[5]),
+            grounded: Boolean(packed[6]),
+            crouching: Boolean(packed[7]),
+            sliding: Boolean(packed[8]),
+            wallRunning: Boolean(packed[9]),
+            dashingThisFrame: Boolean(packed[10]),
+            speed: packed[11]
+        },
+        movementInternal: unpackMovementInternal(packed[12]),
+        hands: {
+            left: unpackHand('left', hands[0]),
+            right: unpackHand('right', hands[1])
+        },
+        dash: {
+            charges: dash[0],
+            rechargeTimerSeconds: dash[1],
+            cooldownSeconds: dash[2]
+        },
+        lives: packed[15],
+        combatState: packed[16],
+        eliminatedAtMs: packed[17],
+        lastPlayerBuffUntilMs: packed[18],
+        connected: Boolean(packed[19]),
+        reconnectDeadlineAtMs: packed[20],
+        lastProcessedInputSeq: packed[21]
+    };
+}
+function packMovementInternal(movementInternal) {
+    return [
+        movementInternal.slideTimer,
+        movementInternal.slideBufferTimer,
+        movementInternal.jumpGraceTimer,
+        movementInternal.wallRunTimer,
+        movementInternal.wallReattachCooldown,
+        movementInternal.dashActiveTimer,
+        b(movementInternal.doubleJumpAvailable),
+        movementInternal.catchBoostTimer,
+        movementInternal.groundHeight,
+        movementInternal.lastWallNormalX,
+        movementInternal.lastWallNormalZ,
+        b(movementInternal.backflipActive),
+        movementInternal.backflipTimer,
+        movementInternal.backflipCooldown
+    ];
+}
+function unpackMovementInternal(movementInternal) {
+    return {
+        slideTimer: movementInternal[0],
+        slideBufferTimer: movementInternal.length > 13 ? movementInternal[1] : 0,
+        jumpGraceTimer: movementInternal[movementInternal.length > 13 ? 2 : 1],
+        wallRunTimer: movementInternal[movementInternal.length > 13 ? 3 : 2],
+        wallReattachCooldown: movementInternal[movementInternal.length > 13 ? 4 : 3],
+        dashActiveTimer: movementInternal[movementInternal.length > 13 ? 5 : 4],
+        doubleJumpAvailable: Boolean(movementInternal[movementInternal.length > 13 ? 6 : 5]),
+        catchBoostTimer: movementInternal[movementInternal.length > 13 ? 7 : 6],
+        groundHeight: movementInternal[movementInternal.length > 13 ? 8 : 7],
+        lastWallNormalX: movementInternal[movementInternal.length > 13 ? 9 : 8],
+        lastWallNormalZ: movementInternal[movementInternal.length > 13 ? 10 : 9],
+        backflipActive: Boolean(movementInternal[movementInternal.length > 13 ? 11 : 10]),
+        backflipTimer: movementInternal[movementInternal.length > 13 ? 12 : 11],
+        backflipCooldown: movementInternal[movementInternal.length > 13 ? 13 : 12]
     };
 }
 function packHand(hand) {
@@ -255,6 +438,26 @@ function unpackBall(packed) {
         lastTouchedByPlayerId: packed[12],
         throwId: packed[13]
     };
+}
+function unpackPlayers(packedPlayers) {
+    const players = {};
+    for (const packedPlayer of packedPlayers) {
+        const player = unpackPlayer(packedPlayer);
+        players[player.id] = player;
+    }
+    return players;
+}
+function unpackBalls(packedBalls) {
+    const balls = {};
+    for (const packedBall of packedBalls) {
+        const ball = unpackBall(packedBall);
+        balls[ball.id] = ball;
+    }
+    return balls;
+}
+function roomMeta(room) {
+    const { players: _players, balls: _balls, ...meta } = room;
+    return meta;
 }
 /**
  * Fixed-point vector quantization (Quake/Source-style). World coordinates are sent as integers
@@ -322,6 +525,9 @@ function b(value) {
 }
 function isCompactSnapshot(snapshot) {
     return snapshot.type === 'snapshot-compact';
+}
+function isTieredCompactSnapshot(snapshot) {
+    return snapshot.type === 'snapshot-tiered-v1';
 }
 function hydrateSnapshotRoster(snapshot, roster) {
     let changed = false;

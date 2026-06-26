@@ -158,7 +158,7 @@ describe('shared movement simulation', () => {
       prev = input;
     }
 
-    expect(movement.speed).toBeGreaterThan(8.7);
+    expect(movement.speed).toBeGreaterThan(8.5);
   });
 
   it('does not bleed high horizontal speed while airborne', () => {

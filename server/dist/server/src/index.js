@@ -2,6 +2,7 @@
 Object.defineProperty(exports, "__esModule", { value: true });
 exports.server = void 0;
 const colyseus_1 = require("colyseus");
+const netConfig_1 = require("../../shared/netConfig");
 const DuelRoom_1 = require("./rooms/DuelRoom");
 const DEFAULT_PORT = 2567;
 ensureGlobalWebSocket();
@@ -20,6 +21,7 @@ exports.server = (0, colyseus_1.defineServer)({
 const port = readPort();
 void exports.server.listen(port).then(() => {
     console.log(`Strafeball Colyseus server listening on ws://localhost:${port}`);
+    console.log(`Network config: ${(0, netConfig_1.describeNetConfig)()}`);
     console.log('Create a private room with client.create("duel", { name }) and join by roomId with client.joinById(roomId, { name }).');
 });
 function ensureGlobalWebSocket() {

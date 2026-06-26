@@ -1,5 +1,5 @@
 import type { HandSide, PlayerInput, RoomState, Vec3 } from './types';
-import type { CompactServerSnapshot, PlayerRoster } from './snapshotCodec';
+import type { CompactServerSnapshot, PlayerRoster, TieredCompactServerSnapshot } from './snapshotCodec';
 import type { BattleMusicSyncState } from './music/BattleMusic';
 import type { NetFlightRecorderClientReport, NetFlightRecorderConfigMessage } from './netFlightRecorder';
 import type { RoomSettingsPatch } from './roomSettings';
@@ -52,7 +52,7 @@ export interface ServerSnapshot {
   room: RoomState;
 }
 
-export type SnapshotPayload = ServerSnapshot | CompactServerSnapshot;
+export type SnapshotPayload = ServerSnapshot | CompactServerSnapshot | TieredCompactServerSnapshot;
 
 /**
  * Authoritative throw event (Phase 4). Broadcast the instant the server accepts a throw, BEFORE the

@@ -35,8 +35,12 @@ import {
   hydrateSnapshotRoster,
   inflateCompactSnapshot,
   isCompactSnapshot,
+  isTieredCompactSnapshot,
+  laneInfoFromFullSnapshot,
+  mergeTieredCompactSnapshot,
   rosterFromRoom,
-  type PlayerRoster
+  type PlayerRoster,
+  type SnapshotLaneInfo
 } from '../../../shared/snapshotCodec';
 
 export type ConnectionStatus = 'offline' | 'connecting' | 'connected' | 'error';
@@ -75,6 +79,8 @@ export class MultiplayerClient {
   public localPlayerId = '';
   public pingMs: number | null = null;
   public latestSnapshot: ServerSnapshot | null = null;
+  public latestSnapshotLanes: SnapshotLaneInfo | null = null;
+  public snapshotTierMode: SnapshotLaneInfo['mode'] = 'baseline';
   public battleMusicSync: BattleMusicSyncState | null = null;
   // Throw events received since the last drain. The renderer drains these each frame to seed/refresh
   // deterministic live-ball visual prediction. Bounded: cleared on drain and on leave/reset.
@@ -251,6 +257,8 @@ export class MultiplayerClient {
     this.roomId = '';
     this.localPlayerId = '';
     this.latestSnapshot = null;
+    this.latestSnapshotLanes = null;
+    this.snapshotTierMode = 'baseline';
     this.battleMusicSync = null;
     this.throwEventQueue = [];
     this.catchEventQueue = [];
@@ -480,14 +488,19 @@ export class MultiplayerClient {
   private bindRoom(room: Room): void {
     room.onMessage('snapshot', (message: SnapshotPayload) => {
       if (this.room !== room) return;
-      const unpacked = isCompactSnapshot(message) ? inflateCompactSnapshot(message) : message;
-      this.recordSnapshotReceived(unpacked);
-      const snapshot = hydrateSnapshotRoster(unpacked, this.roster);
+      const decoded = isTieredCompactSnapshot(message)
+        ? mergeTieredCompactSnapshot(message, this.latestSnapshot, this.localPlayerId)
+        : decodeFullSnapshotMessage(message);
+      if (!decoded) return;
+      this.snapshotTierMode = decoded.lanes.mode;
+      this.recordSnapshotReceived(decoded.snapshot);
+      const snapshot = hydrateSnapshotRoster(decoded.snapshot, this.roster);
       if (this.latestSnapshot && snapshot.tick <= this.latestSnapshot.tick) {
         this.snapshotWindowStaleDropped += 1;
         return;
       }
       this.latestSnapshot = snapshot;
+      this.latestSnapshotLanes = decoded.lanes;
       this.recordServerTimeSample(snapshot.serverTimeMs);
     });
 
@@ -532,6 +545,8 @@ export class MultiplayerClient {
         serverTimeMs: Date.now(),
         room: message.room
       };
+      this.latestSnapshotLanes = laneInfoFromFullSnapshot(this.latestSnapshot);
+      this.snapshotTierMode = 'baseline';
     });
 
     room.onMessage('music-sync', (message: BattleMusicSyncMessage) => {
@@ -613,6 +628,8 @@ export class MultiplayerClient {
       this.roomId = '';
       this.localPlayerId = '';
       this.latestSnapshot = null;
+      this.latestSnapshotLanes = null;
+      this.snapshotTierMode = 'baseline';
       this.battleMusicSync = null;
       this.throwEventQueue = [];
       this.catchEventQueue = [];
@@ -788,4 +805,12 @@ function replaceRoster(target: PlayerRoster, next: PlayerRoster): void {
 
 function clearRoster(target: PlayerRoster): void {
   for (const playerId in target) delete target[playerId];
+}
+
+function decodeFullSnapshotMessage(message: SnapshotPayload): { snapshot: ServerSnapshot; lanes: SnapshotLaneInfo } {
+  const snapshot = isCompactSnapshot(message) ? inflateCompactSnapshot(message) : message as ServerSnapshot;
+  return {
+    snapshot,
+    lanes: laneInfoFromFullSnapshot(snapshot)
+  };
 }

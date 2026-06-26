@@ -76,6 +76,22 @@ class DuelRoom extends colyseus_1.Room {
     lastLoopWakeAtMs = 0;
     nextSnapshotDueAtMs = 0;
     lastSnapshotTickSent = -1;
+    snapshotCadenceCounter = 0;
+    forceNextTieredFullSnapshot = true;
+    lastTieredResetSerial = -1;
+    lastTieredWorldDirtyKey = '';
+    lastTieredPlayerDirtyKey = '';
+    tieredFastLaneSnapshotsThisWindow = 0;
+    tieredPlayerLaneSnapshotsThisWindow = 0;
+    tieredWorldLaneSnapshotsThisWindow = 0;
+    tieredBallLaneSnapshotsThisWindow = 0;
+    tieredFastLaneBytesTotal = 0;
+    tieredFastLaneBytesMax = 0;
+    tieredPlayerLaneBytesTotal = 0;
+    tieredPlayerLaneBytesMax = 0;
+    tieredWorldLaneBytesTotal = 0;
+    tieredWorldLaneBytesMax = 0;
+    tieredLaneByteSamples = 0;
     // When sim and snapshot rates are equal (mode A/C) we broadcast one snapshot per sim step, which
     // is exactly the old coupled behavior — no accumulator drift, lowest latency.
     snapshotCoupledToTick = netConfig_1.SNAPSHOT_RATE === netConfig_1.SERVER_TICK_RATE;
@@ -131,7 +147,7 @@ class DuelRoom extends colyseus_1.Room {
         });
         // One-time room-created line describing the active net config + the manual-snapshot patch mode.
         this.log(`room created mode=${this.roomMode} playersPerTeam=${this.playersPerTeam} preset=${this.roomSettings.preset} ${(0, netConfig_1.describeNetConfig)()} ` +
-            `snapshotEncoding=${netConfig_1.SNAPSHOT_ENCODING} snapshotBackpressure=${netConfig_1.SNAPSHOT_BACKPRESSURE_BYTES}B ` +
+            `snapshotEncoding=${netConfig_1.SNAPSHOT_ENCODING} snapshotTierMode=${netConfig_1.SNAPSHOT_TIER_MODE} snapshotProfile=${(0, netConfig_1.describeSnapshotProfile)()} snapshotBackpressure=${netConfig_1.SNAPSHOT_BACKPRESSURE_BYTES}B ` +
             `colyseusPatchRate=${formatPatchRate(COLYSEUS_PATCH_RATE_MS)} ` +
             `colyseusMaxMessagesPerSecond=${this.maxMessagesPerSecond}/s(per-client inbound, expected~${(0, NetworkRateLimits_1.expectedPerClientMessagesPerSecond)(netConfig_1.CLIENT_INPUT_RATE)}/s)`);
         if (this.netFlightRecorderEnabled) {
@@ -287,6 +303,8 @@ class DuelRoom extends colyseus_1.Room {
                 this.lastLoopWakeAtMs = now;
                 this.nextSnapshotDueAtMs = 0;
                 this.lastSnapshotTickSent = -1;
+                this.snapshotCadenceCounter = 0;
+                this.forceNextTieredFullSnapshot = true;
                 return;
             }
             const rawElapsedMs = this.lastLoopWakeAtMs === 0 ? 0 : now - this.lastLoopWakeAtMs;
@@ -345,6 +363,7 @@ class DuelRoom extends colyseus_1.Room {
             client.leave(4001);
             return;
         }
+        this.markTieredFullSnapshotDirty();
         this.game.setConnected(client.sessionId, true);
         this.log(`player joined id=${player.id} name="${player.name}" side=${player.spawnSide}`);
         client.send('joined-room', {
@@ -361,6 +380,7 @@ class DuelRoom extends colyseus_1.Room {
     // state intact (#12). If the window elapses, the framework proceeds to onLeave.
     async onDrop(client, _code) {
         this.game.setConnected(client.sessionId, false, Date.now() + RECONNECT_SECONDS * 1000);
+        this.markTieredFullSnapshotDirty();
         this.log(`player dropped id=${client.sessionId} — awaiting reconnection`);
         this.reportServerConnectionEvent('client_drop', client.sessionId);
         try {
@@ -372,6 +392,7 @@ class DuelRoom extends colyseus_1.Room {
     }
     onReconnect(client) {
         this.game.setConnected(client.sessionId, true, null);
+        this.markTieredFullSnapshotDirty();
         this.log(`player reconnected id=${client.sessionId}`);
         this.sendNetFlightRecorderConfig(client);
         this.sendBattleMusicSync(client);
@@ -383,6 +404,7 @@ class DuelRoom extends colyseus_1.Room {
     onLeave(client, _code) {
         this.buckets.delete(client.sessionId);
         this.game.abandon(client.sessionId);
+        this.markTieredFullSnapshotDirty();
         this.log(`player left id=${client.sessionId}`);
         this.broadcast('player-left', { type: 'player-left', playerId: client.sessionId });
         this.broadcastRosterUpdate();
@@ -441,6 +463,17 @@ class DuelRoom extends colyseus_1.Room {
         this.snapshotCompactFrameBytesTotal = 0;
         this.snapshotCompactFrameBytesMax = 0;
         this.snapshotPayloadSamples = 0;
+        this.tieredFastLaneSnapshotsThisWindow = 0;
+        this.tieredPlayerLaneSnapshotsThisWindow = 0;
+        this.tieredWorldLaneSnapshotsThisWindow = 0;
+        this.tieredBallLaneSnapshotsThisWindow = 0;
+        this.tieredFastLaneBytesTotal = 0;
+        this.tieredFastLaneBytesMax = 0;
+        this.tieredPlayerLaneBytesTotal = 0;
+        this.tieredPlayerLaneBytesMax = 0;
+        this.tieredWorldLaneBytesTotal = 0;
+        this.tieredWorldLaneBytesMax = 0;
+        this.tieredLaneByteSamples = 0;
         this.snapshotWsBufferedBytesTotal = 0;
         this.snapshotWsBufferedBytesMax = 0;
         this.snapshotWsBufferedSamples = 0;
@@ -483,11 +516,14 @@ class DuelRoom extends colyseus_1.Room {
         }
         let activeBalls = 0;
         let liveBalls = 0;
+        let settledBalls = 0;
         for (const ball of balls) {
             if (ball.phase !== 'dead')
                 activeBalls += 1;
             if (ball.phase === 'live' || ball.phase === 'deflected')
                 liveBalls += 1;
+            if (ball.phase === 'loose')
+                settledBalls += 1;
         }
         const mem = process.memoryUsage();
         const mb = (bytes) => (bytes / 1048576).toFixed(1);
@@ -531,9 +567,22 @@ class DuelRoom extends colyseus_1.Room {
             ? Math.round(this.snapshotCompactFrameBytesTotal / this.snapshotPayloadSamples)
             : 0;
         const estimatedSnapshotOutBytesPerSec = avgFrameBytes * (this.snapshotClientSendsThisWindow / elapsedSeconds);
+        const avgFastLaneBytes = this.tieredLaneByteSamples > 0
+            ? Math.round(this.tieredFastLaneBytesTotal / this.tieredLaneByteSamples)
+            : 0;
+        const avgPlayerLaneBytes = this.tieredLaneByteSamples > 0
+            ? Math.round(this.tieredPlayerLaneBytesTotal / this.tieredLaneByteSamples)
+            : 0;
+        const avgWorldLaneBytes = this.tieredLaneByteSamples > 0
+            ? Math.round(this.tieredWorldLaneBytesTotal / this.tieredLaneByteSamples)
+            : 0;
+        const lanePct = (count) => {
+            return this.snapshotsThisWindow > 0 ? ((count / this.snapshotsThisWindow) * 100).toFixed(1) : '0.0';
+        };
         // Combat counters for this window (verify the lag-comp catch fix in production).
         const c = this.game.drainCombatMetrics();
         this.log(`[perf] roomAgeSec=${roomAgeSec.toFixed(1)} ` +
+            `snapshotMode=${netConfig_1.SNAPSHOT_TIER_MODE} profile=${(0, netConfig_1.describeSnapshotProfile)()} ` +
             `sim=${netConfig_1.SERVER_TICK_RATE}Hz input=${netConfig_1.CLIENT_INPUT_RATE}Hz snapshots=${netConfig_1.SNAPSHOT_RATE}Hz ` +
             `simTicks=${(this.simTicksThisWindow / elapsedSeconds).toFixed(1)}/s ` +
             `snapshotsSent=${(this.snapshotsThisWindow / elapsedSeconds).toFixed(1)}/s snapshotClientSends=${(this.snapshotClientSendsThisWindow / elapsedSeconds).toFixed(1)}/s ` +
@@ -543,13 +592,15 @@ class DuelRoom extends colyseus_1.Room {
             `snapshotLateMs avg=${avgSnapshotLateMs.toFixed(2)} max=${this.snapshotLateMsMax.toFixed(2)} skippedSnapshots=${this.snapshotDeadlineSkipsThisWindow} noNewTickSkips=${this.snapshotNoNewTickSkipsThisWindow} backpressureSkips=${this.snapshotBackpressureSkipsThisWindow} allBackpressureSkips=${this.snapshotAllBackpressureSkipsThisWindow} ` +
             `incoming=${incomingRate.toFixed(1)}/s ` +
             `players total=${playerStates.length} active=${activePlayers} alive=${alivePlayers} eliminated=${eliminatedPlayers} disconnected=${disconnectedPlayers} ` +
-            `balls total=${balls.length} active=${activeBalls} live=${liveBalls} ` +
+            `balls total=${balls.length} active=${activeBalls} live=${liveBalls} settled=${settledBalls} ` +
             `inputDrain={avg=${buffers.inputsDrainedAvg.toFixed(2)} max=${buffers.inputsDrainedMax} maxQueueBefore=${buffers.maxInputQueueBeforeDrain}} ` +
             `buffers={input=${buffers.inputQueues} inputMax=${buffers.maxInputQueue} throw=${buffers.pendingThrowEvents} combat=${buffers.pendingCombatEvents} defenseHist=${buffers.defenseHistoryEntries} ballHist=${buffers.ballHistoryEntries} catch=${buffers.catchAttempts} hit=${buffers.recentHits}} ` +
             `combat={catchTry=${c.catchAttemptsOpened} catch=${c.catches} reclaim=${c.reclaimCatches} parry=${c.parries} hit=${c.hits} revert=${c.hitReverts}} ` +
             `accumulatorCaps=${this.stepCapHitsThisWindow} ` +
             `snapshotBytes activeAvg=${avgPayload} activeMax=${this.snapshotPayloadBytesMax} fullAvg=${avgFullPayload} fullMax=${this.snapshotFullPayloadBytesMax} compactAvg=${avgCompactPayload} compactMax=${this.snapshotCompactPayloadBytesMax} ` +
             `snapshotFrameBytes activeAvg=${avgFrameBytes} activeMax=${this.snapshotFrameBytesMax} fullAvg=${avgFullFrameBytes} fullMax=${this.snapshotFullFrameBytesMax} compactAvg=${avgCompactFrameBytes} compactMax=${this.snapshotCompactFrameBytesMax} estimatedOut=${Math.round(estimatedSnapshotOutBytesPerSec)}B/s ` +
+            `snapshotLanePct fast=${lanePct(this.tieredFastLaneSnapshotsThisWindow)} player=${lanePct(this.tieredPlayerLaneSnapshotsThisWindow)} world=${lanePct(this.tieredWorldLaneSnapshotsThisWindow)} ball=${lanePct(this.tieredBallLaneSnapshotsThisWindow)} ` +
+            `snapshotLaneBytes fastAvg=${avgFastLaneBytes} fastMax=${this.tieredFastLaneBytesMax} playerAvg=${avgPlayerLaneBytes} playerMax=${this.tieredPlayerLaneBytesMax} worldAvg=${avgWorldLaneBytes} worldMax=${this.tieredWorldLaneBytesMax} ` +
             `wsBuffered avg=${wsBufferedAvg}B max=${wsBufferedMax}B ` +
             `eventLoopMs avg=${eventLoopDelayAvgMs.toFixed(2)} p95=${eventLoopDelayP95Ms.toFixed(2)} max=${eventLoopDelayMaxMs.toFixed(2)} ` +
             `loopWakeMs max=${this.loopWakeDelayMsMax.toFixed(2)} stalls50=${this.loopWakeStallsOver50MsThisWindow} stalls100=${this.loopWakeStallsOver100MsThisWindow} stalls500=${this.loopWakeStallsOver500MsThisWindow} ` +
@@ -595,6 +646,7 @@ class DuelRoom extends colyseus_1.Room {
         this.snapshotBroadcastMsMax = Math.max(this.snapshotBroadcastMsMax, broadcastMs);
         this.snapshotLateMsTotal += lateMs;
         this.snapshotLateMsMax = Math.max(this.snapshotLateMsMax, lateMs);
+        this.recordTieredLanePresence(payload);
         const sampleStride = Math.max(1, Math.floor(netConfig_1.SNAPSHOT_RATE / 4));
         if (this.debug.PERF_DEBUG && this.snapshotPayloadSamples < 8 && this.snapshotsThisWindow % sampleStride === 1) {
             const activeBytes = JSON.stringify(payload).length;
@@ -620,6 +672,8 @@ class DuelRoom extends colyseus_1.Room {
             this.snapshotCompactFrameBytesTotal += compactFrameBytes;
             this.snapshotCompactFrameBytesMax = Math.max(this.snapshotCompactFrameBytesMax, compactFrameBytes);
             this.snapshotPayloadSamples += 1;
+            if ((0, snapshotCodec_1.isTieredCompactSnapshot)(payload))
+                this.recordTieredLaneByteSample(payload);
         }
     }
     recordLoopWakeDelay(delayMs) {
@@ -677,7 +731,9 @@ class DuelRoom extends colyseus_1.Room {
         const snapshot = this.game.snapshot();
         const snapshotBuildMs = this.game.getLastSnapshotBuildMs();
         const encodeStartedAt = node_perf_hooks_1.performance.now();
-        const payload = this.encodeSnapshot(snapshot);
+        const cadence = this.snapshotCadenceCounter;
+        this.snapshotCadenceCounter += 1;
+        const payload = this.encodeSnapshot(snapshot, cadence);
         const buildMs = snapshotBuildMs + (node_perf_hooks_1.performance.now() - encodeStartedAt);
         const frameBytesEstimate = this.netFlightRecorderEnabled ? encodedRoomMessageBytes('snapshot', payload) : 0;
         const broadcastStartedAt = node_perf_hooks_1.performance.now();
@@ -716,8 +772,146 @@ class DuelRoom extends colyseus_1.Room {
         }
         return sendable;
     }
-    encodeSnapshot(snapshot) {
-        return netConfig_1.USE_COMPACT_SNAPSHOTS ? (0, snapshotCodec_1.makeCompactSnapshot)(snapshot) : snapshot;
+    encodeSnapshot(snapshot, cadence) {
+        if (!netConfig_1.USE_TIERED_SNAPSHOTS)
+            return netConfig_1.USE_COMPACT_SNAPSHOTS ? (0, snapshotCodec_1.makeCompactSnapshot)(snapshot) : snapshot;
+        const resetSerial = snapshot.room.resetVote.resetSerial;
+        const resetChanged = resetSerial !== this.lastTieredResetSerial;
+        if (resetChanged) {
+            this.forceNextTieredFullSnapshot = true;
+            this.lastTieredResetSerial = resetSerial;
+        }
+        const worldDirtyKey = this.tieredWorldDirtyKey(snapshot);
+        const playerDirtyKey = this.tieredPlayerDirtyKey(snapshot);
+        const worldDirty = worldDirtyKey !== this.lastTieredWorldDirtyKey;
+        const playerDirty = playerDirtyKey !== this.lastTieredPlayerDirtyKey;
+        const forceFull = this.forceNextTieredFullSnapshot;
+        const includePlayerLane = forceFull || playerDirty || cadence % 2 === 0;
+        const includeWorldLane = forceFull || worldDirty || cadence % 4 === 0;
+        const payload = (0, snapshotCodec_1.makeTieredCompactSnapshot)(snapshot, {
+            includePlayerLane,
+            includeWorldLane,
+            includeFastPlayerLane: !includePlayerLane,
+            includeBallLane: true
+        });
+        if (includeWorldLane)
+            this.lastTieredWorldDirtyKey = worldDirtyKey;
+        if (includePlayerLane)
+            this.lastTieredPlayerDirtyKey = playerDirtyKey;
+        this.forceNextTieredFullSnapshot = false;
+        return payload;
+    }
+    markTieredFullSnapshotDirty() {
+        this.forceNextTieredFullSnapshot = true;
+    }
+    tieredWorldDirtyKey(snapshot) {
+        const room = snapshot.room;
+        const match = room.match;
+        const boundary = match.boundary;
+        const settings = room.settings;
+        const resetVote = room.resetVote;
+        const startVote = room.startVote;
+        const endVote = room.endVote;
+        const intermissionVote = room.intermissionVote;
+        const score = stableNumberRecord(match.scoreByTeamId);
+        const rounds = stableNumberRecord(match.roundsWonByTeamId);
+        const mats = Object.values(room.mats)
+            .sort((a, b) => a.id.localeCompare(b.id))
+            .map((mat) => `${mat.id}:${Number(mat.knockedOver)}:${mat.knockDirection.x.toFixed(2)},${mat.knockDirection.z.toFixed(2)}`)
+            .join(',');
+        const boundaryEvent = boundary.lastEvent;
+        const boundaryEventKey = boundaryEvent.type === 'none'
+            ? 'none'
+            : Object.values(boundaryEvent).join(':');
+        return [
+            room.hostPlayerId ?? '',
+            room.phase,
+            settings.preset,
+            settings.format,
+            settings.livesPerPlayer,
+            settings.dodgeballCount,
+            settings.maxLiveBallBounces,
+            settings.matPreset,
+            settings.roundCount,
+            settings.halfCourtTimerSeconds,
+            match.mode,
+            match.status,
+            match.winnerTeamId ?? '',
+            match.currentRound,
+            match.roundCount,
+            score,
+            rounds,
+            Number(boundary.noBoundaries),
+            boundaryEventKey,
+            resetVote.resetSerial,
+            resetVote.voteCount,
+            resetVote.requiredVotes,
+            resetVote.mode,
+            startVote.voteCount,
+            startVote.requiredVotes,
+            startVote.teamChoiceCount,
+            startVote.requiredTeamChoices,
+            Number(endVote.active),
+            endVote.voteCount,
+            endVote.requiredVotes,
+            Number(intermissionVote.active),
+            intermissionVote.nextRoundCount,
+            intermissionVote.toLobbyCount,
+            intermissionVote.requiredVotes,
+            mats
+        ].join('|');
+    }
+    tieredPlayerDirtyKey(snapshot) {
+        return Object.values(snapshot.room.players)
+            .sort((a, b) => a.id.localeCompare(b.id))
+            .map((player) => {
+            const left = player.hands.left;
+            const right = player.hands.right;
+            return [
+                player.id,
+                player.teamId,
+                player.spawnSide,
+                player.teamSlotIndex,
+                player.legalHalf,
+                Number(player.connected),
+                player.lives,
+                player.combatState,
+                left.heldBallId ?? '',
+                left.mode,
+                left.lastCatchAttemptId,
+                right.heldBallId ?? '',
+                right.mode,
+                right.lastCatchAttemptId
+            ].join(':');
+        })
+            .join('|');
+    }
+    recordTieredLanePresence(payload) {
+        if (!(0, snapshotCodec_1.isTieredCompactSnapshot)(payload))
+            return;
+        this.tieredFastLaneSnapshotsThisWindow += 1;
+        if ((payload.l & snapshotCodec_1.TIERED_SNAPSHOT_LANES.PLAYER) !== 0)
+            this.tieredPlayerLaneSnapshotsThisWindow += 1;
+        if ((payload.l & snapshotCodec_1.TIERED_SNAPSHOT_LANES.WORLD) !== 0)
+            this.tieredWorldLaneSnapshotsThisWindow += 1;
+        if ((payload.l & snapshotCodec_1.TIERED_SNAPSHOT_LANES.BALL) !== 0)
+            this.tieredBallLaneSnapshotsThisWindow += 1;
+    }
+    recordTieredLaneByteSample(payload) {
+        const fastBytes = JSON.stringify({
+            rs: payload.rs,
+            f: payload.f,
+            b: payload.b
+        }).length;
+        const playerBytes = payload.p ? JSON.stringify(payload.p).length : 0;
+        const worldBytes = payload.w ? JSON.stringify(payload.w).length : 0;
+        this.tieredFastLaneBytesTotal += fastBytes;
+        this.tieredFastLaneBytesMax = Math.max(this.tieredFastLaneBytesMax, fastBytes);
+        this.tieredPlayerLaneBytesTotal += playerBytes;
+        this.tieredPlayerLaneBytesMax = Math.max(this.tieredPlayerLaneBytesMax, playerBytes);
+        this.tieredWorldLaneBytesTotal += worldBytes;
+        this.tieredWorldLaneBytesMax = Math.max(this.tieredWorldLaneBytesMax, worldBytes);
+        this.tieredLaneByteSamples += 1;
     }
     recordSnapshotBufferedAmount(playerId, buffered) {
         this.snapshotWsBufferedBytesTotal += buffered;
@@ -1197,6 +1391,12 @@ function formatPerClientPerfLine(players, playerNetStats, incomingByPlayerIdAndT
 }
 function formatNullableMs(value) {
     return value === null ? 'n/a' : `${Math.round(value)}ms`;
+}
+function stableNumberRecord(record) {
+    return Object.entries(record)
+        .sort(([a], [b]) => a.localeCompare(b))
+        .map(([key, value]) => `${key}:${value}`)
+        .join(',');
 }
 function identity(value) {
     return value;

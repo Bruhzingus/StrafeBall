@@ -4,7 +4,14 @@ import { createBallState } from '../shared/simulation/BallSim';
 import { vec3 } from '../shared/simulation/CollisionMath';
 import { createRoomState } from '../shared/simulation/MatchSim';
 import { createPlayerState } from '../shared/simulation/PlayerSim';
-import { hydrateSnapshotRoster, inflateCompactSnapshot, makeCompactSnapshot, rosterFromRoom } from '../shared/snapshotCodec';
+import {
+  hydrateSnapshotRoster,
+  inflateCompactSnapshot,
+  makeCompactSnapshot,
+  makeTieredCompactSnapshot,
+  mergeTieredCompactSnapshot,
+  rosterFromRoom
+} from '../shared/snapshotCodec';
 
 describe('snapshot codec', () => {
   it('compact snapshots preserve hand, combat, ack, and ball identity fields', () => {
@@ -160,5 +167,85 @@ describe('snapshot codec', () => {
     expect(dp.movement.position.x).toBe(0);
     expect(Number.isFinite(dp.movement.position.y)).toBe(true);
     expect(dp.movement.position.z).toBeCloseTo(3, 2);
+  });
+
+  it('merges tiered snapshots without clearing absent lanes or stamping remote players', () => {
+    const p1 = createPlayerState('p1', 'blue', 'negativeZ', { lastProcessedInputSeq: 10 });
+    const p2 = createPlayerState('p2', 'red', 'positiveZ', { lastProcessedInputSeq: 20 });
+    p1.movement.position = vec3(1, 0, 1);
+    p2.movement.position = vec3(2, 0, 2);
+    const ball = createBallState('ball_0', vec3(0, 1, 0), { phase: 'loose' });
+    const room = createRoomState({ id: 'room', tick: 100, players: [p1, p2], balls: [ball] });
+    room.resetVote = { ...room.resetVote, resetSerial: 4 };
+    const fullSnapshot: ServerSnapshot = { type: 'snapshot', tick: 100, serverTimeMs: 1000, room };
+    const fullDecoded = mergeTieredCompactSnapshot(
+      makeTieredCompactSnapshot(fullSnapshot, { includePlayerLane: true, includeWorldLane: true }),
+      null,
+      'p1'
+    );
+    expect(fullDecoded).not.toBeNull();
+
+    const nextRoom = {
+      ...room,
+      tick: 101,
+      players: {
+        ...room.players,
+        p1: {
+          ...room.players.p1,
+          movement: { ...room.players.p1.movement, position: vec3(5, 0, 5) },
+          lastProcessedInputSeq: 11
+        },
+        p2: {
+          ...room.players.p2,
+          movement: { ...room.players.p2.movement, position: vec3(9, 0, 9) },
+          lastProcessedInputSeq: 21
+        }
+      },
+      balls: {
+        ball_0: {
+          ...room.balls.ball_0,
+          position: vec3(3, 1, 3),
+          velocity: vec3(1, 0, 0)
+        }
+      },
+      resetVote: { ...room.resetVote, resetSerial: 5 }
+    };
+    const fastOnlySnapshot: ServerSnapshot = { type: 'snapshot', tick: 101, serverTimeMs: 1010, room: nextRoom };
+    const fastDecoded = mergeTieredCompactSnapshot(
+      makeTieredCompactSnapshot(fastOnlySnapshot, { includePlayerLane: false, includeWorldLane: false }),
+      fullDecoded!.snapshot,
+      'p1'
+    );
+
+    expect(fastDecoded).not.toBeNull();
+    expect(fastDecoded!.lanes.playerLane).toBe(false);
+    expect(fastDecoded!.lanes.ballLane).toBe(true);
+    expect(fastDecoded!.snapshot.room.resetVote.resetSerial).toBe(5);
+    expect(fastDecoded!.snapshot.room.players.p1.movement.position.x).toBeCloseTo(5, 2);
+    expect(fastDecoded!.snapshot.room.players.p1.lastProcessedInputSeq).toBe(11);
+    expect(fastDecoded!.snapshot.room.players.p2.movement.position.x).toBeCloseTo(2, 2);
+    expect(fastDecoded!.snapshot.room.players.p2.lastProcessedInputSeq).toBe(20);
+    expect(fastDecoded!.snapshot.room.balls.ball_0.position.x).toBeCloseTo(3, 2);
+  });
+
+  it('uses a present player lane as the authoritative roster', () => {
+    const p1 = createPlayerState('p1', 'blue', 'negativeZ');
+    const p2 = createPlayerState('p2', 'red', 'positiveZ');
+    const room = createRoomState({ id: 'room', tick: 1, players: [p1, p2], balls: [] });
+    const previous: ServerSnapshot = { type: 'snapshot', tick: 1, serverTimeMs: 100, room };
+
+    const nextRoom = createRoomState({ id: 'room', tick: 2, players: [p1], balls: [] });
+    nextRoom.resetVote = { ...room.resetVote };
+    const decoded = mergeTieredCompactSnapshot(
+      makeTieredCompactSnapshot({ type: 'snapshot', tick: 2, serverTimeMs: 110, room: nextRoom }, {
+        includePlayerLane: true,
+        includeWorldLane: false
+      }),
+      previous,
+      'p1'
+    );
+
+    expect(decoded).not.toBeNull();
+    expect(Object.keys(decoded!.snapshot.room.players)).toEqual(['p1']);
   });
 });
