@@ -60,22 +60,22 @@ let shadowSystemCreateCount = 0;
  * Build the showcase lights. Idempotent: disposes any prior showcase lights / stray hemis first so a
  * scene rebuild, reconnect, or room reset can never leave duplicate lights behind.
  */
-export function applyShowcaseLighting(scene: Scene): ShowcaseLights {
+export function applyShowcaseLighting(scene: Scene, tier: ShowcaseTier): ShowcaseLights {
   disposeShowcaseLightMeshes(scene);
 
-  const hemi = configureHemisphericFill(scene);
-  const key = configureKeyLight(scene);
+  const hemi = configureHemisphericFill(scene, tier);
+  const key = configureKeyLight(scene, tier);
 
   activeLights = { hemi, key };
   return activeLights;
 }
 
-function configureHemisphericFill(scene: Scene): HemisphericLight {
+function configureHemisphericFill(scene: Scene, tier: ShowcaseTier): HemisphericLight {
   const existing = scene.lights.find((light): light is HemisphericLight => light instanceof HemisphericLight);
   const hemi = existing ?? new HemisphericLight(HEMI_NAME, new Vector3(0, 1, 0), scene);
   const c = SHOWCASE_CONFIG.lights.hemi;
   hemi.direction = new Vector3(0, 1, 0);
-  hemi.intensity = c.intensity;
+  hemi.intensity = c.intensityByTier[tier];
   hemi.diffuse = new Color3(...c.diffuse);
   hemi.groundColor = new Color3(...c.ground);
   hemi.specular = new Color3(...c.specular);
@@ -90,7 +90,7 @@ function configureHemisphericFill(scene: Scene): HemisphericLight {
  * The single directional key. Fixed orthographic frustum derived from map dimensions (so shadows don't
  * shimmer/resize as players move), angled diagonally for modelling + depth. Drives the ShadowGenerator.
  */
-function configureKeyLight(scene: Scene): DirectionalLight {
+function configureKeyLight(scene: Scene, tier: ShowcaseTier): DirectionalLight {
   const stale = scene.getLightByName(KEY_NAME);
   if (stale) stale.dispose();
 
@@ -103,7 +103,7 @@ function configureKeyLight(scene: Scene): DirectionalLight {
   direction.normalize();
 
   const key = new DirectionalLight(KEY_NAME, direction, scene);
-  key.intensity = c.intensity;
+  key.intensity = c.intensityByTier[tier];
   key.diffuse = new Color3(...c.diffuse);
   key.specular = new Color3(...c.specular);
 
@@ -130,12 +130,13 @@ export function createShowcaseShadowSystem(scene: Scene, key: DirectionalLight, 
 
   const cfg = SHOWCASE_CONFIG.shadows;
   const mapSize = cfg.mapSizeByTier[tier];
+  const darkness = cfg.darknessByTier[tier];
   // PCF needs WebGL2 / WebGPU. `webGLVersion` only exists on the WebGL engine; absent ⇒ WebGPU (PCF ok).
   const webGLVersion = (scene.getEngine() as { webGLVersion?: number }).webGLVersion;
   const supportsPcf = webGLVersion === undefined || webGLVersion > 1;
 
   const generator = new ShadowGenerator(mapSize, key);
-  generator.setDarkness(cfg.darkness);
+  generator.setDarkness(darkness);
   generator.bias = cfg.bias;
   generator.normalBias = cfg.normalBias;
   generator.transparencyShadow = false;
@@ -155,7 +156,7 @@ export function createShowcaseShadowSystem(scene: Scene, key: DirectionalLight, 
     generator,
     filteringMode,
     mapSize,
-    darkness: cfg.darkness,
+    darkness,
     casters: new Set<Mesh>(),
     casterCategories: new Map()
   };

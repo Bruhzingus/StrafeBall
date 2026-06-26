@@ -214,22 +214,22 @@ const GYM_MATERIAL_TUNING = {
     metallic: 0,
     // Lowered slightly within the 0.56–0.68 spec range for a touch more highlight definition along
     // the raised cushion's bevel edge — the macro shape was reading flat under restrained lighting.
-    roughness: 0.58,
+    roughness: 0.64,
     // Fine vinyl grain only — subtle relief, not embossed fabric.
-    normalLevel: 0.28,
-    aoStrength: 0.11,
+    normalLevel: 0.2,
+    aoStrength: 0.12,
     // Faintest satin reflection response; the pads must never read glossy or mirror-like.
-    environmentIntensity: 0.07,
+    environmentIntensity: 0.045,
     // Texture repeats per ~1.6 m pad face: small enough to read as fine grain, never stretched/noisy.
-    uScale: 2.0,
-    vScale: 2.6,
+    uScale: 1.7,
+    vScale: 2.25,
     // Brighten + push the deep-navy albedo toward a richer, more readable team blue (the raw texture
     // reads near-black on the dimly-lit end wall). Multiplier >1 lifts the dark vinyl into a clear navy
     // gym-mat blue with visible colour, while staying clear of glossy royal-blue plastic.
-    albedoTint: [1.5, 1.62, 2.0] as Rgb,
+    albedoTint: [1.2, 1.28, 1.55] as Rgb,
     // Subtle blue self-lift so the pads never sink into near-black shadow and the bevels stay readable
     // — restrained (not a glow).
-    emissive: [0.02, 0.035, 0.08] as Rgb
+    emissive: [0.004, 0.007, 0.015] as Rgb
   }
 } as const;
 
@@ -349,7 +349,6 @@ export function applyGymVisualRevamp(scene: Scene): void {
   if (!fakeLightingDisabled) createWallBounceGlow(scene);
   createWallPaddingDetails(scene);
   createRaisedWallPadPanels(scene);
-  createWallPadSeamStraps(scene);
   createWallPadWordmark(scene);
   createScoreboardWallAccents(scene);
   createScoreboardHardware(scene);
@@ -661,10 +660,9 @@ function loadShowcaseEnvironment(scene: Scene): void {
 /**
  * SHOWCASE material response (Part 1 + Part 6), applied as an override pass ON TOP of the competitive
  * baseline tuning so the baseline values are never mutated — flipping back to Competitive needs no undo.
- * Raises each gym PBR surface's roughness into its spec band and its environmentIntensity so the .env
- * reads as a broad soft sheen (mainly the floor), and lifts maxSimultaneousLights so floor/walls/mats/
- * bleachers actually react to all four roof spots + the fill lights (PBR defaults to 4, which would drop
- * lights). The ceiling is a StandardMaterial (no PBR roughness): expressed as a near-zero specular.
+ * Raises each gym PBR surface's roughness into its spec band and its environmentIntensity so reflection
+ * response stays broad and soft, and lifts maxSimultaneousLights for the Showcase hemi/key rig. The
+ * ceiling is a StandardMaterial (no PBR roughness): expressed as a near-zero specular.
  *
  * Call AFTER the gym build AND after the competitive reflection-target pass, so Showcase wins. No-op for
  * any material that does not exist / is not the expected type, and never touches non-gym/UI materials.
@@ -672,7 +670,15 @@ function loadShowcaseEnvironment(scene: Scene): void {
 export function applyShowcaseGymMaterials(scene: Scene): void {
   const m = SHOWCASE_CONFIG.materials;
 
-  applyShowcasePbrSurface(scene, 'floor_material', m.floor.roughness, m.floor.environmentIntensity, m.maxSimultaneousLights, m.floor.specularIntensity);
+  applyShowcasePbrSurface(
+    scene,
+    'floor_material',
+    m.floor.roughness,
+    m.floor.environmentIntensity,
+    m.maxSimultaneousLights,
+    m.floor.specularIntensity,
+    m.floor.albedoTint
+  );
   for (const wall of ['north_wall_brick_mat', 'south_wall_brick_mat', 'east_wall_brick_mat', 'west_wall_brick_mat']) {
     applyShowcasePbrSurface(scene, wall, m.wall.roughness, m.wall.environmentIntensity, m.maxSimultaneousLights);
   }
@@ -697,10 +703,12 @@ function applyShowcasePbrSurface(
   roughness: number,
   environmentIntensity: number,
   maxSimultaneousLights: number,
-  specularIntensity?: number
+  specularIntensity?: number,
+  albedoTint?: readonly [number, number, number]
 ): void {
   const material = scene.getMaterialByName(materialName);
   if (!(material instanceof PBRMaterial)) return;
+  if (albedoTint) material.albedoColor = new Color3(...albedoTint);
   material.metallic = 0;
   material.roughness = roughness;
   material.environmentIntensity = environmentIntensity;
@@ -924,9 +932,9 @@ function createWallPaddingDetails(scene: Scene): void {
   // (createRaisedWallPadPanels) project ~0.105 m off the wall; this board sits ~0.065 m off the wall,
   // so the narrow gaps between modules reveal it as a believable dark recess — no fake stitch lines,
   // no bright royal-blue decals (those have been removed). Visual-only, never collision.
-  const backingMaterial = solidMaterial(scene, 'decor_wall_pad_backing_mat', new Color3(0.028, 0.045, 0.1), {
-    emissive: new Color3(0.002, 0.004, 0.012),
-    specular: new Color3(0.04, 0.05, 0.07)
+  const backingMaterial = solidMaterial(scene, 'decor_wall_pad_backing_mat', new Color3(0.075, 0.16, 0.38), {
+    emissive: new Color3(0.006, 0.018, 0.055),
+    specular: new Color3(0.04, 0.055, 0.085)
   });
 
   for (const side of frontBackWallSides()) {
@@ -987,22 +995,56 @@ function createWallPadNavyMaterial(scene: Scene): PBRMaterial {
   return material;
 }
 
-// Pad-module geometry, shared between createRaisedWallPadPanels (the pads themselves) and
-// createWallPadSeamStraps (the strap hardware that crosses the gap between them) so the strap can be
-// positioned exactly relative to the cushion face without duplicating/drifting the depth math.
-const PAD_DEPTH = 0.02; // core/mounting-board depth
-const PAD_RAISE = 0.035; // cushion protrusion past the core face (the bevel step)
-const PAD_BORDER = 0.09; // recessed flat border framing the raised cushion
-const PAD_CENTER_INSET = WALL_PAD_DECAL_INSET - 0.025; // 0.06 → front cushion face ≈ 0.105 m off wall
-const PAD_CUSHION_FACE_INSET = PAD_CENTER_INSET + PAD_DEPTH / 2 + PAD_RAISE; // ≈ 0.105 m off wall
+const WALL_PAD_MODULE_COUNT = 16;
+const WALL_PAD_SIDE_INSET = 0.24;
+const WALL_PAD_SEAM_GAP = 0.014;
+const PAD_BACK_DEPTH = 0.018;
+const PAD_BODY_DEPTH = 0.05;
+const PAD_SHOULDER_DEPTH = 0.016;
+const PAD_FACE_DEPTH = 0.008;
+const PAD_BULGE_DEPTH = 0.002;
+const PAD_TOTAL_DEPTH = PAD_BACK_DEPTH + PAD_BODY_DEPTH + PAD_SHOULDER_DEPTH + PAD_FACE_DEPTH + PAD_BULGE_DEPTH;
+const PAD_CENTER_INSET = WALL_PAD_DECAL_INSET - 0.038;
+const PAD_FACE_INSET = PAD_CENTER_INSET + PAD_TOTAL_DEPTH * 0.5;
+
+function createWallPadModuleMesh(
+  scene: Scene,
+  name: string,
+  options: { width: number; height: number; material: Material }
+): Mesh {
+  const { width, height, material } = options;
+  const bodyWidth = Math.max(0.01, width - 0.026);
+  const bodyHeight = Math.max(0.01, height - 0.026);
+  const shoulderWidth = Math.max(0.01, width - 0.07);
+  const shoulderHeight = Math.max(0.01, height - 0.068);
+  const faceWidth = Math.max(0.01, width - 0.112);
+  const faceHeight = Math.max(0.01, height - 0.106);
+  const bulgeWidth = Math.max(0.01, width - 0.17);
+  const bulgeHeight = Math.max(0.01, height - 0.164);
+  const frontZ = -PAD_TOTAL_DEPTH * 0.5;
+  const backZ = frontZ + PAD_TOTAL_DEPTH;
+
+  const parts: Mesh[] = [];
+  const pushPart = (partName: string, partWidth: number, partHeight: number, partDepth: number, frontFaceZ: number) => {
+    const part = MeshBuilder.CreateBox(partName, { width: partWidth, height: partHeight, depth: partDepth }, scene);
+    part.position.z = frontFaceZ + partDepth * 0.5;
+    parts.push(part);
+  };
+
+  pushPart(`${name}_backer`, width, height, PAD_BACK_DEPTH, backZ - PAD_BACK_DEPTH);
+  pushPart(`${name}_body`, bodyWidth, bodyHeight, PAD_BODY_DEPTH, frontZ + PAD_BULGE_DEPTH + PAD_FACE_DEPTH + PAD_SHOULDER_DEPTH);
+  pushPart(`${name}_shoulder`, shoulderWidth, shoulderHeight, PAD_SHOULDER_DEPTH, frontZ + PAD_BULGE_DEPTH + PAD_FACE_DEPTH);
+  pushPart(`${name}_face`, faceWidth, faceHeight, PAD_FACE_DEPTH, frontZ + PAD_BULGE_DEPTH);
+  pushPart(`${name}_bulge`, bulgeWidth, bulgeHeight, PAD_BULGE_DEPTH, frontZ);
+
+  const merged = Mesh.MergeMeshes(parts, true, true, undefined, false, false) ?? parts[0];
+  merged.name = name;
+  merged.material = material;
+  merged.isPickable = false;
+  return merged;
+}
 
 function createRaisedWallPadPanels(scene: Scene): void {
-  // Real 3D pad modules: one merged beveled-panel mesh per module (core box + raised front cushion =
-  // one draw call), navy-vinyl PBR material, frozen static transform, visual-only (no collision). The
-  // raised cushion sits ~0.105 m off the wall and steps up ~0.035 m past the recessed border — a thin
-  // mounting board (PAD_DEPTH) with a pronounced cushion bulge reads far more like a real padded mat
-  // than a thick block with a shallow lip, while the TOTAL projection off the wall is unchanged (still
-  // within the 0.07–0.11 m spec) so the bevel step is just a much larger share of the same thickness.
   const navyVinyl = createWallPadNavyMaterial(scene);
   const halfL = TUNING.map.halfLength;
 
@@ -1013,16 +1055,11 @@ function createRaisedWallPadPanels(scene: Scene): void {
 
     for (let i = 0; i < layout.count; i += 1) {
       const offset = layout.start + i * (layout.panelWidth + layout.gap);
-      const pad = createBeveledPanelMesh(scene, `decor_wall_pad_module_${side}_${String(i).padStart(2, '0')}`, {
+      const pad = createWallPadModuleMesh(scene, `decor_wall_pad_module_${side}_${String(i).padStart(2, '0')}`, {
         width: layout.panelWidth,
         height: panelHeight,
-        depth: PAD_DEPTH,
-        material: navyVinyl,
-        border: PAD_BORDER,
-        raise: PAD_RAISE
+        material: navyVinyl
       });
-      // createBeveledPanelMesh builds along Z (cushions on ±Z), which already matches the front/back
-      // wall normal — no rotation needed. North wall at +Z, south at -Z.
       pad.position.set(offset, panelHeight / 2, side === 'north' ? halfL - PAD_CENTER_INSET : -halfL + PAD_CENTER_INSET);
       markDecorative(pad);
       pad.freezeWorldMatrix();
@@ -1030,98 +1067,20 @@ function createRaisedWallPadPanels(scene: Scene): void {
   }
 }
 
-/**
- * Velcro-strap hardware crossing the seam between adjacent pad modules. Real gym wall pads are
- * velcro-strapped to the wall rather than glued edge-to-edge — the straps are what actually give the
- * seam visible depth/separation, instead of just a flat painted gap line. Two short strap bands per
- * seam (clear of the centred wordmark band), each with a small plastic buckle accent, mounted just in
- * front of the cushion faces so the gap reads as occluded hardware rather than a void showing the wall.
- * Visual-only, no collision; same low-poly box primitives as the rest of the pad system.
- */
-function createWallPadSeamStraps(scene: Scene): void {
-  const strapMaterial = solidMaterial(scene, 'decor_wall_pad_strap_mat', new Color3(0.085, 0.09, 0.1), {
-    emissive: new Color3(0.004, 0.004, 0.005),
-    specular: new Color3(0.05, 0.05, 0.055)
-  });
-  const buckleMaterial = solidMaterial(scene, 'decor_wall_pad_buckle_mat', new Color3(0.42, 0.43, 0.46), {
-    emissive: new Color3(0.01, 0.01, 0.011),
-    specular: new Color3(0.22, 0.22, 0.24)
-  });
-
-  const strapThickness = 0.014;
-  const strapFaceInset = PAD_CUSHION_FACE_INSET + strapThickness / 2 + 0.006; // sits just in front of the cushion
-  const strapHeight = 0.16;
-  const buckleSize = 0.05;
-  const buckleInset = strapFaceInset + strapThickness / 2 + buckleSize / 2 + 0.002;
-
-  for (const side of frontBackWallSides()) {
-    const layout = wallPadLayout(wallSpan(side));
-    const panelHeight = WALL_PAD_HEIGHT - 0.02;
-    // Keep clear of the centred wordmark band (≈ 0.61–1.95 m for the current letter size).
-    const strapYs = [panelHeight * 0.14, panelHeight * 0.87];
-
-    for (let i = 0; i < layout.count - 1; i += 1) {
-      const gapCenter = layout.start + (i + 0.5) * (layout.panelWidth + layout.gap);
-      const strapWidth = layout.gap + 0.12; // overlaps onto both neighbouring pad faces
-
-      for (const y of strapYs) {
-        createWallBox(
-          scene,
-          `decor_wall_pad_strap_${side}_${String(i).padStart(2, '0')}_${y === strapYs[0] ? 'lo' : 'hi'}`,
-          side,
-          strapWidth,
-          strapHeight,
-          y,
-          gapCenter,
-          strapThickness,
-          strapMaterial,
-          strapFaceInset
-        );
-        createWallBox(
-          scene,
-          `decor_wall_pad_buckle_${side}_${String(i).padStart(2, '0')}_${y === strapYs[0] ? 'lo' : 'hi'}`,
-          side,
-          buckleSize,
-          buckleSize,
-          y,
-          gapCenter,
-          buckleSize * 0.4,
-          buckleMaterial,
-          buckleInset
-        );
-      }
-    }
-  }
-}
-
 const WALL_PAD_WORDMARK = 'STRAFEBALL';
 
-/**
- * One varsity-style glyph per pad module — never more than one letter per mat. Each letter is its own
- * small plane, sized to sit comfortably inside a single module (clear of the seams on either side), and
- * the run of letters is centered across the module count. Off-white fill, navy drop-shadow underlay,
- * thin gold outline, no glow. Materials are cached per character (STRAFEBALL repeats A and L) so only
- * 8 textures are ever generated for the whole wordmark, on both walls.
- */
 function createWallPadWordmark(scene: Scene): void {
   const letterMaterials = new Map<string, StandardMaterial>();
-  // Cushion face ≈ 0.105 m off the wall; sit the letters ~4 mm in front of it.
-  const wordmarkInset = (WALL_PAD_DECAL_INSET - 0.025) + 0.025 + 0.02 + 0.004;
+  const wordmarkInset = PAD_FACE_INSET + 0.003;
 
   for (const side of frontBackWallSides()) {
     const layout = wallPadLayout(wallSpan(side));
-    const letterCount = Math.min(WALL_PAD_WORDMARK.length, layout.count);
+    const letterCount = WALL_PAD_WORDMARK.length;
     const moduleStart = Math.floor((layout.count - letterCount) / 2);
-    const wordStart = Math.floor((WALL_PAD_WORDMARK.length - letterCount) / 2);
 
     for (let j = 0; j < letterCount; j += 1) {
-      // createWallPlane positions every module at the SAME world-X offset regardless of side, but a
-      // viewer facing the south wall is turned 180° relative to one facing north, so increasing world-X
-      // reads right-to-left there. Walk the word backwards for south so it reads correctly left-to-right
-      // from each wall's own viewer (this is the one place world-X ordering needs side-awareness; every
-      // other pad/letter measurement above is side-agnostic).
-      const j2 = side === 'south' ? letterCount - 1 - j : j;
-      const letter = WALL_PAD_WORDMARK[wordStart + j2];
+      const letterIndex = side === 'south' ? letterCount - 1 - j : j;
+      const letter = WALL_PAD_WORDMARK[letterIndex];
       const moduleIndex = moduleStart + j;
       const offset = layout.start + moduleIndex * (layout.panelWidth + layout.gap);
 
@@ -1131,16 +1090,15 @@ function createWallPadWordmark(scene: Scene): void {
         letterMaterials.set(letter, material);
       }
 
-      // Condensed varsity glyph: comfortably inside the module width, clear of both seams.
-      const width = layout.panelWidth * 0.62;
-      const height = width * 1.35;
+      const width = layout.panelWidth * 0.5;
+      const height = WALL_PAD_HEIGHT * 0.45;
       createWallPlane(
         scene,
         `decor_wall_pad_wordmark_${side}_${String(moduleIndex).padStart(2, '0')}`,
         side,
         width,
         height,
-        WALL_PAD_HEIGHT * 0.52,
+        WALL_PAD_HEIGHT * 0.525,
         offset,
         material,
         wordmarkInset
@@ -1150,28 +1108,30 @@ function createWallPadWordmark(scene: Scene): void {
 }
 
 function createWallPadLetterMaterial(scene: Scene, letter: string): StandardMaterial {
-  const size = 256;
-  const texture = new DynamicTexture(`decor_wall_pad_letter_${letter}_tex`, { width: size, height: Math.round(size * 1.35) }, scene, true);
+  const existing = scene.getMaterialByName(`decor_wall_pad_letter_${letter}_mat`);
+  if (existing instanceof StandardMaterial) return existing;
+
+  const width = 256;
+  const height = 344;
+  const texture = new DynamicTexture(`decor_wall_pad_letter_${letter}_tex`, { width, height }, scene, true);
   texture.hasAlpha = true;
   texture.anisotropicFilteringLevel = 8;
   texture.updateSamplingMode(Texture.TRILINEAR_SAMPLINGMODE);
-  const w = size;
-  const h = Math.round(size * 1.35);
   const ctx = texture.getContext() as CanvasRenderingContext2D;
-  ctx.clearRect(0, 0, w, h);
+  ctx.clearRect(0, 0, width, height);
   ctx.textAlign = 'center';
   ctx.textBaseline = 'middle';
-  ctx.font = `900 ${Math.round(h * 0.82)}px Impact, "Arial Black", sans-serif`;
-  // Deep-navy drop-shadow underlay, offset down/right for separation against the pad.
+  const fontSize = Math.round(height * 0.78);
+  ctx.font = `900 ${fontSize}px Impact, "Arial Black", sans-serif`;
+
   ctx.fillStyle = '#0a1530';
-  ctx.fillText(letter, w / 2 + 5, h / 2 + 7);
-  // Primary off-white lettering with a restrained gold outline.
+  ctx.fillText(letter, width / 2 + 5, height / 2 + 7);
   ctx.lineJoin = 'round';
-  ctx.lineWidth = Math.round(h * 0.032);
+  ctx.lineWidth = Math.round(fontSize * 0.045);
   ctx.strokeStyle = '#c79a3a';
-  ctx.strokeText(letter, w / 2, h / 2);
+  ctx.strokeText(letter, width / 2, height / 2);
   ctx.fillStyle = '#f6f1e4';
-  ctx.fillText(letter, w / 2, h / 2);
+  ctx.fillText(letter, width / 2, height / 2);
   texture.update(true);
 
   const material = new StandardMaterial(`decor_wall_pad_letter_${letter}_mat`, scene);
@@ -1179,7 +1139,6 @@ function createWallPadLetterMaterial(scene: Scene, letter: string): StandardMate
   material.opacityTexture = texture;
   material.useAlphaFromDiffuseTexture = true;
   material.emissiveTexture = texture;
-  // Modest self-lift for readability against the dark navy pads — restrained, not a glow.
   material.emissiveColor = new Color3(0.12, 0.12, 0.11);
   material.diffuseColor = new Color3(1, 1, 1);
   material.specularColor = new Color3(0.04, 0.04, 0.04);
@@ -1189,13 +1148,9 @@ function createWallPadLetterMaterial(scene: Scene, letter: string): StandardMate
 }
 
 function wallPadLayout(span: number): { count: number; gap: number; panelWidth: number; start: number; usedWidth: number } {
-  const sideInset = 0.24;
-  // Wide enough that the velcro-strap hardware (createWallPadSeamStraps) reads as a real mounted seam
-  // rather than a thin painted line (was 0.006, then 0.026).
-  const gap = 0.045;
-  const targetPanelWidth = 1.64;
-  const usableWidth = span - sideInset * 2;
-  const count = Math.max(1, Math.floor((usableWidth + gap) / (targetPanelWidth + gap)));
+  const gap = WALL_PAD_SEAM_GAP;
+  const usableWidth = span - WALL_PAD_SIDE_INSET * 2;
+  const count = WALL_PAD_MODULE_COUNT;
   const panelWidth = (usableWidth - gap * (count - 1)) / count;
   const usedWidth = panelWidth * count + gap * (count - 1);
   const start = -usedWidth / 2 + panelWidth / 2;

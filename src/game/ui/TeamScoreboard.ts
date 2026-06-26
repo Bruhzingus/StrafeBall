@@ -29,6 +29,7 @@ export type MatchScoreboardData = {
   mode: '1v1' | '2v2';
   /** Seconds until the half drops; rendered as M:SS. */
   halfDropSecondsRemaining: number;
+  noBoundaries: boolean;
   blueTeam: TeamScoreboardData;
   redTeam: TeamScoreboardData;
 };
@@ -50,6 +51,8 @@ export class TeamScoreboard {
   private readonly root: HTMLDivElement;
   private readonly assets: ScoreboardAssetPaths;
   private lastMarkup = '';
+  private wasNoBoundaries = false;
+  private noBoundariesDisplayUntilMs = 0;
 
   constructor(parent: HTMLElement, assets: Partial<ScoreboardAssetPaths> = {}) {
     this.assets = { ...DEFAULT_ASSETS, ...assets };
@@ -69,6 +72,13 @@ export class TeamScoreboard {
    * DOM is only rewritten when the rendered string changes.
    */
   update(data: MatchScoreboardData): void {
+    if (data.noBoundaries && !this.wasNoBoundaries) {
+      this.noBoundariesDisplayUntilMs = performance.now() + 2800;
+    } else if (!data.noBoundaries) {
+      this.noBoundariesDisplayUntilMs = 0;
+    }
+    this.wasNoBoundaries = data.noBoundaries;
+
     const markup = this.render(data);
     if (markup === this.lastMarkup) return;
     this.lastMarkup = markup;
@@ -81,7 +91,7 @@ export class TeamScoreboard {
 
   private render(data: MatchScoreboardData): string {
     const modeLabel = `${data.mode} TEAM MATCH`;
-    const timer = formatClock(data.halfDropSecondsRemaining);
+    const timerState = this.timerState(data);
     return `
       <!-- ===== Outer aluminium frame: dark rounded corner brackets + a real pen tray ===== -->
       <div class="team-scoreboard__frame">
@@ -102,15 +112,7 @@ export class TeamScoreboard {
           <!-- ===== CENTER: mode title + half-drop timer ===== -->
           <div class="team-scoreboard__center">
             <div class="ts-mode">${escapeHtml(modeLabel)}</div>
-            <div class="ts-timer-card">
-              <!-- hand-drawn marker box around the timer -->
-              <span class="ts-timer-box">${markerBox('rgba(28,32,38,0.85)')}</span>
-              <div class="ts-timer-label">
-                Half Drops In
-                <span class="ts-underline ts-underline--ink">${MARKER_UNDERLINE}</span>
-              </div>
-              <div class="ts-timer-value">${escapeHtml(timer)}</div>
-            </div>
+            ${this.timerCard(timerState)}
           </div>
 
           <!-- hand-drawn marker divider between center and right team -->
@@ -124,6 +126,61 @@ export class TeamScoreboard {
         <!-- ===== Pen tray ledge: center clip + decorative markers / eraser ===== -->
         ${this.tray()}
       </div>
+    `;
+  }
+
+  private timerState(data: MatchScoreboardData): {
+    className: string;
+    boxColor: string;
+    label: string;
+    value: string;
+    open: boolean;
+  } {
+    const displayedSecond = Math.max(0, Math.floor(data.halfDropSecondsRemaining));
+    const warning = !data.noBoundaries && displayedSecond >= 1 && displayedSecond <= 10;
+    const urgent = warning && displayedSecond <= 5;
+    const open = data.noBoundaries && performance.now() < this.noBoundariesDisplayUntilMs;
+    if (open) {
+      return {
+        className: 'ts-timer-card ts-timer-card--open',
+        boxColor: 'rgba(226, 31, 31, 0.95)',
+        label: '',
+        value: 'NO BOUNDARIES',
+        open: true
+      };
+    }
+    return {
+      className: [
+        'ts-timer-card',
+        warning ? 'ts-timer-card--warning ts-timer-card--shake' : '',
+        urgent ? 'ts-timer-card--urgent' : ''
+      ].filter(Boolean).join(' '),
+      boxColor: warning ? 'rgba(226, 31, 31, 0.92)' : 'rgba(28,32,38,0.85)',
+      label: 'HALF DROPS IN',
+      value: formatClock(data.halfDropSecondsRemaining),
+      open: false
+    };
+  }
+
+  private timerCard(state: ReturnType<TeamScoreboard['timerState']>): string {
+    if (state.open) {
+      return `
+            <div class="${state.className}">
+              <span class="ts-timer-box">${markerBox(state.boxColor)}</span>
+              <div class="ts-timer-open">${escapeHtml(state.value)}</div>
+            </div>
+      `;
+    }
+    return `
+            <div class="${state.className}">
+              <!-- hand-drawn marker box around the timer -->
+              <span class="ts-timer-box">${markerBox(state.boxColor)}</span>
+              <div class="ts-timer-label">
+                ${escapeHtml(state.label)}
+                <span class="ts-underline ts-underline--ink">${MARKER_UNDERLINE}</span>
+              </div>
+              <div class="ts-timer-value">${escapeHtml(state.value)}</div>
+            </div>
     `;
   }
 

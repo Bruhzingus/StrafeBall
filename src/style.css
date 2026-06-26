@@ -4531,6 +4531,64 @@ html, body {
   letter-spacing: 0.04em;
 }
 
+.ts-timer-card--warning {
+  color: #e21f1f;
+}
+
+.ts-timer-card--warning .ts-timer-label,
+.ts-timer-card--warning .ts-timer-value {
+  color: #e21f1f;
+}
+
+.ts-timer-card--warning .ts-underline--ink {
+  color: rgba(226, 31, 31, 0.88);
+}
+
+.ts-timer-card--warning .ts-timer-value {
+  text-shadow: 0 1px 0 rgba(255, 245, 230, 0.72);
+}
+
+.ts-timer-card--urgent .ts-timer-value {
+  color: #f0352e;
+}
+
+.ts-timer-card--shake {
+  animation: ts-timer-mech-shake 108ms cubic-bezier(0.24, 0.76, 0.26, 1) both;
+}
+
+.ts-timer-card--urgent.ts-timer-card--shake {
+  animation-duration: 124ms;
+}
+
+.ts-timer-open {
+  font-family: var(--font-bangers);
+  font-weight: 400;
+  font-size: 38px;
+  line-height: 0.95;
+  color: #e21f1f;
+  letter-spacing: 0.03em;
+  white-space: nowrap;
+  text-shadow: 0 1px 0 rgba(255, 248, 232, 0.86);
+}
+
+.ts-timer-card--open {
+  padding: 14px 24px 12px;
+}
+
+@keyframes ts-timer-mech-shake {
+  0% { transform: translateX(0); }
+  22% { transform: translateX(-2px); }
+  48% { transform: translateX(2px); }
+  72% { transform: translateX(-1px); }
+  100% { transform: translateX(0); }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .ts-timer-card--shake {
+    animation: none;
+  }
+}
+
 /* ---- Pen tray ledge: markers + eraser + a center clip (decorative polish only) ---- */
 .team-scoreboard__tray {
   position: relative;

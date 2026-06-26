@@ -144,10 +144,19 @@ export class SoundManager {
 
   /** Short analog clock tick used for the final half-court countdown. */
   clockTick(remainingSeconds: number): void {
+    if (settings.reducedEffects) return;
     const urgency = 1 + Math.max(0, (10 - remainingSeconds) * 0.035);
     this.tone('square', 1160 * urgency, 880 * urgency, 0.05, 0.048);
     this.tone('triangle', 460 * urgency, 360 * urgency, 0.085, 0.032);
     this.noiseBurst(0.022, 0.012, 1700 * urgency);
+  }
+
+  /** Short scoreboard confirmation when half court opens. */
+  boundaryOpenConfirm(): void {
+    if (settings.reducedEffects) return;
+    this.tone('square', 420, 420, 0.12, 0.075);
+    this.tone('triangle', 630, 520, 0.16, 0.05);
+    this.noiseBurst(0.035, 0.01, 1300);
   }
 
   /**

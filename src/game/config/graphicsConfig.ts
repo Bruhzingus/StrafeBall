@@ -9,10 +9,9 @@
  *                                  and a single FXAA post. Performance-conscious; the shipping default.
  *
  *   - GRAPHICS_MODE_SHOWCASE     — a quality-first, client-only "make the gym look as good as possible
- *                                  on a strong desktop" mode. Phase 6: ONE fixture-aligned rig — six
- *                                  broad shadowless SpotLights under the visible ceiling fixtures, one
- *                                  hemispheric fill, and one subtle shadow-casting directional driving a
- *                                  single ShadowGenerator. FXAA only. No .env IBL, no SSAO, no bloom.
+ *                                  on a strong desktop" mode. Phase 6 recovery: one broad
+ *                                  hemispheric fill and one subtle shadow-casting directional driving
+ *                                  a single ShadowGenerator. FXAA only. No .env IBL, no SSAO, no bloom.
  *
  * NOTHING here is imported by server or shared code. None of it touches gameplay, collision, map
  * dimensions, networking, HUD/scoreboard behavior, or practice behavior — it only configures rendering.
@@ -150,7 +149,7 @@ export const SHOWCASE_CONFIG = {
      * main "depth + darker corners" lever, no fake AO needed. Kept moderate so the key still models.
      */
     hemi: {
-      intensity: 0.55,
+      intensityByTier: { [SHOWCASE_TIER_ULTRA]: 0.62, [SHOWCASE_TIER_HIGH]: 0.79 } as Record<ShowcaseTier, number>,
       diffuse: [1.0, 0.975, 0.93] as [number, number, number],
       ground: [0.26, 0.29, 0.36] as [number, number, number], // darker cool ground = natural corner depth
       specular: [0.06, 0.06, 0.07] as [number, number, number]
@@ -161,7 +160,7 @@ export const SHOWCASE_CONFIG = {
      * darker. Warm-neutral white. This is the dominant brightness source; the hemi is the fill.
      */
     key: {
-      intensity: 0.9,
+      intensityByTier: { [SHOWCASE_TIER_ULTRA]: 0.95, [SHOWCASE_TIER_HIGH]: 1.08 } as Record<ShowcaseTier, number>,
       direction: [-0.35, -1, -0.25] as [number, number, number],
       diffuse: [1.0, 0.99, 0.95] as [number, number, number],
       specular: [0.16, 0.16, 0.16] as [number, number, number]
@@ -175,8 +174,8 @@ export const SHOWCASE_CONFIG = {
    */
   shadows: {
     mapSizeByTier: { [SHOWCASE_TIER_ULTRA]: 2048, [SHOWCASE_TIER_HIGH]: 1024 } as Record<ShowcaseTier, number>,
-    /** Babylon darkness: 0 = black, 1 = invisible. Phase 6 band 0.14–0.20. */
-    darkness: 0.18,
+    /** Babylon darkness: 0 = black, 1 = invisible. */
+    darknessByTier: { [SHOWCASE_TIER_ULTRA]: 0.22, [SHOWCASE_TIER_HIGH]: 0.28 } as Record<ShowcaseTier, number>,
     bias: 0.0016,
     normalBias: 0.02,
     /** 'pcf' (default, broad support) or 'pcfsoft' (softer, slightly heavier). */
@@ -247,7 +246,7 @@ export const SHOWCASE_CONFIG = {
     // Calmed maple response (Materials Pass B): roughness raised and environmentIntensity/specularIntensity
     // lowered so the probe reflection stays a faint blurred response rather than a wet/strong highlight,
     // matching the Competitive baseline in GYM_MATERIAL_TUNING.floor.
-    floor: { roughness: 0.54, environmentIntensity: 0.08, specularIntensity: 0.26 },
+    floor: { albedoTint: [1.0, 0.99, 0.955] as [number, number, number], roughness: 0.58, environmentIntensity: 0.065, specularIntensity: 0.22 },
     // wallPad/wall are StandardMaterial-driven in practice and receive NO probe reflection ("nearly
     // none"); these env values are inert without a reflectionTexture and are kept only for completeness.
     wallPad: { roughness: 0.5, environmentIntensity: 0.0 },

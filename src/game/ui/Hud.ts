@@ -37,12 +37,10 @@ export class Hud {
   private smoothedSpeed = 0;
   private hasSmoothedSpeed = false;
   private readonly countdown: HTMLDivElement;
-  private readonly boundaryClock: HTMLDivElement;
   private readonly halfCourtWarning: HTMLDivElement;
   private readonly musicHud: MusicHud;
   private readonly teamScoreboard: TeamScoreboard;
   private lastCountdownLabel = '';
-  private lastBoundaryClockLabel = '';
   private readonly crosshair: Crosshair;
   // Last rendered markup per panel — we only touch the DOM when the text actually changes,
   // so the HUD doesn't thrash innerHTML 60+ times a second while values are static.
@@ -171,9 +169,6 @@ export class Hud {
     this.countdown = document.createElement('div');
     this.countdown.className = 'countdown';
     this.root.appendChild(this.countdown);
-    this.boundaryClock = document.createElement('div');
-    this.boundaryClock.className = 'boundary-clock';
-    this.root.appendChild(this.boundaryClock);
     this.halfCourtWarning = document.createElement('div');
     this.halfCourtWarning.className = 'half-court-warning';
     this.root.appendChild(this.halfCourtWarning);
@@ -336,7 +331,6 @@ export class Hud {
     this.updateCountdown('playing', 0);
     this.hearts.style.display = 'none';
     this.bottomLeft.style.display = 'none';
-    this.updateBoundaryClock(rules.boundary.elapsed, rules.boundary.noBoundaries);
     this.updateHalfCourtWarning({
       deathCountdownActive: rules.boundary.illegalCountdownActive,
       countdownSeconds: rules.boundary.illegalCountdownSeconds,
@@ -403,6 +397,7 @@ export class Hud {
     this.teamScoreboard.update({
       mode: '1v1',
       halfDropSecondsRemaining: rules.boundary.noBoundaries ? 0 : noBoundariesTime,
+      noBoundaries: rules.boundary.noBoundaries,
       blueTeam: { name: 'BLUE TEAM', color: 'blue', score: rules.scoring.playerHits, players: ['You'] },
       redTeam: { name: 'RED TEAM', color: 'red', score: rules.boundary.opponentPenaltyHits, players: ['Player 2'] }
     });
@@ -463,7 +458,6 @@ export class Hud {
   ): void {
     const room = snapshot.room;
     this.updateCountdown(room.match.status, room.match.countdownSeconds);
-    this.updateBoundaryClock(room.match.boundary.elapsedSeconds, room.match.boundary.noBoundaries);
     this.bottomLeft.style.display = 'none';
     const players = Object.values(room.players).sort(compareHudPlayers);
     const local = room.players[localPlayerId];
@@ -531,6 +525,7 @@ export class Hud {
     const scoreboardData: MatchScoreboardData = {
       mode: room.match.mode === '2v2' ? '2v2' : '1v1',
       halfDropSecondsRemaining: room.match.boundary.noBoundaries ? 0 : noBoundariesTime,
+      noBoundaries: room.match.boundary.noBoundaries,
       blueTeam: {
         name: 'BLUE TEAM',
         color: 'blue',
@@ -647,37 +642,6 @@ export class Hud {
         }
       }, 700);
     }
-  }
-
-  private updateBoundaryClock(elapsedSeconds: number, noBoundaries: boolean): void {
-    const remainingSeconds = Math.max(0, TUNING.match.noBoundariesSeconds - elapsedSeconds);
-    const countdownSeconds = TUNING.match.halfCourtCountdownSeconds;
-    const active =
-      !noBoundaries &&
-      remainingSeconds > 0 &&
-      remainingSeconds <= countdownSeconds;
-    const seconds = active ? Math.max(1, Math.ceil(remainingSeconds)) : 0;
-    const label = active ? String(seconds) : '';
-    const isOpeningWarning = active && seconds === countdownSeconds;
-    const renderKey = label ? `${label}:${isOpeningWarning ? 'warning' : 'countdown'}` : '';
-
-    if (renderKey === this.lastBoundaryClockLabel) return;
-
-    if (label === '') {
-      this.boundaryClock.classList.remove('boundary-clock--visible');
-      this.lastBoundaryClockLabel = '';
-      return;
-    }
-
-    this.boundaryClock.innerHTML = `
-      <div class="boundary-clock-label">${isOpeningWarning ? 'Boundary Warning' : 'Half Court Drops In'}</div>
-      <div class="boundary-clock-value">${label}</div>
-      <div class="boundary-clock-sub">${isOpeningWarning ? 'Boundaries lift in 10 seconds' : 'Full court opening'}</div>
-    `;
-    this.boundaryClock.classList.remove('boundary-clock--visible');
-    void this.boundaryClock.offsetWidth;
-    this.boundaryClock.classList.add('boundary-clock--visible');
-    this.lastBoundaryClockLabel = renderKey;
   }
 
   private updateHalfCourtWarning(violation: HalfCourtViolationState | undefined): void {

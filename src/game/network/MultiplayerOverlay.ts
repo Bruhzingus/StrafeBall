@@ -45,6 +45,7 @@ export class MultiplayerOverlay {
   private modalOpen = false;
   private settingsOpen = false;
   private wasLiveMatch = false;
+  private wasReportOpen = false;
   private pendingAction: PendingAction = null;
   private awaitingInteractReleaseFocus = false;
   private lastCompletedMatchKey = '';
@@ -254,6 +255,7 @@ export class MultiplayerOverlay {
     }
     const liveMatch = isLiveMatch(snapshot?.room ?? null);
     const matchStatus = snapshot?.room.match.status;
+    const reportOpen = this.client.connected && (matchStatus === 'complete' || matchStatus === 'intermission');
     // Auto-close the menu only at the MOMENT the match goes live (so play isn't blocked). The player
     // can deliberately reopen it mid-match — e.g. to call or agree to an early-end vote — and it stays
     // open until they close it (or the next match starts).
@@ -264,11 +266,17 @@ export class MultiplayerOverlay {
     } else if (!liveMatch && this.wasLiveMatch && matchStatus === 'warmup') {
       // A live→lobby return (early-end vote passed): pop the menu so the host can reconfigure + restart.
       this.modalOpen = true;
+    } else if (this.wasReportOpen && !reportOpen && matchStatus === 'warmup') {
+      // The postmatch report just closed naturally (vote/timeout back to the lobby) — return to the
+      // normal compact pregame HUD instead of leaving the report-era full panel (and its pointer-lock
+      // suppression, see syncLockOverlaySuppression) stuck open forever.
+      this.modalOpen = false;
     }
     if (liveMatch || (snapshot?.room && snapshot.room.match.status !== 'warmup')) {
       this.settingsOpen = false;
     }
     this.wasLiveMatch = liveMatch;
+    this.wasReportOpen = reportOpen;
     const connected = this.client.connected;
     const busy = this.client.status === 'connecting';
     const nameReady = this.nameInput.value.trim().length > 0;
@@ -339,7 +347,6 @@ export class MultiplayerOverlay {
     this.joinButton.disabled = this.joinButton.disabled || !nameReady;
     this.joinInput.disabled = connected || busy || !nameReady;
 
-    const reportOpen = connected && (snapshot?.room.match.status === 'complete' || snapshot?.room.match.status === 'intermission');
     // Compact HUD only while the menu is CLOSED. When the player deliberately reopens it (modalOpen),
     // show the full control surface so settings/vote controls are clearly interactive — even mid-match.
     const compact = connected && !busy && this.client.status !== 'error' && !reportOpen && !liveMatch && !this.modalOpen && !this.settingsOpen;

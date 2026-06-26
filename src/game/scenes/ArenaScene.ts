@@ -244,6 +244,9 @@ export class ArenaScene {
   private footstepTimer = 0;
   private squeakCooldown = 0;
   private lastBoundaryClockTickSecond: number | null = null;
+  private lastBoundaryClockDisplaySecond: number | null = null;
+  private boundaryCountdownWasActive = false;
+  private boundaryOpenConfirmPlayed = false;
   private lastGroundMoveDir: Vec3 = { x: 0, y: 0, z: 1 };
   private lastGroundSpeed = 0;
 
@@ -856,7 +859,10 @@ export class ArenaScene {
     }
 
     this.rules.boundary.update(dt, this.player.root.position);
-    this.updateBoundaryClockSound(this.rules.boundary.elapsed, this.rules.boundary.noBoundaries);
+    this.updateBoundaryClockSound(
+      Math.max(0, TUNING.match.noBoundariesSeconds - this.rules.boundary.elapsed),
+      this.rules.boundary.noBoundaries
+    );
     this.updateOfflineCourtLines();
     this.effects.update(dt);
 
@@ -976,7 +982,12 @@ export class ArenaScene {
     }
     this.updatePredictionDebugMetrics(local);
     this.updateDesyncTracker(dt);
-    if (snapshot) this.updateBoundaryClockSound(snapshot.room.match.boundary.elapsedSeconds, snapshot.room.match.boundary.noBoundaries);
+    if (snapshot) {
+      this.updateBoundaryClockSound(
+        Math.max(0, snapshot.room.settings.halfCourtTimerSeconds - snapshot.room.match.boundary.elapsedSeconds),
+        snapshot.room.match.boundary.noBoundaries
+      );
+    }
 
     // Initialise prediction from the first authoritative player state we receive.
     if (local && !this.predictedMovement) {
@@ -2214,22 +2225,34 @@ export class ArenaScene {
     });
   }
 
-  private updateBoundaryClockSound(elapsedSeconds: number, noBoundaries: boolean): void {
-    const remainingSeconds = Math.max(0, GAME_CONSTANTS.match.noBoundariesSeconds - elapsedSeconds);
-    const active =
-      !noBoundaries &&
-      remainingSeconds > 0 &&
-      remainingSeconds <= GAME_CONSTANTS.match.halfCourtCountdownSeconds;
+  private updateBoundaryClockSound(remainingSeconds: number, noBoundaries: boolean): void {
+    const displayedSecond = Math.max(0, Math.floor(remainingSeconds));
 
-    if (!active) {
-      this.lastBoundaryClockTickSecond = null;
+    if (!noBoundaries) {
+      if (this.lastBoundaryClockDisplaySecond !== null && displayedSecond > this.lastBoundaryClockDisplaySecond) {
+        this.lastBoundaryClockTickSecond = null;
+      }
+      this.boundaryOpenConfirmPlayed = false;
+      this.boundaryCountdownWasActive = remainingSeconds > 0;
+      this.lastBoundaryClockDisplaySecond = displayedSecond;
+
+      if (displayedSecond < 1 || displayedSecond > GAME_CONSTANTS.match.halfCourtCountdownSeconds) {
+        if (displayedSecond > GAME_CONSTANTS.match.halfCourtCountdownSeconds) this.lastBoundaryClockTickSecond = null;
+        return;
+      }
+
+      if (displayedSecond === this.lastBoundaryClockTickSecond) return;
+      this.lastBoundaryClockTickSecond = displayedSecond;
+      this.sound.clockTick(displayedSecond);
       return;
     }
 
-    const second = Math.max(1, Math.ceil(remainingSeconds));
-    if (second === this.lastBoundaryClockTickSecond) return;
-    this.lastBoundaryClockTickSecond = second;
-    this.sound.clockTick(second);
+    this.lastBoundaryClockTickSecond = null;
+    this.lastBoundaryClockDisplaySecond = 0;
+    if (!this.boundaryCountdownWasActive || this.boundaryOpenConfirmPlayed) return;
+    this.boundaryOpenConfirmPlayed = true;
+    this.boundaryCountdownWasActive = false;
+    this.sound.boundaryOpenConfirm();
   }
 
   private aimedOnlineBallId(local: PlayerState): string | null {
@@ -2528,7 +2551,7 @@ export class ArenaScene {
    * spotlight pools). Dynamic caster registration is routed to that single-generator system.
    */
   private createShowcaseLighting(): void {
-    const { key } = applyShowcaseLighting(this.scene);
+    const { key } = applyShowcaseLighting(this.scene, this.showcaseTier);
     createShowcaseShadowSystem(this.scene, key, this.showcaseTier);
     setActiveGymShadowRegistrar(registerShowcaseShadowCaster);
   }
