@@ -10,8 +10,7 @@ import {
   PBRMaterial,
   Scene,
   StandardMaterial,
-  Texture,
-  VertexData
+  Texture
 } from '@babylonjs/core';
 import { TUNING } from '../config/tuning';
 import { MAT_SPECS, createBleacherTierSpecs } from '../../../shared/simulation/MapGeometry';
@@ -994,11 +993,11 @@ function createWallPadNavyMaterial(scene: Scene): PBRMaterial {
   return material;
 }
 
-const WALL_PAD_MODULE_COUNT = 12;
+const WALL_PAD_WORDMARK = 'STRAFEBALL';
+const WALL_PAD_MODULE_COUNT = 16;
 const WALL_PAD_SIDE_INSET = 0.24;
 const WALL_PAD_SEAM_GAP = 0.016;
-const PAD_TOTAL_DEPTH = 0.096;
-const PAD_FRONT_BULGE = 0.006;
+const PAD_TOTAL_DEPTH = 0.052;
 const PAD_CENTER_INSET = WALL_PAD_DECAL_INSET - 0.038;
 const PAD_FACE_INSET = PAD_CENTER_INSET + PAD_TOTAL_DEPTH * 0.5;
 
@@ -1008,59 +1007,7 @@ function createWallPadModuleMesh(
   options: { width: number; height: number; material: Material }
 ): Mesh {
   const { width, height, material } = options;
-  const frontZ = -PAD_TOTAL_DEPTH * 0.5;
-  const backZ = frontZ + PAD_TOTAL_DEPTH;
-  const rings = [
-    { insetX: 0, insetY: 0, z: backZ },
-    { insetX: 0, insetY: 0, z: frontZ + 0.034 },
-    { insetX: 0.018, insetY: 0.018, z: frontZ + 0.018 },
-    { insetX: 0.034, insetY: 0.032, z: frontZ + PAD_FRONT_BULGE },
-    { insetX: 0.09, insetY: 0.085, z: frontZ }
-  ];
-
-  const positions: number[] = [];
-  const uvs: number[] = [];
-  for (const ring of rings) {
-    const halfWidth = Math.max(0.01, width * 0.5 - ring.insetX);
-    const halfHeight = Math.max(0.01, height * 0.5 - ring.insetY);
-    const points = [
-      [-halfWidth, -halfHeight],
-      [halfWidth, -halfHeight],
-      [halfWidth, halfHeight],
-      [-halfWidth, halfHeight]
-    ] as const;
-    for (const [x, y] of points) {
-      positions.push(x, y, ring.z);
-      uvs.push((x / width) + 0.5, 1 - ((y / height) + 0.5));
-    }
-  }
-
-  const indices: number[] = [];
-  indices.push(0, 2, 1, 0, 3, 2);
-  const lastRingStart = (rings.length - 1) * 4;
-  indices.push(lastRingStart, lastRingStart + 2, lastRingStart + 1, lastRingStart, lastRingStart + 3, lastRingStart + 2);
-  for (let ringIndex = 0; ringIndex < rings.length - 1; ringIndex += 1) {
-    const current = ringIndex * 4;
-    const next = current + 4;
-    for (let corner = 0; corner < 4; corner += 1) {
-      const a = current + corner;
-      const b = current + ((corner + 1) % 4);
-      const c = next + ((corner + 1) % 4);
-      const d = next + corner;
-      indices.push(a, b, c, a, c, d);
-    }
-  }
-
-  const normals: number[] = [];
-  VertexData.ComputeNormals(positions, indices, normals);
-
-  const mesh = new Mesh(name, scene);
-  const vertexData = new VertexData();
-  vertexData.positions = positions;
-  vertexData.indices = indices;
-  vertexData.normals = normals;
-  vertexData.uvs = uvs;
-  vertexData.applyToMesh(mesh);
+  const mesh = MeshBuilder.CreateBox(name, { width, height, depth: PAD_TOTAL_DEPTH }, scene);
   mesh.material = material;
   mesh.isPickable = false;
   return mesh;
@@ -1089,64 +1036,77 @@ function createRaisedWallPadPanels(scene: Scene): void {
   }
 }
 
-const WALL_PAD_WORDMARK = 'STRAFEBALL';
-
 function createWallPadWordmark(scene: Scene): void {
-  const material = createWallPadWordmarkMaterial(scene);
-  const wordmarkInset = PAD_FACE_INSET + 0.003;
+  const wordmarkInset = PAD_FACE_INSET + 0.018;
 
   for (const side of frontBackWallSides()) {
     const layout = wallPadLayout(wallSpan(side));
-    const wordmarkWidth = layout.panelWidth * 10 + layout.gap * 9;
-    createWallPlane(
-      scene,
-      `decor_wall_pad_wordmark_${side}`,
-      side,
-      wordmarkWidth,
-      WALL_PAD_HEIGHT * 0.52,
-      WALL_PAD_HEIGHT * 0.53,
-      0,
-      material,
-      wordmarkInset
-    );
+    const moduleStart = Math.floor((layout.count - WALL_PAD_WORDMARK.length) / 2);
+    for (let i = 0; i < WALL_PAD_WORDMARK.length; i += 1) {
+      const wordIndex = side === 'south' ? WALL_PAD_WORDMARK.length - 1 - i : i;
+      const letter = WALL_PAD_WORDMARK[wordIndex];
+      const moduleIndex = moduleStart + i;
+      const offset = layout.start + moduleIndex * (layout.panelWidth + layout.gap);
+      const material = createWallPadLetterMaterial(scene, letter);
+      createWallPlane(
+        scene,
+        `decor_wall_pad_letter_${side}_${moduleIndex}_${letter}`,
+        side,
+        layout.panelWidth * 0.78,
+        WALL_PAD_HEIGHT * 0.62,
+        WALL_PAD_HEIGHT * 0.53,
+        offset,
+        material,
+        wordmarkInset
+      );
+    }
   }
 }
 
-function createWallPadWordmarkMaterial(scene: Scene): StandardMaterial {
-  const existing = scene.getMaterialByName('decor_wall_pad_wordmark_mat');
+function createWallPadLetterMaterial(scene: Scene, letter: string): StandardMaterial {
+  const materialName = `decor_wall_pad_letter_${letter}_mat`;
+  const existing = scene.getMaterialByName(materialName);
   if (existing instanceof StandardMaterial) return existing;
 
-  const svg = `
-<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 4096 246">
-  <text x="2062" y="153" text-anchor="middle" dominant-baseline="middle"
-    font-family="Impact, 'Arial Black', sans-serif" font-size="176" font-weight="900"
-    textLength="3380" lengthAdjust="spacingAndGlyphs" fill="#07132d">STRAFEBALL</text>
-  <text x="2048" y="136" text-anchor="middle" dominant-baseline="middle"
-    font-family="Impact, 'Arial Black', sans-serif" font-size="176" font-weight="900"
-    textLength="3380" lengthAdjust="spacingAndGlyphs" fill="#f6f1e4"
-    stroke="#c79a3a" stroke-width="10" stroke-linejoin="round" paint-order="stroke fill">STRAFEBALL</text>
-</svg>`.trim();
-  const texture = new Texture(
-    `data:image/svg+xml;charset=utf-8,${encodeURIComponent(svg)}`,
-    scene,
-    false,
-    false,
-    Texture.TRILINEAR_SAMPLINGMODE
-  );
-  texture.name = 'decor_wall_pad_wordmark_svg_tex';
+  const texture = new DynamicTexture(`decor_wall_pad_letter_${letter}_tex`, { width: 512, height: 512 }, scene, false);
   texture.hasAlpha = true;
   texture.anisotropicFilteringLevel = 8;
+  texture.updateSamplingMode(Texture.TRILINEAR_SAMPLINGMODE);
 
-  const material = new StandardMaterial('decor_wall_pad_wordmark_mat', scene);
+  const ctx = texture.getContext() as CanvasRenderingContext2D;
+  ctx.clearRect(0, 0, 512, 512);
+  ctx.textAlign = 'center';
+  ctx.textBaseline = 'middle';
+  ctx.font = '900 360px "Arial Black", Impact, Arial, sans-serif';
+  ctx.lineJoin = 'round';
+  ctx.miterLimit = 2;
+
+  ctx.globalAlpha = 0.58;
+  ctx.fillStyle = '#06142f';
+  ctx.fillText(letter, 266, 294);
+
+  ctx.globalAlpha = 1;
+  ctx.lineWidth = 26;
+  ctx.strokeStyle = '#c79a3a';
+  ctx.strokeText(letter, 256, 266);
+  ctx.fillStyle = '#f7f2e5';
+  ctx.fillText(letter, 256, 266);
+
+  ctx.lineWidth = 8;
+  ctx.strokeStyle = '#082050';
+  ctx.strokeText(letter, 256, 266);
+  texture.update();
+
+  const material = new StandardMaterial(materialName, scene);
   material.diffuseTexture = texture;
   material.opacityTexture = texture;
   material.useAlphaFromDiffuseTexture = true;
   material.emissiveTexture = texture;
-  material.emissiveColor = new Color3(0.1, 0.095, 0.08);
+  material.emissiveColor = new Color3(0.18, 0.16, 0.1);
   material.diffuseColor = new Color3(1, 1, 1);
   material.specularColor = new Color3(0.025, 0.025, 0.022);
+  material.transparencyMode = Material.MATERIAL_ALPHABLEND;
   material.backFaceCulling = false;
-  material.zOffset = -2;
   return material;
 }
 
