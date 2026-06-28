@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { MultiplayerClient } from '../src/game/network/MultiplayerClient';
+import type { PlayerInput } from '../shared/types';
 
 interface SentMessage {
   type: string;
@@ -15,6 +16,42 @@ function clientWithFakeRoom(): { client: MultiplayerClient; sent: SentMessage[] 
   };
   (client as unknown as { localPlayerId: string }).localPlayerId = 'me';
   return { client, sent };
+}
+
+function fullInput(overrides: Partial<PlayerInput> = {}): PlayerInput {
+  return {
+    sequence: 0,
+    clientTimeMs: 0,
+    moveX: 0,
+    moveZ: 0,
+    dashDirection: { x: 0, y: 0, z: 0 },
+    lookYawRadians: 0,
+    lookPitchRadians: 0,
+    jumpPressed: false,
+    jumpHeld: false,
+    dashPressed: false,
+    crouchPressed: false,
+    crouchHeld: false,
+    slidePressed: false,
+    slideHeld: false,
+    backflipPressed: false,
+    pickupPressed: false,
+    dropPressed: false,
+    fakeThrowPressed: false,
+    fakeThrowHeld: false,
+    leftHandPressed: false,
+    leftHandHeld: false,
+    rightHandPressed: false,
+    rightHandHeld: false,
+    leftHandReleased: false,
+    rightHandReleased: false,
+    leftCatchAttemptId: 0,
+    rightCatchAttemptId: 0,
+    backflipThrowTier: 0,
+    resetSerial: 0,
+    interactHeld: false,
+    ...overrides
+  };
 }
 
 describe('MultiplayerClient room-control wiring', () => {
@@ -48,6 +85,40 @@ describe('MultiplayerClient room-control wiring', () => {
       { type: 'start-match', payload: { type: 'start-match', playerId: 'me' } },
       { type: 'end-vote', payload: { type: 'end-vote', playerId: 'me' } }
     ]);
+  });
+
+  it('sends compact input commands with timing on the wrapper', () => {
+    const { client, sent } = clientWithFakeRoom();
+    const previous = fullInput({
+      sequence: 1,
+      clientTimeMs: 1000,
+      moveX: 1,
+      lookYawRadians: 0.5,
+      leftHandHeld: true
+    });
+    const current = fullInput({
+      sequence: 2,
+      clientTimeMs: 1010,
+      moveX: 1,
+      lookYawRadians: 0.5,
+      leftHandHeld: false
+    });
+
+    client.sendInput(current, previous);
+
+    expect(sent).toHaveLength(1);
+    expect(sent[0].type).toBe('input');
+    expect(sent[0].payload).toEqual({
+      type: 'input',
+      playerId: 'me',
+      sequence: 2,
+      clientTimeMs: 1010,
+      input: {
+        lookYawRadians: 0.5,
+        lookPitchRadians: 0,
+        leftHandHeld: false
+      }
+    });
   });
 
   it('no-ops safely when offline (no room)', () => {

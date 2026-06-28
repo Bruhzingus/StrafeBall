@@ -11,8 +11,8 @@
  * To switch test configs, change DEFAULT_NET_MODE below and rebuild, or set NET_MODE on the
  * server. The browser build validates VITE_NET_MODE but does not hot-swap rates after compile.
  * The supported modes:
- *   A. 128 sim / 128 input / 96 snapshots (current smooth 1v1/2v2 target)
- *   B. 90 sim / 90 input / 60 snapshots   (stable lower-bandwidth fallback)
+ *   A. 90 sim / 90 input / 60 snapshots   (stable public-playtest default)
+ *   B. 128 sim / 128 input / 96 snapshots (high-rate LAN/strong-connection target)
  *   C. 60 sim / 60 input / 60 snapshots   (legacy full-rate fallback)
  *   D. 60 sim / 60 input / 30 snapshots   (bandwidth fallback)
  *   E. 30 sim / 30 input / 30 snapshots   (baseline for constrained hosts)
@@ -93,8 +93,8 @@ function resolveProcessMode(): NetMode {
   return DEFAULT_NET_MODE;
 }
 
-/** Compiled default mode. Smooth 1v1/2v2 baseline: 128 sim / 128 input / 96 snapshots. */
-export const DEFAULT_NET_MODE: NetMode = 'A_128_128_96';
+/** Compiled default mode. Stable public-playtest baseline: 90 sim/input, 60 snapshots. */
+export const DEFAULT_NET_MODE: NetMode = 'A_90_90_60';
 
 /**
  * Active mode resolved at module load from process.env (server) or the compiled default (client).
@@ -130,8 +130,8 @@ export const INTERPOLATION_DELAY_MS = active.interpolationDelayMs;
 
 /**
  * How frequently the room loop wakes to drain the fixed-step accumulator. Wake faster than the sim
- * rate so timer jitter can't starve a step. 200Hz wake (5ms) comfortably feeds a 128Hz sim
- * (~1.56 wakes per step of headroom).
+ * rate so timer jitter can't starve a step. 200Hz wake (5ms) comfortably feeds the high-rate modes
+ * with headroom.
  */
 export const ROOM_LOOP_WAKE_RATE = 200;
 export const ROOM_LOOP_WAKE_INTERVAL_MS = 1000 / ROOM_LOOP_WAKE_RATE;

@@ -274,7 +274,7 @@ export class MultiplayerClient {
     this.leave();
   }
 
-  sendInput(input: PlayerInput): void {
+  sendInput(input: PlayerInput, previous?: PlayerInput): void {
     if (!this.room) return;
     // Sample the uplink send buffer BEFORE we enqueue this input. The input stream is the dominant
     // outbound traffic (one packet per fixed step), so this is where uplink congestion first shows.
@@ -283,14 +283,14 @@ export class MultiplayerClient {
     // rewind window, and a transient uplink-queue spike (the thing that inflates raw ping to ~3000ms)
     // must not widen lag-comp. The server still clamps/EMA-smooths it, so this only makes the rewind
     // track true network RTT more faithfully during congestion — no balance change.
-    this.room.send('input', this.buildInputCommand(input));
+    this.room.send('input', this.buildInputCommand(input, previous));
   }
 
-  estimateInputCommandJsonBytes(input: PlayerInput): number {
-    return JSON.stringify(this.buildInputCommand(input)).length;
+  estimateInputCommandJsonBytes(input: PlayerInput, previous?: PlayerInput): number {
+    return JSON.stringify(this.buildInputCommand(input, previous)).length;
   }
 
-  private buildInputCommand(input: PlayerInput): InputCommand {
+  private buildInputCommand(input: PlayerInput, previous?: PlayerInput): InputCommand {
     const reportedRtt = this.rttEstimateMs;
     return {
       type: 'input',
@@ -298,7 +298,7 @@ export class MultiplayerClient {
       sequence: input.sequence,
       clientTimeMs: input.clientTimeMs,
       ...(reportedRtt !== null ? { rttMs: reportedRtt } : {}),
-      input: toWireInput(input)
+      input: toWireInput(input, previous)
     } satisfies InputCommand;
   }
 

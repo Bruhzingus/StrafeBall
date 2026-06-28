@@ -10,6 +10,23 @@ import { CollisionWorld } from '../map/Collider';
 
 export type FrictionMode = 'air' | 'normal' | 'slide' | 'dashSuppressed';
 
+/**
+ * Optional world override for the OFFLINE controller only (the local Movement Sandbox uses it). When
+ * set it replaces the default gym world: the position clamp uses these XZ bounds + ceiling, and
+ * wall-run/wall-bounce/wall-jump detection queries `wallNormalAt` instead of the four gym perimeter
+ * walls. When null (normal practice + every online path, which uses shared/simulation/MovementSim
+ * anyway) behaviour is byte-for-byte unchanged.
+ */
+export interface MovementWorld {
+  minX: number;
+  maxX: number;
+  minZ: number;
+  maxZ: number;
+  ceilingY: number;
+  /** Outward (into open space) unit XZ normal of the nearest wall-run surface in range, else null. */
+  wallNormalAt(x: number, z: number, y: number): Vector3 | null;
+}
+
 export interface MovementSnapshot {
   position: Vector3;
   velocity: Vector3;
@@ -55,6 +72,8 @@ export class MovementController {
   private lastWallNormal = Vector3.Zero();
   private catchRecoilOffset = 0;
   private slideHoldActive = false;
+  // Offline-only world override (Movement Sandbox). Null = default gym world (unchanged behaviour).
+  private world: MovementWorld | null = null;
 
   constructor(
     private readonly root: TransformNode,
@@ -63,6 +82,37 @@ export class MovementController {
     private readonly backflip: BackflipController,
     private readonly collision: CollisionWorld
   ) {}
+
+  /** Offline only: install (or clear with null) a world override for the Movement Sandbox. */
+  setWorld(world: MovementWorld | null): void {
+    this.world = world;
+    this.endWallRun();
+  }
+
+  resetKinematics(): void {
+    this.velocity.setAll(0);
+    this.grounded = true;
+    this.sliding = false;
+    this.crouching = false;
+    this.wallRunning = false;
+    this.dashingThisFrame = false;
+    this.slideTimer = 0;
+    this.slideBufferTimer = 0;
+    this.jumpGraceTimer = 0;
+    this.wallRunTimer = 0;
+    this.wallRunClimbing = false;
+    this.wallRunVerticalInput = 0;
+    this.wallReattachCooldown = 0;
+    this.doubleJumpAvailable = true;
+    this.catchBoostTimer = 0;
+    this.dashActiveTimer = 0;
+    this.groundHeight = 0;
+    this.lastWallNormal.setAll(0);
+    this.catchRecoilOffset = 0;
+    this.slideHoldActive = false;
+    this.camera.position.z = 0;
+    this.applyCameraHeight();
+  }
 
   update(dt: number, input: InputManager, catchStanceActive: boolean): MovementSnapshot {
     this.dashingThisFrame = false;
@@ -398,6 +448,7 @@ export class MovementController {
    */
   private detectWall(): Vector3 | null {
     const p = this.root.position;
+    if (this.world) return this.world.wallNormalAt(p.x, p.z, p.y);
     const margin = 0.9;
     if (TUNING.map.halfWidth - Math.abs(p.x) < margin) {
       return new Vector3(-Math.sign(p.x), 0, 0);
@@ -565,8 +616,13 @@ export class MovementController {
   }
 
   private clampToGymBounds(): void {
-    this.root.position.x = Math.max(-TUNING.map.halfWidth + TUNING.player.radius, Math.min(TUNING.map.halfWidth - TUNING.player.radius, this.root.position.x));
-    this.root.position.z = Math.max(-TUNING.map.halfLength + TUNING.player.radius, Math.min(TUNING.map.halfLength - TUNING.player.radius, this.root.position.z));
+    const r = TUNING.player.radius;
+    const minX = (this.world ? this.world.minX : -TUNING.map.halfWidth) + r;
+    const maxX = (this.world ? this.world.maxX : TUNING.map.halfWidth) - r;
+    const minZ = (this.world ? this.world.minZ : -TUNING.map.halfLength) + r;
+    const maxZ = (this.world ? this.world.maxZ : TUNING.map.halfLength) - r;
+    this.root.position.x = Math.max(minX, Math.min(maxX, this.root.position.x));
+    this.root.position.z = Math.max(minZ, Math.min(maxZ, this.root.position.z));
     const maxY = this.maxPlayerY();
     if (this.root.position.y > maxY) {
       this.root.position.y = maxY;
@@ -577,7 +633,8 @@ export class MovementController {
   }
 
   private maxPlayerY(): number {
-    return Math.max(0, TUNING.map.wallHeight - this.currentBodyHeight() - TUNING.player.ceilingClearance);
+    const ceiling = this.world ? this.world.ceilingY : TUNING.map.wallHeight;
+    return Math.max(0, ceiling - this.currentBodyHeight() - TUNING.player.ceilingClearance);
   }
 
   private applyCameraHeight(): void {
@@ -595,6 +652,9 @@ export class MovementController {
 
   private wallJumpAwayDirection(): Vector3 {
     const p = this.root.position;
+    if (this.world) {
+      return this.world.wallNormalAt(p.x, p.z, p.y) ?? yawForward(this.root.rotation.y).scale(-1);
+    }
     if (Math.abs(Math.abs(p.x) - TUNING.map.halfWidth) < 0.8) {
       return new Vector3(-Math.sign(p.x), 0, 0);
     }

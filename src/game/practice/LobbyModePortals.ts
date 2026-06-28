@@ -1,15 +1,27 @@
 import { Color3, DynamicTexture, Material, Mesh, MeshBuilder, Scene, StandardMaterial, Texture, Vector3 } from '@babylonjs/core';
 
 export type LobbyMode = '1v1' | '2v2';
+export type LobbyPortalAction =
+  | { type: 'matchmaking'; mode: LobbyMode }
+  | { type: 'movementCourse' };
+
+type LobbyPortalId = 'privateMatch' | 'movementCourse';
+
+interface PortalEnergyPalette {
+  edge: Color3;
+  status: Color3;
+  surfaceBack: Color3;
+  surfaceFront: Color3;
+}
 
 interface ModeZoneDef {
-  mode: LobbyMode;
+  id: LobbyPortalId;
+  action: LobbyPortalAction;
+  eyebrow: string;
   title: string;
   subtitle: string;
-  helper: string;
-  queueLabel: string;
   position: Vector3;
-  stationWidth: number;
+  palette: PortalEnergyPalette;
 }
 
 interface SurfaceLayer {
@@ -48,17 +60,40 @@ const PORTAL = {
   surfaceFront: new Color3(0.22, 0.5, 0.95)
 } as const;
 
-// A single unified private-match portal. Format (1v1 / 2v2) is a host setting chosen inside the
-// match menu when CREATING a room. `mode` here is just the default format the menu opens on.
+const PRIVATE_MATCH_ENERGY: PortalEnergyPalette = {
+  edge: PORTAL.edge,
+  status: PORTAL.status,
+  surfaceBack: PORTAL.surfaceBack,
+  surfaceFront: PORTAL.surfaceFront
+};
+
+const MOVEMENT_COURSE_ENERGY: PortalEnergyPalette = {
+  edge: new Color3(0.1, 0.7, 1.0),
+  status: new Color3(0.08, 0.52, 0.95),
+  surfaceBack: new Color3(0.04, 0.26, 0.82),
+  surfaceFront: new Color3(0.16, 0.62, 1.0)
+};
+
+// Practice-lobby portals stay client-only. Private Match opens the existing room menu; Movement Course
+// is a local training destination and never touches the online room/server path.
 const ZONES: ModeZoneDef[] = [
   {
-    mode: '1v1',
+    id: 'privateMatch',
+    action: { type: 'matchmaking', mode: '1v1' },
+    eyebrow: 'Match Lobby',
     title: 'PRIVATE MATCH',
     subtitle: 'Create or join with a code',
-    helper: 'Set up a 1v1 or 2v2 room',
-    queueLabel: 'PRIVATE MATCH',
     position: new Vector3(0, 0, -11.15),
-    stationWidth: 2.5
+    palette: PRIVATE_MATCH_ENERGY
+  },
+  {
+    id: 'movementCourse',
+    action: { type: 'movementCourse' },
+    eyebrow: 'Training',
+    title: 'MOVEMENT COURSE',
+    subtitle: 'Enter the local movement course',
+    position: new Vector3(3.35, 0, -11.15),
+    palette: MOVEMENT_COURSE_ENERGY
   }
 ];
 
@@ -67,11 +102,12 @@ export class LobbyModePortals {
   private readonly meshes: Mesh[] = [];
   private readonly disposables: Array<{ dispose(): void }> = [];
   private readonly prompt: HTMLDivElement;
+  private readonly promptEyebrow: HTMLDivElement;
   private readonly promptTitle: HTMLDivElement;
   private readonly promptSubtitle: HTMLDivElement;
   private readonly promptFill: HTMLDivElement;
-  private activeMode: LobbyMode | null = null;
-  private lastPromptMode: LobbyMode | null = null;
+  private activeZoneId: LobbyPortalId | null = null;
+  private lastPromptZoneId: LobbyPortalId | null = null;
   private lastPromptPercent = -1;
   private promptVisible = false;
   private holdSeconds = 0;
@@ -85,13 +121,14 @@ export class LobbyModePortals {
     this.prompt = document.createElement('div');
     this.prompt.className = 'lobby-mode-prompt';
     this.prompt.innerHTML = `
-      <div class="lobby-mode-prompt__eyebrow">Match Lobby</div>
+      <div class="lobby-mode-prompt__eyebrow"></div>
       <div class="lobby-mode-prompt__title"></div>
       <div class="lobby-mode-prompt__subtitle"></div>
       <div class="lobby-mode-prompt__hint"><span class="key">E</span> hold to enter</div>
       <div class="lobby-mode-prompt__bar"><div></div></div>
     `;
     document.getElementById('hud-root')?.appendChild(this.prompt);
+    this.promptEyebrow = this.mustPromptElement<HTMLDivElement>('.lobby-mode-prompt__eyebrow');
     this.promptTitle = this.mustPromptElement<HTMLDivElement>('.lobby-mode-prompt__title');
     this.promptSubtitle = this.mustPromptElement<HTMLDivElement>('.lobby-mode-prompt__subtitle');
     this.promptFill = this.mustPromptElement<HTMLDivElement>('.lobby-mode-prompt__bar > div');
@@ -103,7 +140,13 @@ export class LobbyModePortals {
    * shut: the portal shows only idle motion and a still-held interact key cannot re-open the menu the
    * instant it closes — re-arming requires a genuine release first (see the latch handling below).
    */
-  update(dt: number, playerPosition: Vector3, interactHeld: boolean, menuOpen: boolean, onActivate: (mode: LobbyMode) => void): void {
+  update(
+    dt: number,
+    playerPosition: Vector3,
+    interactHeld: boolean,
+    menuOpen: boolean,
+    onActivate: (action: LobbyPortalAction) => void
+  ): void {
     this.elapsed += dt;
 
     if (!this.enabled) {
@@ -118,13 +161,13 @@ export class LobbyModePortals {
       this.activatedThisHold = true;
       this.holdSeconds = 0;
       this.setPromptVisible(false);
-      this.updateStationVisuals(this.activeMode, 0);
+      this.updateStationVisuals(this.activeZoneId, 0);
       return;
     }
 
     const nearest = this.nearestZone(playerPosition);
     if (!nearest) {
-      this.activeMode = null;
+      this.activeZoneId = null;
       this.holdSeconds = 0;
       this.activatedThisHold = false;
       this.setPromptVisible(false);
@@ -132,8 +175,8 @@ export class LobbyModePortals {
       return;
     }
 
-    if (this.activeMode !== nearest.mode) {
-      this.activeMode = nearest.mode;
+    if (this.activeZoneId !== nearest.id) {
+      this.activeZoneId = nearest.id;
       this.holdSeconds = 0;
       this.activatedThisHold = false;
     }
@@ -145,12 +188,21 @@ export class LobbyModePortals {
       this.holdSeconds = Math.min(HOLD_SECONDS, this.holdSeconds + dt);
       if (this.holdSeconds >= HOLD_SECONDS) {
         this.activatedThisHold = true;
-        onActivate(nearest.mode);
+        onActivate(nearest.action);
       }
     }
 
+    // onActivate may have disabled the portals this same frame (entering the movement sandbox or
+    // going online). If so, don't fall through and re-show the prompt — update() won't run again
+    // until the portals are re-enabled, so the prompt would otherwise stay stuck on screen.
+    if (!this.enabled) {
+      this.setPromptVisible(false);
+      this.updateStationVisuals(null, 0);
+      return;
+    }
+
     const progress = this.holdSeconds / HOLD_SECONDS;
-    this.updateStationVisuals(nearest.mode, progress);
+    this.updateStationVisuals(nearest.id, progress);
     this.updatePrompt(nearest);
   }
 
@@ -185,27 +237,27 @@ export class LobbyModePortals {
     const openingTopY = baseY + straightHeight + archRadius;
 
     // --- Materials ---
-    const frameMat = this.solidLit('portal_frame_mat', PORTAL.frame, new Color3(0.16, 0.17, 0.19), 26);
-    const trimMat = this.solidLit('portal_trim_mat', PORTAL.trim, new Color3(0.4, 0.42, 0.46), 64);
+    const frameMat = this.solidLit(`portal_${def.id}_frame_mat`, PORTAL.frame, new Color3(0.16, 0.17, 0.19), 26);
+    const trimMat = this.solidLit(`portal_${def.id}_trim_mat`, PORTAL.trim, new Color3(0.4, 0.42, 0.46), 64);
     trimMat.emissiveColor = new Color3(0.05, 0.055, 0.07);
-    const plinthMat = this.solidLit('portal_plinth_mat', PORTAL.plinth, new Color3(0.12, 0.13, 0.15), 22);
+    const plinthMat = this.solidLit(`portal_${def.id}_plinth_mat`, PORTAL.plinth, new Color3(0.12, 0.13, 0.15), 22);
 
-    const edgeMat = this.emissiveMaterial('portal_edge_mat', PORTAL.edge.scale(0.6));
-    const statusMat = this.emissiveMaterial('portal_status_mat', PORTAL.status.scale(0.45));
+    const edgeMat = this.emissiveMaterial(`portal_${def.id}_edge_mat`, def.palette.edge.scale(0.6));
+    const statusMat = this.emissiveMaterial(`portal_${def.id}_status_mat`, def.palette.status.scale(0.45));
 
     // --- Plinth (small navy-charcoal block) + cap ---
-    const plinth = MeshBuilder.CreateBox(`portal_${def.mode}_plinth`, { width: 1.5, height: baseY, depth: 0.56 }, this.scene);
+    const plinth = MeshBuilder.CreateBox(`portal_${def.id}_plinth`, { width: 1.5, height: baseY, depth: 0.56 }, this.scene);
     plinth.position.set(cx, baseY / 2, cz);
     plinth.material = plinthMat;
     this.addMesh(plinth, true);
 
-    const cap = MeshBuilder.CreateBox(`portal_${def.mode}_plinth_cap`, { width: 1.58, height: 0.05, depth: 0.62 }, this.scene);
+    const cap = MeshBuilder.CreateBox(`portal_${def.id}_plinth_cap`, { width: 1.58, height: 0.05, depth: 0.62 }, this.scene);
     cap.position.set(cx, baseY + 0.01, cz);
     cap.material = trimMat;
     this.addMesh(cap, true);
 
     // One subtle status panel on the plinth front face.
-    const statusPanel = MeshBuilder.CreatePlane(`portal_${def.mode}_status`, { width: 0.66, height: 0.08 }, this.scene);
+    const statusPanel = MeshBuilder.CreatePlane(`portal_${def.id}_status`, { width: 0.66, height: 0.08 }, this.scene);
     statusPanel.position.set(cx, baseY * 0.5, cz + 0.29);
     statusPanel.material = statusMat;
     this.addMesh(statusPanel, true);
@@ -213,12 +265,12 @@ export class LobbyModePortals {
     // --- Portal surface: two scrolling indigo layers (rect body + arched top), behind the frame ---
     const surfaceLayers: SurfaceLayer[] = [];
     for (const [name, z, alpha, base, vSpeed, uSpeed, uAmp] of [
-      ['back', zSurfaceBack, 0.95, PORTAL.surfaceBack, 0.05, 0.21, 0.03],
-      ['front', zSurfaceFront, 0.5, PORTAL.surfaceFront, -0.085, 0.33, 0.05]
+      ['back', zSurfaceBack, 0.95, def.palette.surfaceBack, 0.05, 0.21, 0.03],
+      ['front', zSurfaceFront, 0.5, def.palette.surfaceFront, -0.085, 0.33, 0.05]
     ] as const) {
       const tex = new Texture(SURFACE_TEXTURE_URL, this.scene, false, false, Texture.TRILINEAR_SAMPLINGMODE);
       tex.hasAlpha = false;
-      const mat = new StandardMaterial(`portal_${def.mode}_surface_${name}_mat`, this.scene);
+      const mat = new StandardMaterial(`portal_${def.id}_surface_${name}_mat`, this.scene);
       mat.diffuseColor = new Color3(0, 0, 0);
       mat.emissiveTexture = tex;
       mat.emissiveColor = base.clone();
@@ -229,7 +281,7 @@ export class LobbyModePortals {
       mat.backFaceCulling = false;
       this.disposables.push(tex, mat);
 
-      const surface = this.buildArchedSurface(`portal_${def.mode}_surface_${name}`, cx, z, baseY, openingWidth, straightHeight);
+      const surface = this.buildArchedSurface(`portal_${def.id}_surface_${name}`, cx, z, baseY, openingWidth, straightHeight);
       surface.material = mat;
       this.addMesh(surface, true);
 
@@ -237,7 +289,7 @@ export class LobbyModePortals {
     }
 
     // --- Thin electric-blue edge energy hugging the opening (brightens on proximity) ---
-    const edgeTube = MeshBuilder.CreateTube(`portal_${def.mode}_edge`, {
+    const edgeTube = MeshBuilder.CreateTube(`portal_${def.id}_edge`, {
       path: archPath(cx, zEdge, baseY, openingWidth - 0.02, straightHeight),
       radius: 0.022,
       tessellation: 8,
@@ -247,7 +299,7 @@ export class LobbyModePortals {
     this.addMesh(edgeTube, true);
 
     // --- Inner trim (brushed cool gray) ---
-    const trimTube = MeshBuilder.CreateTube(`portal_${def.mode}_trim`, {
+    const trimTube = MeshBuilder.CreateTube(`portal_${def.id}_trim`, {
       path: archPath(cx, zTrim, baseY, openingWidth - 0.05, straightHeight - 0.02),
       radius: 0.03,
       tessellation: 8,
@@ -257,7 +309,7 @@ export class LobbyModePortals {
     this.addMesh(trimTube, true);
 
     // --- Main arched frame (navy-charcoal metal) ---
-    const frameTube = MeshBuilder.CreateTube(`portal_${def.mode}_frame`, {
+    const frameTube = MeshBuilder.CreateTube(`portal_${def.id}_frame`, {
       path: archPath(cx, zFrame, baseY, openingWidth, straightHeight),
       radius: 0.08,
       tessellation: 10,
@@ -267,8 +319,8 @@ export class LobbyModePortals {
     this.addMesh(frameTube, true);
 
     // --- "PRIVATE MATCH" sign above the arch (painted once, never per-frame) ---
-    const signTexture = this.createSignTexture(`portal_${def.mode}_sign_tex`, def.title);
-    const signMat = new StandardMaterial(`portal_${def.mode}_sign_mat`, this.scene);
+    const signTexture = this.createSignTexture(`portal_${def.id}_sign_tex`, def.title);
+    const signMat = new StandardMaterial(`portal_${def.id}_sign_mat`, this.scene);
     signMat.diffuseTexture = signTexture;
     signMat.emissiveTexture = signTexture;
     signMat.emissiveColor = new Color3(0.92, 0.95, 1.0);
@@ -279,7 +331,7 @@ export class LobbyModePortals {
     signMat.transparencyMode = Material.MATERIAL_ALPHABLEND;
     this.disposables.push(signTexture, signMat);
 
-    const sign = MeshBuilder.CreatePlane(`portal_${def.mode}_sign`, { width: 1.12, height: 0.27 }, this.scene);
+    const sign = MeshBuilder.CreatePlane(`portal_${def.id}_sign`, { width: 1.12, height: 0.27 }, this.scene);
     sign.position.set(cx, openingTopY + 0.2, zSign);
     sign.material = signMat;
     this.addMesh(sign, true);
@@ -288,9 +340,9 @@ export class LobbyModePortals {
       ...def,
       surfaceLayers,
       edgeMaterial: edgeMat,
-      edgeBaseEmissive: PORTAL.edge.clone(),
+      edgeBaseEmissive: def.palette.edge.clone(),
       statusMaterial: statusMat,
-      statusBaseEmissive: PORTAL.status.clone()
+      statusBaseEmissive: def.palette.status.clone()
     });
   }
 
@@ -377,11 +429,12 @@ export class LobbyModePortals {
   }
 
   private updatePrompt(zone: ModeZone): void {
-    if (this.lastPromptMode !== zone.mode) {
-      this.lastPromptMode = zone.mode;
+    if (this.lastPromptZoneId !== zone.id) {
+      this.lastPromptZoneId = zone.id;
+      this.promptEyebrow.textContent = zone.eyebrow;
       this.promptTitle.textContent = zone.title;
       this.promptSubtitle.textContent = zone.subtitle;
-      this.prompt.dataset.mode = zone.mode;
+      this.prompt.dataset.mode = zone.id;
     }
     const percent = Math.round((this.holdSeconds / HOLD_SECONDS) * 100);
     if (percent !== this.lastPromptPercent) {
@@ -396,10 +449,10 @@ export class LobbyModePortals {
    * a small extra edge lift (the clear progress feedback lives in the HTML prompt bar). The portal never
    * flashes or out-glows the ceiling fixtures / scoreboard.
    */
-  private updateStationVisuals(activeMode: LobbyMode | null, activeProgress: number): void {
+  private updateStationVisuals(activeZoneId: LobbyPortalId | null, activeProgress: number): void {
     const slow = 0.5 + 0.5 * Math.sin(this.elapsed * 1.3);
     for (const zone of this.zones) {
-      const active = zone.mode === activeMode;
+      const active = zone.id === activeZoneId;
       const proximity = active ? 1 : 0;
       const progress = active ? Math.max(0, Math.min(1, activeProgress)) : 0;
 

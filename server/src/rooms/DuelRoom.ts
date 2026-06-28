@@ -247,7 +247,7 @@ export class DuelRoom extends Room {
     this.playersPerTeam = matchSettings.teamSize;
     this.maxClients = matchSettings.maxPlayers;
     // Colyseus 0.17 applies this PER CLIENT on inbound messages and force-closes the sender when
-    // exceeded, so size it to a single client's expected 128Hz stream plus burst headroom.
+    // exceeded, so size it to the active client input stream plus burst headroom.
     this.maxMessagesPerSecond = computeMaxMessagesPerSecondPerClient(CLIENT_INPUT_RATE);
     this.game = new ServerGameLoop(this.roomId, {
       tickRate: SERVER_TICK_RATE,
@@ -274,8 +274,10 @@ export class DuelRoom extends Room {
       const wrapped = message && typeof message === 'object' && 'input' in message
         ? (message as Partial<InputCommand>)
         : undefined;
-      const input = wrapped ? wrapped.input : (message as Partial<PlayerInput> | undefined);
-      const seq = wrapped?.sequence ?? wrapped?.input?.sequence ?? (message as { sequence?: number } | undefined)?.sequence ?? 0;
+      const input = wrapped
+        ? inputPayloadFromCommand(wrapped)
+        : (message as Partial<PlayerInput> | undefined);
+      const seq = wrapped?.sequence ?? (wrapped?.input as Partial<PlayerInput> | undefined)?.sequence ?? (message as { sequence?: number } | undefined)?.sequence ?? 0;
       const rttMs = typeof wrapped?.rttMs === 'number' && Number.isFinite(wrapped.rttMs) ? wrapped.rttMs : undefined;
       if (!this.game.handleInput(client.sessionId, input, seq, rttMs)) {
         this.reject(client, 'input', 'unknown-player');
@@ -1471,6 +1473,20 @@ function trimJsonBytes<T>(value: T, maxBytes: number): T {
 
 function formatPatchRate(patchRateMs: number | null): string {
   return patchRateMs === null ? 'disabled(manual snapshots)' : `${(1000 / patchRateMs).toFixed(1)}Hz`;
+}
+
+function inputPayloadFromCommand(command: Partial<InputCommand>): Partial<PlayerInput> | undefined {
+  const raw = command.input as Partial<PlayerInput> | undefined;
+  if (!raw) return raw;
+
+  const input: Partial<PlayerInput> = { ...raw };
+  if (typeof command.clientTimeMs === 'number' && Number.isFinite(command.clientTimeMs)) {
+    input.clientTimeMs = command.clientTimeMs;
+  }
+  if (typeof command.sequence === 'number' && Number.isFinite(command.sequence)) {
+    input.sequence = command.sequence;
+  }
+  return input;
 }
 
 function readClientBufferedAmount(client: Client): number | null {

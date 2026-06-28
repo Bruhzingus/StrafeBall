@@ -1,0 +1,451 @@
+import {
+  Color3,
+  Color4,
+  DynamicTexture,
+  Material,
+  Mesh,
+  MeshBuilder,
+  Scene,
+  StandardMaterial,
+  Texture,
+  TransformNode,
+  Vector3,
+  Vector4
+} from '@babylonjs/core';
+import { GymArena } from '../map/GymArena';
+import { PlayerController } from '../player/PlayerController';
+import { MovementWorld } from '../player/MovementController';
+import { InputManager } from '../input/InputManager';
+import { CONTROL_KEYS } from '../config/controls';
+import { AABB } from '../map/Collider';
+import {
+  BOUNDARY_HEIGHT,
+  BOUNDARY_THICKNESS,
+  SANDBOX_CEILING_Y,
+  SANDBOX_CENTER,
+  SANDBOX_HALF_X,
+  SANDBOX_HALF_Z,
+  SANDBOX_WALLS,
+  WallRunFace,
+  WallStyle,
+  buildStandaloneWallBoxes,
+  buildWallRunFaces,
+  sandboxLeaveWorld,
+  sandboxSpawnWorld,
+  sandboxWorldBounds
+} from './MovementSandboxLayout';
+
+export type SandboxAction = 'leave';
+
+const COLLISION_ID_PREFIX = 'sandbox_';
+const WALL_RUN_MARGIN = 1.0;
+/** World size (metres) of one grid cell on the ground + walls — large + spaced out, consistent on every face. */
+const GRID_CELL_METRES = 10;
+
+/**
+ * Local outdoor Movement Sandbox: a large, mostly-flat free-movement yard placed far from the gym.
+ * Free practice only — no timer, checkpoints, objectives, bots, leaderboard, or course HUD. It owns
+ * its own cheap geometry (ground + outer boundary + a few big standalone walls), implements the
+ * offline MovementController's world override (expanded bounds + wall-run on the standalone walls),
+ * and a single hold-E leave portal.
+ *
+ * Strictly offline/practice-only: ArenaScene updates it only from the offline step path, never from
+ * stepOnline, and tears it down before connected play. It implements MovementWorld so the offline
+ * controller can clamp to the yard and wall-run the standalone walls.
+ */
+export class MovementSandbox implements MovementWorld {
+  public active = false;
+
+  // MovementWorld bounds (world space).
+  public readonly minX: number;
+  public readonly maxX: number;
+  public readonly minZ: number;
+  public readonly maxZ: number;
+  public readonly ceilingY = SANDBOX_CEILING_Y;
+
+  private readonly root: TransformNode;
+  private readonly materials: StandardMaterial[] = [];
+  private readonly disposables: Array<{ dispose(): void }> = [];
+  private readonly collisionBoxes: AABB[] = [];
+  private faces: WallRunFace[] = [];
+  private built = false;
+
+  // Saved scene sky/fog state, restored on exit.
+  private savedClearColor: Color4 | null = null;
+  private savedFog: { mode: number; color: Color3; start: number; end: number; density: number } | null = null;
+
+  private leaveHold = 0;
+  private leaveLatched = false;
+
+  constructor(private readonly scene: Scene, private readonly gym: GymArena) {
+    const b = sandboxWorldBounds();
+    this.minX = b.minX;
+    this.maxX = b.maxX;
+    this.minZ = b.minZ;
+    this.maxZ = b.maxZ;
+    this.root = new TransformNode('movement_sandbox_root', scene);
+    this.root.setEnabled(false);
+  }
+
+  // ---------------------------------------------------------------------------------------------
+  // MovementWorld
+  // ---------------------------------------------------------------------------------------------
+
+  /** Nearest wall-run face within range (below its top, within its span, on its open side), else null. */
+  wallNormalAt(x: number, z: number, y: number): Vector3 | null {
+    let best: WallRunFace | null = null;
+    let bestDist = WALL_RUN_MARGIN;
+    for (const f of this.faces) {
+      if (y > f.topY) continue;
+      const d = (x - f.ox) * f.nx + (z - f.oz) * f.nz; // distance along the outward normal
+      if (d < 0 || d > bestDist) continue;
+      const t = (x - f.ox) * f.tx + (z - f.oz) * f.tz; // position along the face tangent
+      if (t < -f.halfLen || t > f.halfLen) continue;
+      best = f;
+      bestDist = d;
+    }
+    return best ? new Vector3(best.nx, 0, best.nz) : null;
+  }
+
+  // ---------------------------------------------------------------------------------------------
+  // Lifecycle
+  // ---------------------------------------------------------------------------------------------
+
+  enter(player: PlayerController): void {
+    if (this.active) return;
+    if (!this.built) this.build();
+    this.active = true;
+
+    this.root.setEnabled(true);
+    for (const box of this.collisionBoxes) this.gym.collision.add(box);
+    this.applyOutdoorSky();
+
+    player.hands.clearHands();
+    player.movement.setWorld(this);
+    const spawn = sandboxSpawnWorld();
+    player.setRespawn(new Vector3(spawn.x, 0, spawn.z), spawn.yaw);
+    player.teleportTo(new Vector3(spawn.x, 0, spawn.z), spawn.yaw, 0);
+
+    this.leaveHold = 0;
+    this.leaveLatched = false;
+  }
+
+  exit(player?: PlayerController): void {
+    if (!this.active) return;
+    this.active = false;
+    this.root.setEnabled(false);
+    this.removeCollisionFromGym();
+    this.restoreSky();
+    if (player) {
+      player.movement.setWorld(null);
+      player.setRespawn();
+    }
+  }
+
+  dispose(): void {
+    for (const d of this.disposables) d.dispose();
+    for (const m of this.materials) m.dispose();
+    this.root.dispose();
+  }
+
+  /**
+   * Yield to the Creator Sandbox editor: hide the static walls + remove the sandbox's collision so
+   * the editor's own geometry/collision can take over. Stays `active` (the outdoor sky is kept) and
+   * is fully reversible via resume(). Offline-only; never touched while online.
+   */
+  suspend(): void {
+    if (!this.active) return;
+    this.root.setEnabled(false);
+    this.removeCollisionFromGym();
+  }
+
+  /** Resume the sandbox after the editor exits: re-show walls, re-add collision, respawn the player. */
+  resume(player: PlayerController): void {
+    if (!this.active) return;
+    this.root.setEnabled(true);
+    for (const box of this.collisionBoxes) this.gym.collision.add(box);
+    player.hands.clearHands();
+    player.movement.setWorld(this);
+    const spawn = sandboxSpawnWorld();
+    player.setRespawn(new Vector3(spawn.x, 0, spawn.z), spawn.yaw);
+    player.teleportTo(new Vector3(spawn.x, 0, spawn.z), spawn.yaw, 0);
+  }
+
+  get lobbyReturn(): { position: Vector3; yaw: number } {
+    return { position: new Vector3(2, 0, -8.2), yaw: Math.PI };
+  }
+
+  // ---------------------------------------------------------------------------------------------
+  // Per-frame update (offline step only) — only the hold-E leave portal; pure free practice.
+  // ---------------------------------------------------------------------------------------------
+
+  update(dt: number, player: PlayerController, input: InputManager, onAction: (action: SandboxAction) => void): void {
+    if (!this.active) return;
+    const leave = sandboxLeaveWorld();
+    const p = player.root.position;
+    const dx = p.x - leave.x;
+    const dz = p.z - leave.z;
+    const near = dx * dx + dz * dz <= leave.radius * leave.radius;
+    const held = input.isKeyDown(CONTROL_KEYS.interact);
+
+    if (!near || !held) {
+      this.leaveHold = 0;
+      this.leaveLatched = false;
+      return;
+    }
+    if (this.leaveLatched) return;
+    this.leaveHold = Math.min(leave.holdSeconds, this.leaveHold + dt);
+    if (this.leaveHold >= leave.holdSeconds) {
+      this.leaveLatched = true;
+      onAction('leave');
+    }
+  }
+
+  // ---------------------------------------------------------------------------------------------
+  // Sky / fog (outdoor look; restored on exit)
+  // ---------------------------------------------------------------------------------------------
+
+  private applyOutdoorSky(): void {
+    this.savedClearColor = this.scene.clearColor.clone();
+    this.savedFog = {
+      mode: this.scene.fogMode,
+      color: this.scene.fogColor.clone(),
+      start: this.scene.fogStart,
+      end: this.scene.fogEnd,
+      density: this.scene.fogDensity
+    };
+    const sky = new Color3(0.52, 0.63, 0.79);
+    this.scene.clearColor = new Color4(sky.r, sky.g, sky.b, 1);
+    // Light linear distance fog gives the open yard depth and (with the 22 m perimeter walls) keeps
+    // the faraway gym out of sight, while leaving the ~330 m playable area clearly readable.
+    this.scene.fogMode = Scene.FOGMODE_LINEAR;
+    this.scene.fogColor = sky;
+    this.scene.fogStart = 240;
+    this.scene.fogEnd = 700;
+  }
+
+  private restoreSky(): void {
+    if (this.savedClearColor) this.scene.clearColor = this.savedClearColor;
+    if (this.savedFog) {
+      this.scene.fogMode = this.savedFog.mode;
+      this.scene.fogColor = this.savedFog.color;
+      this.scene.fogStart = this.savedFog.start;
+      this.scene.fogEnd = this.savedFog.end;
+      this.scene.fogDensity = this.savedFog.density;
+    }
+    this.savedClearColor = null;
+    this.savedFog = null;
+  }
+
+  private removeCollisionFromGym(): void {
+    const boxes = this.gym.collision.boxes;
+    for (let i = boxes.length - 1; i >= 0; i -= 1) {
+      if (boxes[i].id?.startsWith(COLLISION_ID_PREFIX)) boxes.splice(i, 1);
+    }
+  }
+
+  // ---------------------------------------------------------------------------------------------
+  // Geometry (built once, lazily, on first entry)
+  // ---------------------------------------------------------------------------------------------
+
+  private build(): void {
+    if (this.built) return;
+    this.createMaterials();
+    this.buildGround();
+    this.buildBoundary();
+    this.buildWalls();
+    this.buildSpawn();
+
+    this.collisionBoxes.push(...buildStandaloneWallBoxes(COLLISION_ID_PREFIX));
+    this.faces = buildWallRunFaces();
+
+    for (const child of this.root.getChildMeshes(false)) {
+      if (child instanceof Mesh) {
+        child.isPickable = false;
+        child.freezeWorldMatrix();
+      }
+    }
+    this.built = true;
+  }
+
+  private deckMat!: StandardMaterial;
+  private padMat!: StandardMaterial;
+  private concreteMat!: StandardMaterial;
+  private accentMat!: StandardMaterial;
+  private boundaryMat!: StandardMaterial;
+
+  private createMaterials(): void {
+    this.deckMat = this.gridMaterial('sandbox_ground', new Color3(0.40, 0.43, 0.47));
+    this.padMat = this.gridMaterial('sandbox_pad', new Color3(0.14, 0.27, 0.52));
+    this.concreteMat = this.gridMaterial('sandbox_concrete', new Color3(0.52, 0.54, 0.57));
+    this.accentMat = this.gridMaterial('sandbox_accent', new Color3(0.10, 0.40, 0.52));
+    this.boundaryMat = this.gridMaterial('sandbox_boundary', new Color3(0.30, 0.33, 0.38));
+  }
+
+  private materialFor(style: WallStyle): StandardMaterial {
+    return style === 'pad' ? this.padMat : style === 'accent' ? this.accentMat : this.concreteMat;
+  }
+
+  private buildGround(): void {
+    this.gridBox(
+      'sandbox_ground',
+      SANDBOX_CENTER.x, -0.5, SANDBOX_CENTER.z,
+      SANDBOX_HALF_X * 2 + BOUNDARY_THICKNESS * 2, 1, SANDBOX_HALF_Z * 2 + BOUNDARY_THICKNESS * 2,
+      this.deckMat
+    );
+  }
+
+  private buildBoundary(): void {
+    const b = sandboxWorldBounds();
+    const h = BOUNDARY_HEIGHT;
+    const t = BOUNDARY_THICKNESS;
+    const fullX = SANDBOX_HALF_X * 2 + t * 2;
+    const fullZ = SANDBOX_HALF_Z * 2;
+    // Visual-only perimeter (the controller's bounds clamp is the real barrier). Inner faces are
+    // wall-run surfaces (see buildWallRunFaces).
+    const walls: Array<[string, number, number, number, number]> = [
+      ['bnd_w', b.minX - t / 2, SANDBOX_CENTER.z, t, fullZ],
+      ['bnd_e', b.maxX + t / 2, SANDBOX_CENTER.z, t, fullZ],
+      ['bnd_s', SANDBOX_CENTER.x, b.minZ - t / 2, fullX, t],
+      ['bnd_n', SANDBOX_CENTER.x, b.maxZ + t / 2, fullX, t]
+    ];
+    for (const [name, cx, cz, w, d] of walls) {
+      this.gridBox(name, cx, h / 2, cz, w, h, d, this.boundaryMat);
+    }
+  }
+
+  private buildWalls(): void {
+    for (const wall of SANDBOX_WALLS) {
+      const mesh = this.gridBox(
+        `sandbox_wall_${wall.id}`,
+        SANDBOX_CENTER.x + wall.center.x, wall.size.height / 2, SANDBOX_CENTER.z + wall.center.z,
+        wall.size.width, wall.size.height, wall.size.depth,
+        this.materialFor(wall.style)
+      );
+      mesh.rotation.y = wall.rotationY;
+    }
+  }
+
+  private buildSpawn(): void {
+    const spawn = sandboxSpawnWorld();
+    const leave = sandboxLeaveWorld();
+
+    // Spawn pad + title sign.
+    this.gridBox('sandbox_spawn_pad', spawn.x, 0.04, spawn.z, 6, 0.08, 6, this.accentMat);
+    this.sign('sandbox_title', 'MOVEMENT SANDBOX', new Vector3(spawn.x + 1.5, 2.4, spawn.z), 4.0, 0.9);
+    this.sign('sandbox_sub', 'FREE MOVEMENT PRACTICE', new Vector3(spawn.x + 1.5, 1.5, spawn.z), 3.6, 0.6);
+
+    // Leave portal frame (hold E).
+    for (const dx of [-0.7, 0.7]) {
+      this.gridBox(`sandbox_leave_post_${dx}`, leave.x + dx, 1.2, leave.z, 0.18, 2.4, 0.18, this.padMat);
+    }
+    this.gridBox('sandbox_leave_beam', leave.x, 2.3, leave.z, 1.7, 0.2, 0.18, this.accentMat);
+    this.sign('sandbox_leave_sign', 'LEAVE\nHOLD E', new Vector3(leave.x, 2.95, leave.z), 1.8, 0.85);
+  }
+
+  // --- helpers ---------------------------------------------------------------------------------
+
+  /** A material whose surface colour is a tileable grid texture (cells = base, lines = lighter base). */
+  private gridMaterial(name: string, base: Color3): StandardMaterial {
+    const m = new StandardMaterial(name, this.scene);
+    m.diffuseTexture = this.gridTexture(`${name}_grid`, base);
+    m.diffuseColor = new Color3(1, 1, 1); // colour comes from the texture
+    m.emissiveColor = base.scale(0.06);   // small lift so shadowed faces aren't pure black
+    m.specularColor = new Color3(0.04, 0.04, 0.045);
+    this.materials.push(m);
+    return m;
+  }
+
+  /**
+   * Procedural tileable grid: cell interior filled with `base`, with one line along the top + left
+   * edges in a lighter shade. Tiling (via per-box world-scale UVs in gridBox) makes those edge lines
+   * meet across cells into continuous large grid lines.
+   */
+  private gridTexture(name: string, base: Color3): DynamicTexture {
+    const size = 256;
+    const lineW = 6;
+    const tex = new DynamicTexture(name, { width: size, height: size }, this.scene, true);
+    const ctx = tex.getContext() as CanvasRenderingContext2D;
+    const lighten = (c: number) => Math.min(1, c + 0.26);
+    const line = new Color3(lighten(base.r), lighten(base.g), lighten(base.b));
+    ctx.fillStyle = toCss(base);
+    ctx.fillRect(0, 0, size, size);
+    ctx.fillStyle = toCss(line);
+    ctx.fillRect(0, 0, size, lineW); // top edge
+    ctx.fillRect(0, 0, lineW, size); // left edge
+    tex.update(true);
+    tex.wrapU = Texture.WRAP_ADDRESSMODE;
+    tex.wrapV = Texture.WRAP_ADDRESSMODE;
+    this.disposables.push(tex);
+    return tex;
+  }
+
+  /** Box whose grid texture tiles at a consistent ~GRID_CELL_METRES world size on every face. */
+  private gridBox(name: string, cx: number, cy: number, cz: number, w: number, h: number, d: number, material: StandardMaterial): Mesh {
+    const c = GRID_CELL_METRES;
+    const uv = (a: number, b: number) => new Vector4(0, 0, Math.max(1, a / c), Math.max(1, b / c));
+    // Box face order: front, back, right, left, top, bottom. front/back = w×h, right/left = d×h, top/bottom = w×d.
+    const faceUV = [uv(w, h), uv(w, h), uv(d, h), uv(d, h), uv(w, d), uv(w, d)];
+    const mesh = MeshBuilder.CreateBox(name, { width: w, height: h, depth: d, wrap: true, faceUV }, this.scene);
+    mesh.position.set(cx, cy, cz);
+    mesh.material = material;
+    mesh.parent = this.root;
+    return mesh;
+  }
+
+  private sign(name: string, text: string, position: Vector3, width: number, height: number): Mesh {
+    const tex = new DynamicTexture(`${name}_tex`, { width: 512, height: 256 }, this.scene, true);
+    tex.hasAlpha = true;
+    const ctx = tex.getContext() as CanvasRenderingContext2D;
+    ctx.clearRect(0, 0, 512, 256);
+    ctx.fillStyle = 'rgba(12, 20, 42, 0.86)';
+    roundRect(ctx, 12, 12, 488, 232, 22);
+    ctx.fill();
+    ctx.strokeStyle = 'rgba(120, 200, 255, 0.6)';
+    ctx.lineWidth = 4;
+    roundRect(ctx, 12, 12, 488, 232, 22);
+    ctx.stroke();
+    ctx.fillStyle = '#eef4ff';
+    ctx.textAlign = 'center';
+    ctx.textBaseline = 'middle';
+    const lines = text.split('\n');
+    const fontSize = lines.length > 1 ? 54 : 64;
+    ctx.font = `900 ${fontSize}px Arial`;
+    const lineH = fontSize + 12;
+    const startY = 128 - ((lines.length - 1) * lineH) / 2;
+    lines.forEach((line, i) => ctx.fillText(line, 256, startY + i * lineH));
+    tex.update(true);
+
+    const mat = new StandardMaterial(`${name}_mat`, this.scene);
+    mat.diffuseTexture = tex;
+    mat.emissiveTexture = tex;
+    mat.opacityTexture = tex;
+    mat.emissiveColor = new Color3(0.9, 0.94, 1.0);
+    mat.disableLighting = true;
+    mat.specularColor = new Color3(0, 0, 0);
+    mat.backFaceCulling = false;
+    mat.transparencyMode = Material.MATERIAL_ALPHABLEND;
+
+    const mesh = MeshBuilder.CreatePlane(name, { width, height }, this.scene);
+    mesh.position.copyFrom(position);
+    mesh.material = mat;
+    mesh.parent = this.root;
+    this.disposables.push(tex, mat);
+    return mesh;
+  }
+}
+
+function toCss(c: Color3): string {
+  const ch = (v: number) => Math.max(0, Math.min(255, Math.round(v * 255)));
+  return `rgb(${ch(c.r)}, ${ch(c.g)}, ${ch(c.b)})`;
+}
+
+function roundRect(ctx: CanvasRenderingContext2D, x: number, y: number, w: number, h: number, r: number): void {
+  ctx.beginPath();
+  ctx.moveTo(x + r, y);
+  ctx.arcTo(x + w, y, x + w, y + h, r);
+  ctx.arcTo(x + w, y + h, x, y + h, r);
+  ctx.arcTo(x, y + h, x, y, r);
+  ctx.arcTo(x, y, x + w, y, r);
+  ctx.closePath();
+}

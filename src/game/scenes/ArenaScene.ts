@@ -48,8 +48,10 @@ import { Effects } from '../effects/Effects';
 import { PracticeBot } from '../bot/PracticeBot';
 import { PracticeControlWall } from '../practice/PracticeControlWall';
 import { LobbyModePortals } from '../practice/LobbyModePortals';
-import type { LobbyMode } from '../practice/LobbyModePortals';
+import type { LobbyMode, LobbyPortalAction } from '../practice/LobbyModePortals';
 import { GuideWall } from '../practice/GuideWall';
+import { MovementSandbox, type SandboxAction } from '../practice/MovementSandbox';
+import { CreatorEditor, CREATOR_ENTRY_RADIUS, CREATOR_ENTRY_HOLD_SECONDS } from '../practice/creator/CreatorEditor';
 import { createPracticeState } from '../practice/PracticeState';
 import type { PracticeState } from '../practice/PracticeState';
 import { MultiplayerClient } from '../network/MultiplayerClient';
@@ -108,6 +110,13 @@ export class ArenaScene {
   private readonly practiceWall: PracticeControlWall;
   private readonly lobbyModePortals: LobbyModePortals;
   private readonly guideWall: GuideWall;
+  // Local outdoor Movement Sandbox — lazily created on first entry, only ever updated from the
+  // offline step path (never stepOnline), and torn down when connected online gameplay begins.
+  private movementSandbox: MovementSandbox | null = null;
+  // Developer-only Creator Sandbox editor — created lazily on first sandbox entry, only ever updated
+  // from the offline step path, and force-deactivated before connected online play.
+  private creator: CreatorEditor | null = null;
+  private creatorEntryHold = 0;
   private readonly practiceState: PracticeState = createPracticeState();
   private readonly settingsPanel: SettingsPanel;
   private readonly gym: GymArena;
@@ -418,6 +427,8 @@ export class ArenaScene {
     this.practiceWall.dispose();
     this.lobbyModePortals.dispose();
     this.guideWall.dispose();
+    this.movementSandbox?.dispose();
+    this.creator?.dispose();
     this.effects.dispose();
     // Tear down whichever shadow system this session built; the other is a no-op. Clear the caster
     // registrar so any late registration becomes a safe no-op.
@@ -812,6 +823,13 @@ export class ArenaScene {
   private step(dt: number): void {
     this.elapsed += dt;
 
+    // The Creator Sandbox editor, when unlocked + active, takes over the offline step entirely
+    // (Build Mode flies an editor camera with the player frozen; Playtest Mode runs real movement).
+    if (this.creator?.isActive()) {
+      this.stepCreator(dt);
+      return;
+    }
+
     // Snapshot previous states before the update so we can detect edges.
     const wasSliding = this.prevSliding;
     const wasBackflipActive = this.prevBackflipActive;
@@ -836,6 +854,13 @@ export class ArenaScene {
 
     this.updateBackflipQteOffline(dt, snap.grounded);
 
+    // The Movement Sandbox runs a lean offline step (movement foley + the leave portal only) and
+    // skips the normal practice/match systems below (bots, mats, dummy scoring, boundary, gym update).
+    if (this.movementSandbox?.active) {
+      this.stepMovementSandbox(dt);
+      return;
+    }
+
     // Practice bots — only active when enabled via control wall
     const playerPos = this.player.camera.globalPosition;
     if (this.quickBot.update(dt, playerPos)) this.effects.botThrow();
@@ -846,7 +871,7 @@ export class ArenaScene {
       this.player.root.position,
       this.input.isKeyDown(CONTROL_KEYS.interact),
       this.multiplayerOverlay.isMenuOpen(),
-      (mode) => this.openLobbyMode(mode)
+      (action) => this.activateLobbyPortal(action)
     );
 
     this.ballManager.setPickupHighlight(
@@ -1109,7 +1134,7 @@ export class ArenaScene {
         );
       }
       this.recordOnlineInputPerf(input, prev);
-      this.multiplayer.sendInput(input);
+      this.multiplayer.sendInput(input, prev);
       this.onlineRateLogInputCount += 1;
       this.perfReportInputCount += 1;
       this.lastSentInput = input;
@@ -1320,7 +1345,7 @@ export class ArenaScene {
       (this.perfReportInputCount + 1) % sampleStride === 0 &&
       isPerfDebugEnabled()
     ) {
-      const bytes = this.multiplayer.estimateInputCommandJsonBytes(input);
+      const bytes = this.multiplayer.estimateInputCommandJsonBytes(input, previous);
       this.perfReportInputJsonBytesTotal += bytes;
       this.perfReportInputJsonBytesMax = Math.max(this.perfReportInputJsonBytesMax, bytes);
       this.perfReportInputJsonByteSamples += 1;
@@ -1740,6 +1765,14 @@ export class ArenaScene {
     if (this.onlineModeActive) return;
     this.onlineModeActive = true;
     this.onlineModeStartedAtMs = Date.now();
+    // Force-deactivate the Creator Sandbox editor (no sandbox restore — the online path tears the
+    // sandbox down next) and hide its entry sign, so the editor is fully inert during online play.
+    this.creator?.forceDeactivate();
+    this.creator?.setEntrySignVisible(false);
+    // Tear down the local Movement Sandbox before connected play: clears the player's world override
+    // + respawn, disables its meshes, removes its collision boxes, and restores the sky/fog. The
+    // standard online setup below (props off, balls cleared, mats reset) is idempotent with this.
+    this.movementSandbox?.exit(this.player);
     this.resetBackflipQte();
     this.networkYaw = this.player.root.rotation.y;
     this.networkPitch = this.player.camera.rotation.x;
@@ -1981,8 +2014,114 @@ export class ArenaScene {
     this.sound.pingAt(speed, position, this.player.camera.globalPosition, forward, AUDIO_UP, gain);
   }
 
+  private activateLobbyPortal(action: LobbyPortalAction): void {
+    if (action.type === 'matchmaking') {
+      this.openLobbyMode(action.mode);
+      return;
+    }
+    this.enterMovementCourse();
+  }
+
   private openLobbyMode(mode: LobbyMode): void {
     this.multiplayerOverlay.openMode(mode);
+  }
+
+  private enterMovementCourse(): void {
+    if (this.onlineModeActive || this.multiplayer.connected) return;
+    if (!this.movementSandbox) {
+      this.movementSandbox = new MovementSandbox(this.scene, this.gym);
+    }
+    this.resetBackflipQte();
+    this.player.hands.clearHands();
+    // No stray practice balls in the sandbox (it has none); clears them from the gym.
+    this.ballManager.clear();
+    // Hide practice/match furniture (wall, portals, guide, bots, dummies) while in the sandbox.
+    this.setPracticePropsEnabled(false);
+    this.movementSandbox.enter(this.player);
+    this.ensureCreator();
+    this.creator?.setEntrySignVisible(true);
+    this.creatorEntryHold = 0;
+    this.hud.showScoreEvent('MOVEMENT SANDBOX', 'Free movement practice — hold E at the portal to leave', 'neutral');
+  }
+
+  private leaveMovementCourse(): void {
+    const sandbox = this.movementSandbox;
+    if (!sandbox || !sandbox.active) return;
+    const ret = sandbox.lobbyReturn;
+    this.creator?.setEntrySignVisible(false);
+    this.creatorEntryHold = 0;
+    sandbox.exit(this.player);
+    this.setPracticePropsEnabled(true);
+    this.ballManager.spawnCenterLineBalls();
+    this.player.hands.clearHands();
+    this.player.teleportTo(ret.position, ret.yaw, 0);
+    this.hud.showScoreEvent('PRACTICE LOBBY', 'Left the movement sandbox', 'neutral');
+  }
+
+  /** Lazily build the developer Creator Sandbox editor (offline-only; gated by password + online check). */
+  private ensureCreator(): void {
+    if (this.creator) return;
+    this.creator = new CreatorEditor(this.scene, this.gym, this.player, this.input, {
+      isOnline: () => this.onlineModeActive || this.multiplayer.connected,
+      suspendSandbox: () => this.movementSandbox?.suspend(),
+      resumeSandbox: () => this.movementSandbox?.resume(this.player)
+    });
+  }
+
+  /** Offline step while the Creator Sandbox is active (replaces the normal sandbox/practice step). */
+  private stepCreator(dt: number): void {
+    const creator = this.creator;
+    if (!creator) return;
+    if (creator.getModePublic() === 'playtest') {
+      // Real local first-person movement against the editor's collision/world.
+      this.player.update(dt, false);
+      const snap = this.player.lastMovementSnapshot;
+      this.updateLocalMovementFoley(dt, vector3ToVec3(snap.velocity), snap.grounded, snap.sliding, snap.dashingThisFrame, snap.wallRunning);
+      this.effects.update(dt);
+      if (this.input.wasKeyPressed('F1')) creator.setMode('build');
+    }
+    creator.step(dt);
+  }
+
+  /** Drive the Creator Sandbox entry sign prompt + hold-E unlock while in the (non-creator) sandbox. */
+  private updateCreatorEntry(dt: number): void {
+    const creator = this.creator;
+    if (!creator || creator.isActive()) {
+      this.creatorEntryHold = 0;
+      return;
+    }
+    const pt = creator.entryWorldPoint();
+    const p = this.player.root.position;
+    const dx = p.x - pt.x;
+    const dz = p.z - pt.z;
+    const near = dx * dx + dz * dz <= CREATOR_ENTRY_RADIUS * CREATOR_ENTRY_RADIUS;
+    const held = this.input.isKeyDown(CONTROL_KEYS.interact);
+    if (near && held) this.creatorEntryHold = Math.min(CREATOR_ENTRY_HOLD_SECONDS, this.creatorEntryHold + dt);
+    else this.creatorEntryHold = 0;
+    creator.showEntryPrompt(near, this.creatorEntryHold / CREATOR_ENTRY_HOLD_SECONDS);
+    if (this.creatorEntryHold >= CREATOR_ENTRY_HOLD_SECONDS) {
+      this.creatorEntryHold = 0;
+      creator.promptUnlock();
+    }
+  }
+
+  private handleSandboxAction(action: SandboxAction): void {
+    if (action === 'leave') this.leaveMovementCourse();
+  }
+
+  /**
+   * Offline-only lean step for the active Movement Sandbox: movement foley + effects + the hold-E
+   * leave portal. Pure free practice — no balls, bots, objectives, timers, checkpoints, or HUD, and
+   * all the normal practice/match systems are intentionally skipped while the sandbox is active.
+   */
+  private stepMovementSandbox(dt: number): void {
+    const sandbox = this.movementSandbox;
+    if (!sandbox) return;
+    const snap = this.player.lastMovementSnapshot;
+    this.updateLocalMovementFoley(dt, vector3ToVec3(snap.velocity), snap.grounded, snap.sliding, snap.dashingThisFrame, snap.wallRunning);
+    this.effects.update(dt);
+    sandbox.update(dt, this.player, this.input, (action) => this.handleSandboxAction(action));
+    this.updateCreatorEntry(dt);
   }
 
   /**

@@ -526,6 +526,15 @@ export class GymArena {
   }
 
   /**
+   * Show/hide the half-court cone props. Used by the local Movement Course to clear the mid-floor
+   * cones from the course area; reversible. (Their per-frame motion lives in updateHalfCourtCones,
+   * which the course step path does not call, so they stay put while hidden.)
+   */
+  setHalfCourtConesVisible(visible: boolean): void {
+    for (const cone of this.halfCourtCones) cone.mesh.setEnabled(visible);
+  }
+
+  /**
    * Six fluorescent fixtures hanging from the ceiling. These are emissive visual props only — the
    * competitive lighting rig (one HemisphericLight + one DirectionalLight, set up by ArenaScene via
    * CompetitiveLighting) does all the actual lighting, so no runtime PointLights are created here.

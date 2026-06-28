@@ -83,11 +83,45 @@ describe('toWireInput', () => {
     expect('dashDirection' in wire).toBe(false);
   });
 
-  it('leaves every other field untouched', () => {
-    const input = fullInput({ moveX: 1, moveZ: -1, jumpPressed: true, sequence: 7, lookYawRadians: 1.2 });
+  it('leaves gameplay fields untouched in conservative mode', () => {
+    const input = fullInput({ moveX: 1, moveZ: -1, jumpPressed: true, sequence: 7, clientTimeMs: 123, lookYawRadians: 1.2 });
     const wire = toWireInput(input);
-    const { dashDirection: _omit, ...rest } = input;
+    const { dashDirection: _dash, sequence: _seq, clientTimeMs: _time, ...rest } = input;
     expect(wire).toEqual(rest);
+  });
+
+  it('omits unchanged fields when encoded against the previous input', () => {
+    const previous = fullInput({
+      moveX: 1,
+      leftHandHeld: true,
+      lookYawRadians: 0.5,
+      lookPitchRadians: -0.1,
+      sequence: 10,
+      clientTimeMs: 1000
+    });
+    const current = fullInput({
+      moveX: 1,
+      leftHandHeld: false,
+      lookYawRadians: 0.5,
+      lookPitchRadians: -0.1,
+      sequence: 11,
+      clientTimeMs: 1010
+    });
+    expect(toWireInput(current, previous)).toEqual({
+      lookYawRadians: 0.5,
+      lookPitchRadians: -0.1,
+      leftHandHeld: false
+    });
+  });
+
+  it('keeps latched catch ids even when unchanged so they resend until acked', () => {
+    const previous = fullInput({ leftCatchAttemptId: 3, lookYawRadians: 0.1 });
+    const current = fullInput({ leftCatchAttemptId: 3, lookYawRadians: 0.1 });
+    expect(toWireInput(current, previous)).toEqual({
+      lookYawRadians: 0.1,
+      lookPitchRadians: 0,
+      leftCatchAttemptId: 3
+    });
   });
 
   it('shrinks the serialized packet on the common (non-dash) tick', () => {
@@ -99,7 +133,15 @@ describe('toWireInput', () => {
     expect(trimmedBytes).toBeLessThan(fullBytes);
     // dashDirection serializes as `,"dashDirection":{"x":0,"y":0,"z":0}` — ~37 bytes. Assert a real
     // saving (not just one byte) so a regression that stops trimming is caught.
-    expect(fullBytes - trimmedBytes).toBeGreaterThanOrEqual(30);
+    expect(fullBytes - trimmedBytes).toBeGreaterThanOrEqual(60);
+  });
+
+  it('delta encoding materially shrinks the common unchanged input packet', () => {
+    const previous = fullInput({ moveX: 1, lookYawRadians: 0.7, lookPitchRadians: -0.2, sequence: 1234, clientTimeMs: 1_700_000_000_000 });
+    const current = fullInput({ moveX: 1, lookYawRadians: 0.7, lookPitchRadians: -0.2, sequence: 1235, clientTimeMs: 1_700_000_000_008 });
+    const conservativeBytes = JSON.stringify(toWireInput(current)).length;
+    const deltaBytes = JSON.stringify(toWireInput(current, previous)).length;
+    expect(deltaBytes).toBeLessThan(conservativeBytes / 3);
   });
 });
 

@@ -641,7 +641,7 @@ describe('ServerGameLoop', () => {
       expect(loop.state.mats[mat.id].knockedOver).toBe(false);
 
       // During the post-reset grace, repeated walk-into contact should NOT immediately flop it.
-      const protectedSteps = Math.max(1, Math.floor(GAME_CONSTANTS.mat.postResetKnockImmunitySeconds * loop.tickRate) - 1);
+      const protectedSteps = Math.max(1, Math.ceil(GAME_CONSTANTS.mat.postResetKnockImmunitySeconds * loop.tickRate));
       for (let i = 0; i < protectedSteps; i += 1) {
         loop.state.players.a.movement.position = vec3(mat.position.x, 0, mat.position.z - 0.6);
         loop.state.players.a.movement.velocity = vec3(0, 0, 4);
@@ -2241,7 +2241,50 @@ describe('ServerGameLoop', () => {
       expect(loop.state.players.a.dash.charges).toBe(GAME_CONSTANTS.dash.maxCharges);
     });
 
-    it('ignores a backflip tier when airborne, even wall-running (the QTE is landing-only)', () => {
+    it('honors a backflip QTE tier when the server is on the near-landing airborne tick', () => {
+      const loop = new ServerGameLoop('room');
+      loop.addPlayer('a', 'A');
+      loop.state.players.a.movement.position = vec3(0, 0, 0);
+      loop.handleInput('a', { lookYawRadians: 0, lookPitchRadians: 0, sequence: 1 }, 1);
+      loop.step();
+      expect(loop.handlePickup('a').ok).toBe(true);
+      // Networked QTE clicks can reach the server on the crossing-ground tick: the player is
+      // descending and close to the floor, but MovementSim will not mark grounded until next tick.
+      loop.state.players.a.movement.grounded = false;
+      loop.state.players.a.movement.wallRunning = false;
+      loop.state.players.a.movement.position = vec3(0, 0.2, 0);
+      loop.state.players.a.movement.velocity = vec3(0, -9, 0);
+      loop.state.players.a.movementInternal.groundHeight = 0;
+      loop.state.players.a.movementInternal.backflipActive = false;
+      loop.state.players.a.movementInternal.backflipCooldown = GAME_CONSTANTS.backflip.cooldownSeconds;
+
+      expect(loop.handleThrow('a', { hand: 'left', backflipTier: 5 }).ok).toBe(true);
+      const live = Object.values(loop.state.balls).find((b) => b.phase === 'live');
+      expect(live!.isSuper).toBe(true);
+      expect(length(live!.velocity)).toBeCloseTo(backflipQteSpeed(5), 0);
+    });
+
+    it('ignores a backflip tier when clearly airborne (the QTE is landing-only)', () => {
+      const loop = new ServerGameLoop('room');
+      loop.addPlayer('a', 'A');
+      loop.state.players.a.movement.position = vec3(0, 0, 0);
+      loop.handleInput('a', { lookYawRadians: 0, lookPitchRadians: 0, sequence: 1 }, 1);
+      loop.step();
+      expect(loop.handlePickup('a').ok).toBe(true);
+      loop.state.players.a.movement.grounded = false;
+      loop.state.players.a.movement.wallRunning = false;
+      loop.state.players.a.movement.position = vec3(0, 2.0, 0);
+      loop.state.players.a.movement.velocity = vec3(0, -4, 0);
+      loop.state.players.a.movementInternal.groundHeight = 0;
+      loop.state.players.a.movementInternal.backflipCooldown = GAME_CONSTANTS.backflip.cooldownSeconds;
+
+      expect(loop.handleThrow('a', { hand: 'left', backflipTier: 5 }).ok).toBe(true);
+      const live = Object.values(loop.state.balls).find((b) => b.phase === 'live');
+      expect(live!.isSuper).toBe(false);
+      expect(length(live!.velocity)).toBeCloseTo(GAME_CONSTANTS.ball.quickThrowSpeed, 1);
+    });
+
+    it('ignores a backflip tier while wall-running (the QTE is landing-only)', () => {
       const loop = new ServerGameLoop('room');
       loop.addPlayer('a', 'A');
       loop.state.players.a.movement.position = vec3(0, 0, 0);

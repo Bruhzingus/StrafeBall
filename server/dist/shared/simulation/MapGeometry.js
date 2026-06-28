@@ -224,8 +224,19 @@ function pushBleacherEndCapCollisionBoxes(boxes, panel, tiers) {
         const bandHeight = Math.min(exports.BLEACHER_ENDCAP_LAYOUT.fasciaBandHeight, top);
         boxes.push(aabbFromCenter(tier.center.x, top - bandHeight / 2, panel.center.z, (exports.BLEACHER_LAYOUT.tierRun - exports.BLEACHER_ENDCAP_LAYOUT.fasciaGap) * 0.5, bandHeight * 0.5, exports.BLEACHER_ENDCAP_LAYOUT.fasciaThickness * 0.5, { kind: 'bleacher', id: `bleacher_endcap_fascia_${side}_${zSign}_${tier.step}` }));
     }
+    // The visual top rail is a single thin cylinder tracing the stair nosing line at an angle, but
+    // collision is AABB-only (no oriented boxes), so one box spanning the whole run/rise would bound a
+    // huge rectangle far looser than the actual slim diagonal tube. Segmenting per tier step keeps each
+    // box tight around just that slice of the line, hugging the visual rail closely instead of walling
+    // off the entire stair void above/below it.
     const railRadius = exports.BLEACHER_ENDCAP_LAYOUT.railTopRadius;
-    boxes.push(aabbFromCenter(innerX + side * totalRun / 2, (totalRun * slope) / 2 + exports.BLEACHER_ENDCAP_LAYOUT.railHeightAboveNosing, railZ, totalRun * 0.5 + railRadius, totalRun * slope * 0.5 + railRadius, railRadius, { kind: 'bleacher', id: `bleacher_endcap_rail_top_${side}_${zSign}` }));
+    const railSegments = exports.BLEACHER_LAYOUT.tierCount;
+    const segRun = totalRun / railSegments;
+    const segRise = segRun * slope;
+    for (let i = 0; i < railSegments; i += 1) {
+        const runMid = (i + 0.5) * segRun;
+        boxes.push(aabbFromCenter(innerX + side * runMid, runMid * slope + exports.BLEACHER_ENDCAP_LAYOUT.railHeightAboveNosing, railZ, segRun * 0.5 + railRadius, segRise * 0.5 + railRadius, railRadius, { kind: 'bleacher', id: `bleacher_endcap_rail_top_${side}_${zSign}_${i}` }));
+    }
     const newelRuns = [0, totalRun / 2, totalRun];
     for (let i = 0; i < newelRuns.length; i += 1) {
         const run = newelRuns[i];

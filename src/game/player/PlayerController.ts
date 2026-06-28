@@ -28,6 +28,10 @@ export class PlayerController {
   private pitch = 0;
   private yaw = 0;
   private wallLean = 0;
+  // Where the K "reset" sends the player. Defaults to the gym spawn; the Movement Sandbox points it
+  // at the sandbox spawn while active so a reset stays inside the sandbox (restored on exit).
+  private readonly respawnPosition = new Vector3(0, 0, -16);
+  private respawnYaw: number | undefined = undefined;
 
   constructor(scene: Scene, private readonly input: InputManager, ballManager: BallManager, collision: CollisionWorld, effects: Effects) {
     this.root = new TransformNode('playerRoot', scene);
@@ -86,10 +90,30 @@ export class PlayerController {
   }
 
   resetPosition(): void {
-    this.root.position.set(0, 0, -16);
-    this.movement.velocity.setAll(0);
+    this.teleportTo(this.respawnPosition.clone(), this.respawnYaw ?? this.yaw);
+  }
+
+  /** Set where the K reset teleports to (used by the Movement Sandbox; pass no args to restore gym). */
+  setRespawn(position = new Vector3(0, 0, -16), yaw?: number): void {
+    this.respawnPosition.copyFrom(position);
+    this.respawnYaw = yaw;
+  }
+
+  teleportTo(position: Vector3, yawRadians = this.yaw, pitchRadians = this.pitch): void {
+    this.root.position.copyFrom(position);
+    this.yaw = yawRadians;
+    this.pitch = Math.max(-TUNING.player.lookPitchLimitRadians, Math.min(TUNING.player.lookPitchLimitRadians, pitchRadians));
+    this.root.rotation.y = this.yaw;
+    this.camera.rotation.x = this.pitch;
+    this.camera.rotation.y = 0;
+    this.camera.rotation.z = 0;
     this.wallLean = 0;
     this.root.rotation.z = 0;
+    this.backflip.active = false;
+    this.backflip.timer = 0;
+    this.movement.resetKinematics();
+    this.lastMovementSnapshot = this.movement.snapshot();
+    this.camera.getViewMatrix(true);
   }
 
   applyWallRunLean(dt: number, wallRunning: boolean, wallNormalX = 0, wallNormalZ = 0): void {

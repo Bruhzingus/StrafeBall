@@ -137,7 +137,7 @@ class DuelRoom extends colyseus_1.Room {
         this.playersPerTeam = matchSettings.teamSize;
         this.maxClients = matchSettings.maxPlayers;
         // Colyseus 0.17 applies this PER CLIENT on inbound messages and force-closes the sender when
-        // exceeded, so size it to a single client's expected 128Hz stream plus burst headroom.
+        // exceeded, so size it to the active client input stream plus burst headroom.
         this.maxMessagesPerSecond = (0, NetworkRateLimits_1.computeMaxMessagesPerSecondPerClient)(netConfig_1.CLIENT_INPUT_RATE);
         this.game = new ServerGameLoop_1.ServerGameLoop(this.roomId, {
             tickRate: netConfig_1.SERVER_TICK_RATE,
@@ -160,7 +160,9 @@ class DuelRoom extends colyseus_1.Room {
             const wrapped = message && typeof message === 'object' && 'input' in message
                 ? message
                 : undefined;
-            const input = wrapped ? wrapped.input : message;
+            const input = wrapped
+                ? inputPayloadFromCommand(wrapped)
+                : message;
             const seq = wrapped?.sequence ?? wrapped?.input?.sequence ?? message?.sequence ?? 0;
             const rttMs = typeof wrapped?.rttMs === 'number' && Number.isFinite(wrapped.rttMs) ? wrapped.rttMs : undefined;
             if (!this.game.handleInput(client.sessionId, input, seq, rttMs)) {
@@ -1309,6 +1311,19 @@ function trimJsonBytes(value, maxBytes) {
 }
 function formatPatchRate(patchRateMs) {
     return patchRateMs === null ? 'disabled(manual snapshots)' : `${(1000 / patchRateMs).toFixed(1)}Hz`;
+}
+function inputPayloadFromCommand(command) {
+    const raw = command.input;
+    if (!raw)
+        return raw;
+    const input = { ...raw };
+    if (typeof command.clientTimeMs === 'number' && Number.isFinite(command.clientTimeMs)) {
+        input.clientTimeMs = command.clientTimeMs;
+    }
+    if (typeof command.sequence === 'number' && Number.isFinite(command.sequence)) {
+        input.sequence = command.sequence;
+    }
+    return input;
 }
 function readClientBufferedAmount(client) {
     const raw = client;

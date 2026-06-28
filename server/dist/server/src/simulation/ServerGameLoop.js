@@ -32,6 +32,11 @@ const MAX_INPUT_QUEUE = netConfig_1.SERVER_INPUT_QUEUE_LIMIT;
 // If no fresh input arrives for this long, the player's input is treated as neutral (so a
 // backgrounded/frozen tab doesn't keep walking or charging on the last-held input).
 const STALE_INPUT_MS = 1000;
+// A landing-QTE packet can reach the server on the same tick the authoritative sim crosses the
+// ground plane, before MovementSim has flipped `grounded` back to true. Keep this cushion tight so
+// high airborne or wall-run spoof attempts still downgrade to a normal throw.
+const BACKFLIP_QTE_LANDING_GRACE_HEIGHT = 0.55;
+const BACKFLIP_QTE_MAX_UPWARD_GRACE_SPEED = 0.5;
 // Default dashDirection for an input whose dashDirection was trimmed from the wire (zero vector).
 // MUST be zero, not the previous input, so the sim derives the dash dir from the wish/facing — see
 // normalizeInput. Frozen so it can't be mutated by a downstream consumer.
@@ -467,10 +472,12 @@ class ServerGameLoop {
         // recently (cooldown still high). This bounds abuse: a client can't claim a backflip throw it
         // didn't earn. A valid tier sets the speed (tier 1 = quick, top tier = fastest) and marks super.
         // The QTE is landing-only, so a wall-running player can never be mid-QTE here.
+        // `canHonorBackflipQteThrow` also accepts a tight near-ground descent grace for online packets
+        // that arrive on the authoritative crossing-ground tick.
         const backflipTier = (0, CollisionMath_1.clamp)(Math.trunc(request.backflipTier ?? 0), 0, constants_1.GAME_CONSTANTS.backflip.qte.tierCount);
         const backflipRecent = player.movementInternal.backflipCooldown >
             constants_1.GAME_CONSTANTS.backflip.cooldownSeconds - (constants_1.GAME_CONSTANTS.backflip.durationSeconds + constants_1.GAME_CONSTANTS.backflip.qte.durationSeconds + 0.3);
-        const isBackflipThrow = backflipTier >= 1 && player.movement.grounded && backflipRecent;
+        const isBackflipThrow = backflipTier >= 1 && backflipRecent && this.canHonorBackflipQteThrow(player);
         const origin = (0, CollisionMath_1.add)((0, HandAnchors_1.computePlayerHandAnchor)(player, request.hand), (0, CollisionMath_1.scale)(forward, 0.16));
         // Anti "2-ball technique": a second throw landing within doubleThrowWindowSeconds of this
         // player's previous throw slows BOTH balls down, instead of only the new client-side throw.
@@ -547,6 +554,20 @@ class ServerGameLoop {
                 ` curve=(${curveAccel.x.toFixed(2)},${curveAccel.y.toFixed(2)},${curveAccel.z.toFixed(2)})`);
         }
         return { ok: true, log: `throw accepted player=${playerId} ball=${ball.id} hand=${request.hand} charge=${charge01.toFixed(2)}${isSuper ? ' SUPER' : ''}` };
+    }
+    canHonorBackflipQteThrow(player) {
+        if (player.movementInternal.backflipActive)
+            return false;
+        if (player.movement.grounded)
+            return true;
+        if (player.movement.wallRunning)
+            return false;
+        const groundHeight = Number.isFinite(player.movementInternal.groundHeight)
+            ? player.movementInternal.groundHeight
+            : 0;
+        const heightAboveGround = player.movement.position.y - groundHeight;
+        return heightAboveGround <= BACKFLIP_QTE_LANDING_GRACE_HEIGHT &&
+            player.movement.velocity.y <= BACKFLIP_QTE_MAX_UPWARD_GRACE_SPEED;
     }
     /**
      * Legacy discrete catch/parry request. Catch is now driven by the input-stream attempt model
@@ -3321,6 +3342,20 @@ function resolveBallStaticBoxes(ball, boxes, logger, bounceRule) {
             continue;
         if (position.z < box.minZ - r || position.z > box.maxZ + r)
             continue;
+        // The side bleachers form the low side-wall lane. For a horizontal BANK SHOT (|vx| ≥ |vy|) model
+        // the stepped tiers as a single FLAT vertical side wall: reflect in X back toward the court and
+        // survive one bounce, whether the discrete step grazed a tier front face (X) or a step top (Y).
+        // Without this, a low bank shot that clips a (taller) step top reflects upward and dies on the
+        // first bounce instead of banking — see isSideWallLikeStaticBounce / the side-wall one-bounce
+        // rule. Vertical drops onto the bleachers (|vy| > |vx|) fall through to the normal per-axis bounce.
+        if (box.kind === 'bleacher' && box.id?.startsWith('bleacher_tier_') === true && Math.abs(velocity.x) >= Math.abs(velocity.y)) {
+            position.x = sideBleacherCourtFaceX(box);
+            velocity.x = ((box.minX + box.maxX) * 0.5 >= 0 ? -1 : 1) * Math.abs(velocity.x) * e;
+            hitAxis = 'x';
+            bounced = true;
+            hitBox = box;
+            break;
+        }
         const penX = Math.min(position.x - (box.minX - r), (box.maxX + r) - position.x);
         const penY = Math.min(position.y - (box.minY - r), (box.maxY + r) - position.y);
         const penZ = Math.min(position.z - (box.minZ - r), (box.maxZ + r) - position.z);
