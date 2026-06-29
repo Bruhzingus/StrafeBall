@@ -22,6 +22,9 @@ import {
   BOUNDARY_HEIGHT,
   type WallStyle
 } from '../MovementSandboxLayout';
+// The committed course layout — the single source of truth the editor opens on AND the live
+// Movement Sandbox renders. Edited locally, then promoted into this file (see committedCourseLayout).
+import committedCourseJson from './layouts/movementCourseLayout.json';
 
 // ---------------------------------------------------------------------------------------------
 // Schema
@@ -700,6 +703,18 @@ export function defaultCreatorLayout(): CreatorLayout {
     },
     objects
   };
+}
+
+/**
+ * The committed course layout: the single source of truth both the editor (its default + Reset) and
+ * the live Movement Sandbox build from. Validated on load; when it has no objects yet (the initial
+ * placeholder) we fall back to the built-in default sandbox, so the world is never empty. To "ship" a
+ * layout you designed in the editor, its JSON is written into layouts/movementCourseLayout.json.
+ */
+export function committedCourseLayout(): CreatorLayout {
+  const { layout } = validateLayout(committedCourseJson);
+  if (layout.objects.length === 0) return defaultCreatorLayout();
+  return layout;
 }
 
 /** World spawn (position + yaw radians) for playtest, from the active default spawn (or yard centre). */

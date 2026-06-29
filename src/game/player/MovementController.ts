@@ -312,9 +312,11 @@ export class MovementController {
 
   /**
    * Wall-bounce: hit a wall too head-on to wall-run (steeper than runTriggerAngleDegrees) while
-   * airborne, then press jump near/touching the wall to bounce off — same impulse as a wall-jump,
-   * but doesn't require an active wall-run and costs no stamina/dash charge. Free action, but it
-   * still sets the reattach cooldown so you can't immediately wall-run/bounce the same wall again.
+   * airborne, then press jump near/touching the wall to bounce off like a spring — the faster you're
+   * moving INTO the wall, the farther out and higher you launch. Reflects the into-wall velocity
+   * (keeping along-wall momentum) and sets a fresh upward kick, both scaling with the approach speed.
+   * Doesn't require an active wall-run and costs no stamina/dash charge; still sets the reattach
+   * cooldown so you can't immediately wall-run/bounce the same wall again. Mirrors MovementSim exactly.
    */
   private tryWallBounce(): boolean {
     if (this.grounded) return false;
@@ -328,8 +330,15 @@ export class MovementController {
     const maxInto = Math.sin(TUNING.wall.runTriggerAngleDegrees * DEG2RAD);
     if (intoWall <= maxInto) return false; // shallow enough to wall-run instead
 
-    this.velocity = this.velocity.add(normal.scale(TUNING.wall.jumpAwaySpeed));
-    this.velocity.y = TUNING.wall.jumpUpSpeed;
+    const vn = this.velocity.x * normal.x + this.velocity.z * normal.z; // along outward normal (neg = into wall)
+    const approach = Math.min(TUNING.wall.bounceMaxApproachSpeed, Math.max(0, -vn));
+    const tx = this.velocity.x - vn * normal.x; // along-wall component, preserved
+    const tz = this.velocity.z - vn * normal.z;
+    const outward = TUNING.wall.bounceBaseAwaySpeed + approach * TUNING.wall.bounceAwayGain;
+    const up = TUNING.wall.bounceBaseUpSpeed + approach * TUNING.wall.bounceUpGain;
+    this.velocity.x = tx + normal.x * outward;
+    this.velocity.z = tz + normal.z * outward;
+    this.velocity.y = Math.max(this.velocity.y, up);
     this.wallReattachCooldown = TUNING.wall.reattachCooldownSeconds;
     return true;
   }

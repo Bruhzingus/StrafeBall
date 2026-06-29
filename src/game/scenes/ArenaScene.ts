@@ -355,7 +355,12 @@ export class ArenaScene {
       this.hud.toggleDebug();
     }
 
-    this.multiplayerOverlay.update();
+    // While the Creator Sandbox owns the screen (its password modal or an active editor session) it
+    // is the sole owner of cursor-lock suppression — skip the lobby overlay's per-frame suppression so
+    // it can't fight the editor (which would break free-look / re-grab the pointer every frame).
+    if (!this.creator?.isBusy()) {
+      this.multiplayerOverlay.update();
+    }
     if (this.multiplayer.connected) {
       this.enterOnlineMode();
       const matchStatus = this.multiplayer.latestSnapshot?.room.match.status ?? 'warmup';
@@ -2064,7 +2069,8 @@ export class ArenaScene {
     this.creator = new CreatorEditor(this.scene, this.gym, this.player, this.input, {
       isOnline: () => this.onlineModeActive || this.multiplayer.connected,
       suspendSandbox: () => this.movementSandbox?.suspend(),
-      resumeSandbox: () => this.movementSandbox?.resume(this.player)
+      resumeSandbox: () => this.movementSandbox?.resume(this.player),
+      setHudVisible: (visible: boolean) => this.hud.setVisible(visible)
     });
   }
 

@@ -81,6 +81,12 @@ export const TUNING = {
     minEntrySpeed: GAME_CONSTANTS.wall.minEntrySpeed,
     jumpAwaySpeed: GAME_CONSTANTS.wall.jumpAwaySpeed,
     jumpUpSpeed: GAME_CONSTANTS.wall.jumpUpSpeed,
+    // Momentum-driven wall-bounce spring (see shared/constants.ts wall.bounce* for the model).
+    bounceBaseAwaySpeed: GAME_CONSTANTS.wall.bounceBaseAwaySpeed,
+    bounceAwayGain: GAME_CONSTANTS.wall.bounceAwayGain,
+    bounceBaseUpSpeed: GAME_CONSTANTS.wall.bounceBaseUpSpeed,
+    bounceUpGain: GAME_CONSTANTS.wall.bounceUpGain,
+    bounceMaxApproachSpeed: GAME_CONSTANTS.wall.bounceMaxApproachSpeed,
     reattachCooldownSeconds: GAME_CONSTANTS.wall.reattachCooldownSeconds,
     ceilingDetachDistance: GAME_CONSTANTS.wall.ceilingDetachDistance,
     // A/D-while-W wall-run climb (see shared/constants.ts wall.* for the full description).

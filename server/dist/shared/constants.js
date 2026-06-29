@@ -71,6 +71,19 @@ exports.GAME_CONSTANTS = {
         jumpAwaySpeed: 9.5,
         // Upward kick of a wall-jump. Reduced 15% (6.8 -> 5.78) so the "hump" off the wall is lower.
         jumpUpSpeed: 5.78,
+        // --- Wall-BOUNCE spring (the head-on, non-wall-run jump off a wall) ---
+        // A momentum-driven spring: the faster you're moving INTO the wall, the farther out and higher you
+        // bounce. We reflect the into-wall velocity (preserving along-wall momentum) and set a fresh upward
+        // kick, both = base + approachSpeed * gain. `approachSpeed` is the into-wall speed (the spring
+        // "compression"), clamped by bounceMaxApproachSpeed so a hard dash-in can't fling you absurdly.
+        // These ONLY affect the wall-bounce; the wall-run jump still uses jumpAwaySpeed/jumpUpSpeed above.
+        // Tuned down ~30% from the first pass (it launched too far), with the split shifted slightly toward
+        // vertical: the horizontal away-push is cut a bit more, the upward kick a bit less.
+        bounceBaseAwaySpeed: 3.7,
+        bounceAwayGain: 0.71,
+        bounceBaseUpSpeed: 3.9,
+        bounceUpGain: 0.49,
+        bounceMaxApproachSpeed: 15,
         reattachCooldownSeconds: 0.2,
         // Stop wall-run reattachment before the player reaches the ceiling clamp; otherwise the run
         // start boost can re-fire every frame at the top of the gym.

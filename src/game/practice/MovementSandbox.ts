@@ -25,15 +25,22 @@ import {
   SANDBOX_CENTER,
   SANDBOX_HALF_X,
   SANDBOX_HALF_Z,
-  SANDBOX_WALLS,
-  WallRunFace,
   WallStyle,
-  buildStandaloneWallBoxes,
-  buildWallRunFaces,
-  sandboxLeaveWorld,
-  sandboxSpawnWorld,
-  sandboxWorldBounds
+  sandboxLeaveWorld
 } from './MovementSandboxLayout';
+import {
+  committedCourseLayout,
+  isSolidModule,
+  layoutSpawn,
+  objectSolidBoxes,
+  type CreatorLayout
+} from './creator/CreatorLayout';
+import {
+  buildCreatorCollisionBoxes,
+  buildCreatorWallFaces,
+  layoutWorldBounds,
+  type CreatorWallFace
+} from './creator/CreatorWorld';
 
 export type SandboxAction = 'leave';
 
@@ -67,8 +74,14 @@ export class MovementSandbox implements MovementWorld {
   private readonly materials: StandardMaterial[] = [];
   private readonly disposables: Array<{ dispose(): void }> = [];
   private readonly collisionBoxes: AABB[] = [];
-  private faces: WallRunFace[] = [];
+  private faces: CreatorWallFace[] = [];
   private built = false;
+
+  // The committed course layout the yard renders. `courseLayout` excludes the outer boundary walls
+  // (the yard draws + clamps its own boundary), leaving the editable course pieces.
+  private readonly fullLayout: CreatorLayout;
+  private readonly courseLayout: CreatorLayout;
+  private readonly leavePoint: { x: number; z: number; radius: number; holdSeconds: number };
 
   // Saved scene sky/fog state, restored on exit.
   private savedClearColor: Color4 | null = null;
@@ -78,11 +91,25 @@ export class MovementSandbox implements MovementWorld {
   private leaveLatched = false;
 
   constructor(private readonly scene: Scene, private readonly gym: GymArena) {
-    const b = sandboxWorldBounds();
+    const layout = committedCourseLayout();
+    this.fullLayout = layout;
+    this.courseLayout = { ...layout, objects: layout.objects.filter((o) => o.type !== 'boundary_wall') };
+
+    const b = layoutWorldBounds(layout);
     this.minX = b.minX;
     this.maxX = b.maxX;
     this.minZ = b.minZ;
     this.maxZ = b.maxZ;
+
+    const fallbackLeave = sandboxLeaveWorld();
+    const leaveMarker = layout.objects.find((o) => o.type === 'leave_portal');
+    this.leavePoint = {
+      x: leaveMarker ? leaveMarker.position[0] : fallbackLeave.x,
+      z: leaveMarker ? leaveMarker.position[2] : fallbackLeave.z,
+      radius: fallbackLeave.radius,
+      holdSeconds: fallbackLeave.holdSeconds
+    };
+
     this.root = new TransformNode('movement_sandbox_root', scene);
     this.root.setEnabled(false);
   }
@@ -93,7 +120,7 @@ export class MovementSandbox implements MovementWorld {
 
   /** Nearest wall-run face within range (below its top, within its span, on its open side), else null. */
   wallNormalAt(x: number, z: number, y: number): Vector3 | null {
-    let best: WallRunFace | null = null;
+    let best: CreatorWallFace | null = null;
     let bestDist = WALL_RUN_MARGIN;
     for (const f of this.faces) {
       if (y > f.topY) continue;
@@ -122,9 +149,9 @@ export class MovementSandbox implements MovementWorld {
 
     player.hands.clearHands();
     player.movement.setWorld(this);
-    const spawn = sandboxSpawnWorld();
-    player.setRespawn(new Vector3(spawn.x, 0, spawn.z), spawn.yaw);
-    player.teleportTo(new Vector3(spawn.x, 0, spawn.z), spawn.yaw, 0);
+    const spawn = layoutSpawn(this.fullLayout);
+    player.setRespawn(new Vector3(spawn.x, spawn.y, spawn.z), spawn.yaw);
+    player.teleportTo(new Vector3(spawn.x, spawn.y, spawn.z), spawn.yaw, 0);
 
     this.leaveHold = 0;
     this.leaveLatched = false;
@@ -166,9 +193,9 @@ export class MovementSandbox implements MovementWorld {
     for (const box of this.collisionBoxes) this.gym.collision.add(box);
     player.hands.clearHands();
     player.movement.setWorld(this);
-    const spawn = sandboxSpawnWorld();
-    player.setRespawn(new Vector3(spawn.x, 0, spawn.z), spawn.yaw);
-    player.teleportTo(new Vector3(spawn.x, 0, spawn.z), spawn.yaw, 0);
+    const spawn = layoutSpawn(this.fullLayout);
+    player.setRespawn(new Vector3(spawn.x, spawn.y, spawn.z), spawn.yaw);
+    player.teleportTo(new Vector3(spawn.x, spawn.y, spawn.z), spawn.yaw, 0);
   }
 
   get lobbyReturn(): { position: Vector3; yaw: number } {
@@ -181,7 +208,7 @@ export class MovementSandbox implements MovementWorld {
 
   update(dt: number, player: PlayerController, input: InputManager, onAction: (action: SandboxAction) => void): void {
     if (!this.active) return;
-    const leave = sandboxLeaveWorld();
+    const leave = this.leavePoint;
     const p = player.root.position;
     const dx = p.x - leave.x;
     const dz = p.z - leave.z;
@@ -256,8 +283,8 @@ export class MovementSandbox implements MovementWorld {
     this.buildWalls();
     this.buildSpawn();
 
-    this.collisionBoxes.push(...buildStandaloneWallBoxes(COLLISION_ID_PREFIX));
-    this.faces = buildWallRunFaces();
+    this.collisionBoxes.push(...buildCreatorCollisionBoxes(this.courseLayout, COLLISION_ID_PREFIX));
+    this.faces = buildCreatorWallFaces(this.courseLayout);
 
     for (const child of this.root.getChildMeshes(false)) {
       if (child instanceof Mesh) {
@@ -296,7 +323,7 @@ export class MovementSandbox implements MovementWorld {
   }
 
   private buildBoundary(): void {
-    const b = sandboxWorldBounds();
+    const b = { minX: this.minX, maxX: this.maxX, minZ: this.minZ, maxZ: this.maxZ };
     const h = BOUNDARY_HEIGHT;
     const t = BOUNDARY_THICKNESS;
     const fullX = SANDBOX_HALF_X * 2 + t * 2;
@@ -315,20 +342,22 @@ export class MovementSandbox implements MovementWorld {
   }
 
   private buildWalls(): void {
-    for (const wall of SANDBOX_WALLS) {
-      const mesh = this.gridBox(
-        `sandbox_wall_${wall.id}`,
-        SANDBOX_CENTER.x + wall.center.x, wall.size.height / 2, SANDBOX_CENTER.z + wall.center.z,
-        wall.size.width, wall.size.height, wall.size.depth,
-        this.materialFor(wall.style)
-      );
-      mesh.rotation.y = wall.rotationY;
+    // Render every solid course piece from the committed layout (boundary excluded — the yard draws
+    // its own). Each module's oriented sub-boxes become grid boxes; collision + wall-run faces are
+    // derived from the same data, so the live yard matches what you build/playtest in the editor.
+    for (const obj of this.courseLayout.objects) {
+      if (!isSolidModule(obj.type) || obj.visible === false) continue;
+      const mat = this.materialFor(styleForMaterial(obj.material));
+      for (const box of objectSolidBoxes(obj)) {
+        const mesh = this.gridBox(`sandbox_wall_${obj.id}`, box.cx, box.cy, box.cz, box.w, box.h, box.d, mat);
+        mesh.rotation.y = box.ry;
+      }
     }
   }
 
   private buildSpawn(): void {
-    const spawn = sandboxSpawnWorld();
-    const leave = sandboxLeaveWorld();
+    const spawn = layoutSpawn(this.fullLayout);
+    const leave = this.leavePoint;
 
     // Spawn pad + title sign.
     this.gridBox('sandbox_spawn_pad', spawn.x, 0.04, spawn.z, 6, 0.08, 6, this.accentMat);
@@ -438,6 +467,11 @@ export class MovementSandbox implements MovementWorld {
 function toCss(c: Color3): string {
   const ch = (v: number) => Math.max(0, Math.min(255, Math.round(v * 255)));
   return `rgb(${ch(c.r)}, ${ch(c.g)}, ${ch(c.b)})`;
+}
+
+/** Map a layout material id onto one of the yard's three wall styles (others fall back to concrete). */
+function styleForMaterial(material: string | undefined): WallStyle {
+  return material === 'pad' ? 'pad' : material === 'accent' ? 'accent' : 'concrete';
 }
 
 function roundRect(ctx: CanvasRenderingContext2D, x: number, y: number, w: number, h: number, r: number): void {

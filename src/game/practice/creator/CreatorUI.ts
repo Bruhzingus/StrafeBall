@@ -42,6 +42,7 @@ export interface CreatorBridge {
   quickSave(): void;
   quickLoad(): void;
   exportJson(): void;
+  copyJson(): void;
   importJsonFile(file: File): void;
   resetLayout(): void;
 
@@ -51,6 +52,7 @@ export interface CreatorBridge {
 
   armModule(type: string | null): void;
   getArmedModule(): string | null;
+  focusSelected(): void;
 
   getSelectedObject(): CreatorLayoutObject | null;
   setSelectedName(name: string): void;
@@ -78,7 +80,7 @@ export class CreatorUI {
   private readonly host: HTMLElement;
   private readonly toolbar: HTMLDivElement;
   private readonly modeBar: HTMLDivElement;
-  private readonly paletteEl: HTMLDivElement;
+  private readonly hotbar: HTMLDivElement;
   private readonly inspectorEl: HTMLDivElement;
   private readonly snapEl: HTMLDivElement;
   private readonly helpEl: HTMLDivElement;
@@ -91,15 +93,23 @@ export class CreatorUI {
   private readonly fileInput: HTMLInputElement;
 
   private readonly paletteButtons = new Map<string, HTMLButtonElement>();
+  private readonly gizmoButtons = new Map<string, HTMLButtonElement>();
   private undoBtn!: HTMLButtonElement;
   private redoBtn!: HTMLButtonElement;
   private buildBtn!: HTMLButtonElement;
   private playtestBtn!: HTMLButtonElement;
 
   private inspectorObjectId: string | null = null;
+  private toolbarVisible = false;
   private toastTimer: number | null = null;
   private modalSubmit: ((value: string) => void) | null = null;
   private modalCancel: (() => void) | null = null;
+  // Don't focus the password field while gameplay keys (E / WASD / jump…) are still physically held
+  // from opening the modal — otherwise the held key auto-repeats straight into the field. Mirrors the
+  // matchmaking portal's "wait for interact release before focusing the name input" handling.
+  private awaitingModalFocus = false;
+  private readonly modalHeldKeys = new Set<string>();
+  private modalFocusFallbackTimer: number | null = null;
 
   constructor(hostRoot: HTMLElement, private readonly bridge: CreatorBridge) {
     this.host = hostRoot;
@@ -107,17 +117,20 @@ export class CreatorUI {
     this.toolbar = el('div', 'creator-ui');
     this.toolbar.setAttribute('data-no-lock', '');
     this.modeBar = el('div', 'creator-modebar');
-    this.paletteEl = el('div', 'creator-section creator-palette');
     this.inspectorEl = el('div', 'creator-section creator-inspector');
     this.snapEl = el('div', 'creator-section creator-snap');
     this.helpEl = el('div', 'creator-help');
+    // Bottom hotbar (Fortnite-style): the clickable + keybindable tool/module strip.
+    this.hotbar = el('div', 'creator-hotbar');
+    this.hotbar.setAttribute('data-no-lock', '');
 
     this.buildModeBar();
-    this.buildPalette();
+    this.buildHotbar();
     this.buildSnapPanel();
 
-    this.toolbar.append(this.modeBar, this.paletteEl, this.inspectorEl, this.snapEl, this.helpEl);
+    this.toolbar.append(this.modeBar, this.inspectorEl, this.snapEl, this.helpEl);
     this.host.appendChild(this.toolbar);
+    this.host.appendChild(this.hotbar);
 
     this.toastEl = el('div', 'creator-toast');
     this.host.appendChild(this.toastEl);
@@ -194,6 +207,7 @@ export class CreatorUI {
     const row2 = el('div', 'creator-modebar-row');
     row2.append(
       button('Export', 'creator-btn', () => this.bridge.exportJson()),
+      button('Copy JSON', 'creator-btn', () => this.bridge.copyJson()),
       button('Import', 'creator-btn', () => this.fileInput.click()),
       this.undoBtn,
       this.redoBtn
@@ -212,38 +226,77 @@ export class CreatorUI {
   }
 
   // ---------------------------------------------------------------------------------------------
-  // Palette
+  // Bottom hotbar: tools cluster + module strip (Fortnite-style, clickable + keybindable)
   // ---------------------------------------------------------------------------------------------
 
-  private buildPalette(): void {
-    const header = el('div', 'creator-section-title');
-    header.textContent = 'Module Palette';
-    this.paletteEl.appendChild(header);
+  private buildHotbar(): void {
+    // --- Tools cluster (gizmo modes + grid snap), each with its keybind ---
+    const tools = el('div', 'creator-hotbar-tools');
+    const toolDefs: Array<[string, string, CreatorSnapSettings['gizmo']]> = [
+      ['Move', 'G', 'move'],
+      ['Rotate', 'R', 'rotate'],
+      ['Scale', 'T', 'scale'],
+      ['Select', 'V', 'off']
+    ];
+    for (const [label, key, gizmo] of toolDefs) {
+      const btn = this.hotbarButton(label, key, () => this.bridge.setSnapSettings({ gizmo }));
+      this.gizmoButtons.set(gizmo, btn);
+      tools.appendChild(btn);
+    }
+    tools.appendChild(this.hotbarButton('Focus', 'F', () => this.bridge.focusSelected()));
+    this.hotbar.appendChild(tools);
 
+    // --- Module strip, grouped, with number badges on the first ten ---
+    const strip = el('div', 'creator-hotbar-strip');
     for (const category of ['terrain', 'marker', 'optional'] as CreatorModuleCategory[]) {
-      const group = el('div', 'creator-palette-group');
-      const groupTitle = el('div', 'creator-palette-grouptitle');
+      const group = el('div', 'creator-hotbar-group');
+      const groupTitle = el('div', 'creator-hotbar-grouptitle');
       groupTitle.textContent = CATEGORY_LABELS[category];
       group.appendChild(groupTitle);
-      const grid = el('div', 'creator-palette-grid');
+      const chips = el('div', 'creator-hotbar-chips');
       for (const mod of CREATOR_MODULES.filter((m) => m.category === category)) {
-        const btn = button(mod.label, 'creator-palette-btn', () => {
+        const globalIdx = CREATOR_MODULES.indexOf(mod);
+        const keyBadge = globalIdx < 10 ? String((globalIdx + 1) % 10) : '';
+        const btn = button('', 'creator-chip', () => {
           const armed = this.bridge.getArmedModule() === mod.type ? null : mod.type;
           this.bridge.armModule(armed);
           this.refreshPaletteArmed();
         });
+        if (keyBadge) {
+          const badge = el('span', 'creator-chip-key');
+          badge.textContent = keyBadge;
+          btn.appendChild(badge);
+        }
+        const labelSpan = el('span', 'creator-chip-label');
+        labelSpan.textContent = mod.label;
+        btn.appendChild(labelSpan);
         this.paletteButtons.set(mod.type, btn);
-        grid.appendChild(btn);
+        chips.appendChild(btn);
       }
-      group.appendChild(grid);
-      this.paletteEl.appendChild(group);
+      group.appendChild(chips);
+      strip.appendChild(group);
     }
+    this.hotbar.appendChild(strip);
+  }
+
+  private hotbarButton(label: string, key: string, onClick: () => void, keyOnly = false): HTMLButtonElement {
+    const btn = button('', `creator-hotbar-tool${keyOnly ? ' creator-hotbar-tool--keyonly' : ''}`, onClick);
+    const badge = el('span', 'creator-chip-key');
+    badge.textContent = key;
+    const labelSpan = el('span', 'creator-chip-label');
+    labelSpan.textContent = label;
+    btn.append(badge, labelSpan);
+    return btn;
   }
 
   private refreshPaletteArmed(): void {
     const armed = this.bridge.getArmedModule();
     for (const [type, btn] of this.paletteButtons) {
-      btn.classList.toggle('creator-palette-btn--armed', type === armed);
+      btn.classList.toggle('creator-chip--armed', type === armed);
+    }
+    const gizmo = this.bridge.getSnapSettings().gizmo;
+    for (const [mode, btn] of this.gizmoButtons) {
+      btn.classList.toggle('creator-hotbar-tool--active', mode === gizmo);
     }
   }
 
@@ -441,13 +494,13 @@ export class CreatorUI {
     this.undoBtn.disabled = !this.bridge.canUndo();
     this.redoBtn.disabled = !this.bridge.canRedo();
 
-    // In playtest, collapse the editing sections to the minimal overlay.
+    // In playtest, collapse the editing sections to the minimal overlay + hide the build hotbar.
     const editing = mode === 'build';
-    this.paletteEl.style.display = editing ? '' : 'none';
+    this.hotbar.classList.toggle('creator-hotbar--visible', this.toolbarVisible && editing);
     this.inspectorEl.style.display = editing ? '' : 'none';
     this.snapEl.style.display = editing ? '' : 'none';
     this.helpEl.textContent = editing
-      ? 'Build: WASD fly · Space/Ctrl up/down · Shift faster · hold RMB look · LMB select/place · right-click cancel · Del delete · Ctrl+D dup · Ctrl+Z/Y undo/redo · F1 playtest'
+      ? 'WASD fly · Space/Ctrl up/down · Shift faster · hold RMB look · LMB place/select · RMB-tap cancel · 1–0 pick module · G/R/T/V move/rotate/scale/select · F focus · B duplicate · Del delete · Ctrl+Z/Y undo/redo · Ctrl+S save · F1 playtest'
       : 'Playtest: real movement · F1 return to Build · Reset Player to respawn';
 
     this.refreshPaletteArmed();
@@ -475,7 +528,9 @@ export class CreatorUI {
   }
 
   setToolbarVisible(visible: boolean): void {
+    this.toolbarVisible = visible;
     this.toolbar.classList.toggle('creator-ui--visible', visible);
+    this.refresh();
   }
 
   setEntryPromptVisible(visible: boolean, progress: number): void {
@@ -498,7 +553,45 @@ export class CreatorUI {
     this.modalMessage.textContent = '';
     this.modalInput.value = '';
     this.modal.classList.add('creator-modal-backdrop--visible');
-    window.setTimeout(() => this.modalInput.focus(), 30);
+
+    // Defer focusing until the keys held to open the modal are released (so they don't type into it).
+    this.awaitingModalFocus = true;
+    this.modalHeldKeys.clear();
+    window.addEventListener('keydown', this.onModalFocusKeyDown);
+    window.addEventListener('keyup', this.onModalFocusKeyUp);
+    // Fallback: if nothing is actually held (keys already released), focus shortly after opening.
+    this.modalFocusFallbackTimer = window.setTimeout(() => {
+      if (this.awaitingModalFocus && this.modalHeldKeys.size === 0) this.focusModalInput();
+    }, 400);
+  }
+
+  private readonly onModalFocusKeyDown = (e: KeyboardEvent): void => {
+    // Physically-held keys auto-repeat keydown here; track them so we only focus once all are up.
+    if (this.awaitingModalFocus && GAMEPLAY_HOLD_CODES.has(e.code)) this.modalHeldKeys.add(e.code);
+  };
+
+  private readonly onModalFocusKeyUp = (e: KeyboardEvent): void => {
+    if (!this.awaitingModalFocus) return;
+    this.modalHeldKeys.delete(e.code);
+    if (this.modalHeldKeys.size === 0) this.focusModalInput();
+  };
+
+  private focusModalInput(): void {
+    if (!this.awaitingModalFocus) return;
+    this.stopAwaitingModalFocus();
+    this.modalInput.focus();
+    this.modalInput.select();
+  }
+
+  private stopAwaitingModalFocus(): void {
+    this.awaitingModalFocus = false;
+    this.modalHeldKeys.clear();
+    if (this.modalFocusFallbackTimer !== null) {
+      window.clearTimeout(this.modalFocusFallbackTimer);
+      this.modalFocusFallbackTimer = null;
+    }
+    window.removeEventListener('keydown', this.onModalFocusKeyDown);
+    window.removeEventListener('keyup', this.onModalFocusKeyUp);
   }
 
   setModalMessage(message: string): void {
@@ -506,6 +599,7 @@ export class CreatorUI {
   }
 
   closePasswordModal(): void {
+    this.stopAwaitingModalFocus();
     this.modal.classList.remove('creator-modal-backdrop--visible');
     this.modalInput.value = '';
     this.modalSubmit = null;
@@ -530,7 +624,9 @@ export class CreatorUI {
 
   dispose(): void {
     if (this.toastTimer !== null) window.clearTimeout(this.toastTimer);
+    this.stopAwaitingModalFocus();
     this.toolbar.remove();
+    this.hotbar.remove();
     this.toastEl.remove();
     this.entryPrompt.remove();
     this.modal.remove();
@@ -600,6 +696,12 @@ export class CreatorUI {
     return row;
   }
 }
+
+// Gameplay keys that might be physically held when the password modal opens (interact + movement);
+// the field isn't focused until all of these are released so they can't auto-repeat into it.
+const GAMEPLAY_HOLD_CODES = new Set<string>([
+  'KeyE', 'KeyW', 'KeyA', 'KeyS', 'KeyD', 'Space', 'ShiftLeft', 'ControlLeft', 'ControlRight'
+]);
 
 function el<K extends keyof HTMLElementTagNameMap>(tag: K, className: string): HTMLElementTagNameMap[K] {
   const node = document.createElement(tag);

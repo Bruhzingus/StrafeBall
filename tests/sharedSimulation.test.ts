@@ -109,6 +109,39 @@ describe('shared hand and pickup simulation', () => {
   });
 });
 
+describe('shared wall-bounce spring', () => {
+  // Airborne, hugging the +X wall and flying straight into it (head-on), then jump → spring bounce.
+  function bounceVelocity(approach: number): { x: number; y: number; z: number } {
+    const player = createPlayerState('p1', 'blue');
+    player.movement.position = vec3(GAME_CONSTANTS.map.halfWidth - GAME_CONSTANTS.player.radius - 0.05, 4, 0);
+    player.movement.velocity = vec3(approach, 0, 0);
+    player.movement.grounded = false;
+    const jump = { ...neutralInput(), jumpPressed: true };
+    const next = stepMovement(player.movement, player.movementInternal, player.dash, jump, neutralInput(), 1 / 72, [], false);
+    return next.movement.velocity;
+  }
+
+  it('bounces back off the wall and launches upward', () => {
+    const v = bounceVelocity(8);
+    expect(v.x).toBeLessThan(0); // pushed back into the court (away from the +X wall)
+    expect(v.y).toBeGreaterThan(0); // launched upward
+  });
+
+  it('launches farther out and higher the faster you hit the wall', () => {
+    const slow = bounceVelocity(3);
+    const fast = bounceVelocity(10);
+    expect(Math.abs(fast.x)).toBeGreaterThan(Math.abs(slow.x) + 2); // farther away
+    expect(fast.y).toBeGreaterThan(slow.y + 1); // higher up
+  });
+
+  it('caps the spring so an extreme approach cannot fling absurdly', () => {
+    const extreme = bounceVelocity(40);
+    const atCap = bounceVelocity(GAME_CONSTANTS.wall.bounceMaxApproachSpeed);
+    expect(Math.abs(extreme.x)).toBeCloseTo(Math.abs(atCap.x), 1);
+    expect(extreme.y).toBeCloseTo(atCap.y, 1);
+  });
+});
+
 describe('shared movement simulation', () => {
   it('conserves airborne momentum when only W is held', () => {
     const player = createPlayerState('p1', 'blue');

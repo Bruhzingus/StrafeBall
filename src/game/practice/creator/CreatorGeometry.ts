@@ -42,6 +42,9 @@ const DEG2RAD = Math.PI / 180;
 export class CreatorGeometry {
   private readonly root: TransformNode;
   private readonly cachedMaterials = new Map<string, StandardMaterial>();
+  // Textures owned by the CACHED materials (grid floor + terrain) — they must outlive a rebuild, so
+  // they are disposed only on full teardown (NOT in disposePerBuild, which runs every edit).
+  private readonly cachedTextures: Array<{ dispose(): void }> = [];
   private readonly perBuild: Array<{ dispose(): void }> = [];
   private readonly objectRoots = new Map<string, TransformNode>();
 
@@ -277,10 +280,13 @@ export class CreatorGeometry {
 
   private ensureGrid(): void {
     if (this.gridMesh) return;
+    // A bright, LIT grid-textured floor (not a dark emissive overlay) so the yard reads clearly in both
+    // Build and Playtest instead of looking black / leaving objects floating in the sky.
     const mat = new StandardMaterial('creator_grid_mat', this.scene);
-    mat.diffuseTexture = this.gridTexture('creator_grid_tex', new Color3(0.22, 0.26, 0.32), new Color3(0.5, 0.62, 0.78));
-    mat.emissiveColor = new Color3(0.16, 0.2, 0.26);
-    mat.specularColor = new Color3(0, 0, 0);
+    mat.diffuseTexture = this.gridTexture('creator_grid_tex', new Color3(0.40, 0.43, 0.47), new Color3(0.62, 0.66, 0.72));
+    mat.diffuseColor = new Color3(1, 1, 1);
+    mat.emissiveColor = new Color3(0.06, 0.065, 0.07);
+    mat.specularColor = new Color3(0.02, 0.02, 0.025);
     mat.backFaceCulling = false;
     this.cachedMaterials.set('__grid', mat);
     const grid = MeshBuilder.CreateGround('creator_grid', { width: 1, height: 1 }, this.scene);
@@ -296,7 +302,7 @@ export class CreatorGeometry {
     const w = b.maxX - b.minX;
     const d = b.maxZ - b.minZ;
     this.gridMesh.scaling.set(w, 1, d);
-    this.gridMesh.position.set(SANDBOX_CENTER.x, (layout.ground.bounds.y ?? 0) + 0.02, SANDBOX_CENTER.z);
+    this.gridMesh.position.set(SANDBOX_CENTER.x, (layout.ground.bounds.y ?? 0) - 0.02, SANDBOX_CENTER.z);
     const tex = (this.gridMesh.material as StandardMaterial).diffuseTexture as Texture | null;
     if (tex) {
       tex.uScale = Math.max(1, w / GRID_CELL_METRES);
@@ -362,7 +368,9 @@ export class CreatorGeometry {
 
   private applyOverlayVisibility(): void {
     const on = this.overlaysEnabled;
-    if (this.gridMesh) this.gridMesh.setEnabled(on && this.gridVisible);
+    // The ground floor shows in BOTH Build and Playtest (it's the floor, not a build-only gizmo); only
+    // the "show grid" toggle hides it. Trigger/collision debug volumes are Build-only.
+    if (this.gridMesh) this.gridMesh.setEnabled(this.gridVisible);
     for (const m of this.triggerMeshes) m.setEnabled(on && this.triggersVisible);
     for (const m of this.collisionMeshes) m.setEnabled(on && this.collisionVisible);
   }
@@ -460,7 +468,9 @@ export class CreatorGeometry {
     tex.update(true);
     tex.wrapU = Texture.WRAP_ADDRESSMODE;
     tex.wrapV = Texture.WRAP_ADDRESSMODE;
-    this.perBuild.push(tex);
+    // Persistent: this texture backs a cached material, so it must survive rebuilds (an edit calls
+    // disposePerBuild every time — disposing it there is what made the floor/walls go black on place).
+    this.cachedTextures.push(tex);
     return tex;
   }
 
@@ -524,6 +534,8 @@ export class CreatorGeometry {
     this.gridMesh?.dispose();
     for (const mat of this.cachedMaterials.values()) mat.dispose();
     this.cachedMaterials.clear();
+    for (const t of this.cachedTextures) t.dispose();
+    this.cachedTextures.length = 0;
     this.objectRoots.clear();
     this.root.dispose();
   }

@@ -35,13 +35,14 @@ import {
   CreatorLayoutObject,
   CreatorObjectMetadata,
   cloneLayout,
+  committedCourseLayout,
   createObjectId,
-  defaultCreatorLayout,
   enforceSingleDefaultSpawn,
   isLayoutValid,
   layoutSpawn,
   moduleDef,
   objectDimensions,
+  objectWorldAabb,
   scaleForDimensions,
   type Vec3Tuple
 } from './CreatorLayout';
@@ -74,6 +75,8 @@ export interface CreatorEditorHooks {
   suspendSandbox(): void;
   /** Restore the sandbox visuals + collision + movement world + spawn the player back in. */
   resumeSandbox(): void;
+  /** Hide/show the gameplay HUD (scoreboard, hands, crosshair, music…) while the editor is up. */
+  setHudVisible(visible: boolean): void;
 }
 
 type Mode = 'build' | 'playtest';
@@ -115,6 +118,7 @@ export class CreatorEditor implements CreatorBridge {
 
   // Pointer/gizmo interaction state.
   private looking = false;
+  private lookMoved = 0;
   private gizmoDragging = false;
   private ignoreClickUntilMs = 0;
 
@@ -130,7 +134,11 @@ export class CreatorEditor implements CreatorBridge {
   private readonly onPointerUp = (e: PointerEvent) => this.handlePointerUp(e);
   private readonly onPointerMove = (e: PointerEvent) => this.handlePointerMove(e);
   private readonly onWheel = (e: WheelEvent) => this.handleWheel(e);
-  private readonly onBlur = () => this.flyKeys.clear();
+  private readonly onBlur = () => {
+    this.flyKeys.clear();
+    this.looking = false;
+    this.setCanvasCursor('');
+  };
   private listenersActive = false;
 
   constructor(
@@ -140,7 +148,7 @@ export class CreatorEditor implements CreatorBridge {
     private readonly input: InputManager,
     private readonly hooks: CreatorEditorHooks
   ) {
-    this.layout = loadLocalLayout() ?? defaultCreatorLayout();
+    this.layout = loadLocalLayout() ?? committedCourseLayout();
     this.history = new CreatorHistory(this.layout);
     this.geometry = new CreatorGeometry(scene);
     this.geometry.setEnabled(false);
@@ -155,6 +163,11 @@ export class CreatorEditor implements CreatorBridge {
 
   isActive(): boolean {
     return this.active;
+  }
+
+  /** Active editor session OR an open password modal — i.e. the creator owns the screen + input. */
+  isBusy(): boolean {
+    return this.active || this.ui.isModalOpen();
   }
 
   getModePublic(): Mode {
@@ -256,6 +269,7 @@ export class CreatorEditor implements CreatorBridge {
     this.mode = 'build';
     this.setEntrySignVisible(false);
     this.hooks.suspendSandbox();
+    this.hooks.setHudVisible(false);
 
     this.geometry.setEnabled(true);
     this.geometry.rebuild(this.layout);
@@ -342,6 +356,7 @@ export class CreatorEditor implements CreatorBridge {
 
     this.scene.activeCamera = this.player.camera;
     this.player.movement.setWorld(null);
+    this.hooks.setHudVisible(true);
     this.active = false;
     this.mode = 'build';
 
@@ -466,6 +481,8 @@ export class CreatorEditor implements CreatorBridge {
     window.removeEventListener('pointermove', this.onPointerMove);
     canvas?.removeEventListener('wheel', this.onWheel);
     this.flyKeys.clear();
+    this.looking = false;
+    this.setCanvasCursor('');
   }
 
   private handleKeyDown(e: KeyboardEvent): void {
@@ -511,6 +528,29 @@ export class CreatorEditor implements CreatorBridge {
     if ((e.ctrlKey && code === 'KeyY') || (e.ctrlKey && e.shiftKey && code === 'KeyZ')) {
       e.preventDefault();
       this.redo();
+      return;
+    }
+    if (e.ctrlKey && code === 'KeyS') {
+      e.preventDefault();
+      this.quickSave();
+      return;
+    }
+    if (e.ctrlKey) return; // leave other Ctrl combos to the browser
+
+    // --- Single-key tools (Fortnite/Blender style) ---
+    if (code === 'KeyG') { e.preventDefault(); this.setSnapSettings({ gizmo: 'move' }); return; }
+    if (code === 'KeyR') { e.preventDefault(); this.setSnapSettings({ gizmo: 'rotate' }); return; }
+    if (code === 'KeyT') { e.preventDefault(); this.setSnapSettings({ gizmo: 'scale' }); return; }
+    if (code === 'KeyV') { e.preventDefault(); this.setSnapSettings({ gizmo: 'off' }); return; }
+    if (code === 'KeyF') { e.preventDefault(); this.focusSelected(); return; }
+    if (code === 'KeyB') { e.preventDefault(); this.duplicateSelected(); return; }
+
+    // --- Number keys arm the first ten modules (the main building blocks) ---
+    const digit = /^Digit([0-9])$/.exec(code);
+    if (digit) {
+      e.preventDefault();
+      const n = Number(digit[1]);
+      this.armModuleByIndex(n === 0 ? 9 : n - 1);
     }
   }
 
@@ -522,16 +562,22 @@ export class CreatorEditor implements CreatorBridge {
   private handlePointerDown(e: PointerEvent): void {
     if (e.pointerType !== 'mouse') return;
     if (e.button === 2) {
+      // Free-look on hold-RMB using raw mouse deltas — deliberately NOT pointer-lock based, so it can't
+      // be broken by the cursor-lock suppression machinery. Hide the cursor while dragging.
       this.looking = true;
+      this.lookMoved = 0;
       e.preventDefault();
-      this.canvas()?.requestPointerLock?.();
+      this.setCanvasCursor('none');
     }
   }
 
   private handlePointerMove(e: PointerEvent): void {
-    if (!this.looking || document.pointerLockElement !== this.canvas()) return;
-    this.camYaw += e.movementX * LOOK_SENSITIVITY;
-    this.camPitch += e.movementY * LOOK_SENSITIVITY;
+    if (!this.looking) return;
+    const dx = e.movementX || 0;
+    const dy = e.movementY || 0;
+    this.lookMoved += Math.abs(dx) + Math.abs(dy);
+    this.camYaw += dx * LOOK_SENSITIVITY;
+    this.camPitch += dy * LOOK_SENSITIVITY;
     this.camPitch = Math.max(-PITCH_LIMIT, Math.min(PITCH_LIMIT, this.camPitch));
     this.applyCameraRotation();
   }
@@ -541,13 +587,15 @@ export class CreatorEditor implements CreatorBridge {
     if (e.button === 2) {
       if (this.looking) {
         this.looking = false;
-        if (document.pointerLockElement === this.canvas()) document.exitPointerLock?.();
-        // A right-click tap (no real look drag) cancels placement / deselects.
-        if (this.armedModule) {
-          this.armModule(null);
-          this.ui.refresh();
-        } else {
-          this.select(null);
+        this.setCanvasCursor('');
+        // A right-click tap (negligible drag, not a look) cancels placement / deselects.
+        if (this.lookMoved < 6) {
+          if (this.armedModule) {
+            this.armModule(null);
+            this.ui.refresh();
+          } else {
+            this.select(null);
+          }
         }
       }
       return;
@@ -558,6 +606,11 @@ export class CreatorEditor implements CreatorBridge {
     const target = e.target as Element | null;
     if (target && target !== this.canvas()) return; // click landed on UI, not the world
     this.handleLeftClick(e);
+  }
+
+  private setCanvasCursor(cursor: string): void {
+    const c = this.canvas();
+    if (c) c.style.cursor = cursor;
   }
 
   private handleWheel(e: WheelEvent): void {
@@ -835,6 +888,33 @@ export class CreatorEditor implements CreatorBridge {
     return this.armedModule;
   }
 
+  /** Arm the Nth module in the palette order (used by the number-key hotbar shortcuts). Toggles off if
+   *  the same module is pressed again. */
+  armModuleByIndex(index: number): void {
+    const mod = CREATOR_MODULES[index];
+    if (!mod) return;
+    this.armModule(this.armedModule === mod.type ? null : mod.type);
+    this.ui.refresh();
+  }
+
+  /** Frame the editor camera on the selected object (F), keeping the current view angle. */
+  focusSelected(): void {
+    const obj = this.getSelectedObject();
+    const cam = this.editorCamera;
+    if (!obj || !cam) return;
+    const a = objectWorldAabb(obj);
+    const cx = (a.minX + a.maxX) / 2;
+    const cy = (a.minY + a.maxY) / 2;
+    const cz = (a.minZ + a.maxZ) / 2;
+    const span = Math.max(a.maxX - a.minX, a.maxY - a.minY, a.maxZ - a.minZ, 4);
+    const dist = span * 1.6 + 6;
+    const cosPitch = Math.cos(this.camPitch);
+    const fX = Math.sin(this.camYaw) * cosPitch;
+    const fZ = Math.cos(this.camYaw) * cosPitch;
+    const fY = -Math.sin(this.camPitch);
+    cam.position.set(cx - fX * dist, cy - fY * dist, cz - fZ * dist);
+  }
+
   // ---------------------------------------------------------------------------------------------
   // Grid / snap
   // ---------------------------------------------------------------------------------------------
@@ -949,10 +1029,32 @@ export class CreatorEditor implements CreatorBridge {
   }
 
   resetLayout(): void {
-    if (!window.confirm('Reset to the default Movement Sandbox layout? Unsaved changes will be lost.')) return;
+    if (!window.confirm('Reset to the committed Movement Sandbox layout? Unsaved changes will be lost.')) return;
     this.selectedId = null;
-    this.applyLayout(defaultCreatorLayout(), true);
-    this.ui.toast('Layout reset to default');
+    this.applyLayout(committedCourseLayout(), true);
+    this.ui.toast('Layout reset to committed layout');
+  }
+
+  /**
+   * Copy the current layout JSON to the clipboard so it can be handed off and saved into the repo
+   * (layouts/movementCourseLayout.json) to become the live course. Falls back to a JSON export
+   * download if the clipboard API is unavailable.
+   */
+  copyJson(): void {
+    const json = JSON.stringify(this.layout, null, 2);
+    const clip = navigator.clipboard;
+    if (clip && typeof clip.writeText === 'function') {
+      clip.writeText(json).then(
+        () => this.ui.toast('Layout JSON copied — paste it to save into the repo'),
+        () => {
+          exportLayoutToFile(this.layout);
+          this.ui.toast('Clipboard blocked — exported JSON file instead');
+        }
+      );
+    } else {
+      exportLayoutToFile(this.layout);
+      this.ui.toast('Clipboard unavailable — exported JSON file instead');
+    }
   }
 
   resetPlayer(): void {

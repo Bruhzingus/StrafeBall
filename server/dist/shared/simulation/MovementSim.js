@@ -186,12 +186,21 @@ function stepMovement(movementIn, internalIn, dashIn, input, prevInput, dt, boxe
             wallReattachCooldown = c.wall.reattachCooldownSeconds;
         }
         else if (!grounded && wallBounceNormal !== null) {
-            // Hit a wall too head-on to wall-run (steeper than runTriggerAngleDegrees): bounce off with
-            // the same impulse as a wall-jump, but doesn't require an active wall-run and is free
-            // (no stamina/dash cost). Still sets the reattach cooldown to prevent an immediate re-trigger.
-            vx += wallBounceNormal.x * c.wall.jumpAwaySpeed * speedScale;
-            vz += wallBounceNormal.z * c.wall.jumpAwaySpeed * speedScale;
-            vy = c.wall.jumpUpSpeed * speedScale;
+            // Hit a wall too head-on to wall-run (steeper than runTriggerAngleDegrees): bounce off like a
+            // spring. The faster you're moving INTO the wall, the farther out and higher you launch — we
+            // reflect the into-wall velocity (keeping along-wall momentum) and set a fresh upward kick, both
+            // scaling with the approach speed. Free (no stamina/dash cost); still sets the reattach cooldown.
+            const nx = wallBounceNormal.x;
+            const nz = wallBounceNormal.z;
+            const vn = vx * nx + vz * nz; // along the outward normal; negative = moving into the wall
+            const approach = Math.min(c.wall.bounceMaxApproachSpeed, Math.max(0, -vn));
+            const tx = vx - vn * nx; // along-wall (tangential) component, preserved
+            const tz = vz - vn * nz;
+            const outward = c.wall.bounceBaseAwaySpeed * speedScale + approach * c.wall.bounceAwayGain;
+            const up = c.wall.bounceBaseUpSpeed * speedScale + approach * c.wall.bounceUpGain;
+            vx = tx + nx * outward;
+            vz = tz + nz * outward;
+            vy = Math.max(vy, up);
             wallReattachCooldown = c.wall.reattachCooldownSeconds;
         }
         else if (grounded || jumpGraceTimer > 0) {

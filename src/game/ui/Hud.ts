@@ -209,6 +209,12 @@ export class Hud {
     this.topLeft.style.display = this.debugVisible ? '' : 'none';
   }
 
+  /** Hide/show the entire gameplay HUD (scoreboard, hands, crosshair, speed, music, help). Used by the
+   * Creator Sandbox so the editor isn't cluttered by gameplay UI you aren't using. */
+  setVisible(visible: boolean): void {
+    this.root.style.display = visible ? '' : 'none';
+  }
+
   showScoreEvent(title: string, subtitle: string, variant: 'good' | 'bad' | 'neutral' = 'neutral'): void {
     this.showTimedScoreEvent(title, subtitle, variant, 1150);
   }

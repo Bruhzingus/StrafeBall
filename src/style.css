@@ -4870,7 +4870,7 @@ html, body {
   top: 12px;
   right: 12px;
   width: 286px;
-  max-height: calc(100vh - 24px);
+  max-height: calc(100vh - 190px);
   overflow-y: auto;
   display: none;
   flex-direction: column;
@@ -5056,6 +5056,8 @@ html, body {
   justify-content: center;
   background: rgba(4, 8, 18, 0.72);
   z-index: 80;
+  /* Capture clicks so they can't fall through to the game canvas (which would grab pointer lock). */
+  pointer-events: auto;
 }
 .creator-modal-backdrop--visible { display: flex; }
 .creator-modal {
@@ -5081,3 +5083,83 @@ html, body {
   font-size: 14px;
 }
 .creator-modal-actions { display: flex; gap: 8px; justify-content: flex-end; }
+
+/* --- Bottom hotbar (Fortnite-style clickable + keybindable tool/module strip) --- */
+.creator-hotbar {
+  position: absolute;
+  left: 10px;
+  right: 304px; /* leave room for the right-side toolbar */
+  bottom: 10px;
+  display: none;
+  flex-direction: column;
+  gap: 8px;
+  padding: 8px 10px;
+  border-radius: 12px;
+  background: rgba(10, 16, 30, 0.92);
+  border: 1px solid rgba(110, 170, 255, 0.32);
+  box-shadow: 0 10px 30px rgba(0, 0, 0, 0.5);
+  color: #dfe8f6;
+  font-family: 'Trebuchet MS', 'Segoe UI', Verdana, sans-serif;
+  pointer-events: auto;
+  z-index: 60;
+}
+.creator-hotbar--visible { display: flex; }
+
+.creator-hotbar-tools { display: flex; gap: 6px; flex-wrap: wrap; }
+.creator-hotbar-tool {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 6px 10px;
+  border-radius: 7px;
+  border: 1px solid rgba(140, 180, 255, 0.3);
+  background: rgba(40, 60, 100, 0.5);
+  color: #e6eefc;
+  font-size: 12px;
+  font-weight: 700;
+  cursor: pointer;
+}
+.creator-hotbar-tool:hover { background: rgba(60, 90, 150, 0.7); }
+.creator-hotbar-tool--active { background: rgba(70, 150, 255, 0.9); border-color: #aaccff; color: #fff; }
+
+.creator-hotbar-strip { display: flex; gap: 14px; flex-wrap: wrap; align-items: flex-start; }
+.creator-hotbar-group { display: flex; flex-direction: column; gap: 4px; }
+.creator-hotbar-grouptitle {
+  font-size: 9px;
+  font-weight: 800;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: #7d93b8;
+}
+.creator-hotbar-chips { display: flex; gap: 5px; flex-wrap: wrap; }
+
+.creator-chip {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  padding: 5px 8px;
+  border-radius: 7px;
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  background: rgba(255, 255, 255, 0.05);
+  color: #dfe8f6;
+  font-size: 11px;
+  font-weight: 600;
+  cursor: pointer;
+}
+.creator-chip:hover { background: rgba(90, 130, 200, 0.4); }
+.creator-chip--armed { background: rgba(70, 150, 255, 0.9); border-color: #aaccff; color: #fff; }
+.creator-chip-key {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 16px;
+  height: 16px;
+  padding: 0 3px;
+  border-radius: 4px;
+  background: rgba(0, 0, 0, 0.45);
+  border: 1px solid rgba(255, 255, 255, 0.25);
+  font-size: 10px;
+  font-weight: 800;
+  color: #ffe08a;
+}
+.creator-chip-label { white-space: nowrap; }
