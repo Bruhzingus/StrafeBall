@@ -1239,6 +1239,9 @@ export class CreatorEditor implements CreatorBridge {
   }
 
   setSnapSettings(patch: Partial<CreatorSnapSettings>): void {
+    // Choosing a transform tool (Move/Rotate/Scale/Select) exits placement: disarm the held module so
+    // the next click SELECTS what you clicked instead of stamping another copy.
+    if (patch.gizmo !== undefined && this.armedModule) this.armModule(null);
     Object.assign(this.snap, patch);
     if (patch.showGrid !== undefined) this.geometry.setGridVisible(this.snap.showGrid);
     if (patch.showTriggers !== undefined) this.geometry.setTriggersVisible(this.snap.showTriggers);

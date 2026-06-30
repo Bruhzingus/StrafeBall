@@ -25,6 +25,7 @@ import {
 import {
   CreatorLayout,
   CreatorLayoutObject,
+  CreatorModuleDef,
   materialDef,
   moduleDef,
   moduleLocalBoxes,
@@ -53,6 +54,16 @@ export class CreatorGeometry {
   private gridMesh: Mesh | null = null;
   private selectionBox: Mesh | null = null;
   private readonly previewBuild: Array<{ dispose(): void }> = [];
+  // Persistent placement-preview handles (built once per shape, moved per frame — see setPlacementPreview).
+  private previewShapeSig: string | null = null;
+  private previewObjRoot: TransformNode | null = null;
+  private previewBoundsMesh: Mesh | null = null;
+  private previewFootprint: Mesh | null = null;
+  private previewDrop: Mesh | null = null;
+  private previewRelX = 0;
+  private previewRelZ = 0;
+  private previewRelCenterY = 0;
+  private previewMinYRel = 0;
   private readonly triggerMeshes: Mesh[] = [];
   private readonly collisionMeshes: Mesh[] = [];
 
@@ -356,24 +367,51 @@ export class CreatorGeometry {
   // Placement preview
   // ---------------------------------------------------------------------------------------------
 
+  /**
+   * Show/update the placement ghost. CRITICAL: the meshes are rebuilt only when the SHAPE changes
+   * (type/rotation/scale/look) — never per frame, since recreating transparent meshes every frame made
+   * the ghost flicker ("flash in and out") and small/thin shapes look like they never appeared. While
+   * only the position changes (the common case — moving the cursor) we just move the existing meshes.
+   */
   setPlacementPreview(obj: CreatorLayoutObject | null): void {
-    this.disposePreview();
-    if (!obj || !this.overlaysEnabled) {
-      this.previewRoot.setEnabled(false);
+    const def = obj ? moduleDef(obj.type) : undefined;
+    if (!obj || !def || !this.overlaysEnabled) {
+      this.hidePreview();
       return;
     }
+    const sig = this.previewShapeSignature(obj);
+    if (sig !== this.previewShapeSig) {
+      this.previewShapeSig = sig;
+      this.buildPreviewMeshes(obj, def);
+    }
+    this.movePreview(obj);
+    this.previewRoot.setEnabled(true);
+  }
 
-    const def = moduleDef(obj.type);
-    if (!def) {
-      this.previewRoot.setEnabled(false);
-      return;
-    }
+  clearPlacementPreview(): void {
+    this.hidePreview();
+  }
+
+  /** Idempotent hide — disposes once, then no-ops, so repeated clears never churn meshes. */
+  private hidePreview(): void {
+    if (this.previewShapeSig === null && this.previewBuild.length === 0) return;
+    this.disposePreview();
+    this.previewRoot.setEnabled(false);
+    this.previewShapeSig = null;
+  }
+
+  /** What forces a mesh rebuild — everything except world position (which is a cheap transform). */
+  private previewShapeSignature(obj: CreatorLayoutObject): string {
+    const r = (n: number) => Math.round((n ?? 0) * 1000) / 1000;
+    return [obj.type, r(obj.rotation[1] ?? 0), r(obj.scale[0]), r(obj.scale[1]), r(obj.scale[2]), obj.material ?? '', obj.texture ?? ''].join('|');
+  }
+
+  private buildPreviewMeshes(obj: CreatorLayoutObject, def: CreatorModuleDef): void {
+    this.disposePreview();
 
     const node = new TransformNode(`creator_preview_${obj.type}`, this.scene);
     node.parent = this.previewRoot;
-    node.position.set(obj.position[0], obj.position[1], obj.position[2]);
-    node.rotation.set(0, (obj.rotation[1] ?? 0) * DEG2RAD, 0);
-    node.scaling.set(obj.scale[0], obj.scale[1], obj.scale[2]);
+    this.previewObjRoot = node;
     this.previewBuild.push(node);
 
     const fill = this.previewMaterial();
@@ -387,43 +425,64 @@ export class CreatorGeometry {
       this.buildMarkerPreview(obj, node, fill);
     }
 
+    // The AABB-aligned helpers (bounds outline, ground footprint, drop line) have a fixed size for a
+    // given rotation/scale; only their world position changes, so capture the offset from the base.
     const a = objectWorldAabb(obj);
+    const px = obj.position[0], py = obj.position[1], pz = obj.position[2];
+    this.previewRelX = (a.minX + a.maxX) / 2 - px;
+    this.previewRelZ = (a.minZ + a.maxZ) / 2 - pz;
+    this.previewRelCenterY = (a.minY + a.maxY) / 2 - py;
+    this.previewMinYRel = a.minY - py;
+
     const bounds = MeshBuilder.CreateBox('creator_preview_bounds', { width: a.maxX - a.minX, height: a.maxY - a.minY, depth: a.maxZ - a.minZ }, this.scene);
-    bounds.position.set((a.minX + a.maxX) / 2, (a.minY + a.maxY) / 2, (a.minZ + a.maxZ) / 2);
     bounds.material = this.previewOutlineMaterial();
     bounds.isPickable = false;
     bounds.parent = this.previewRoot;
+    this.previewBoundsMesh = bounds;
     this.previewBuild.push(bounds);
 
-    // Ground footprint + drop line: a bright marker on the floor directly under the object so the exact
-    // landing spot is unmistakable — even when the piece is raised off the ground.
-    const cx = (a.minX + a.maxX) / 2;
-    const cz = (a.minZ + a.maxZ) / 2;
+    const footMat = this.previewFootprintMaterial();
     const fpW = Math.max(0.4, a.maxX - a.minX);
     const fpD = Math.max(0.4, a.maxZ - a.minZ);
-    const footMat = this.previewFootprintMaterial();
     const footprint = MeshBuilder.CreateBox('creator_preview_footprint', { width: fpW, height: 0.06, depth: fpD }, this.scene);
-    footprint.position.set(cx, this.groundY + 0.04, cz);
     footprint.material = footMat;
     footprint.isPickable = false;
     footprint.parent = this.previewRoot;
+    this.previewFootprint = footprint;
     this.previewBuild.push(footprint);
 
-    if (a.minY > this.groundY + 0.15) {
-      const lineH = a.minY - this.groundY;
-      const drop = MeshBuilder.CreateBox('creator_preview_drop', { width: 0.14, height: lineH, depth: 0.14 }, this.scene);
-      drop.position.set(cx, this.groundY + lineH / 2, cz);
-      drop.material = footMat;
-      drop.isPickable = false;
-      drop.parent = this.previewRoot;
-      this.previewBuild.push(drop);
-    }
-
-    this.previewRoot.setEnabled(true);
+    // Unit-height drop line, scaled per frame to span ground → object base (hidden when grounded).
+    const drop = MeshBuilder.CreateBox('creator_preview_drop', { width: 0.14, height: 1, depth: 0.14 }, this.scene);
+    drop.material = footMat;
+    drop.isPickable = false;
+    drop.parent = this.previewRoot;
+    drop.setEnabled(false);
+    this.previewDrop = drop;
+    this.previewBuild.push(drop);
   }
 
-  clearPlacementPreview(): void {
-    this.setPlacementPreview(null);
+  /** Per-frame transform update only (no mesh creation/disposal → no flicker). */
+  private movePreview(obj: CreatorLayoutObject): void {
+    const px = obj.position[0], py = obj.position[1], pz = obj.position[2];
+    if (this.previewObjRoot) {
+      this.previewObjRoot.position.set(px, py, pz);
+      this.previewObjRoot.rotation.set(0, (obj.rotation[1] ?? 0) * DEG2RAD, 0);
+      this.previewObjRoot.scaling.set(obj.scale[0], obj.scale[1], obj.scale[2]);
+    }
+    const cx = px + this.previewRelX;
+    const cz = pz + this.previewRelZ;
+    if (this.previewBoundsMesh) this.previewBoundsMesh.position.set(cx, py + this.previewRelCenterY, cz);
+    if (this.previewFootprint) this.previewFootprint.position.set(cx, this.groundY + 0.04, cz);
+    if (this.previewDrop) {
+      const h = py + this.previewMinYRel - this.groundY;
+      if (h > 0.15) {
+        this.previewDrop.setEnabled(true);
+        this.previewDrop.scaling.set(1, h, 1);
+        this.previewDrop.position.set(cx, this.groundY + h / 2, cz);
+      } else {
+        this.previewDrop.setEnabled(false);
+      }
+    }
   }
 
   private buildMarkerPreview(obj: CreatorLayoutObject, node: TransformNode, mat: StandardMaterial): void {
@@ -746,6 +805,10 @@ export class CreatorGeometry {
       }
     }
     this.previewBuild.length = 0;
+    this.previewObjRoot = null;
+    this.previewBoundsMesh = null;
+    this.previewFootprint = null;
+    this.previewDrop = null;
   }
 
   dispose(): void {
