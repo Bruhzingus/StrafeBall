@@ -16,7 +16,10 @@ const KEY_PREFIX = 'strafeball:creator-sandbox:v1';
 export const STORAGE_KEYS = {
   layout: `${KEY_PREFIX}:layout`,
   autosave: `${KEY_PREFIX}:autosave`,
-  slots: `${KEY_PREFIX}:slots`
+  slots: `${KEY_PREFIX}:slots`,
+  // The user's "published" layout: what the LIVE Movement Sandbox plays (read on its build). Lets a
+  // user save their own course and play it after a reload, even on the web (localStorage only).
+  published: `${KEY_PREFIX}:published`
 } as const;
 
 const MAX_SLOTS = 8;
@@ -86,6 +89,36 @@ export function loadAutosave(): CreatorLayout | null {
     return validateLayout(JSON.parse(raw)).layout;
   } catch {
     return null;
+  }
+}
+
+// --- Published course (the live Movement Sandbox reads this) ------------------------------------
+
+/** Publish a layout as the live Movement Course (what the sandbox plays after a reload). */
+export function savePublishedLayout(layout: CreatorLayout): boolean {
+  return writeKey(STORAGE_KEYS.published, JSON.stringify(layout));
+}
+
+/** The user's published course, validated. Returns null when none has been saved. */
+export function loadPublishedLayout(): CreatorLayout | null {
+  const raw = readKey(STORAGE_KEYS.published);
+  if (!raw) return null;
+  try {
+    return validateLayout(JSON.parse(raw)).layout;
+  } catch {
+    return null;
+  }
+}
+
+/** Remove any published course (revert the live sandbox to the committed layout on next build). */
+export function clearPublishedLayout(): boolean {
+  const ls = safeLocalStorage();
+  if (!ls) return false;
+  try {
+    ls.removeItem(STORAGE_KEYS.published);
+    return true;
+  } catch {
+    return false;
   }
 }
 

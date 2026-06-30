@@ -2084,7 +2084,8 @@ export class ArenaScene {
       const snap = this.player.lastMovementSnapshot;
       this.updateLocalMovementFoley(dt, vector3ToVec3(snap.velocity), snap.grounded, snap.sliding, snap.dashingThisFrame, snap.wallRunning);
       this.effects.update(dt);
-      if (this.input.wasKeyPressed('F1')) creator.setMode('build');
+      // F1 or Esc returns to Build so the player can never get stuck in pointer-locked playtest.
+      if (this.input.wasKeyPressed('F1') || this.input.wasKeyPressed('Escape')) creator.setMode('build');
     }
     creator.step(dt);
   }

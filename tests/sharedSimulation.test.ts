@@ -347,6 +347,29 @@ describe('shared movement simulation', () => {
     expect(after.movement.wallRunning).toBe(false);
   });
 
+  it('refreshes double jump on wall-jump so players can double jump away from the wall', () => {
+    const dt = 1 / 72;
+    const player = createPlayerState('p1', 'blue');
+    player.movement.position = vec3(GAME_CONSTANTS.map.halfWidth - GAME_CONSTANTS.player.radius, 3, 0);
+    player.movement.velocity = vec3(0, 0, GAME_CONSTANTS.wall.minEntrySpeed + 3);
+    player.movement.grounded = false;
+    player.movement.wallRunning = true;
+    player.movementInternal.doubleJumpAvailable = false;
+    player.movementInternal.lastWallNormalX = -1;
+
+    const jump = { ...neutralInput(), jumpPressed: true, jumpHeld: true };
+    const wallJump = stepMovement(player.movement, player.movementInternal, player.dash, jump, neutralInput(), dt, [], false);
+
+    expect(wallJump.movement.wallRunning).toBe(false);
+    expect(wallJump.internal.doubleJumpAvailable).toBe(true);
+
+    const airJump = stepMovement(wallJump.movement, wallJump.internal, wallJump.dash, jump, neutralInput(), dt, [], false);
+
+    expect(airJump.movement.dashingThisFrame).toBe(true);
+    expect(airJump.internal.doubleJumpAvailable).toBe(false);
+    expect(airJump.dash.charges).toBe(GAME_CONSTANTS.dash.maxCharges - 1);
+  });
+
   // Wall-run vertical is controlled by A/D while holding W. Player hugs the +X wall (normal = -X),
   // facing +Z (yaw 0), so right = +X points INTO the wall: D (moveX +1) steers into the wall (climb),
   // A (moveX -1) steers away (descend). W alone runs straight (holds height). A/D without W: nothing.

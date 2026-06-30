@@ -4886,6 +4886,12 @@ html, body {
   pointer-events: auto;
   z-index: 60;
 }
+.creator-ui,
+.creator-ui *,
+.creator-hotbar,
+.creator-hotbar * {
+  box-sizing: border-box;
+}
 .creator-ui--visible { display: flex; }
 .creator-ui[data-mode="playtest"] { border-color: rgba(120, 240, 170, 0.45); }
 
@@ -4907,7 +4913,28 @@ html, body {
 }
 .creator-modebar { display: flex; flex-direction: column; gap: 6px; }
 .creator-modebar-row { display: flex; gap: 6px; flex-wrap: wrap; }
+.creator-modebar-row--primary { align-items: stretch; }
 .creator-mode-group { display: flex; gap: 4px; }
+
+.creator-settings-toggle {
+  min-width: 80px;
+  text-transform: uppercase;
+  background: linear-gradient(180deg, rgba(183, 105, 255, 0.95), rgba(125, 70, 220, 0.9));
+  border-color: rgba(210, 170, 255, 0.7);
+}
+.creator-settings-toggle:hover,
+.creator-settings-toggle--open {
+  background: linear-gradient(180deg, rgba(199, 140, 255, 0.98), rgba(145, 82, 235, 0.95));
+  border-color: rgba(235, 210, 255, 0.82);
+}
+.creator-settings-dropdown {
+  display: none;
+  flex-direction: column;
+  gap: 6px;
+  padding-top: 2px;
+}
+.creator-settings-dropdown--open { display: flex; }
+.creator-settings-dropdown .creator-modebar-row { width: 100%; }
 
 .creator-btn {
   flex: 1 1 auto;
@@ -5102,6 +5129,9 @@ html, body {
   font-family: 'Trebuchet MS', 'Segoe UI', Verdana, sans-serif;
   pointer-events: auto;
   z-index: 60;
+  /* Never let a wrapped module strip grow tall enough to swallow the viewport — scroll it instead. */
+  max-height: 42vh;
+  overflow-y: auto;
 }
 .creator-hotbar--visible { display: flex; }
 
@@ -5121,6 +5151,7 @@ html, body {
 }
 .creator-hotbar-tool:hover { background: rgba(60, 90, 150, 0.7); }
 .creator-hotbar-tool--active { background: rgba(70, 150, 255, 0.9); border-color: #aaccff; color: #fff; }
+.creator-hotbar-tool:disabled { opacity: 0.4; cursor: default; }
 
 .creator-hotbar-strip { display: flex; gap: 14px; flex-wrap: wrap; align-items: flex-start; }
 .creator-hotbar-group { display: flex; flex-direction: column; gap: 4px; }
@@ -5148,6 +5179,68 @@ html, body {
 }
 .creator-chip:hover { background: rgba(90, 130, 200, 0.4); }
 .creator-chip--armed { background: rgba(70, 150, 255, 0.9); border-color: #aaccff; color: #fff; }
+
+/* --- Outliner (object list) --- */
+.creator-outliner-head { display: flex; align-items: center; justify-content: space-between; }
+.creator-outliner-count {
+  font-size: 10px;
+  font-weight: 800;
+  color: #0b1220;
+  background: #8fb8ff;
+  border-radius: 9px;
+  padding: 1px 7px;
+}
+.creator-outliner-search { width: 100%; }
+.creator-outliner-list {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  max-height: 168px;
+  overflow-y: auto;
+  padding-right: 2px;
+}
+.creator-outliner-row {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  border-radius: 5px;
+  background: rgba(255, 255, 255, 0.03);
+}
+.creator-outliner-row--active { background: rgba(70, 150, 255, 0.32); outline: 1px solid rgba(150, 200, 255, 0.6); }
+.creator-outliner-row:hover { background: rgba(90, 130, 200, 0.28); }
+.creator-outliner-eye,
+.creator-outliner-mini {
+  flex: 0 0 auto;
+  width: 22px;
+  padding: 3px 0;
+  border-radius: 4px;
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  background: rgba(255, 255, 255, 0.04);
+  color: #cdd9ef;
+  font-size: 11px;
+  line-height: 1;
+  cursor: pointer;
+}
+.creator-outliner-eye:hover,
+.creator-outliner-mini:hover { background: rgba(90, 130, 200, 0.5); }
+.creator-outliner-del:hover { background: rgba(170, 60, 60, 0.7); color: #fff; }
+.creator-outliner-label {
+  flex: 1 1 auto;
+  min-width: 0;
+  text-align: left;
+  padding: 4px 6px;
+  border: none;
+  background: transparent;
+  color: #e3ecfb;
+  font-size: 11px;
+  font-weight: 600;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  cursor: pointer;
+}
+.creator-outliner-label--hidden { color: #6f80a0; font-style: italic; }
+
 .creator-chip-key {
   display: inline-flex;
   align-items: center;

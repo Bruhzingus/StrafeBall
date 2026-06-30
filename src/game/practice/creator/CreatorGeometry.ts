@@ -30,7 +30,8 @@ import {
   moduleLocalBoxes,
   objectCollisionBoxes,
   objectWorldAabb,
-  orientedBoxAabb
+  orientedBoxAabb,
+  textureDef
 } from './CreatorLayout';
 import { layoutWorldBounds } from './CreatorWorld';
 import { SANDBOX_CENTER } from '../MovementSandboxLayout';
@@ -41,6 +42,7 @@ const DEG2RAD = Math.PI / 180;
 
 export class CreatorGeometry {
   private readonly root: TransformNode;
+  private readonly previewRoot: TransformNode;
   private readonly cachedMaterials = new Map<string, StandardMaterial>();
   // Textures owned by the CACHED materials (grid floor + terrain) — they must outlive a rebuild, so
   // they are disposed only on full teardown (NOT in disposePerBuild, which runs every edit).
@@ -50,6 +52,7 @@ export class CreatorGeometry {
 
   private gridMesh: Mesh | null = null;
   private selectionBox: Mesh | null = null;
+  private readonly previewBuild: Array<{ dispose(): void }> = [];
   private readonly triggerMeshes: Mesh[] = [];
   private readonly collisionMeshes: Mesh[] = [];
 
@@ -57,9 +60,13 @@ export class CreatorGeometry {
   private triggersVisible = true;
   private collisionVisible = false;
   private overlaysEnabled = true;
+  private groundY = 0;
 
   constructor(private readonly scene: Scene) {
     this.root = new TransformNode('creator_geometry_root', scene);
+    this.previewRoot = new TransformNode('creator_preview_root', scene);
+    this.previewRoot.parent = this.root;
+    this.previewRoot.setEnabled(false);
   }
 
   setEnabled(enabled: boolean): void {
@@ -108,10 +115,14 @@ export class CreatorGeometry {
   }
 
   private buildSolid(obj: CreatorLayoutObject, node: TransformNode): void {
-    const mat = this.terrainMaterial(obj.material ?? 'concrete');
+    const texId = obj.texture && textureDef(obj.texture) ? obj.texture : null;
+    const mat = texId ? this.texturedMaterial(texId) : this.terrainMaterial(obj.material ?? 'concrete');
+    // For real image textures, tile to the texture's metre size and account for the object's scale so a
+    // stretched wall keeps a consistent texel density (the abstract grid keeps its per-build local UVs).
+    const cell = texId ? textureDef(texId)!.tile : GRID_CELL_METRES;
     const boxes = moduleLocalBoxes(obj.type);
     boxes.forEach((b, i) => {
-      const mesh = this.gridBox(`creator_${obj.id}_${i}`, b.s[0], b.s[1], b.s[2], mat);
+      const mesh = this.gridBox(`creator_${obj.id}_${i}`, b.s[0], b.s[1], b.s[2], mat, cell, texId ? obj.scale : [1, 1, 1]);
       mesh.position.set(b.o[0], b.o[1], b.o[2]);
       mesh.parent = node;
       this.tagPickable(mesh, obj.id);
@@ -298,6 +309,7 @@ export class CreatorGeometry {
 
   private positionGrid(layout: CreatorLayout): void {
     if (!this.gridMesh) return;
+    this.groundY = layout.ground.bounds.y ?? 0;
     const b = layoutWorldBounds(layout);
     const w = b.maxX - b.minX;
     const d = b.maxZ - b.minZ;
@@ -338,6 +350,137 @@ export class CreatorGeometry {
     this.selectionBox.scaling.set(a.maxX - a.minX + pad, a.maxY - a.minY + pad, a.maxZ - a.minZ + pad);
     this.selectionBox.position.set((a.minX + a.maxX) / 2, (a.minY + a.maxY) / 2, (a.minZ + a.maxZ) / 2);
     this.selectionBox.setEnabled(true);
+  }
+
+  // ---------------------------------------------------------------------------------------------
+  // Placement preview
+  // ---------------------------------------------------------------------------------------------
+
+  setPlacementPreview(obj: CreatorLayoutObject | null): void {
+    this.disposePreview();
+    if (!obj || !this.overlaysEnabled) {
+      this.previewRoot.setEnabled(false);
+      return;
+    }
+
+    const def = moduleDef(obj.type);
+    if (!def) {
+      this.previewRoot.setEnabled(false);
+      return;
+    }
+
+    const node = new TransformNode(`creator_preview_${obj.type}`, this.scene);
+    node.parent = this.previewRoot;
+    node.position.set(obj.position[0], obj.position[1], obj.position[2]);
+    node.rotation.set(0, (obj.rotation[1] ?? 0) * DEG2RAD, 0);
+    node.scaling.set(obj.scale[0], obj.scale[1], obj.scale[2]);
+    this.previewBuild.push(node);
+
+    const fill = this.previewMaterial();
+    if (def.category === 'terrain') {
+      for (const b of moduleLocalBoxes(obj.type)) {
+        const mesh = MeshBuilder.CreateBox(`creator_preview_${obj.type}_box`, { width: b.s[0], height: b.s[1], depth: b.s[2] }, this.scene);
+        mesh.position.set(b.o[0], b.o[1], b.o[2]);
+        this.configurePreviewMesh(mesh, fill, node);
+      }
+    } else {
+      this.buildMarkerPreview(obj, node, fill);
+    }
+
+    const a = objectWorldAabb(obj);
+    const bounds = MeshBuilder.CreateBox('creator_preview_bounds', { width: a.maxX - a.minX, height: a.maxY - a.minY, depth: a.maxZ - a.minZ }, this.scene);
+    bounds.position.set((a.minX + a.maxX) / 2, (a.minY + a.maxY) / 2, (a.minZ + a.maxZ) / 2);
+    bounds.material = this.previewOutlineMaterial();
+    bounds.isPickable = false;
+    bounds.parent = this.previewRoot;
+    this.previewBuild.push(bounds);
+
+    // Ground footprint + drop line: a bright marker on the floor directly under the object so the exact
+    // landing spot is unmistakable — even when the piece is raised off the ground.
+    const cx = (a.minX + a.maxX) / 2;
+    const cz = (a.minZ + a.maxZ) / 2;
+    const fpW = Math.max(0.4, a.maxX - a.minX);
+    const fpD = Math.max(0.4, a.maxZ - a.minZ);
+    const footMat = this.previewFootprintMaterial();
+    const footprint = MeshBuilder.CreateBox('creator_preview_footprint', { width: fpW, height: 0.06, depth: fpD }, this.scene);
+    footprint.position.set(cx, this.groundY + 0.04, cz);
+    footprint.material = footMat;
+    footprint.isPickable = false;
+    footprint.parent = this.previewRoot;
+    this.previewBuild.push(footprint);
+
+    if (a.minY > this.groundY + 0.15) {
+      const lineH = a.minY - this.groundY;
+      const drop = MeshBuilder.CreateBox('creator_preview_drop', { width: 0.14, height: lineH, depth: 0.14 }, this.scene);
+      drop.position.set(cx, this.groundY + lineH / 2, cz);
+      drop.material = footMat;
+      drop.isPickable = false;
+      drop.parent = this.previewRoot;
+      this.previewBuild.push(drop);
+    }
+
+    this.previewRoot.setEnabled(true);
+  }
+
+  clearPlacementPreview(): void {
+    this.setPlacementPreview(null);
+  }
+
+  private buildMarkerPreview(obj: CreatorLayoutObject, node: TransformNode, mat: StandardMaterial): void {
+    const def = moduleDef(obj.type);
+    if (!def) return;
+    const [w, h, d] = def.baseSize;
+    switch (def.shape) {
+      case 'gate':
+      case 'portal': {
+        const postT = Math.max(0.18, w * 0.06);
+        for (const sx of [-1, 1]) {
+          const post = MeshBuilder.CreateBox(`creator_preview_${obj.type}_post`, { width: postT, height: h, depth: Math.max(0.18, d) }, this.scene);
+          post.position.set((sx * (w - postT)) / 2, h / 2, 0);
+          this.configurePreviewMesh(post, mat, node);
+        }
+        const beam = MeshBuilder.CreateBox(`creator_preview_${obj.type}_beam`, { width: w, height: postT, depth: Math.max(0.18, d) }, this.scene);
+        beam.position.set(0, h - postT / 2, 0);
+        this.configurePreviewMesh(beam, mat, node);
+        break;
+      }
+      case 'arrow': {
+        const shaft = MeshBuilder.CreateBox(`creator_preview_${obj.type}_shaft`, { width: w * 0.35, height: 0.08, depth: d * 0.62 }, this.scene);
+        shaft.position.set(0, 0.08, -d * 0.1);
+        this.configurePreviewMesh(shaft, mat, node);
+        const head = MeshBuilder.CreateCylinder(`creator_preview_${obj.type}_head`, { diameter: w, height: 0.08, tessellation: 3 }, this.scene);
+        head.rotation.x = Math.PI / 2;
+        head.position.set(0, 0.08, d * 0.35);
+        this.configurePreviewMesh(head, mat, node);
+        break;
+      }
+      case 'sign': {
+        const post = MeshBuilder.CreateBox(`creator_preview_${obj.type}_post`, { width: 0.16, height: Math.max(0.6, h * 0.8), depth: 0.16 }, this.scene);
+        post.position.set(0, Math.max(0.6, h * 0.8) / 2, 0);
+        this.configurePreviewMesh(post, mat, node);
+        const face = MeshBuilder.CreateBox(`creator_preview_${obj.type}_face`, { width: w, height: h, depth: Math.max(0.08, d) }, this.scene);
+        face.position.set(0, Math.max(0.6, h * 0.8) + h / 2, 0);
+        this.configurePreviewMesh(face, mat, node);
+        break;
+      }
+      default: {
+        const pad = MeshBuilder.CreateBox(`creator_preview_${obj.type}_pad`, { width: w, height: Math.max(0.08, h), depth: d }, this.scene);
+        pad.position.set(0, Math.max(0.04, h / 2), 0);
+        this.configurePreviewMesh(pad, mat, node);
+        const arrow = MeshBuilder.CreateCylinder(`creator_preview_${obj.type}_dir`, { diameter: Math.min(w, d) * 0.5, height: 0.1, tessellation: 3 }, this.scene);
+        arrow.rotation.x = Math.PI / 2;
+        arrow.position.set(0, Math.max(0.12, h + 0.05), d * 0.25);
+        this.configurePreviewMesh(arrow, mat, node);
+        break;
+      }
+    }
+  }
+
+  private configurePreviewMesh(mesh: Mesh, material: StandardMaterial, parent: TransformNode): void {
+    mesh.material = material;
+    mesh.isPickable = false;
+    mesh.parent = parent;
+    this.previewBuild.push(mesh);
   }
 
   // ---------------------------------------------------------------------------------------------
@@ -418,6 +561,26 @@ export class CreatorGeometry {
     return mat;
   }
 
+  /** A real in-game image texture (tiled) applied as a lit material — cached + persists across rebuilds. */
+  private texturedMaterial(id: string): StandardMaterial {
+    const key = `tex_${id}`;
+    const cached = this.cachedMaterials.get(key);
+    if (cached) return cached;
+    const def = textureDef(id)!;
+    const mat = new StandardMaterial(`creator_${key}`, this.scene);
+    const tex = new Texture(def.url, this.scene);
+    tex.wrapU = Texture.WRAP_ADDRESSMODE;
+    tex.wrapV = Texture.WRAP_ADDRESSMODE;
+    mat.diffuseTexture = tex;
+    mat.diffuseColor = new Color3(1, 1, 1);
+    // Lift the shadowed side a touch so the texture reads clearly in the editor's flat lighting.
+    mat.emissiveColor = new Color3(0.12, 0.12, 0.13);
+    mat.specularColor = new Color3(0.05, 0.05, 0.06);
+    this.cachedMaterials.set(key, mat);
+    this.cachedTextures.push(tex);
+    return mat;
+  }
+
   private solidMaterial(id: string): StandardMaterial {
     const key = `solid_${id}`;
     const cached = this.cachedMaterials.get(key);
@@ -446,10 +609,56 @@ export class CreatorGeometry {
     return mat;
   }
 
-  private gridBox(name: string, w: number, h: number, d: number, material: StandardMaterial): Mesh {
-    const c = GRID_CELL_METRES;
-    const uv = (a: number, b: number) => new Vector4(0, 0, Math.max(1, a / c), Math.max(1, b / c));
-    const faceUV = [uv(w, h), uv(w, h), uv(d, h), uv(d, h), uv(w, d), uv(w, d)];
+  private previewMaterial(): StandardMaterial {
+    const cached = this.cachedMaterials.get('__placement_preview');
+    if (cached) return cached;
+    const color = new Color3(0.12, 0.72, 1.0);
+    const mat = new StandardMaterial('creator_placement_preview_mat', this.scene);
+    mat.diffuseColor = color;
+    mat.emissiveColor = color.scale(0.8);
+    mat.specularColor = new Color3(0, 0, 0);
+    mat.alpha = 0.46;
+    mat.backFaceCulling = false;
+    mat.disableLighting = true;
+    mat.transparencyMode = Material.MATERIAL_ALPHABLEND;
+    this.cachedMaterials.set('__placement_preview', mat);
+    return mat;
+  }
+
+  /** Bright, unlit marker used for the placement footprint + drop line on the ground. */
+  private previewFootprintMaterial(): StandardMaterial {
+    const cached = this.cachedMaterials.get('__placement_footprint');
+    if (cached) return cached;
+    const color = new Color3(1.0, 0.82, 0.2);
+    const mat = new StandardMaterial('creator_placement_footprint_mat', this.scene);
+    mat.emissiveColor = color;
+    mat.diffuseColor = new Color3(0, 0, 0);
+    mat.specularColor = new Color3(0, 0, 0);
+    mat.disableLighting = true;
+    mat.alpha = 0.9;
+    this.cachedMaterials.set('__placement_footprint', mat);
+    return mat;
+  }
+
+  private previewOutlineMaterial(): StandardMaterial {
+    const cached = this.cachedMaterials.get('__placement_preview_outline');
+    if (cached) return cached;
+    const mat = new StandardMaterial('creator_placement_preview_outline_mat', this.scene);
+    mat.emissiveColor = new Color3(0.65, 0.95, 1.0);
+    mat.diffuseColor = new Color3(0, 0, 0);
+    mat.specularColor = new Color3(0, 0, 0);
+    mat.disableLighting = true;
+    mat.wireframe = true;
+    this.cachedMaterials.set('__placement_preview_outline', mat);
+    return mat;
+  }
+
+  private gridBox(name: string, w: number, h: number, d: number, material: StandardMaterial, cell = GRID_CELL_METRES, scale: readonly number[] = [1, 1, 1]): Mesh {
+    // World-space dims drive how many texture cells tile across each face (so scaled walls keep density).
+    const sx = scale[0] ?? 1, sy = scale[1] ?? 1, sz = scale[2] ?? 1;
+    const ww = w * sx, hh = h * sy, dd = d * sz;
+    const uv = (a: number, b: number) => new Vector4(0, 0, Math.max(1, a / cell), Math.max(1, b / cell));
+    const faceUV = [uv(ww, hh), uv(ww, hh), uv(dd, hh), uv(dd, hh), uv(ww, dd), uv(ww, dd)];
     const mesh = MeshBuilder.CreateBox(name, { width: w, height: h, depth: d, wrap: true, faceUV }, this.scene);
     mesh.material = material;
     return mesh;
@@ -528,7 +737,19 @@ export class CreatorGeometry {
     this.perBuild.length = 0;
   }
 
+  private disposePreview(): void {
+    for (const d of this.previewBuild) {
+      try {
+        d.dispose();
+      } catch {
+        /* ignore double-dispose */
+      }
+    }
+    this.previewBuild.length = 0;
+  }
+
   dispose(): void {
+    this.disposePreview();
     this.disposePerBuild();
     this.selectionBox?.dispose();
     this.gridMesh?.dispose();
@@ -537,6 +758,7 @@ export class CreatorGeometry {
     for (const t of this.cachedTextures) t.dispose();
     this.cachedTextures.length = 0;
     this.objectRoots.clear();
+    this.previewRoot.dispose();
     this.root.dispose();
   }
 }

@@ -56,6 +56,9 @@ export interface CreatorLayoutObject {
   /** Multiplies the module's base size. Editing width/height/depth writes here. */
   scale: Vec3Tuple;
   material?: string;
+  /** Optional real in-game image texture id (see CREATOR_TEXTURES). Overrides the flat material look
+   *  on solid terrain modules. Local/offline only — never read by the server or shared sim. */
+  texture?: string;
   color?: string;
   collision?: boolean;
   visible?: boolean;
@@ -86,17 +89,19 @@ export interface CreatorObjectMetadata {
 
 export const CREATOR_LIMITS = {
   maxObjects: 400,
-  minDimension: 0.1,
-  maxDimension: 600,
-  minScale: 0.02,
-  maxScale: 80,
-  /** Allowed distance of an object's base from the yard centre (a margin past the boundary). */
-  maxRadiusFromCenter: Math.max(SANDBOX_HALF_X, SANDBOX_HALF_Z) + 60,
-  minY: -8,
-  maxY: SANDBOX_CEILING_Y + 20,
+  // Size/scale are effectively unlimited by request — only tiny floors (to avoid degenerate/zero or
+  // non-finite geometry) and an astronomically high ceiling remain, purely as crash guards.
+  minDimension: 0.01,
+  maxDimension: 100000,
+  minScale: 0.001,
+  maxScale: 100000,
+  /** Allowed distance of an object's base from the yard centre. Generous so big pieces aren't reined in. */
+  maxRadiusFromCenter: Math.max(SANDBOX_HALF_X, SANDBOX_HALF_Z) + 100000,
+  minY: -100000,
+  maxY: SANDBOX_CEILING_Y + 100000,
   maxLabelLength: 64,
   maxNameLength: 48,
-  maxTriggerDimension: 120
+  maxTriggerDimension: 100000
 } as const;
 
 // ---------------------------------------------------------------------------------------------
@@ -129,6 +134,39 @@ export const CREATOR_MATERIAL_IDS = CREATOR_MATERIALS.map((m) => m.id);
 
 export function materialDef(id: string | undefined): CreatorMaterialDef {
   return CREATOR_MATERIALS.find((m) => m.id === id) ?? CREATOR_MATERIALS[0];
+}
+
+// ---------------------------------------------------------------------------------------------
+// Real in-game image textures (the actual surfaces used by the gym/arena), selectable per object.
+// These are static assets served from /public; applying one to a solid module renders that real
+// texture (tiled) instead of the flat grid material. Local/offline only.
+// ---------------------------------------------------------------------------------------------
+
+export interface CreatorTextureDef {
+  id: string;
+  label: string;
+  /** Public asset URL of the colour/albedo map (served from /public). */
+  url: string;
+  /** World metres covered by one texture repeat (drives tiling on terrain). */
+  tile: number;
+}
+
+export const CREATOR_TEXTURES: readonly CreatorTextureDef[] = [
+  { id: 'cinder_block', label: 'Painted Cinder Block', url: '/assets/textures/gym/walls/NewWalls/StrafeBall_PaintedCinderBlock_Imperfect_Color_2K.png', tile: 4 },
+  { id: 'brick', label: 'Brick Wall', url: '/assets/textures/gym/walls/Bricks064_2K-JPG_Color.jpg', tile: 3 },
+  { id: 'stone', label: 'Stone Wall', url: '/assets/textures/gym/walls/Wall_Stones.png', tile: 4 },
+  { id: 'navy_vinyl', label: 'Navy Vinyl Pad', url: '/assets/textures/gym/walls/NewWallMat/NavyVinyl_Color.png', tile: 4 },
+  { id: 'wall_pad', label: 'Wall Pad', url: '/assets/textures/gym/walls/WallMat.png', tile: 4 },
+  { id: 'cover_mat', label: 'Blue Cover Mat', url: '/assets/textures/gym/Obstacles/gym_cover_mat_blue_tuned.png', tile: 3 },
+  { id: 'laminate_floor', label: 'Laminate Floor', url: '/assets/textures/gym/floor/textures/laminate_floor_03_diff_2k.png', tile: 5 },
+  { id: 'wood_floor', label: 'Wood Floor', url: '/assets/textures/gym/floor/WoodFloor051_1K-JPG_Color.jpg', tile: 4 }
+];
+
+export const CREATOR_TEXTURE_IDS = CREATOR_TEXTURES.map((t) => t.id);
+
+export function textureDef(id: string | undefined): CreatorTextureDef | undefined {
+  if (!id) return undefined;
+  return CREATOR_TEXTURES.find((t) => t.id === id);
 }
 
 const wallStyleToMaterial: Record<WallStyle, string> = {
@@ -503,6 +541,7 @@ export function sanitizeObject(raw: unknown): CreatorLayoutObject | null {
   };
   if (typeof o.name === 'string') obj.name = sanitizeText(o.name, CREATOR_LIMITS.maxNameLength);
   if (typeof o.color === 'string') obj.color = sanitizeText(o.color, 16);
+  if (typeof o.texture === 'string' && CREATOR_TEXTURE_IDS.includes(o.texture)) obj.texture = o.texture;
 
   const meta = sanitizeMetadata(o.metadata, def);
   if (meta) obj.metadata = meta;

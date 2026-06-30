@@ -203,6 +203,7 @@ export function stepMovement(
       wallRunning = false;
       wallRunTimer = 0;
       wallReattachCooldown = c.wall.reattachCooldownSeconds;
+      doubleJumpAvailable = true;
     } else if (!grounded && wallBounceNormal !== null) {
       // Hit a wall too head-on to wall-run (steeper than runTriggerAngleDegrees): bounce off like a
       // spring. The faster you're moving INTO the wall, the farther out and higher you launch — we

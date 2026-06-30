@@ -41,6 +41,7 @@ import {
   layoutWorldBounds,
   type CreatorWallFace
 } from './creator/CreatorWorld';
+import { loadPublishedLayout } from './creator/CreatorStorage';
 
 export type SandboxAction = 'leave';
 
@@ -91,7 +92,9 @@ export class MovementSandbox implements MovementWorld {
   private leaveLatched = false;
 
   constructor(private readonly scene: Scene, private readonly gym: GymArena) {
-    const layout = committedCourseLayout();
+    // Prefer the user's published course (saved locally from the Creator editor) so their own saved
+    // progress is what they play — falling back to the committed course when none exists. Local only.
+    const layout = loadPublishedLayout() ?? committedCourseLayout();
     this.fullLayout = layout;
     this.courseLayout = { ...layout, objects: layout.objects.filter((o) => o.type !== 'boundary_wall') };
 

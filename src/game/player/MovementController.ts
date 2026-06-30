@@ -275,6 +275,7 @@ export class MovementController {
       this.velocity.y = TUNING.wall.jumpUpSpeed;
       this.endWallRun();
       this.wallReattachCooldown = TUNING.wall.reattachCooldownSeconds;
+      this.doubleJumpAvailable = true;
       return;
     }
 

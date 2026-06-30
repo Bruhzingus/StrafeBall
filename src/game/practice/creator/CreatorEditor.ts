@@ -44,6 +44,7 @@ import {
   objectDimensions,
   objectWorldAabb,
   scaleForDimensions,
+  textureDef,
   type Vec3Tuple
 } from './CreatorLayout';
 import { CreatorWorld, buildCreatorCollisionBoxes } from './CreatorWorld';
@@ -55,8 +56,10 @@ import {
   exportLayoutToFile,
   importLayoutFromFile,
   loadLocalLayout,
+  loadPublishedLayout,
   saveAutosave,
-  saveLocalLayout
+  saveLocalLayout,
+  savePublishedLayout
 } from './CreatorStorage';
 
 const COLLISION_ID_PREFIX = 'creator_';
@@ -98,7 +101,14 @@ export class CreatorEditor implements CreatorBridge {
   private worldInstalled = false;
 
   private selectedId: string | null = null;
+  private clipboard: CreatorLayoutObject | null = null;
   private armedModule: string | null = null;
+  private placementPreview: CreatorLayoutObject | null = null;
+  private previewPointerX: number | null = null;
+  private previewPointerY: number | null = null;
+  private previewRotationYDeg = 0;
+  private previewYOffset = 0;
+  private previewScale: Vec3Tuple = [1, 1, 1];
 
   private readonly snap: CreatorSnapSettings = {
     gridSnap: true,
@@ -148,7 +158,9 @@ export class CreatorEditor implements CreatorBridge {
     private readonly input: InputManager,
     private readonly hooks: CreatorEditorHooks
   ) {
-    this.layout = loadLocalLayout() ?? committedCourseLayout();
+    // Open on the quick-save slot, else the user's published course (their saved progress), else the
+    // committed default — so the editor and the live Movement Course stay in sync across reloads.
+    this.layout = loadLocalLayout() ?? loadPublishedLayout() ?? committedCourseLayout();
     this.history = new CreatorHistory(this.layout);
     this.geometry = new CreatorGeometry(scene);
     this.geometry.setEnabled(false);
@@ -233,7 +245,10 @@ export class CreatorEditor implements CreatorBridge {
   /** Per-frame update while active. Build: fly camera. Playtest: handled by ArenaScene (player). */
   step(dt: number): void {
     if (!this.active) return;
-    if (this.mode === 'build') this.updateFlyCamera(dt);
+    if (this.mode === 'build') {
+      this.updateFlyCamera(dt);
+      this.updatePlacementPreviewFromPointer();
+    }
   }
 
   /** Hard shutdown for going online: tears down with no sandbox restore (the online path handles it). */
@@ -300,6 +315,7 @@ export class CreatorEditor implements CreatorBridge {
     this.mode = 'build';
     this.uninstallWorldAndCollision();
     this.player.movement.setWorld(null);
+    this.hooks.setHudVisible(false);
     this.input.setLockSuppressed(true);
     this.addListeners();
     this.ensureEditorCamera();
@@ -307,13 +323,16 @@ export class CreatorEditor implements CreatorBridge {
     this.geometry.setOverlaysEnabled(true);
     this.applyGizmoMode();
     this.refreshSelectionVisual();
+    this.updatePlacementPreviewFromPointer();
   }
 
   private enterPlaytestMode(): void {
     this.mode = 'playtest';
     this.removeListeners();
     this.detachGizmo();
+    this.clearPlacementPreview();
     this.geometry.setOverlaysEnabled(false);
+    this.hooks.setHudVisible(true);
     // Install the editable layout's collision + movement world for real movement.
     this.installWorldAndCollision();
     this.scene.activeCamera = this.player.camera;
@@ -347,6 +366,7 @@ export class CreatorEditor implements CreatorBridge {
     this.uninstallWorldAndCollision();
     this.geometry.setOverlaysEnabled(false);
     this.geometry.setEnabled(false);
+    this.clearPlacementPreview();
     this.ui.setToolbarVisible(false);
     this.ui.setEntryPromptVisible(false, 0);
     this.ui.closePasswordModal();
@@ -399,7 +419,7 @@ export class CreatorEditor implements CreatorBridge {
     if (this.editorCamera) return;
     const cam = new FreeCamera('creator_editor_cam', new Vector3(0, 12, 0), this.scene);
     cam.minZ = 0.1;
-    cam.maxZ = 4000;
+    cam.maxZ = 40000; // generous far plane so very large pieces aren't clipped from view
     cam.fov = 1.1;
     this.editorCamera = cam;
   }
@@ -445,7 +465,7 @@ export class CreatorEditor implements CreatorBridge {
       cam.position.y += dirY * scale;
       cam.position.z += dirZ * scale;
     }
-    cam.position.y = Math.max(-8, Math.min(160, cam.position.y));
+    cam.position.y = Math.max(-200, Math.min(2000, cam.position.y));
   }
 
   // ---------------------------------------------------------------------------------------------
@@ -520,6 +540,16 @@ export class CreatorEditor implements CreatorBridge {
       this.duplicateSelected();
       return;
     }
+    if (e.ctrlKey && code === 'KeyC') {
+      e.preventDefault();
+      this.copySelected();
+      return;
+    }
+    if (e.ctrlKey && code === 'KeyV') {
+      e.preventDefault();
+      this.paste();
+      return;
+    }
     if (e.ctrlKey && code === 'KeyZ' && !e.shiftKey) {
       e.preventDefault();
       this.undo();
@@ -536,6 +566,12 @@ export class CreatorEditor implements CreatorBridge {
       return;
     }
     if (e.ctrlKey) return; // leave other Ctrl combos to the browser
+
+    if (this.armedModule && this.handlePlacementAdjustKey(e)) return;
+
+    // Arrow keys / PageUp-Down nudge the selected object by the grid step (Shift = fine). Only when a
+    // module isn't armed (armed mode steers the placement preview instead).
+    if (!this.armedModule && this.handleNudgeKey(e)) return;
 
     // --- Single-key tools (Fortnite/Blender style) ---
     if (code === 'KeyG') { e.preventDefault(); this.setSnapSettings({ gizmo: 'move' }); return; }
@@ -572,6 +608,9 @@ export class CreatorEditor implements CreatorBridge {
   }
 
   private handlePointerMove(e: PointerEvent): void {
+    this.previewPointerX = e.clientX;
+    this.previewPointerY = e.clientY;
+    if (this.armedModule && !this.looking) this.updatePlacementPreviewFromPointer();
     if (!this.looking) return;
     const dx = e.movementX || 0;
     const dy = e.movementY || 0;
@@ -616,6 +655,14 @@ export class CreatorEditor implements CreatorBridge {
   private handleWheel(e: WheelEvent): void {
     if (!this.armedModule) return;
     e.preventDefault();
+    if (e.shiftKey) {
+      this.rotatePlacementPreview(e.deltaY > 0 ? 1 : -1);
+      return;
+    }
+    if (e.ctrlKey) {
+      this.adjustPlacementHeight(e.deltaY < 0 ? 1 : -1);
+      return;
+    }
     const types = moduleTypeList();
     const idx = types.indexOf(this.armedModule);
     if (idx < 0) return;
@@ -632,7 +679,10 @@ export class CreatorEditor implements CreatorBridge {
     const y = e.clientY - rect.top;
     const pick = this.pickWorld(x, y);
     if (this.armedModule) {
-      if (pick) this.placeModule(this.armedModule, pick.point);
+      if (pick) {
+        this.updatePlacementPreview(pick.point);
+        this.placePlacementPreview();
+      }
       return;
     }
     this.select(pick?.objectId ?? null);
@@ -668,7 +718,7 @@ export class CreatorEditor implements CreatorBridge {
 
   private refreshSelectionVisual(): void {
     const obj = this.getSelectedObject();
-    this.geometry.setSelection(this.mode === 'build' ? obj : null);
+    this.geometry.setSelection(this.mode === 'build' && !this.armedModule ? obj : null);
     if (this.mode === 'build') this.reattachGizmo();
   }
 
@@ -724,7 +774,7 @@ export class CreatorEditor implements CreatorBridge {
     const gm = this.gizmoManager;
     if (!gm) return;
     const obj = this.getSelectedObject();
-    if (!obj || this.snap.gizmo === 'off' || this.mode !== 'build') {
+    if (!obj || this.armedModule || this.snap.gizmo === 'off' || this.mode !== 'build') {
       gm.attachToNode(null);
       return;
     }
@@ -767,27 +817,151 @@ export class CreatorEditor implements CreatorBridge {
     return Math.round(v / g) * g;
   }
 
-  private placeModule(type: string, point: Vector3): void {
-    const def = moduleDef(type);
-    if (!def) return;
+  private handlePlacementAdjustKey(e: KeyboardEvent): boolean {
+    const reverse = e.shiftKey ? -1 : 1;
+    if (e.code === 'KeyR') {
+      e.preventDefault();
+      this.rotatePlacementPreview(reverse);
+      return true;
+    }
+    if (e.code === 'KeyQ') {
+      e.preventDefault();
+      this.adjustPlacementHeight(-1);
+      return true;
+    }
+    if (e.code === 'KeyE') {
+      e.preventDefault();
+      this.adjustPlacementHeight(1);
+      return true;
+    }
+    if (e.code === 'BracketLeft') {
+      e.preventDefault();
+      this.adjustPlacementScale(-1);
+      return true;
+    }
+    if (e.code === 'BracketRight') {
+      e.preventDefault();
+      this.adjustPlacementScale(1);
+      return true;
+    }
+    if (e.code === 'KeyC') {
+      e.preventDefault();
+      this.resetPlacementAdjustments();
+      return true;
+    }
+    return false;
+  }
+
+  private rotatePlacementPreview(steps: number): void {
+    const snap = Math.max(1, this.snap.rotationSnapDeg || 15);
+    this.previewRotationYDeg = normalizeDegrees(this.previewRotationYDeg + steps * snap);
+    this.updatePlacementPreviewFromPointer();
+  }
+
+  private adjustPlacementHeight(steps: number): void {
+    const step = Math.max(0.25, this.snap.gridSize || 1);
+    this.previewYOffset = Math.max(-100000, Math.min(100000, this.previewYOffset + steps * step));
+    this.updatePlacementPreviewFromPointer();
+  }
+
+  private adjustPlacementScale(steps: number): void {
+    const step = Math.max(0.05, this.snap.scaleSnap || 0.25);
+    // No upper limit by request — only a tiny positive floor so the preview never collapses to zero.
+    const next = Math.max(0.01, this.previewScale[0] + steps * step);
+    this.previewScale = [next, next, next];
+    this.updatePlacementPreviewFromPointer();
+  }
+
+  private resetPlacementAdjustments(): void {
+    const def = this.armedModule ? moduleDef(this.armedModule) : null;
+    this.previewRotationYDeg = def?.defaultRotationY ?? 0;
+    this.previewYOffset = 0;
+    this.previewScale = [1, 1, 1];
+    this.updatePlacementPreviewFromPointer();
+  }
+
+  private updatePlacementPreviewFromPointer(): void {
+    if (!this.armedModule || this.mode !== 'build') {
+      this.clearPlacementPreview();
+      return;
+    }
+    const canvas = this.canvas();
+    if (!canvas || !this.editorCamera) {
+      this.clearPlacementPreview();
+      return;
+    }
+    const rect = canvas.getBoundingClientRect();
+    // Use the cursor when it's actually over the viewport; otherwise fall back to the SCREEN CENTRE so
+    // an armed module ALWAYS shows a ghost (e.g. right after clicking a hotbar chip, before the mouse
+    // has moved back over the world). This is what makes "where will it land" obvious at all times.
+    const px = this.previewPointerX;
+    const py = this.previewPointerY;
+    const overCanvas =
+      px !== null && py !== null &&
+      px >= rect.left && px <= rect.right && py >= rect.top && py <= rect.bottom &&
+      document.elementFromPoint(px, py) === canvas;
+    const localX = overCanvas ? (px as number) - rect.left : rect.width / 2;
+    const localY = overCanvas ? (py as number) - rect.top : rect.height / 2;
+    const pick = this.pickWorld(localX, localY) ?? (overCanvas ? this.pickWorld(rect.width / 2, rect.height / 2) : null);
+    if (!pick) {
+      this.clearPlacementPreview();
+      return;
+    }
+    this.updatePlacementPreview(pick.point);
+  }
+
+  private updatePlacementPreview(point: Vector3): void {
+    if (!this.armedModule) {
+      this.clearPlacementPreview();
+      return;
+    }
+    const def = moduleDef(this.armedModule);
+    if (!def) {
+      this.clearPlacementPreview();
+      return;
+    }
+    this.placementPreview = {
+      id: `preview_${def.type}`,
+      type: def.type,
+      position: [
+        this.snapValue(point.x),
+        Math.max(this.layout.ground.bounds.y ?? 0, point.y) + this.previewYOffset,
+        this.snapValue(point.z)
+      ],
+      rotation: [0, this.previewRotationYDeg, 0],
+      scale: [...this.previewScale],
+      material: def.material,
+      collision: def.collision,
+      visible: true,
+      metadata: cloneMetadata(def.defaultMetadata)
+    };
+    this.geometry.setPlacementPreview(this.placementPreview);
+  }
+
+  private clearPlacementPreview(): void {
+    this.placementPreview = null;
+    this.geometry.clearPlacementPreview();
+  }
+
+  private placePlacementPreview(): void {
+    const preview = this.placementPreview;
+    if (!preview) return;
     if (this.layout.objects.length >= 400) {
       this.ui.toast('Object limit reached (400).');
       return;
     }
     const obj: CreatorLayoutObject = {
-      id: createObjectId(type),
-      type: def.type,
-      position: [this.snapValue(point.x), Math.max(this.layout.ground.bounds.y ?? 0, point.y), this.snapValue(point.z)],
-      rotation: [0, def.defaultRotationY ?? 0, 0],
-      scale: [1, 1, 1],
-      material: def.material,
-      collision: def.collision,
-      visible: true,
-      metadata: def.defaultMetadata ? { ...def.defaultMetadata } : undefined
+      ...preview,
+      id: createObjectId(preview.type),
+      position: [...preview.position],
+      rotation: [...preview.rotation],
+      scale: [...preview.scale],
+      metadata: cloneMetadata(preview.metadata)
     };
     this.layout.objects.push(obj);
     this.selectedId = obj.id;
     this.commit(obj.id);
+    this.updatePlacementPreviewFromPointer();
   }
 
   duplicateSelected(): void {
@@ -855,6 +1029,15 @@ export class CreatorEditor implements CreatorBridge {
     this.commit(obj.id);
   }
 
+  /** Apply a real in-game image texture to the selected solid (null clears it back to the flat material). */
+  setSelectedTexture(id: string | null): void {
+    const obj = this.getSelectedObject();
+    if (!obj) return;
+    if (id && textureDef(id)) obj.texture = id;
+    else delete obj.texture;
+    this.commit(obj.id);
+  }
+
   setSelectedCollision(value: boolean): void {
     const obj = this.getSelectedObject();
     if (!obj) return;
@@ -877,11 +1060,143 @@ export class CreatorEditor implements CreatorBridge {
   }
 
   // ---------------------------------------------------------------------------------------------
+  // Clipboard (Copy / Paste) — distinct from Duplicate: copy once, paste many (at the cursor).
+  // ---------------------------------------------------------------------------------------------
+
+  private cloneObject(obj: CreatorLayoutObject): CreatorLayoutObject {
+    return cloneLayout({ version: 0, name: '', updatedAt: '', ground: this.layout.ground, objects: [obj] }).objects[0];
+  }
+
+  copySelected(): void {
+    const obj = this.getSelectedObject();
+    if (!obj) {
+      this.ui.toast('Nothing selected to copy');
+      return;
+    }
+    this.clipboard = this.cloneObject(obj);
+    this.ui.toast('Copied object');
+  }
+
+  hasClipboard(): boolean {
+    return this.clipboard !== null;
+  }
+
+  paste(): void {
+    if (!this.clipboard) {
+      this.ui.toast('Clipboard is empty');
+      return;
+    }
+    if (this.layout.objects.length >= 400) {
+      this.ui.toast('Object limit reached (400).');
+      return;
+    }
+    const copy = this.cloneObject(this.clipboard);
+    copy.id = createObjectId(copy.type);
+    const groundY = this.layout.ground.bounds.y ?? 0;
+    const at = this.pasteWorldPoint();
+    if (at) {
+      copy.position = [this.snapValue(at.x), Math.max(groundY, copy.position[1]), this.snapValue(at.z)];
+    } else {
+      const off = Math.max(2, this.snap.gridSize);
+      copy.position = [copy.position[0] + off, copy.position[1], copy.position[2] + off];
+    }
+    if (copy.type === 'spawn_point' && copy.metadata) copy.metadata.defaultSpawn = false;
+    this.layout.objects.push(copy);
+    this.selectedId = copy.id;
+    this.commit(copy.id);
+    this.ui.toast('Pasted object');
+  }
+
+  /** World XZ under the cursor if it's over the viewport, else null (paste falls back to an offset). */
+  private pasteWorldPoint(): { x: number; z: number } | null {
+    if (this.previewPointerX === null || this.previewPointerY === null) return null;
+    const canvas = this.canvas();
+    if (!canvas) return null;
+    const rect = canvas.getBoundingClientRect();
+    if (
+      this.previewPointerX < rect.left || this.previewPointerX > rect.right ||
+      this.previewPointerY < rect.top || this.previewPointerY > rect.bottom
+    ) {
+      return null;
+    }
+    const pick = this.pickWorld(this.previewPointerX - rect.left, this.previewPointerY - rect.top);
+    return pick ? { x: pick.point.x, z: pick.point.z } : null;
+  }
+
+  // ---------------------------------------------------------------------------------------------
+  // Keyboard nudge of the selected object (arrows = XZ, PageUp/Down = Y, Shift = fine)
+  // ---------------------------------------------------------------------------------------------
+
+  private handleNudgeKey(e: KeyboardEvent): boolean {
+    const obj = this.getSelectedObject();
+    if (!obj) return false;
+    const base = this.snap.gridSnap ? this.snap.gridSize : 1;
+    const step = e.shiftKey ? Math.max(0.05, base / 4) : base;
+    let dx = 0;
+    let dy = 0;
+    let dz = 0;
+    switch (e.code) {
+      case 'ArrowLeft': dx = -step; break;
+      case 'ArrowRight': dx = step; break;
+      case 'ArrowUp': dz = step; break;
+      case 'ArrowDown': dz = -step; break;
+      case 'PageUp': dy = step; break;
+      case 'PageDown': dy = -step; break;
+      default: return false;
+    }
+    e.preventDefault();
+    const groundY = this.layout.ground.bounds.y ?? 0;
+    obj.position = [obj.position[0] + dx, Math.max(groundY, obj.position[1] + dy), obj.position[2] + dz];
+    this.commit(obj.id);
+    return true;
+  }
+
+  // ---------------------------------------------------------------------------------------------
+  // Outliner (object list) accessors — select/focus/hide/delete any object, incl. hidden/overlapping
+  // ---------------------------------------------------------------------------------------------
+
+  listObjects(): CreatorLayoutObject[] {
+    return this.layout.objects;
+  }
+
+  getSelectedId(): string | null {
+    return this.selectedId;
+  }
+
+  selectObjectById(id: string): void {
+    this.select(id);
+  }
+
+  focusObjectById(id: string): void {
+    this.select(id);
+    this.focusSelected();
+  }
+
+  /** Toggle an object's visibility from the outliner. Hidden objects stay listed so they're recoverable. */
+  toggleObjectVisibility(id: string): void {
+    const obj = this.findObject(id);
+    if (!obj) return;
+    obj.visible = obj.visible === false; // was hidden → show; was visible → hide
+    this.commit(this.selectedId);
+  }
+
+  deleteObjectById(id: string): void {
+    if (!this.findObject(id)) return;
+    this.layout.objects = this.layout.objects.filter((o) => o.id !== id);
+    if (this.selectedId === id) this.selectedId = null;
+    this.commit(this.selectedId);
+  }
+
+  // ---------------------------------------------------------------------------------------------
   // Palette
   // ---------------------------------------------------------------------------------------------
 
   armModule(type: string | null): void {
     this.armedModule = type && moduleDef(type) ? type : null;
+    this.resetPlacementAdjustments();
+    if (!this.armedModule) this.clearPlacementPreview();
+    else this.updatePlacementPreviewFromPointer();
+    this.refreshSelectionVisual();
   }
 
   getArmedModule(): string | null {
@@ -1057,6 +1372,48 @@ export class CreatorEditor implements CreatorBridge {
     }
   }
 
+  /**
+   * Publish the current layout as the live Movement Course (localStorage). The normal Movement
+   * Sandbox reads this on its next build, so a user can save their own course and play it after a
+   * reload — fully client-side, works on the web. Never touches the server / committed JSON.
+   */
+  saveToCourse(): void {
+    const ok = savePublishedLayout(this.layout);
+    if (!ok) {
+      this.ui.toast('Save to Course failed — storage unavailable');
+      return;
+    }
+    const check = isLayoutValid(this.layout);
+    this.ui.toast(check.valid ? 'Saved to Movement Course — reload to play it' : `Saved to Course (note: ${check.reason})`);
+  }
+
+  /** Load the user's published Movement Course back into the editor to keep iterating on it. */
+  loadFromCourse(): void {
+    const loaded = loadPublishedLayout();
+    if (!loaded) {
+      this.ui.toast('No saved Movement Course found');
+      return;
+    }
+    if (!window.confirm('Load your saved Movement Course into the editor? Unsaved changes will be lost.')) return;
+    this.selectedId = null;
+    this.applyLayout(loaded, true);
+    this.ui.toast('Loaded saved course');
+  }
+
+  /** Upload a layout file straight into the live Movement Course (and the editor), saved to localStorage. */
+  importToCourseFile(file: File): void {
+    if (!window.confirm('Import this file as your Movement Course? It replaces the current layout and your saved course.')) return;
+    importLayoutFromFile(file)
+      .then(({ layout, problems }) => {
+        this.selectedId = null;
+        this.applyLayout(layout, true);
+        const ok = savePublishedLayout(layout);
+        const note = problems.length ? ` (${problems.length} fix(es))` : '';
+        this.ui.toast(ok ? `Imported to Movement Course${note} — reload to play` : `Imported${note}; course save failed`);
+      })
+      .catch((err: Error) => this.ui.toast(err.message || 'Invalid layout file'));
+  }
+
   resetPlayer(): void {
     const spawn = layoutSpawn(this.layout);
     this.player.teleportTo(new Vector3(spawn.x, spawn.y, spawn.z), spawn.yaw, 0);
@@ -1104,6 +1461,19 @@ const FLY_CODES = new Set(['KeyW', 'KeyA', 'KeyS', 'KeyD', 'Space', 'ShiftLeft',
 const MODULE_TYPE_LIST = CREATOR_MODULES.map((m) => m.type as string);
 function moduleTypeList(): string[] {
   return MODULE_TYPE_LIST;
+}
+
+function normalizeDegrees(value: number): number {
+  const n = value % 360;
+  return n < 0 ? n + 360 : n;
+}
+
+function cloneMetadata(metadata: CreatorObjectMetadata | undefined): CreatorObjectMetadata | undefined {
+  if (!metadata) return undefined;
+  return {
+    ...metadata,
+    trigger: metadata.trigger ? { ...metadata.trigger } : undefined
+  };
 }
 
 function isEditableTarget(target: EventTarget | null): boolean {

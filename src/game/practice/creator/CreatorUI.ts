@@ -1,8 +1,9 @@
 /**
  * Creator Sandbox — local editor DOM UI.
  *
- * A single compact right-side toolbar (mode bar, module palette, selected-object inspector, grid/snap
- * panel) plus a build-controls help line, a transient toast, an entry prompt, and the password modal.
+ * A single compact right-side toolbar (mode bar, settings dropdown, selected-object inspector), a
+ * bottom module hotbar, a build-controls help line, a transient toast, an entry prompt, and the
+ * password modal.
  * All plain DOM appended to #hud-root — it never touches the multiplayer scoreboard / overlay. Marked
  * `data-no-lock` so clicks don't grab pointer lock. Driven through the CreatorBridge implemented by the
  * editor; the UI holds no layout/scene state of its own.
@@ -11,6 +12,7 @@
 import {
   CREATOR_MATERIALS,
   CREATOR_MODULES,
+  CREATOR_TEXTURES,
   CreatorLayoutObject,
   CreatorObjectMetadata,
   moduleDef,
@@ -46,6 +48,24 @@ export interface CreatorBridge {
   importJsonFile(file: File): void;
   resetLayout(): void;
 
+  // Movement Course persistence (localStorage-backed; the live course reads it).
+  saveToCourse(): void;
+  loadFromCourse(): void;
+  importToCourseFile(file: File): void;
+
+  // In-editor clipboard (Copy / Paste).
+  copySelected(): void;
+  paste(): void;
+  hasClipboard(): boolean;
+
+  // Outliner (object list).
+  listObjects(): CreatorLayoutObject[];
+  getSelectedId(): string | null;
+  selectObjectById(id: string): void;
+  focusObjectById(id: string): void;
+  toggleObjectVisibility(id: string): void;
+  deleteObjectById(id: string): void;
+
   resetPlayer(): void;
   exitCreator(): void;
   lockCreator(): void;
@@ -59,6 +79,7 @@ export interface CreatorBridge {
   setSelectedTransform(field: 'position' | 'rotation', axis: 0 | 1 | 2, value: number): void;
   setSelectedDimension(axis: 0 | 1 | 2, value: number): void;
   setSelectedMaterial(id: string): void;
+  setSelectedTexture(id: string | null): void;
   setSelectedCollision(value: boolean): void;
   setSelectedVisible(value: boolean): void;
   setSelectedMetadata(patch: Partial<CreatorObjectMetadata>): void;
@@ -82,6 +103,7 @@ export class CreatorUI {
   private readonly modeBar: HTMLDivElement;
   private readonly hotbar: HTMLDivElement;
   private readonly inspectorEl: HTMLDivElement;
+  private readonly outlinerEl: HTMLDivElement;
   private readonly snapEl: HTMLDivElement;
   private readonly helpEl: HTMLDivElement;
   private readonly toastEl: HTMLDivElement;
@@ -91,16 +113,30 @@ export class CreatorUI {
   private readonly modalMessage: HTMLDivElement;
   private readonly modalInput: HTMLInputElement;
   private readonly fileInput: HTMLInputElement;
+  private readonly courseFileInput: HTMLInputElement;
+
+  // Outliner (object list) state.
+  private outlinerListEl!: HTMLDivElement;
+  private outlinerCountEl!: HTMLSpanElement;
+  private outlinerSearch!: HTMLInputElement;
+  private outlinerFilter = '';
+  private outlinerSig = '';
+  private readonly outlinerRows = new Map<string, HTMLDivElement>();
 
   private readonly paletteButtons = new Map<string, HTMLButtonElement>();
   private readonly gizmoButtons = new Map<string, HTMLButtonElement>();
   private undoBtn!: HTMLButtonElement;
   private redoBtn!: HTMLButtonElement;
+  private hotbarUndoBtn!: HTMLButtonElement;
+  private hotbarRedoBtn!: HTMLButtonElement;
   private buildBtn!: HTMLButtonElement;
   private playtestBtn!: HTMLButtonElement;
+  private settingsBtn!: HTMLButtonElement;
+  private settingsDropdown!: HTMLDivElement;
 
   private inspectorObjectId: string | null = null;
   private toolbarVisible = false;
+  private settingsOpen = false;
   private toastTimer: number | null = null;
   private modalSubmit: ((value: string) => void) | null = null;
   private modalCancel: (() => void) | null = null;
@@ -118,6 +154,7 @@ export class CreatorUI {
     this.toolbar.setAttribute('data-no-lock', '');
     this.modeBar = el('div', 'creator-modebar');
     this.inspectorEl = el('div', 'creator-section creator-inspector');
+    this.outlinerEl = el('div', 'creator-section creator-outliner');
     this.snapEl = el('div', 'creator-section creator-snap');
     this.helpEl = el('div', 'creator-help');
     // Bottom hotbar (Fortnite-style): the clickable + keybindable tool/module strip.
@@ -126,9 +163,10 @@ export class CreatorUI {
 
     this.buildModeBar();
     this.buildHotbar();
+    this.buildOutliner();
     this.buildSnapPanel();
 
-    this.toolbar.append(this.modeBar, this.inspectorEl, this.snapEl, this.helpEl);
+    this.toolbar.append(this.modeBar, this.inspectorEl, this.outlinerEl, this.helpEl);
     this.host.appendChild(this.toolbar);
     this.host.appendChild(this.hotbar);
 
@@ -155,6 +193,19 @@ export class CreatorUI {
       this.fileInput.value = '';
     });
     this.host.appendChild(this.fileInput);
+
+    // Separate hidden file input for "Import to Course" (upload a layout straight into the live course).
+    this.courseFileInput = document.createElement('input');
+    this.courseFileInput.type = 'file';
+    this.courseFileInput.accept = 'application/json,.json';
+    this.courseFileInput.style.display = 'none';
+    this.courseFileInput.setAttribute('data-no-lock', '');
+    this.courseFileInput.addEventListener('change', () => {
+      const file = this.courseFileInput.files?.[0];
+      if (file) this.bridge.importToCourseFile(file);
+      this.courseFileInput.value = '';
+    });
+    this.host.appendChild(this.courseFileInput);
 
     // --- Password modal ---
     this.modal = el('div', 'creator-modal-backdrop');
@@ -197,20 +248,38 @@ export class CreatorUI {
 
     this.undoBtn = button('Undo', 'creator-btn', () => this.bridge.undo());
     this.redoBtn = button('Redo', 'creator-btn', () => this.bridge.redo());
+    this.settingsBtn = button('Settings +', 'creator-btn creator-settings-toggle', () => this.setSettingsOpen(!this.settingsOpen));
+    this.settingsBtn.setAttribute('aria-expanded', 'false');
+    this.settingsBtn.setAttribute('aria-haspopup', 'true');
+    this.settingsDropdown = el('div', 'creator-settings-dropdown');
 
-    const row1 = el('div', 'creator-modebar-row');
+    const row1 = el('div', 'creator-modebar-row creator-modebar-row--primary');
     row1.append(
       modeGroup,
       button('Save', 'creator-btn', () => this.bridge.quickSave()),
-      button('Load', 'creator-btn', () => this.bridge.quickLoad())
+      this.settingsBtn
     );
+    // Always-visible headline row: download a layout file + publish to the live Movement Course.
+    const shareRow = el('div', 'creator-modebar-row');
+    shareRow.append(
+      button('⤓ Export File', 'creator-btn creator-btn-primary', () => this.bridge.exportJson()),
+      button('★ Save to Course', 'creator-btn creator-btn-primary', () => this.bridge.saveToCourse())
+    );
+
+    const loadRow = el('div', 'creator-modebar-row');
+    loadRow.append(button('Load', 'creator-btn', () => this.bridge.quickLoad()));
     const row2 = el('div', 'creator-modebar-row');
     row2.append(
-      button('Export', 'creator-btn', () => this.bridge.exportJson()),
       button('Copy JSON', 'creator-btn', () => this.bridge.copyJson()),
-      button('Import', 'creator-btn', () => this.fileInput.click()),
+      button('Import File', 'creator-btn', () => this.fileInput.click()),
       this.undoBtn,
       this.redoBtn
+    );
+    // Movement Course persistence (localStorage; survives reloads, even on the web).
+    const courseRow = el('div', 'creator-modebar-row');
+    courseRow.append(
+      button('Load Course', 'creator-btn', () => this.bridge.loadFromCourse()),
+      button('Import to Course', 'creator-btn', () => this.courseFileInput.click())
     );
     const row3 = el('div', 'creator-modebar-row');
     row3.append(
@@ -222,7 +291,9 @@ export class CreatorUI {
       button('Exit Creator', 'creator-btn', () => this.bridge.exitCreator()),
       button('Lock Creator', 'creator-btn creator-btn-warn', () => this.bridge.lockCreator())
     );
-    this.modeBar.append(row1, row2, row3, row4);
+    this.settingsDropdown.append(loadRow, row2, courseRow, row3, row4, this.snapEl);
+    this.modeBar.append(row1, shareRow, this.settingsDropdown);
+    this.setSettingsOpen(false);
   }
 
   // ---------------------------------------------------------------------------------------------
@@ -244,6 +315,11 @@ export class CreatorUI {
       tools.appendChild(btn);
     }
     tools.appendChild(this.hotbarButton('Focus', 'F', () => this.bridge.focusSelected()));
+    tools.appendChild(this.hotbarButton('Copy', 'Ctrl+C', () => this.bridge.copySelected()));
+    tools.appendChild(this.hotbarButton('Paste', 'Ctrl+V', () => this.bridge.paste()));
+    this.hotbarUndoBtn = this.hotbarButton('Undo', 'Ctrl+Z', () => this.bridge.undo());
+    this.hotbarRedoBtn = this.hotbarButton('Redo', 'Ctrl+Y', () => this.bridge.redo());
+    tools.append(this.hotbarUndoBtn, this.hotbarRedoBtn);
     this.hotbar.appendChild(tools);
 
     // --- Module strip, grouped, with number badges on the first ten ---
@@ -362,6 +438,28 @@ export class CreatorUI {
     matRow.appendChild(matSel);
     this.inspectorEl.appendChild(matRow);
 
+    // Texture (real in-game image textures) — applies to solid terrain modules (e.g. a long wall).
+    if (def && def.category === 'terrain') {
+      const texRow = el('div', 'creator-field');
+      texRow.appendChild(label('Texture'));
+      const texSel = document.createElement('select');
+      texSel.className = 'creator-select';
+      const none = document.createElement('option');
+      none.value = '';
+      none.textContent = 'None (color)';
+      texSel.appendChild(none);
+      for (const t of CREATOR_TEXTURES) {
+        const opt = document.createElement('option');
+        opt.value = t.id;
+        opt.textContent = t.label;
+        texSel.appendChild(opt);
+      }
+      texSel.value = obj.texture ?? '';
+      texSel.addEventListener('change', () => this.bridge.setSelectedTexture(texSel.value || null));
+      texRow.appendChild(texSel);
+      this.inspectorEl.appendChild(texRow);
+    }
+
     // Collision + visible toggles
     const toggles = el('div', 'creator-field-row');
     toggles.append(
@@ -443,6 +541,89 @@ export class CreatorUI {
   }
 
   // ---------------------------------------------------------------------------------------------
+  // Outliner (object list) — select / focus / hide / delete any object, incl. hidden or overlapping
+  // ones that can't be clicked in the viewport.
+  // ---------------------------------------------------------------------------------------------
+
+  private buildOutliner(): void {
+    const head = el('div', 'creator-outliner-head');
+    const title = el('div', 'creator-section-title');
+    title.textContent = 'Objects';
+    this.outlinerCountEl = document.createElement('span');
+    this.outlinerCountEl.className = 'creator-outliner-count';
+    this.outlinerCountEl.textContent = '0';
+    head.append(title, this.outlinerCountEl);
+
+    this.outlinerSearch = document.createElement('input');
+    this.outlinerSearch.type = 'text';
+    this.outlinerSearch.className = 'creator-text creator-outliner-search';
+    this.outlinerSearch.placeholder = 'Search objects…';
+    this.outlinerSearch.addEventListener('input', () => {
+      this.outlinerFilter = this.outlinerSearch.value.trim().toLowerCase();
+      this.applyOutlinerFilter();
+    });
+
+    this.outlinerListEl = el('div', 'creator-outliner-list');
+    this.outlinerEl.append(head, this.outlinerSearch, this.outlinerListEl);
+  }
+
+  private refreshOutliner(): void {
+    const objs = this.bridge.listObjects();
+    const selectedId = this.bridge.getSelectedId();
+    this.outlinerCountEl.textContent = String(objs.length);
+    // Only rebuild the rows when the structure changes (keeps search focus + scroll position stable).
+    const sig = objs.map((o) => `${o.id}:${o.visible === false ? 0 : 1}:${o.name ?? ''}:${o.type}`).join('|');
+    if (sig !== this.outlinerSig) {
+      this.outlinerSig = sig;
+      this.rebuildOutlinerRows(objs);
+    }
+    for (const [id, row] of this.outlinerRows) {
+      row.classList.toggle('creator-outliner-row--active', id === selectedId);
+    }
+    this.applyOutlinerFilter();
+  }
+
+  private rebuildOutlinerRows(objs: readonly CreatorLayoutObject[]): void {
+    this.outlinerListEl.innerHTML = '';
+    this.outlinerRows.clear();
+    if (objs.length === 0) {
+      const empty = el('div', 'creator-empty');
+      empty.textContent = 'No objects yet. Pick a module below and click to place.';
+      this.outlinerListEl.appendChild(empty);
+      return;
+    }
+    for (const obj of objs) {
+      const def = moduleDef(obj.type);
+      const text = obj.name || def?.label || obj.type;
+      const hidden = obj.visible === false;
+      const row = el('div', 'creator-outliner-row');
+      row.dataset.search = text.toLowerCase();
+
+      const eye = button(hidden ? '◌' : '◉', 'creator-outliner-eye', () => this.bridge.toggleObjectVisibility(obj.id));
+      eye.title = hidden ? 'Show' : 'Hide';
+      const labelBtn = button(text, 'creator-outliner-label', () => this.bridge.selectObjectById(obj.id));
+      labelBtn.title = def?.label ?? obj.type;
+      if (hidden) labelBtn.classList.add('creator-outliner-label--hidden');
+      const focusBtn = button('✛', 'creator-outliner-mini', () => this.bridge.focusObjectById(obj.id));
+      focusBtn.title = 'Focus camera';
+      const delBtn = button('✕', 'creator-outliner-mini creator-outliner-del', () => this.bridge.deleteObjectById(obj.id));
+      delBtn.title = 'Delete';
+
+      row.append(eye, labelBtn, focusBtn, delBtn);
+      this.outlinerListEl.appendChild(row);
+      this.outlinerRows.set(obj.id, row);
+    }
+  }
+
+  private applyOutlinerFilter(): void {
+    const f = this.outlinerFilter;
+    for (const row of this.outlinerRows.values()) {
+      const hay = row.dataset.search ?? '';
+      row.style.display = !f || hay.includes(f) ? '' : 'none';
+    }
+  }
+
+  // ---------------------------------------------------------------------------------------------
   // Grid / snap panel
   // ---------------------------------------------------------------------------------------------
 
@@ -491,23 +672,29 @@ export class CreatorUI {
     this.toolbar.dataset.mode = mode;
     this.buildBtn.classList.toggle('creator-mode-btn--active', mode === 'build');
     this.playtestBtn.classList.toggle('creator-mode-btn--active', mode === 'playtest');
-    this.undoBtn.disabled = !this.bridge.canUndo();
-    this.redoBtn.disabled = !this.bridge.canRedo();
+    const canUndo = this.bridge.canUndo();
+    const canRedo = this.bridge.canRedo();
+    this.undoBtn.disabled = !canUndo;
+    this.redoBtn.disabled = !canRedo;
+    this.hotbarUndoBtn.disabled = !canUndo;
+    this.hotbarRedoBtn.disabled = !canRedo;
 
     // In playtest, collapse the editing sections to the minimal overlay + hide the build hotbar.
     const editing = mode === 'build';
     this.hotbar.classList.toggle('creator-hotbar--visible', this.toolbarVisible && editing);
     this.inspectorEl.style.display = editing ? '' : 'none';
+    this.outlinerEl.style.display = editing ? '' : 'none';
     this.snapEl.style.display = editing ? '' : 'none';
     this.helpEl.textContent = editing
-      ? 'WASD fly · Space/Ctrl up/down · Shift faster · hold RMB look · LMB place/select · RMB-tap cancel · 1–0 pick module · G/R/T/V move/rotate/scale/select · F focus · B duplicate · Del delete · Ctrl+Z/Y undo/redo · Ctrl+S save · F1 playtest'
-      : 'Playtest: real movement · F1 return to Build · Reset Player to respawn';
+      ? 'WASD fly · Space/Ctrl up/down · Shift faster · hold RMB look · LMB place preview/select · RMB-tap cancel · 1–0 pick module · wheel swap module · R/Shift+R rotate preview · Q/E height · [/ ] scale · C reset preview · G/R/T/V move/rotate/scale/select · arrows/PgUp/PgDn nudge selected · F focus · B duplicate · Ctrl+C/V copy/paste · Del delete · Ctrl+Z/Y undo/redo · Ctrl+S save · F1 playtest'
+      : 'PLAYTEST — real movement. Press F1 (or Esc) to return to Build. Reset Player to respawn.';
 
     this.refreshPaletteArmed();
     const selected = this.bridge.getSelectedObject();
     if (editing) {
       if ((selected?.id ?? null) !== this.inspectorObjectId) this.buildInspector(selected);
       else this.syncInspectorValues(selected);
+      this.refreshOutliner();
     }
   }
 
@@ -529,8 +716,17 @@ export class CreatorUI {
 
   setToolbarVisible(visible: boolean): void {
     this.toolbarVisible = visible;
+    if (!visible) this.setSettingsOpen(false);
     this.toolbar.classList.toggle('creator-ui--visible', visible);
     this.refresh();
+  }
+
+  private setSettingsOpen(open: boolean): void {
+    this.settingsOpen = open;
+    this.settingsDropdown.classList.toggle('creator-settings-dropdown--open', open);
+    this.settingsBtn.classList.toggle('creator-settings-toggle--open', open);
+    this.settingsBtn.textContent = open ? 'Settings -' : 'Settings +';
+    this.settingsBtn.setAttribute('aria-expanded', String(open));
   }
 
   setEntryPromptVisible(visible: boolean, progress: number): void {
@@ -631,6 +827,7 @@ export class CreatorUI {
     this.entryPrompt.remove();
     this.modal.remove();
     this.fileInput.remove();
+    this.courseFileInput.remove();
   }
 
   // ---------------------------------------------------------------------------------------------
