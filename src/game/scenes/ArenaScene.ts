@@ -2079,13 +2079,19 @@ export class ArenaScene {
     const creator = this.creator;
     if (!creator) return;
     if (creator.getModePublic() === 'playtest') {
-      // Real local first-person movement against the editor's collision/world.
-      this.player.update(dt, false);
-      const snap = this.player.lastMovementSnapshot;
-      this.updateLocalMovementFoley(dt, vector3ToVec3(snap.velocity), snap.grounded, snap.sliding, snap.dashingThisFrame, snap.wallRunning);
-      this.effects.update(dt);
-      // F1 or Esc returns to Build so the player can never get stuck in pointer-locked playtest.
-      if (this.input.wasKeyPressed('F1') || this.input.wasKeyPressed('Escape')) creator.setMode('build');
+      // = toggles a free-fly noclip mid-test; B / F1 / Esc return to Build (never stuck in playtest).
+      if (this.input.wasKeyPressed('Equal')) creator.togglePlaytestFly();
+      if (this.input.wasKeyPressed('KeyB') || this.input.wasKeyPressed('F1') || this.input.wasKeyPressed('Escape')) {
+        creator.setMode('build');
+      } else if (!creator.isPlaytestFlying()) {
+        // Real local first-person movement against the editor's collision/world.
+        this.player.update(dt, false);
+        const snap = this.player.lastMovementSnapshot;
+        this.updateLocalMovementFoley(dt, vector3ToVec3(snap.velocity), snap.grounded, snap.sliding, snap.dashingThisFrame, snap.wallRunning);
+        this.effects.update(dt);
+      } else {
+        this.effects.update(dt);
+      }
     }
     creator.step(dt);
   }

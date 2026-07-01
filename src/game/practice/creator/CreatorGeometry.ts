@@ -31,8 +31,8 @@ import {
   moduleLocalBoxes,
   objectCollisionBoxes,
   objectWorldAabb,
-  orientedBoxAabb,
-  textureDef
+  textureDef,
+  type Vec3Tuple
 } from './CreatorLayout';
 import { layoutWorldBounds } from './CreatorWorld';
 import { SANDBOX_CENTER } from '../MovementSandboxLayout';
@@ -57,13 +57,11 @@ export class CreatorGeometry {
   // Persistent placement-preview handles (built once per shape, moved per frame — see setPlacementPreview).
   private previewShapeSig: string | null = null;
   private previewObjRoot: TransformNode | null = null;
-  private previewBoundsMesh: Mesh | null = null;
-  private previewFootprint: Mesh | null = null;
+  private previewFootRoot: TransformNode | null = null;
   private previewDrop: Mesh | null = null;
-  private previewRelX = 0;
-  private previewRelZ = 0;
-  private previewRelCenterY = 0;
-  private previewMinYRel = 0;
+  private previewLocalCX = 0;
+  private previewLocalCZ = 0;
+  private previewLocalMinY = 0;
   private readonly triggerMeshes: Mesh[] = [];
   private readonly collisionMeshes: Mesh[] = [];
 
@@ -286,11 +284,11 @@ export class CreatorGeometry {
         this.triggerMeshes.push(box);
         this.perBuild.push(box);
       }
-      // Collision-bound debug boxes.
+      // Collision-bound debug boxes — the true oriented boxes the player actually collides with.
       for (const sub of objectCollisionBoxes(obj)) {
-        const a = orientedBoxAabb(sub);
-        const box = MeshBuilder.CreateBox(`creator_col_${obj.id}`, { width: a.maxX - a.minX, height: a.maxY - a.minY, depth: a.maxZ - a.minZ }, this.scene);
-        box.position.set((a.minX + a.maxX) / 2, (a.minY + a.maxY) / 2, (a.minZ + a.maxZ) / 2);
+        const box = MeshBuilder.CreateBox(`creator_col_${obj.id}`, { width: sub.w, height: sub.h, depth: sub.d }, this.scene);
+        box.position.set(sub.cx, sub.cy, sub.cz);
+        box.rotation.y = sub.ry;
         box.material = collisionMat;
         box.isPickable = false;
         box.parent = this.root;
@@ -356,10 +354,20 @@ export class CreatorGeometry {
       this.selectionBox.setEnabled(false);
       return;
     }
-    const a = objectWorldAabb(obj);
+    // Oriented highlight: size from the LOCAL extent × scale and rotate with the object so a rotated
+    // piece gets a tight box that hugs it (not a fat axis-aligned one). ry=0 reduces to the old box.
+    const local = objectWorldAabb({ ...obj, position: [0, 0, 0] as Vec3Tuple, rotation: [0, 0, 0] as Vec3Tuple, scale: [1, 1, 1] as Vec3Tuple });
+    const sx = obj.scale[0], sy = obj.scale[1], sz = obj.scale[2];
+    const ry = (obj.rotation[1] ?? 0) * DEG2RAD;
     const pad = 0.3;
-    this.selectionBox.scaling.set(a.maxX - a.minX + pad, a.maxY - a.minY + pad, a.maxZ - a.minZ + pad);
-    this.selectionBox.position.set((a.minX + a.maxX) / 2, (a.minY + a.maxY) / 2, (a.minZ + a.maxZ) / 2);
+    const lcx = ((local.minX + local.maxX) / 2) * sx;
+    const lcy = ((local.minY + local.maxY) / 2) * sy;
+    const lcz = ((local.minZ + local.maxZ) / 2) * sz;
+    const cos = Math.cos(ry);
+    const sin = Math.sin(ry);
+    this.selectionBox.rotation.set(0, ry, 0);
+    this.selectionBox.scaling.set((local.maxX - local.minX) * sx + pad, (local.maxY - local.minY) * sy + pad, (local.maxZ - local.minZ) * sz + pad);
+    this.selectionBox.position.set(obj.position[0] + lcx * cos + lcz * sin, obj.position[1] + lcy, obj.position[2] - lcx * sin + lcz * cos);
     this.selectionBox.setEnabled(true);
   }
 
@@ -425,30 +433,36 @@ export class CreatorGeometry {
       this.buildMarkerPreview(obj, node, fill);
     }
 
-    // The AABB-aligned helpers (bounds outline, ground footprint, drop line) have a fixed size for a
-    // given rotation/scale; only their world position changes, so capture the offset from the base.
-    const a = objectWorldAabb(obj);
-    const px = obj.position[0], py = obj.position[1], pz = obj.position[2];
-    this.previewRelX = (a.minX + a.maxX) / 2 - px;
-    this.previewRelZ = (a.minZ + a.maxZ) / 2 - pz;
-    this.previewRelCenterY = (a.minY + a.maxY) / 2 - py;
-    this.previewMinYRel = a.minY - py;
+    // LOCAL (unrotated, unscaled) extent — the object root supplies rotation/scale/position, so the
+    // bounds + footprint stay TIGHT and rotate WITH the object instead of a fat axis-aligned square.
+    const local = objectWorldAabb({ ...obj, position: [0, 0, 0] as Vec3Tuple, rotation: [0, 0, 0] as Vec3Tuple, scale: [1, 1, 1] as Vec3Tuple });
+    const lw = Math.max(0.1, local.maxX - local.minX);
+    const lh = Math.max(0.1, local.maxY - local.minY);
+    const ld = Math.max(0.1, local.maxZ - local.minZ);
+    this.previewLocalCX = (local.minX + local.maxX) / 2;
+    this.previewLocalCZ = (local.minZ + local.maxZ) / 2;
+    this.previewLocalMinY = local.minY;
+    const lcy = (local.minY + local.maxY) / 2;
 
-    const bounds = MeshBuilder.CreateBox('creator_preview_bounds', { width: a.maxX - a.minX, height: a.maxY - a.minY, depth: a.maxZ - a.minZ }, this.scene);
+    // Tight oriented bounds outline — child of the object root, so it inherits rotation/scale/position.
+    const bounds = MeshBuilder.CreateBox('creator_preview_bounds', { width: lw, height: lh, depth: ld }, this.scene);
+    bounds.position.set(this.previewLocalCX, lcy, this.previewLocalCZ);
     bounds.material = this.previewOutlineMaterial();
     bounds.isPickable = false;
-    bounds.parent = this.previewRoot;
-    this.previewBoundsMesh = bounds;
+    bounds.parent = node;
     this.previewBuild.push(bounds);
 
+    // Ground footprint: its own root pinned to the floor but sharing the object's yaw + XZ scale.
+    const footRoot = new TransformNode('creator_preview_footroot', this.scene);
+    footRoot.parent = this.previewRoot;
+    this.previewFootRoot = footRoot;
+    this.previewBuild.push(footRoot);
     const footMat = this.previewFootprintMaterial();
-    const fpW = Math.max(0.4, a.maxX - a.minX);
-    const fpD = Math.max(0.4, a.maxZ - a.minZ);
-    const footprint = MeshBuilder.CreateBox('creator_preview_footprint', { width: fpW, height: 0.06, depth: fpD }, this.scene);
+    const footprint = MeshBuilder.CreateBox('creator_preview_footprint', { width: Math.max(0.4, lw), height: 0.06, depth: Math.max(0.4, ld) }, this.scene);
+    footprint.position.set(this.previewLocalCX, 0, this.previewLocalCZ);
     footprint.material = footMat;
     footprint.isPickable = false;
-    footprint.parent = this.previewRoot;
-    this.previewFootprint = footprint;
+    footprint.parent = footRoot;
     this.previewBuild.push(footprint);
 
     // Unit-height drop line, scaled per frame to span ground → object base (hidden when grounded).
@@ -464,21 +478,31 @@ export class CreatorGeometry {
   /** Per-frame transform update only (no mesh creation/disposal → no flicker). */
   private movePreview(obj: CreatorLayoutObject): void {
     const px = obj.position[0], py = obj.position[1], pz = obj.position[2];
+    const ry = (obj.rotation[1] ?? 0) * DEG2RAD;
+    const sx = obj.scale[0], sy = obj.scale[1], sz = obj.scale[2];
     if (this.previewObjRoot) {
       this.previewObjRoot.position.set(px, py, pz);
-      this.previewObjRoot.rotation.set(0, (obj.rotation[1] ?? 0) * DEG2RAD, 0);
-      this.previewObjRoot.scaling.set(obj.scale[0], obj.scale[1], obj.scale[2]);
+      this.previewObjRoot.rotation.set(0, ry, 0);
+      this.previewObjRoot.scaling.set(sx, sy, sz);
     }
-    const cx = px + this.previewRelX;
-    const cz = pz + this.previewRelZ;
-    if (this.previewBoundsMesh) this.previewBoundsMesh.position.set(cx, py + this.previewRelCenterY, cz);
-    if (this.previewFootprint) this.previewFootprint.position.set(cx, this.groundY + 0.04, cz);
+    if (this.previewFootRoot) {
+      this.previewFootRoot.position.set(px, this.groundY + 0.04, pz);
+      this.previewFootRoot.rotation.set(0, ry, 0);
+      this.previewFootRoot.scaling.set(sx, 1, sz);
+    }
     if (this.previewDrop) {
-      const h = py + this.previewMinYRel - this.groundY;
+      // World footprint centre = object base + rotated/scaled local centre.
+      const cos = Math.cos(ry);
+      const sin = Math.sin(ry);
+      const lcx = this.previewLocalCX * sx;
+      const lcz = this.previewLocalCZ * sz;
+      const wcx = px + lcx * cos + lcz * sin;
+      const wcz = pz - lcx * sin + lcz * cos;
+      const h = py + this.previewLocalMinY * sy - this.groundY;
       if (h > 0.15) {
         this.previewDrop.setEnabled(true);
         this.previewDrop.scaling.set(1, h, 1);
-        this.previewDrop.position.set(cx, this.groundY + h / 2, cz);
+        this.previewDrop.position.set(wcx, this.groundY + h / 2, wcz);
       } else {
         this.previewDrop.setEnabled(false);
       }
@@ -806,8 +830,7 @@ export class CreatorGeometry {
     }
     this.previewBuild.length = 0;
     this.previewObjRoot = null;
-    this.previewBoundsMesh = null;
-    this.previewFootprint = null;
+    this.previewFootRoot = null;
     this.previewDrop = null;
   }
 

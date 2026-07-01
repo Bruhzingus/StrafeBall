@@ -35,6 +35,8 @@ export interface CreatorSnapSettings {
 export interface CreatorBridge {
   getMode(): 'build' | 'playtest';
   setMode(mode: 'build' | 'playtest'): void;
+  togglePlaytestFly(): void;
+  isPlaytestFlying(): boolean;
 
   canUndo(): boolean;
   canRedo(): boolean;
@@ -106,6 +108,8 @@ export class CreatorUI {
   private readonly outlinerEl: HTMLDivElement;
   private readonly snapEl: HTMLDivElement;
   private readonly helpEl: HTMLDivElement;
+  private readonly playtestBar: HTMLDivElement;
+  private playtestFlyBtn!: HTMLButtonElement;
   private readonly toastEl: HTMLDivElement;
   private readonly entryPrompt: HTMLDivElement;
   private readonly entryFill: HTMLDivElement;
@@ -161,14 +165,19 @@ export class CreatorUI {
     this.hotbar = el('div', 'creator-hotbar');
     this.hotbar.setAttribute('data-no-lock', '');
 
+    this.playtestBar = el('div', 'creator-playtest-bar');
+    this.playtestBar.setAttribute('data-no-lock', '');
+
     this.buildModeBar();
     this.buildHotbar();
     this.buildOutliner();
     this.buildSnapPanel();
+    this.buildPlaytestBar();
 
     this.toolbar.append(this.modeBar, this.inspectorEl, this.outlinerEl, this.helpEl);
     this.host.appendChild(this.toolbar);
     this.host.appendChild(this.hotbar);
+    this.host.appendChild(this.playtestBar);
 
     this.toastEl = el('div', 'creator-toast');
     this.host.appendChild(this.toastEl);
@@ -294,6 +303,26 @@ export class CreatorUI {
     this.settingsDropdown.append(loadRow, row2, courseRow, row3, row4, this.snapEl);
     this.modeBar.append(row1, shareRow, this.settingsDropdown);
     this.setSettingsOpen(false);
+  }
+
+  // ---------------------------------------------------------------------------------------------
+  // Playtest quick toolbar: shown only in Playtest — return to Build, or toggle free-fly.
+  // ---------------------------------------------------------------------------------------------
+
+  private buildPlaytestBar(): void {
+    const buildBtn = button('◀ Build', 'creator-btn creator-btn-primary', () => this.bridge.setMode('build'));
+    buildBtn.append(this.keyHint('B'));
+    this.playtestFlyBtn = button('✈ Fly', 'creator-btn', () => this.bridge.togglePlaytestFly());
+    this.playtestFlyBtn.append(this.keyHint('='));
+    const label = el('span', 'creator-playtest-label');
+    label.textContent = 'PLAYTEST';
+    this.playtestBar.append(label, buildBtn, this.playtestFlyBtn);
+  }
+
+  private keyHint(key: string): HTMLSpanElement {
+    const badge = el('span', 'creator-chip-key');
+    badge.textContent = key;
+    return badge;
   }
 
   // ---------------------------------------------------------------------------------------------
@@ -681,13 +710,17 @@ export class CreatorUI {
 
     // In playtest, collapse the editing sections to the minimal overlay + hide the build hotbar.
     const editing = mode === 'build';
+    this.playtestBar.classList.toggle('creator-playtest-bar--visible', this.toolbarVisible && !editing);
+    const flying = this.bridge.isPlaytestFlying();
+    this.playtestFlyBtn.classList.toggle('creator-mode-btn--active', flying);
+    if (this.playtestFlyBtn.firstChild) this.playtestFlyBtn.firstChild.textContent = flying ? '✈ Flying' : '✈ Fly';
     this.hotbar.classList.toggle('creator-hotbar--visible', this.toolbarVisible && editing);
     this.inspectorEl.style.display = editing ? '' : 'none';
     this.outlinerEl.style.display = editing ? '' : 'none';
     this.snapEl.style.display = editing ? '' : 'none';
     this.helpEl.textContent = editing
       ? 'WASD fly · Space/Ctrl up/down · Shift faster · hold RMB look · LMB place preview/select · RMB-tap cancel · 1–0 pick module · wheel swap module · R/Shift+R rotate preview · Q/E height · [/ ] scale · C reset preview · G/R/T/V move/rotate/scale/select · arrows/PgUp/PgDn nudge selected · F focus · B duplicate · Ctrl+C/V copy/paste · Del delete · Ctrl+Z/Y undo/redo · Ctrl+S save · F1 playtest'
-      : 'PLAYTEST — real movement. Press F1 (or Esc) to return to Build. Reset Player to respawn.';
+      : 'PLAYTEST — real movement. B / F1 / Esc → Build · = → free-fly (noclip) · Reset Player to respawn.';
 
     this.refreshPaletteArmed();
     const selected = this.bridge.getSelectedObject();
@@ -823,6 +856,7 @@ export class CreatorUI {
     this.stopAwaitingModalFocus();
     this.toolbar.remove();
     this.hotbar.remove();
+    this.playtestBar.remove();
     this.toastEl.remove();
     this.entryPrompt.remove();
     this.modal.remove();

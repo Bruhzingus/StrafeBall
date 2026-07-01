@@ -10,7 +10,7 @@
  */
 
 import { Vector3 } from '@babylonjs/core';
-import { AABB, aabbFromCenter } from '../../map/Collider';
+import { AABB, aabbFromCenter, orientedAabb } from '../../map/Collider';
 import { MovementWorld } from '../../player/MovementController';
 import { SANDBOX_CENTER, SANDBOX_CEILING_Y } from '../MovementSandboxLayout';
 import {
@@ -82,11 +82,17 @@ export function buildCreatorCollisionBoxes(layout: CreatorLayout, idPrefix: stri
   for (const obj of layout.objects) {
     const subs = objectCollisionBoxes(obj);
     for (let i = 0; i < subs.length; i += 1) {
-      const a = orientedBoxAabb(subs[i]);
-      const cx = (a.minX + a.maxX) / 2;
-      const cy = (a.minY + a.maxY) / 2;
-      const cz = (a.minZ + a.maxZ) / 2;
-      const box = aabbFromCenter(cx, cy, cz, (a.maxX - a.minX) / 2, (a.maxY - a.minY) / 2, (a.maxZ - a.minZ) / 2);
+      const s = subs[i];
+      // Rotated sub-boxes become true oriented colliders (exact push-out); axis-aligned ones (ry≈0/90°)
+      // stay plain AABBs — their enclosing box is already exact, keeping the proven fast path.
+      const nearAxis = Math.abs(Math.sin(s.ry)) < 1e-3 || Math.abs(Math.cos(s.ry)) < 1e-3;
+      let box: AABB;
+      if (nearAxis) {
+        const a = orientedBoxAabb(s);
+        box = aabbFromCenter((a.minX + a.maxX) / 2, (a.minY + a.maxY) / 2, (a.minZ + a.maxZ) / 2, (a.maxX - a.minX) / 2, (a.maxY - a.minY) / 2, (a.maxZ - a.minZ) / 2);
+      } else {
+        box = orientedAabb(s.cx, s.cy, s.cz, s.w / 2, s.h / 2, s.d / 2, s.ry);
+      }
       box.id = `${idPrefix}${obj.id}_${i}`;
       boxes.push(box);
     }

@@ -5111,6 +5111,35 @@ html, body {
 }
 .creator-modal-actions { display: flex; gap: 8px; justify-content: flex-end; }
 
+/* --- Playtest quick toolbar (top-centre; Build / Fly while playtesting) --- */
+.creator-playtest-bar {
+  position: absolute;
+  top: 12px;
+  left: 50%;
+  transform: translateX(-50%);
+  display: none;
+  align-items: center;
+  gap: 8px;
+  padding: 7px 12px;
+  border-radius: 10px;
+  background: rgba(10, 16, 30, 0.92);
+  border: 1px solid rgba(120, 240, 170, 0.45);
+  box-shadow: 0 10px 30px rgba(0, 0, 0, 0.5);
+  color: #dfe8f6;
+  font-family: 'Trebuchet MS', 'Segoe UI', Verdana, sans-serif;
+  pointer-events: auto;
+  z-index: 62;
+}
+.creator-playtest-bar--visible { display: flex; }
+.creator-playtest-bar .creator-btn { flex: 0 0 auto; display: flex; align-items: center; gap: 6px; }
+.creator-playtest-label {
+  font-size: 11px;
+  font-weight: 900;
+  letter-spacing: 0.08em;
+  color: #7ef0aa;
+  margin-right: 2px;
+}
+
 /* --- Bottom hotbar (Fortnite-style clickable + keybindable tool/module strip) --- */
 .creator-hotbar {
   position: absolute;

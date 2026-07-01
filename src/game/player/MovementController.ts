@@ -593,8 +593,19 @@ export class MovementController {
     // Pass 1: ground support (skip boxes whose top is too high to stand on from here).
     let support = 0;
     for (const b of boxes) {
-      if (p.x + r <= b.minX || p.x - r >= b.maxX) continue;
-      if (p.z + r <= b.minZ || p.z - r >= b.maxZ) continue;
+      if (b.ry !== undefined) {
+        // Oriented box: test the footprint in the box's local frame (exact).
+        const cos = Math.cos(b.ry);
+        const sin = Math.sin(b.ry);
+        const dwx = p.x - (b.cx as number);
+        const dwz = p.z - (b.cz as number);
+        const lx = cos * dwx - sin * dwz;
+        const lz = sin * dwx + cos * dwz;
+        if (Math.abs(lx) >= (b.hx as number) + r || Math.abs(lz) >= (b.hz as number) + r) continue;
+      } else {
+        if (p.x + r <= b.minX || p.x - r >= b.maxX) continue;
+        if (p.z + r <= b.minZ || p.z - r >= b.maxZ) continue;
+      }
       if (b.maxY <= p.y + stepTolerance && b.maxY > support) support = b.maxY;
     }
     this.groundHeight = support;
@@ -605,6 +616,39 @@ export class MovementController {
       const bodyMinY = Math.max(p.y, support);
       const bodyMaxY = p.y + bodyHeight;
       if (bodyMaxY <= b.minY || bodyMinY >= b.maxY) continue; // no vertical overlap
+
+      if (b.ry !== undefined) {
+        // Oriented push-out: resolve in the box's local frame, then rotate the correction back to
+        // world. Only the inward velocity component is removed, so sliding ALONG the wall stays smooth.
+        const cos = Math.cos(b.ry);
+        const sin = Math.sin(b.ry);
+        const dwx = p.x - (b.cx as number);
+        const dwz = p.z - (b.cz as number);
+        const lx = cos * dwx - sin * dwz;
+        const lz = sin * dwx + cos * dwz;
+        const ox = (b.hx as number) + r - Math.abs(lx);
+        const oz = (b.hz as number) + r - Math.abs(lz);
+        if (ox <= 0 || oz <= 0) continue;
+        let clx = 0;
+        let clz = 0;
+        if (ox < oz) clx = lx < 0 ? -ox : ox;
+        else clz = lz < 0 ? -oz : oz;
+        const cwx = cos * clx + sin * clz; // local → world
+        const cwz = -sin * clx + cos * clz;
+        p.x += cwx;
+        p.z += cwz;
+        const len = Math.hypot(cwx, cwz);
+        if (len > 1e-6) {
+          const nx = cwx / len;
+          const nz = cwz / len;
+          const vn = this.velocity.x * nx + this.velocity.z * nz;
+          if (vn < 0) {
+            this.velocity.x -= vn * nx;
+            this.velocity.z -= vn * nz;
+          }
+        }
+        continue;
+      }
 
       const overlapX = Math.min(p.x + r, b.maxX) - Math.max(p.x - r, b.minX);
       const overlapZ = Math.min(p.z + r, b.maxZ) - Math.max(p.z - r, b.minZ);

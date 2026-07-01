@@ -126,11 +126,18 @@ export class CreatorEditor implements CreatorBridge {
   private camYaw = 0;
   private camPitch = 0.45;
 
+  // Free-fly noclip toggled DURING playtest (= key / quick toolbar) — reuses the build fly camera.
+  private playtestFly = false;
+  private flyListenersActive = false;
+
   // Pointer/gizmo interaction state.
   private looking = false;
   private lookMoved = 0;
   private gizmoDragging = false;
   private ignoreClickUntilMs = 0;
+  // While Ctrl/Shift are being used as a CHORD (Ctrl+scroll height, Ctrl+S save, Shift+wheel rotate…)
+  // we briefly stop them from also driving the fly camera (down / sprint), so keybinds don't overlap.
+  private chordSuppressUntilMs = 0;
 
   // Entry sign (3D prop near the sandbox spawn while creator is locked).
   private entrySign: TransformNode | null = null;
@@ -150,6 +157,38 @@ export class CreatorEditor implements CreatorBridge {
     this.setCanvasCursor('');
   };
   private listenersActive = false;
+
+  // Lean listeners used ONLY for the playtest free-fly (movement + RMB look; no tools/placement).
+  private readonly onFlyKeyDown = (e: KeyboardEvent) => {
+    if (isEditableTarget(e.target)) return;
+    if (!FLY_CODES.has(e.code)) return;
+    const isFlyModifier = e.code === 'ShiftLeft' || e.code === 'ControlLeft' || e.code === 'ControlRight';
+    if (isFlyModifier || (!e.ctrlKey && !e.altKey && !e.metaKey)) {
+      this.flyKeys.add(e.code);
+      e.preventDefault();
+    }
+  };
+  private readonly onFlyKeyUp = (e: KeyboardEvent) => this.flyKeys.delete(e.code);
+  private readonly onFlyPointerDown = (e: PointerEvent) => {
+    if (e.pointerType === 'mouse' && e.button === 2) {
+      this.looking = true;
+      e.preventDefault();
+      this.setCanvasCursor('none');
+    }
+  };
+  private readonly onFlyPointerMove = (e: PointerEvent) => {
+    if (!this.looking) return;
+    this.camYaw += (e.movementX || 0) * LOOK_SENSITIVITY;
+    this.camPitch += (e.movementY || 0) * LOOK_SENSITIVITY;
+    this.camPitch = Math.max(-PITCH_LIMIT, Math.min(PITCH_LIMIT, this.camPitch));
+    this.applyCameraRotation();
+  };
+  private readonly onFlyPointerUp = (e: PointerEvent) => {
+    if (e.pointerType === 'mouse' && e.button === 2 && this.looking) {
+      this.looking = false;
+      this.setCanvasCursor('');
+    }
+  };
 
   constructor(
     private readonly scene: Scene,
@@ -248,7 +287,80 @@ export class CreatorEditor implements CreatorBridge {
     if (this.mode === 'build') {
       this.updateFlyCamera(dt);
       this.updatePlacementPreviewFromPointer();
+    } else if (this.playtestFly) {
+      this.updateFlyCamera(dt);
     }
+  }
+
+  // ---------------------------------------------------------------------------------------------
+  // Playtest free-fly (= key / quick toolbar) — fly around the course mid-test without leaving it.
+  // ---------------------------------------------------------------------------------------------
+
+  isPlaytestFlying(): boolean {
+    return this.active && this.mode === 'playtest' && this.playtestFly;
+  }
+
+  togglePlaytestFly(): void {
+    if (!this.active || this.mode !== 'playtest') return;
+    if (this.playtestFly) this.disablePlaytestFly(true);
+    else this.enablePlaytestFly();
+  }
+
+  private enablePlaytestFly(): void {
+    if (this.playtestFly) return;
+    this.playtestFly = true;
+    this.ensureEditorCamera();
+    const eye = this.player.camera.globalPosition;
+    this.editorCamera!.position.set(eye.x, eye.y, eye.z);
+    this.camYaw = this.player.root.rotation.y;
+    this.camPitch = 0.1;
+    this.applyCameraRotation();
+    this.scene.activeCamera = this.editorCamera;
+    this.input.setLockSuppressed(true); // RMB-look is manual; keep the game from grabbing pointer lock
+    this.addFlyListeners();
+    this.ui.refresh();
+    this.ui.toast('Fly mode — = to land here, B for Build');
+  }
+
+  private disablePlaytestFly(returnPlayer: boolean): void {
+    if (!this.playtestFly) return;
+    this.playtestFly = false;
+    this.removeFlyListeners();
+    this.flyKeys.clear();
+    this.looking = false;
+    this.setCanvasCursor('');
+    if (returnPlayer && this.editorCamera && this.mode === 'playtest') {
+      const c = this.editorCamera.position;
+      const groundY = this.layout.ground.bounds.y ?? 0;
+      this.player.teleportTo(new Vector3(c.x, Math.max(groundY, c.y - 1.6), c.z), this.camYaw, 0);
+      this.scene.activeCamera = this.player.camera;
+      this.input.setLockSuppressed(false);
+    }
+    this.ui.refresh();
+  }
+
+  private addFlyListeners(): void {
+    if (this.flyListenersActive) return;
+    this.flyListenersActive = true;
+    const canvas = this.canvas();
+    window.addEventListener('keydown', this.onFlyKeyDown);
+    window.addEventListener('keyup', this.onFlyKeyUp);
+    window.addEventListener('blur', this.onBlur);
+    canvas?.addEventListener('pointerdown', this.onFlyPointerDown);
+    window.addEventListener('pointerup', this.onFlyPointerUp);
+    window.addEventListener('pointermove', this.onFlyPointerMove);
+  }
+
+  private removeFlyListeners(): void {
+    if (!this.flyListenersActive) return;
+    this.flyListenersActive = false;
+    const canvas = this.canvas();
+    window.removeEventListener('keydown', this.onFlyKeyDown);
+    window.removeEventListener('keyup', this.onFlyKeyUp);
+    window.removeEventListener('blur', this.onBlur);
+    canvas?.removeEventListener('pointerdown', this.onFlyPointerDown);
+    window.removeEventListener('pointerup', this.onFlyPointerUp);
+    window.removeEventListener('pointermove', this.onFlyPointerMove);
   }
 
   /** Hard shutdown for going online: tears down with no sandbox restore (the online path handles it). */
@@ -312,6 +424,7 @@ export class CreatorEditor implements CreatorBridge {
   }
 
   private enterBuildMode(): void {
+    this.disablePlaytestFly(false);
     this.mode = 'build';
     this.uninstallWorldAndCollision();
     this.player.movement.setWorld(null);
@@ -327,6 +440,7 @@ export class CreatorEditor implements CreatorBridge {
   }
 
   private enterPlaytestMode(): void {
+    this.disablePlaytestFly(false);
     this.mode = 'playtest';
     this.removeListeners();
     this.detachGizmo();
@@ -361,6 +475,7 @@ export class CreatorEditor implements CreatorBridge {
   }
 
   private teardownActive(restoreSandbox: boolean): void {
+    this.disablePlaytestFly(false);
     this.removeListeners();
     this.detachGizmo();
     this.uninstallWorldAndCollision();
@@ -441,10 +556,14 @@ export class CreatorEditor implements CreatorBridge {
   private updateFlyCamera(dt: number): void {
     const cam = this.editorCamera;
     if (!cam) return;
+    // While Ctrl/Shift are being consumed as a chord (Ctrl+scroll height, Ctrl+S…), don't also let them
+    // move the camera down / sprint — that was the "Ctrl+scroll sinks the player" overlap.
+    const chordActive = performance.now() < this.chordSuppressUntilMs;
     const moveX = (this.flyKeys.has('KeyD') ? 1 : 0) - (this.flyKeys.has('KeyA') ? 1 : 0);
     const moveZ = (this.flyKeys.has('KeyW') ? 1 : 0) - (this.flyKeys.has('KeyS') ? 1 : 0);
-    const moveY = (this.flyKeys.has('Space') ? 1 : 0) - (this.flyKeys.has('ControlLeft') || this.flyKeys.has('ControlRight') ? 1 : 0);
-    const speed = FLY_BASE_SPEED * (this.flyKeys.has('ShiftLeft') ? FLY_SPRINT : 1);
+    const downHeld = !chordActive && (this.flyKeys.has('ControlLeft') || this.flyKeys.has('ControlRight'));
+    const moveY = (this.flyKeys.has('Space') ? 1 : 0) - (downHeld ? 1 : 0);
+    const speed = FLY_BASE_SPEED * (this.flyKeys.has('ShiftLeft') && !chordActive ? FLY_SPRINT : 1);
 
     const sin = Math.sin(this.camYaw);
     const cos = Math.cos(this.camYaw);
@@ -509,12 +628,19 @@ export class CreatorEditor implements CreatorBridge {
     if (this.ui.isModalOpen() || isEditableTarget(e.target)) return;
     const code = e.code;
 
-    // Held fly keys.
+    // Held fly keys. The fly modifiers (Ctrl/Shift) are always tracked so Ctrl=down / Shift=sprint
+    // work, but a NON-modifier fly key (W/A/S/D/Space) is NOT consumed for movement while Ctrl/Alt/Meta
+    // is held — otherwise it would swallow chords like Ctrl+S / Ctrl+D (S and D are also fly keys).
     if (FLY_CODES.has(code)) {
-      this.flyKeys.add(code);
-      e.preventDefault();
-      return;
+      const isFlyModifier = code === 'ShiftLeft' || code === 'ControlLeft' || code === 'ControlRight';
+      if (isFlyModifier || (!e.ctrlKey && !e.altKey && !e.metaKey)) {
+        this.flyKeys.add(code);
+        e.preventDefault();
+        return;
+      }
     }
+    // Any Ctrl/Meta chord (Ctrl+S/Z/C/V/D/Y…) briefly stops Ctrl/Shift from also driving the camera.
+    if (e.ctrlKey || e.metaKey) this.chordSuppressUntilMs = performance.now() + 260;
 
     if (code === 'F1') {
       e.preventDefault();
@@ -655,6 +781,9 @@ export class CreatorEditor implements CreatorBridge {
   private handleWheel(e: WheelEvent): void {
     if (!this.armedModule) return;
     e.preventDefault();
+    // Scrolling to adjust the preview means Ctrl/Shift are held as a chord — keep them from also
+    // driving the fly camera for a moment (fixes "Ctrl+scroll height also sinks the camera").
+    this.chordSuppressUntilMs = performance.now() + 220;
     if (e.shiftKey) {
       this.rotatePlacementPreview(e.deltaY > 0 ? 1 : -1);
       return;
@@ -738,6 +867,12 @@ export class CreatorEditor implements CreatorBridge {
     gm.positionGizmoEnabled = this.snap.gizmo === 'move';
     gm.rotationGizmoEnabled = this.snap.gizmo === 'rotate';
     gm.scaleGizmoEnabled = this.snap.gizmo === 'scale';
+    if (gm.gizmos.rotationGizmo) {
+      // Collision + visuals honour Y-rotation only, so expose just the yaw ring — X/Z tilt would
+      // silently snap back and feel broken.
+      gm.gizmos.rotationGizmo.xGizmo.isEnabled = false;
+      gm.gizmos.rotationGizmo.zGizmo.isEnabled = false;
+    }
     this.wireGizmoDrag();
     this.applyGizmoSnapping();
     this.reattachGizmo();

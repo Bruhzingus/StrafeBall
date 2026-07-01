@@ -435,8 +435,17 @@ export function objectSolidBoxes(obj: CreatorLayoutObject): OrientedBox[] {
   });
 }
 
+export interface Aabb {
+  minX: number;
+  maxX: number;
+  minY: number;
+  maxY: number;
+  minZ: number;
+  maxZ: number;
+}
+
 /** Axis-aligned enclosing AABB of an oriented box (exact when ry≈0; enclosing otherwise). */
-export function orientedBoxAabb(box: OrientedBox): { minX: number; maxX: number; minY: number; maxY: number; minZ: number; maxZ: number } {
+export function orientedBoxAabb(box: OrientedBox): Aabb {
   const c = Math.abs(Math.cos(box.ry));
   const s = Math.abs(Math.sin(box.ry));
   const hx = (box.w / 2) * c + (box.d / 2) * s;
@@ -450,6 +459,9 @@ export function orientedBoxAabb(box: OrientedBox): { minX: number; maxX: number;
     maxZ: box.cz + hz
   };
 }
+
+// Rotated collision is resolved EXACTLY as oriented boxes by the offline MovementController (see
+// buildCreatorCollisionBoxes → orientedAabb), so no AABB slicing/approximation is needed here.
 
 // ---------------------------------------------------------------------------------------------
 // Editable dimensions helper (UI shows width/height/depth derived from base size × scale)
