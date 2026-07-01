@@ -17,9 +17,10 @@
  * Local/offline only. Never read by the server, shared simulation, prediction, or networking.
  */
 
+import { Vector3 } from '@babylonjs/core';
 import { PlayerController } from '../../player/PlayerController';
 import { TUNING } from '../../config/tuning';
-import { CreatorLayout, CreatorLayoutObject, objectDimensions } from './CreatorLayout';
+import { CreatorLayout, CreatorLayoutObject, objectDimensions, layoutSpawn } from './CreatorLayout';
 
 export type PadKind = 'stamina' | 'backflip' | 'speed' | 'bounce';
 
@@ -57,11 +58,14 @@ export class CreatorPads {
   // cleared the moment they step off, so leaving + returning re-fires immediately.
   private readonly cooldownById = new Map<string, number>();
   private readonly occupied = new Set<string>();
+  // Most-recently-touched checkpoint (kill blocks respawn you here, or at spawn if none touched yet).
+  private lastCheckpoint: { x: number; y: number; z: number; yaw: number } | null = null;
 
   /** Clear all per-pad state (call when entering a fresh Playtest run). */
   reset(): void {
     this.cooldownById.clear();
     this.occupied.clear();
+    this.lastCheckpoint = null;
   }
 
   /** Run one frame of pad effects. Call in Playtest AFTER the player movement update. */
@@ -74,6 +78,31 @@ export class CreatorPads {
 
     const p = player.root.position;
     const r = TUNING.player.radius;
+
+    // Checkpoints: touching a checkpoint gate's trigger volume records it as the respawn point.
+    for (const obj of layout.objects) {
+      if (obj.type !== 'checkpoint_gate' || obj.visible === false) continue;
+      const trig = obj.metadata?.trigger;
+      const dims = objectDimensions(obj);
+      const halfW = (trig ? trig.width : dims[0]) / 2;
+      const height = trig ? trig.height : dims[1];
+      const halfD = (trig ? trig.depth : dims[2]) / 2;
+      if (this.insideOrientedBox(obj, p.x, p.y, p.z, halfW, height, halfD, r)) {
+        this.lastCheckpoint = { x: obj.position[0], y: Math.max(0, obj.position[1]), z: obj.position[2], yaw: (obj.rotation[1] ?? 0) * DEG2RAD };
+      }
+    }
+
+    // Kill blocks: entering one resets you to the last checkpoint (or spawn). Skip pads this frame.
+    for (const obj of layout.objects) {
+      if (obj.type !== 'kill_block' || obj.visible === false) continue;
+      const [w, h, d] = objectDimensions(obj);
+      if (this.insideOrientedBox(obj, p.x, p.y, p.z, w / 2, h, d / 2, r)) {
+        const target = this.lastCheckpoint ?? layoutSpawn(layout);
+        player.teleportTo(new Vector3(target.x, target.y, target.z), target.yaw, 0);
+        return;
+      }
+    }
+
     const stillOn = new Set<string>();
 
     for (const obj of layout.objects) {
@@ -103,6 +132,20 @@ export class CreatorPads {
     }
     this.occupied.clear();
     for (const id of stillOn) this.occupied.add(id);
+  }
+
+  /** Is the player's point inside an oriented (Y-rotated) box volume based at the object (checkpoint/kill)? */
+  private insideOrientedBox(obj: CreatorLayoutObject, px: number, py: number, pz: number, halfW: number, height: number, halfD: number, radius: number): boolean {
+    const base = obj.position[1];
+    if (py < base - 0.2 || py > base + height + 0.2) return false;
+    const ry = (obj.rotation[1] ?? 0) * DEG2RAD;
+    const cos = Math.cos(ry);
+    const sin = Math.sin(ry);
+    const dx = px - obj.position[0];
+    const dz = pz - obj.position[2];
+    const lx = cos * dx - sin * dz;
+    const lz = sin * dx + cos * dz;
+    return Math.abs(lx) <= halfW + radius && Math.abs(lz) <= halfD + radius;
   }
 
   /** Oriented footprint test: is the player standing within (and roughly at the height of) the pad? */

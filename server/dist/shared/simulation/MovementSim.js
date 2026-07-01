@@ -350,16 +350,18 @@ function stepMovement(movementIn, internalIn, dashIn, input, prevInput, dt, boxe
     }
     // --- accelerate toward wish dir ---
     const speedMultiplier = (catchStanceActive ? c.player.catchStanceSpeedMultiplier : 1) + (catchBoostTimer > 0 ? 0.1 : 0);
-    if (grounded) {
-        const brakingSlide = sliding && slideHeldActive && slideTimer >= c.slide.overholdBrakeDelay;
-        const groundWishSpeed = brakingSlide || (crouching && !sliding)
+    if (grounded && !sliding) {
+        // No ground acceleration WHILE SLIDING: a slide is a committed slide — you can't strafe, steer, or
+        // add speed on the ground; it just carries your momentum (bled by friction above). Only normal
+        // (non-slide) grounded movement accelerates toward the wish dir.
+        const groundWishSpeed = crouching
             ? c.player.crouchWalkSpeed * speedScale
             : c.player.maxGroundSpeed * speedMultiplier * speedScale;
         const accelerated = accelerate(vx, vz, wishX, wishZ, hasWish, groundWishSpeed, c.player.groundAcceleration, dt);
         vx = accelerated.vx;
         vz = accelerated.vz;
     }
-    else if (!wallRunClimbing) {
+    else if (!grounded && !wallRunClimbing) {
         // CS-style air-strafe: A/D are the air-control keys. W/S conserves momentum in air but does
         // not add forward/back acceleration, so speed comes from side input plus mouse steering.
         // Suppressed while wall-run climbing: there A/D are repurposed to VERTICAL height control, so

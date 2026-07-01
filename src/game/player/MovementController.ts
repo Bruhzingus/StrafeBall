@@ -148,16 +148,16 @@ export class MovementController {
     const speedMultiplier =
       (catchStanceActive ? TUNING.player.catchStanceSpeedMultiplier : 1) + (this.catchBoostTimer > 0 ? 0.1 : 0);
 
-    if (this.grounded) {
-      // Ground: accelerate up to the (possibly slowed) walk speed. Excess speed carried in
-      // from bhop/slide isn't removed by accelerate — friction (above) bleeds it on non-jump frames.
-      const brakingSlide =
-        this.sliding && this.slideHoldActive && this.slideTimer >= TUNING.slide.overholdBrakeDelay;
-      const groundWishSpeed = brakingSlide || (this.crouching && !this.sliding)
+    if (this.grounded && !this.sliding) {
+      // Ground (NOT sliding): accelerate up to the (possibly slowed) walk speed. Excess speed carried
+      // in from bhop isn't removed by accelerate — friction (above) bleeds it on non-jump frames.
+      // A slide is a committed slide: no ground acceleration at all, so you can't strafe/steer or add
+      // speed on the ground while sliding — it just carries momentum (bled by slide friction above).
+      const groundWishSpeed = this.crouching
         ? TUNING.player.crouchWalkSpeed
         : TUNING.player.maxGroundSpeed * speedMultiplier;
       this.accelerate(wishDir, groundWishSpeed, TUNING.player.groundAcceleration, dt);
-    } else if (!this.wallRunClimbing) {
+    } else if (!this.grounded && !this.wallRunClimbing) {
       // CS-style air-strafe: A/D are the air-control keys. W/S preserves momentum but does not add
       // forward/back air acceleration, so speed comes from mouse-turning with side input. Suppressed
       // while wall-run climbing: there A/D are repurposed to VERTICAL height control, so they must

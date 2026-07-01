@@ -65,6 +65,8 @@ export class CreatorGeometry {
   private previewLocalMinY = 0;
   private readonly triggerMeshes: Mesh[] = [];
   private readonly collisionMeshes: Mesh[] = [];
+  // Object roots for gameplay-INVISIBLE objects: shown (ghosted) + selectable in Build, hidden in Playtest.
+  private readonly hiddenObjectNodes: TransformNode[] = [];
 
   private gridVisible = true;
   private triggersVisible = true;
@@ -92,14 +94,24 @@ export class CreatorGeometry {
     this.objectRoots.clear();
     this.triggerMeshes.length = 0;
     this.collisionMeshes.length = 0;
+    this.hiddenObjectNodes.length = 0;
 
     this.ensureGrid();
     this.ensureSelectionBox();
     this.positionGrid(layout);
 
     for (const obj of layout.objects) {
-      if (obj.visible === false) continue;
+      // Gameplay-invisible objects are STILL built for the editor (ghosted + selectable). They only
+      // vanish in Playtest — toggled off with the overlays. This is what makes an object you hid
+      // recoverable/clickable in the viewport instead of only via the Outliner.
       this.buildObject(obj);
+      if (obj.visible === false) {
+        const node = this.objectRoots.get(obj.id);
+        if (node) {
+          for (const mesh of node.getChildMeshes(false)) mesh.visibility = 0.3;
+          this.hiddenObjectNodes.push(node);
+        }
+      }
     }
 
     this.buildOverlays(layout);
@@ -151,6 +163,9 @@ export class CreatorGeometry {
       case 'pad':
         this.buildPad(obj, node, w, h, d, mat);
         break;
+      case 'box':
+        this.buildHazardBox(obj, node, w, h, d);
+        break;
       case 'gate':
         this.buildGate(obj, node, w, h, d, mat);
         break;
@@ -186,6 +201,17 @@ export class CreatorGeometry {
     chevron.parent = node;
     chevron.isPickable = false;
     this.perBuild.push(chevron);
+  }
+
+  /** A translucent red hazard VOLUME (kill block) — walk-through, sized to the object, base on the floor. */
+  private buildHazardBox(obj: CreatorLayoutObject, node: TransformNode, w: number, h: number, d: number): void {
+    const box = MeshBuilder.CreateBox(`creator_${obj.id}_hazard`, { width: w, height: h, depth: d }, this.scene);
+    box.position.set(0, h / 2, 0);
+    box.material = this.translucentMaterial('creator_hazard_mat', new Color3(0.95, 0.22, 0.22), 0.34);
+    box.parent = node;
+    this.tagPickable(box, obj.id);
+    const label = this.markerLabel(obj);
+    if (label) this.attachLabel(obj, node, label, h + 0.4);
   }
 
   private buildGate(obj: CreatorLayoutObject, node: TransformNode, w: number, h: number, d: number, mat: StandardMaterial): void {
@@ -258,6 +284,9 @@ export class CreatorGeometry {
   }
 
   private attachLabel(obj: CreatorLayoutObject, node: TransformNode, text: string, y: number): void {
+    // Hidden objects' labels are skipped: the label is parented to the (always-on) root for billboarding,
+    // so it can't be toggled off with the object node — and a hidden object shouldn't show a floating label.
+    if (obj.visible === false) return;
     const mesh = this.signPlane(`creator_${obj.id}_label`, text);
     // Parent to the (unrotated, unscaled) geometry root at the marker's WORLD position and billboard it,
     // so the text always faces the camera and can never render mirrored/backwards, whatever the object's
@@ -551,6 +580,12 @@ export class CreatorGeometry {
         this.configurePreviewMesh(beam, mat, node);
         break;
       }
+      case 'box': {
+        const box = MeshBuilder.CreateBox(`creator_preview_${obj.type}_box`, { width: w, height: h, depth: d }, this.scene);
+        box.position.set(0, h / 2, 0);
+        this.configurePreviewMesh(box, mat, node);
+        break;
+      }
       case 'arrow': {
         const shaft = MeshBuilder.CreateBox(`creator_preview_${obj.type}_shaft`, { width: w * 0.3, height: 0.08, depth: d * 0.55 }, this.scene);
         shaft.position.set(0, 0.08, -d * 0.175);
@@ -622,6 +657,8 @@ export class CreatorGeometry {
     if (this.gridMesh) this.gridMesh.setEnabled(this.gridVisible);
     for (const m of this.triggerMeshes) m.setEnabled(on && this.triggersVisible);
     for (const m of this.collisionMeshes) m.setEnabled(on && this.collisionVisible);
+    // Gameplay-invisible objects show (ghosted) only in Build; they disappear in Playtest.
+    for (const n of this.hiddenObjectNodes) n.setEnabled(on);
   }
 
   // ---------------------------------------------------------------------------------------------

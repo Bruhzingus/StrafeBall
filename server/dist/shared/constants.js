@@ -51,9 +51,9 @@ exports.GAME_CONSTANTS = {
         impulse: 0,
         // A slide is a MOMENTUM slide: it keeps the speed you entered with and bleeds it off gradually
         // rather than instantly dropping you to walking speed. friction here is player.friction (10) *
-        // this multiplier, so 0.08 → ~0.8/s exponential decay (e.g. a 15 m/s slide is still ~10 m/s after
-        // 0.5s, ~6.7 after 1.5s) instead of the old 0.55 (5.5/s) which killed the speed almost at once.
-        frictionMultiplier: 0.08,
+        // this multiplier, so 0.12 → ~1.2/s exponential decay. (Dialed back ~30% from the first pass at
+        // 0.08/~0.8-per-s, which kept momentum too easily; the old pre-momentum value was 0.55 / 5.5-per-s.)
+        frictionMultiplier: 0.12,
         minDuration: 0.28,
         // Long enough that the momentum bleeds off naturally (via the low-speed cutoff) before this hard cap
         // ends the slide and normal ground friction takes over.

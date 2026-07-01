@@ -95,7 +95,7 @@ export interface CreatorBridge {
 
 const CATEGORY_LABELS: Record<CreatorModuleCategory, string> = {
   terrain: 'Terrain / Structure',
-  pad: 'Ability Pads',
+  pad: 'Pads & Zones',
   marker: 'Course Markers',
   optional: 'Optional Markers'
 };

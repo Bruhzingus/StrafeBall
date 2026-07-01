@@ -133,6 +133,14 @@ describe('CreatorLayout — collision sub-boxes', () => {
     expect(objectCollisionBoxes(layout.objects[1]).length).toBe(0);
   });
 
+  it('kill_block is a known walk-through volume (no collision boxes, has an AABB for selection)', () => {
+    const { layout } = validateLayout({ objects: [{ type: 'kill_block', position: [1, 0, 2], scale: [2, 1, 1] }] });
+    expect(layout.objects.length).toBe(1);
+    expect(objectCollisionBoxes(layout.objects[0]).length).toBe(0); // walk-through: no collision
+    const dims = objectDimensions(layout.objects[0]);
+    expect(dims[0]).toBeCloseTo(8, 4); // 4 base * 2 scale
+  });
+
   it('markers (spawn) produce no collision boxes', () => {
     const layout = defaultCreatorLayout();
     const spawn = layout.objects.find((o) => o.type === 'spawn_point')!;

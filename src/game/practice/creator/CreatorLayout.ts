@@ -242,6 +242,7 @@ export type CreatorModuleType =
   | 'backflip_pad'
   | 'speed_pad'
   | 'bounce_pad'
+  | 'kill_block'
   | 'bot_spawn'
   | 'target_dummy'
   | 'ball_spawn';
@@ -278,6 +279,9 @@ export const CREATOR_MODULES: readonly CreatorModuleDef[] = [
   { type: 'backflip_pad', label: 'Backflip Pad', category: 'pad', shape: 'pad', baseSize: [4, 0.2, 4], material: 'pad_backflip', collision: false, defaultMetadata: { label: 'BACKFLIP' } },
   { type: 'speed_pad', label: 'Speed Boost Pad', category: 'pad', shape: 'pad', baseSize: [4, 0.2, 6], material: 'pad_speed', collision: false, defaultMetadata: { label: 'SPEED', padStrength: 1 } },
   { type: 'bounce_pad', label: 'Bounce Pad', category: 'pad', shape: 'pad', baseSize: [4, 0.35, 4], material: 'pad_bounce', collision: false, defaultMetadata: { label: 'BOUNCE', padStrength: 1 } },
+  // Kill block: a walk-through hazard VOLUME (no collision) that resets the player to their last
+  // checkpoint (or spawn) on touch in Playtest. Scale it to cover pits / out-of-bounds / hazards.
+  { type: 'kill_block', label: 'Kill Block', category: 'pad', shape: 'box', baseSize: [4, 4, 4], material: 'marker_red', collision: false, defaultMetadata: { label: 'KILL' } },
 
   // --- Optional future-ready markers (metadata only; ignored by the normal sandbox) ---
   { type: 'bot_spawn', label: 'Bot Spawn Marker', category: 'optional', shape: 'pad', baseSize: [2, 0.1, 2], material: 'marker_red', collision: false, defaultMetadata: { yawDeg: 0, label: 'BOT' } },
