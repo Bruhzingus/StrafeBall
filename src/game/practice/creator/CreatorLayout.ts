@@ -81,6 +81,8 @@ export interface CreatorObjectMetadata {
   /** Route label / sign text (plain text, sanitised + length-capped on apply). */
   label?: string;
   enabled?: boolean;
+  /** Ability-pad strength multiplier (bounce launch / speed boost). 1 = default; clamped on apply. */
+  padStrength?: number;
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -101,7 +103,10 @@ export const CREATOR_LIMITS = {
   maxY: SANDBOX_CEILING_Y + 100000,
   maxLabelLength: 64,
   maxNameLength: 48,
-  maxTriggerDimension: 100000
+  maxTriggerDimension: 100000,
+  // Ability-pad strength multiplier bounds (bounce launch / speed boost).
+  minPadStrength: 0.1,
+  maxPadStrength: 20
 } as const;
 
 // ---------------------------------------------------------------------------------------------
@@ -127,7 +132,12 @@ export const CREATOR_MATERIALS: readonly CreatorMaterialDef[] = [
   { id: 'marker_blue', label: 'Marker Blue', rgb: [0.2, 0.45, 0.95], solid: true },
   { id: 'marker_green', label: 'Marker Green', rgb: [0.2, 0.8, 0.4], solid: true },
   { id: 'marker_red', label: 'Marker Red', rgb: [0.92, 0.3, 0.32], solid: true },
-  { id: 'marker_gold', label: 'Marker Gold', rgb: [0.96, 0.78, 0.25], solid: true }
+  { id: 'marker_gold', label: 'Marker Gold', rgb: [0.96, 0.78, 0.25], solid: true },
+  // Ability-pad colours (bright, distinct so each pad type reads at a glance).
+  { id: 'pad_stamina', label: 'Pad · Stamina', rgb: [0.16, 0.78, 0.42], solid: true },
+  { id: 'pad_backflip', label: 'Pad · Backflip', rgb: [0.64, 0.34, 0.95], solid: true },
+  { id: 'pad_speed', label: 'Pad · Speed', rgb: [0.98, 0.62, 0.12], solid: true },
+  { id: 'pad_bounce', label: 'Pad · Bounce', rgb: [0.18, 0.66, 0.98], solid: true }
 ];
 
 export const CREATOR_MATERIAL_IDS = CREATOR_MATERIALS.map((m) => m.id);
@@ -179,7 +189,7 @@ const wallStyleToMaterial: Record<WallStyle, string> = {
 // Module catalog
 // ---------------------------------------------------------------------------------------------
 
-export type CreatorModuleCategory = 'terrain' | 'marker' | 'optional';
+export type CreatorModuleCategory = 'terrain' | 'pad' | 'marker' | 'optional';
 export type CreatorShapeKind =
   | 'box'
   | 'lshape'
@@ -228,6 +238,10 @@ export type CreatorModuleType =
   | 'route_arrow'
   | 'signboard'
   | 'marker_pad'
+  | 'stamina_pad'
+  | 'backflip_pad'
+  | 'speed_pad'
+  | 'bounce_pad'
   | 'bot_spawn'
   | 'target_dummy'
   | 'ball_spawn';
@@ -257,6 +271,13 @@ export const CREATOR_MODULES: readonly CreatorModuleDef[] = [
   { type: 'route_arrow', label: 'Route Arrow', category: 'marker', shape: 'arrow', baseSize: [2.2, 0.1, 2.6], material: 'marker_gold', collision: false, defaultMetadata: { yawDeg: 0, label: '' } },
   { type: 'signboard', label: 'Signboard', category: 'marker', shape: 'sign', baseSize: [3.2, 1.4, 0.2], material: 'marker_blue', collision: false, defaultMetadata: { yawDeg: 0, label: 'SIGN' } },
   { type: 'marker_pad', label: 'Marker Pad', category: 'marker', shape: 'pad', baseSize: [4, 0.1, 4], material: 'marker_blue', collision: false },
+
+  // --- Ability pads (functional in Playtest: step on them to trigger the effect). Scalable; the
+  //     footprint you resize IS the trigger area. padStrength scales bounce/speed power. ---
+  { type: 'stamina_pad', label: 'Stamina Pad', category: 'pad', shape: 'pad', baseSize: [4, 0.2, 4], material: 'pad_stamina', collision: false, defaultMetadata: { label: 'STAMINA' } },
+  { type: 'backflip_pad', label: 'Backflip Pad', category: 'pad', shape: 'pad', baseSize: [4, 0.2, 4], material: 'pad_backflip', collision: false, defaultMetadata: { label: 'BACKFLIP' } },
+  { type: 'speed_pad', label: 'Speed Boost Pad', category: 'pad', shape: 'pad', baseSize: [4, 0.2, 6], material: 'pad_speed', collision: false, defaultMetadata: { label: 'SPEED', padStrength: 1 } },
+  { type: 'bounce_pad', label: 'Bounce Pad', category: 'pad', shape: 'pad', baseSize: [4, 0.35, 4], material: 'pad_bounce', collision: false, defaultMetadata: { label: 'BOUNCE', padStrength: 1 } },
 
   // --- Optional future-ready markers (metadata only; ignored by the normal sandbox) ---
   { type: 'bot_spawn', label: 'Bot Spawn Marker', category: 'optional', shape: 'pad', baseSize: [2, 0.1, 2], material: 'marker_red', collision: false, defaultMetadata: { yawDeg: 0, label: 'BOT' } },
@@ -571,6 +592,9 @@ function sanitizeMetadata(raw: unknown, def: CreatorModuleDef): CreatorObjectMet
   if (typeof m.oneWayYawDeg === 'number') out.oneWayYawDeg = clampNumber(m.oneWayYawDeg, -360, 360, 0);
   if (typeof m.label === 'string') out.label = sanitizeText(m.label, CREATOR_LIMITS.maxLabelLength);
   if (typeof m.enabled === 'boolean') out.enabled = m.enabled;
+  if (typeof m.padStrength === 'number' && Number.isFinite(m.padStrength)) {
+    out.padStrength = clampNumber(m.padStrength, CREATOR_LIMITS.minPadStrength, CREATOR_LIMITS.maxPadStrength, 1);
+  }
   if (m.triggerType === 'start' || m.triggerType === 'checkpoint' || m.triggerType === 'finish' || m.triggerType === 'none') {
     out.triggerType = m.triggerType;
   }

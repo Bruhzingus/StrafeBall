@@ -9,6 +9,7 @@ import { ThrowSystem } from '../ball/ThrowSystem';
 import { cameraForward } from '../utils/vector';
 import { MovementSnapshot } from './MovementController';
 import { Effects } from '../effects/Effects';
+import { practiceCheats } from '../config/practiceCheats';
 
 export interface HandState {
   ball: Ball | null;
@@ -211,7 +212,8 @@ export class HandController {
   }
 
   private tickHand(hand: HandState, dt: number): void {
-    hand.cooldown = Math.max(0, hand.cooldown - dt);
+    // Offline testing aid: no-cooldown clears the catch cooldown so catches can be spammed.
+    hand.cooldown = practiceCheats.noCooldown ? 0 : Math.max(0, hand.cooldown - dt);
     this.tickHandAnimation(hand, dt);
     if (hand.charging) {
       hand.chargeSeconds = Math.min(TUNING.ball.maxChargeSeconds, hand.chargeSeconds + dt);

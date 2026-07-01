@@ -42,6 +42,7 @@ import { SettingsPanel } from '../ui/SettingsPanel';
 import { MatchRules } from '../rules/MatchRules';
 import { TUNING } from '../config/tuning';
 import { CONTROL_KEYS, MOUSE_BUTTON } from '../config/controls';
+import { practiceCheats } from '../config/practiceCheats';
 import { SoundManager } from '../audio/SoundManager';
 import { MusicManager } from '../audio/MusicManager';
 import { Effects } from '../effects/Effects';
@@ -827,6 +828,17 @@ export class ArenaScene {
 
   private step(dt: number): void {
     this.elapsed += dt;
+
+    // Offline testing toggle (all offline modes incl. creator playtest): strip cooldowns from
+    // catches / stamina / backflip / parry so abilities can be spammed while iterating.
+    if (this.input.wasKeyPressed(CONTROL_KEYS.toggleNoCooldown)) {
+      practiceCheats.noCooldown = !practiceCheats.noCooldown;
+      this.hud.showScoreEvent(
+        practiceCheats.noCooldown ? 'NO COOLDOWN: ON' : 'NO COOLDOWN: OFF',
+        'catches · stamina · backflip · parry',
+        practiceCheats.noCooldown ? 'good' : 'neutral'
+      );
+    }
 
     // The Creator Sandbox editor, when unlocked + active, takes over the offline step entirely
     // (Build Mode flies an editor camera with the player frozen; Playtest Mode runs real movement).

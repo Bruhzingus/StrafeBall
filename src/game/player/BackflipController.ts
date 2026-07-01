@@ -1,5 +1,6 @@
 import { Vector3 } from '@babylonjs/core';
 import { TUNING } from '../config/tuning';
+import { practiceCheats } from '../config/practiceCheats';
 
 export class BackflipController {
   public active = false;
@@ -7,7 +8,9 @@ export class BackflipController {
   public cooldown = 0;
 
   update(dt: number): void {
-    if (this.cooldown > 0) {
+    // Offline testing aid: no-cooldown clears the recovery so a backflip is always ready.
+    if (practiceCheats.noCooldown) this.cooldown = 0;
+    else if (this.cooldown > 0) {
       this.cooldown = Math.max(0, this.cooldown - dt);
     }
 
@@ -21,7 +24,7 @@ export class BackflipController {
   }
 
   canStart(): boolean {
-    return !this.active && this.cooldown <= 0;
+    return !this.active && (this.cooldown <= 0 || practiceCheats.noCooldown);
   }
 
   start(backwardDirection: Vector3): Vector3 | null {

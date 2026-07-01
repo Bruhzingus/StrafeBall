@@ -10,6 +10,7 @@ import { angleBetweenDegrees } from '../utils/math';
 import { cameraForward } from '../utils/vector';
 import { InputManager } from '../input/InputManager';
 import { MOUSE_BUTTON } from '../config/controls';
+import { practiceCheats } from '../config/practiceCheats';
 import { HandController } from './HandController';
 import { MovementController, MovementSnapshot } from './MovementController';
 import { DashController } from './DashController';
@@ -39,7 +40,8 @@ export class CatchController {
 
   update(dt: number, input: InputManager, movement: MovementSnapshot): void {
     this.elapsedMs += dt * 1000;
-    this.parryCooldown = Math.max(0, this.parryCooldown - dt);
+    // Offline testing aid: no-cooldown clears the parry cooldown so parries can be spammed.
+    this.parryCooldown = practiceCheats.noCooldown ? 0 : Math.max(0, this.parryCooldown - dt);
 
     const forward = cameraForward(this.camera);
     const threats = this.ballManager.getLiveThreatsToward(this.camera.globalPosition);

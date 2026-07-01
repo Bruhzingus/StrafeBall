@@ -95,6 +95,7 @@ export interface CreatorBridge {
 
 const CATEGORY_LABELS: Record<CreatorModuleCategory, string> = {
   terrain: 'Terrain / Structure',
+  pad: 'Ability Pads',
   marker: 'Course Markers',
   optional: 'Optional Markers'
 };
@@ -353,7 +354,7 @@ export class CreatorUI {
 
     // --- Module strip, grouped, with number badges on the first ten ---
     const strip = el('div', 'creator-hotbar-strip');
-    for (const category of ['terrain', 'marker', 'optional'] as CreatorModuleCategory[]) {
+    for (const category of ['terrain', 'pad', 'marker', 'optional'] as CreatorModuleCategory[]) {
       const group = el('div', 'creator-hotbar-group');
       const groupTitle = el('div', 'creator-hotbar-grouptitle');
       groupTitle.textContent = CATEGORY_LABELS[category];
@@ -566,6 +567,15 @@ export class CreatorUI {
       }
     }
 
+    // Ability-pad power (bounce launch / speed boost). 1 = default; resize the pad itself to change
+    // the trigger area. Stamina / backflip pads have no power to tune.
+    if (obj.type === 'speed_pad' || obj.type === 'bounce_pad') {
+      const powerRow = el('div', 'creator-field');
+      powerRow.appendChild(label(obj.type === 'bounce_pad' ? 'Bounce Power ×' : 'Boost Power ×'));
+      powerRow.appendChild(this.numberInput(meta.padStrength ?? 1, 0.25, (v) => this.bridge.setSelectedMetadata({ padStrength: v })));
+      wrap.appendChild(powerRow);
+    }
+
     this.inspectorEl.appendChild(wrap);
   }
 
@@ -720,7 +730,7 @@ export class CreatorUI {
     this.snapEl.style.display = editing ? '' : 'none';
     this.helpEl.textContent = editing
       ? 'WASD fly · Space/Ctrl up/down · Shift faster · hold RMB look · LMB place preview/select · RMB-tap cancel · 1–0 pick module · wheel swap module · R/Shift+R rotate preview · Q/E height · [/ ] scale · C reset preview · G/R/T/V move/rotate/scale/select · arrows/PgUp/PgDn nudge selected · F focus · B duplicate · Ctrl+C/V copy/paste · Del delete · Ctrl+Z/Y undo/redo · Ctrl+S save · F1 playtest'
-      : 'PLAYTEST — real movement. B / F1 / Esc → Build · = → free-fly (noclip) · Reset Player to respawn.';
+      : 'PLAYTEST — real movement. B / F1 / Esc → Build · = → free-fly (noclip) · Reset Player to respawn · O → no-cooldown · step on ability pads to trigger them.';
 
     this.refreshPaletteArmed();
     const selected = this.bridge.getSelectedObject();

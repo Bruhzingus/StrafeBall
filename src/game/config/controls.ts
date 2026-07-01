@@ -16,7 +16,9 @@ export const CONTROL_KEYS = {
   resetBalls: 'KeyJ',
   resetMatch: 'KeyU',
   debugBallLauncher: 'KeyL',
-  toggleDebug: 'Tab'
+  toggleDebug: 'Tab',
+  // Offline testing toggle: removes cooldowns/costs from catches, stamina (dash), backflip, parry.
+  toggleNoCooldown: 'KeyO'
 } as const;
 
 export const MOUSE_BUTTON = {

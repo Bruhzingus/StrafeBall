@@ -48,6 +48,7 @@ import {
   type Vec3Tuple
 } from './CreatorLayout';
 import { CreatorWorld, buildCreatorCollisionBoxes } from './CreatorWorld';
+import { CreatorPads } from './CreatorPads';
 import { CreatorGeometry } from './CreatorGeometry';
 import { CreatorHistory } from './CreatorHistory';
 import { CreatorAccessLatch, isCreatorConfigured, verifyCreatorPassword } from './CreatorAccess';
@@ -93,6 +94,7 @@ export class CreatorEditor implements CreatorBridge {
   private readonly access = new CreatorAccessLatch();
   private readonly geometry: CreatorGeometry;
   private readonly world: CreatorWorld;
+  private readonly pads = new CreatorPads();
   private readonly ui: CreatorUI;
 
   private editorCamera: FreeCamera | null = null;
@@ -289,6 +291,9 @@ export class CreatorEditor implements CreatorBridge {
       this.updatePlacementPreviewFromPointer();
     } else if (this.playtestFly) {
       this.updateFlyCamera(dt);
+    } else {
+      // Playtest, first-person: apply ability-pad effects after the movement step ran this frame.
+      this.pads.update(dt, this.layout, this.player);
     }
   }
 
@@ -453,6 +458,11 @@ export class CreatorEditor implements CreatorBridge {
     this.input.setLockSuppressed(false);
     const spawn = layoutSpawn(this.layout);
     this.player.hands.clearHands();
+    // Fresh run: refill stamina + clear ability-pad state so a playtest always starts from full,
+    // regardless of what was spent in a previous playtest session.
+    this.player.dash.refill();
+    this.player.backflip.cooldown = 0;
+    this.pads.reset();
     this.player.setRespawn(new Vector3(spawn.x, spawn.y, spawn.z), spawn.yaw);
     this.player.teleportTo(new Vector3(spawn.x, spawn.y, spawn.z), spawn.yaw, 0);
     this.ui.toast('Playtest Mode — F1 to return to Build');
