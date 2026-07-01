@@ -167,6 +167,11 @@ export class Scoreboard3D {
     }
   }
 
+  /** Show/hide the whole board (its meshes are parented to the root). */
+  setVisible(visible: boolean): void {
+    this.root.setEnabled(visible);
+  }
+
   dispose(): void {
     this.root.dispose();
     this.faceTexture.dispose();

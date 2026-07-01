@@ -20,7 +20,8 @@ import {
   StandardMaterial,
   Texture,
   TransformNode,
-  Vector4
+  Vector4,
+  VertexData
 } from '@babylonjs/core';
 import {
   CreatorLayout,
@@ -175,13 +176,13 @@ export class CreatorGeometry {
     this.tagPickable(pad, obj.id);
 
     const label = this.markerLabel(obj);
-    if (label) this.attachLabel(obj, node, label, 1.6, Math.max(2.4, w * 0.6));
+    if (label) this.attachLabel(obj, node, label, 1.6);
 
-    // Facing chevron so spawn / pad orientation is readable (points +Z = the node's facing).
-    const chevron = MeshBuilder.CreateCylinder(`creator_${obj.id}_dir`, { diameter: Math.min(w, d) * 0.5, height: 0.12, tessellation: 3 }, this.scene);
-    chevron.rotation.x = Math.PI / 2;
-    chevron.position.set(0, 0.14, d * 0.25);
-    chevron.material = this.solidMaterial('marker_gold');
+    // Facing chevron so spawn / pad orientation is readable — a flat triangle pointing LOCAL +Z (the
+    // node's facing), sitting just above the pad surface.
+    const reach = Math.min(w, d) * 0.32;
+    const chevron = this.flatTriangle(`creator_${obj.id}_dir`, reach * 0.7, reach, this.solidMaterial('marker_gold'));
+    chevron.position.set(0, Math.max(0.1, h) + 0.02, d * 0.15);
     chevron.parent = node;
     chevron.isPickable = false;
     this.perBuild.push(chevron);
@@ -204,23 +205,23 @@ export class CreatorGeometry {
 
     const order = obj.metadata?.checkpointOrder;
     const text = obj.type === 'finish_gate' ? 'FINISH' : order != null ? `CP ${order}` : 'GATE';
-    this.attachLabel(obj, node, obj.metadata?.label ? `${text}\n${obj.metadata.label}` : text, h + 0.5, Math.min(w, 4));
+    this.attachLabel(obj, node, obj.metadata?.label ? `${text}\n${obj.metadata.label}` : text, h + 0.5);
   }
 
   private buildArrow(obj: CreatorLayoutObject, node: TransformNode, w: number, d: number, mat: StandardMaterial): void {
-    // A flat ground arrow pointing +Z (node facing). Shaft + head built from boxes.
-    const shaft = MeshBuilder.CreateBox(`creator_${obj.id}_shaft`, { width: w * 0.35, height: 0.06, depth: d * 0.6 }, this.scene);
-    shaft.position.set(0, 0.06, -d * 0.1);
+    // A flat ground arrow lying in the XZ plane, pointing LOCAL +Z (the node's facing). The shaft is a
+    // thin flat bar and the head a flat triangle — both flat so the whole arrow reads from above and at
+    // grazing angles, and the head points the same way the arrow is rotated.
+    const shaft = MeshBuilder.CreateBox(`creator_${obj.id}_shaft`, { width: w * 0.3, height: 0.06, depth: d * 0.55 }, this.scene);
+    shaft.position.set(0, 0.06, -d * 0.175);
     shaft.material = mat;
     shaft.parent = node;
     this.tagPickable(shaft, obj.id);
-    const head = MeshBuilder.CreateCylinder(`creator_${obj.id}_head`, { diameter: w, height: 0.06, tessellation: 3 }, this.scene);
-    head.rotation.x = Math.PI / 2;
-    head.position.set(0, 0.06, d * 0.35);
-    head.material = mat;
+    const head = this.flatTriangle(`creator_${obj.id}_head`, w * 0.5, d * 0.5, mat);
+    head.position.set(0, 0.07, 0);
     head.parent = node;
     this.tagPickable(head, obj.id);
-    if (obj.metadata?.label) this.attachLabel(obj, node, obj.metadata.label, 1.4, Math.max(2, w));
+    if (obj.metadata?.label) this.attachLabel(obj, node, obj.metadata.label, 1.4);
   }
 
   private buildSignboard(obj: CreatorLayoutObject, node: TransformNode, w: number, h: number): void {
@@ -231,7 +232,7 @@ export class CreatorGeometry {
     post.parent = node;
     this.tagPickable(post, obj.id);
     const text = obj.metadata?.label || obj.name || 'SIGN';
-    this.attachLabel(obj, node, text, postH + h / 2, w);
+    this.attachLabel(obj, node, text, postH + h / 2);
   }
 
   private buildPortal(obj: CreatorLayoutObject, node: TransformNode, w: number, h: number, mat: StandardMaterial): void {
@@ -247,7 +248,7 @@ export class CreatorGeometry {
     beam.material = this.solidMaterial('marker_gold');
     beam.parent = node;
     this.tagPickable(beam, obj.id);
-    this.attachLabel(obj, node, obj.metadata?.label || 'LEAVE', h + 0.6, w + 0.5);
+    this.attachLabel(obj, node, obj.metadata?.label || 'LEAVE', h + 0.6);
   }
 
   private markerLabel(obj: CreatorLayoutObject): string {
@@ -256,11 +257,34 @@ export class CreatorGeometry {
     return moduleDef(obj.type)?.label ?? '';
   }
 
-  private attachLabel(obj: CreatorLayoutObject, node: TransformNode, text: string, y: number, width: number): void {
-    const mesh = this.signPlane(`creator_${obj.id}_label`, text, Math.max(1.4, width), Math.max(0.6, width * 0.32));
-    mesh.position.set(0, y, 0);
-    mesh.parent = node;
+  private attachLabel(obj: CreatorLayoutObject, node: TransformNode, text: string, y: number): void {
+    const mesh = this.signPlane(`creator_${obj.id}_label`, text);
+    // Parent to the (unrotated, unscaled) geometry root at the marker's WORLD position and billboard it,
+    // so the text always faces the camera and can never render mirrored/backwards, whatever the object's
+    // rotation. Billboarding a child of a ROTATED node misbehaves, so we root-parent + position in world.
+    // The label mesh isn't owned by `node` anymore, so it must be tracked for per-build disposal.
+    const scaleY = obj.scale[1] ?? 1;
+    mesh.position.set(obj.position[0], obj.position[1] + y * scaleY, obj.position[2]);
+    mesh.parent = this.root;
+    mesh.billboardMode = Mesh.BILLBOARDMODE_ALL;
     mesh.isPickable = false;
+    this.perBuild.push(mesh);
+  }
+
+  /**
+   * A flat, double-sided triangle lying in the XZ plane whose point faces LOCAL +Z (the node's facing),
+   * built from explicit vertices so arrows / direction chevrons ALWAYS point the way the object is
+   * rotated (a tessellation-3 cylinder's start angle is undefined and rendered them sideways/upright).
+   */
+  private flatTriangle(name: string, halfWidth: number, length: number, mat: StandardMaterial): Mesh {
+    const mesh = new Mesh(name, this.scene);
+    const vd = new VertexData();
+    vd.positions = [0, 0, length, -halfWidth, 0, 0, halfWidth, 0, 0];
+    vd.indices = [0, 1, 2, 0, 2, 1]; // both windings → visible from above and below
+    vd.normals = [0, 1, 0, 0, 1, 0, 0, 1, 0];
+    vd.applyToMesh(mesh);
+    mesh.material = mat;
+    return mesh;
   }
 
   // ---------------------------------------------------------------------------------------------
@@ -528,12 +552,11 @@ export class CreatorGeometry {
         break;
       }
       case 'arrow': {
-        const shaft = MeshBuilder.CreateBox(`creator_preview_${obj.type}_shaft`, { width: w * 0.35, height: 0.08, depth: d * 0.62 }, this.scene);
-        shaft.position.set(0, 0.08, -d * 0.1);
+        const shaft = MeshBuilder.CreateBox(`creator_preview_${obj.type}_shaft`, { width: w * 0.3, height: 0.08, depth: d * 0.55 }, this.scene);
+        shaft.position.set(0, 0.08, -d * 0.175);
         this.configurePreviewMesh(shaft, mat, node);
-        const head = MeshBuilder.CreateCylinder(`creator_preview_${obj.type}_head`, { diameter: w, height: 0.08, tessellation: 3 }, this.scene);
-        head.rotation.x = Math.PI / 2;
-        head.position.set(0, 0.08, d * 0.35);
+        const head = this.flatTriangle(`creator_preview_${obj.type}_head`, w * 0.5, d * 0.5, mat);
+        head.position.set(0, 0.09, 0);
         this.configurePreviewMesh(head, mat, node);
         break;
       }
@@ -550,9 +573,9 @@ export class CreatorGeometry {
         const pad = MeshBuilder.CreateBox(`creator_preview_${obj.type}_pad`, { width: w, height: Math.max(0.08, h), depth: d }, this.scene);
         pad.position.set(0, Math.max(0.04, h / 2), 0);
         this.configurePreviewMesh(pad, mat, node);
-        const arrow = MeshBuilder.CreateCylinder(`creator_preview_${obj.type}_dir`, { diameter: Math.min(w, d) * 0.5, height: 0.1, tessellation: 3 }, this.scene);
-        arrow.rotation.x = Math.PI / 2;
-        arrow.position.set(0, Math.max(0.12, h + 0.05), d * 0.25);
+        const reach = Math.min(w, d) * 0.32;
+        const arrow = this.flatTriangle(`creator_preview_${obj.type}_dir`, reach * 0.7, reach, mat);
+        arrow.position.set(0, Math.max(0.1, h) + 0.03, d * 0.15);
         this.configurePreviewMesh(arrow, mat, node);
         break;
       }
@@ -766,27 +789,47 @@ export class CreatorGeometry {
     return tex;
   }
 
-  private signPlane(name: string, text: string, width: number, height: number): Mesh {
-    const tex = new DynamicTexture(`${name}_tex`, { width: 512, height: 256 }, this.scene, true);
+  /**
+   * A text sign whose texture AND world plane both size to fit the text: the width flexes with the
+   * longest line (measured), the height with the line count. So "GO" gets a small tag and a long label
+   * a wide banner, with a consistent text height and no stretching (texture + plane share one aspect).
+   */
+  private signPlane(name: string, text: string): Mesh {
+    const lines = text.split('\n').map((l) => l.slice(0, 40)).slice(0, 3);
+    const fontPx = 64;
+    const padX = 46;
+    const padY = 28;
+    const lineStep = fontPx + 18;
+
+    // Measure the text on a scratch 2D context so the texture is only as wide as the content needs.
+    const measure = document.createElement('canvas').getContext('2d');
+    let maxTextPx = 1;
+    if (measure) {
+      measure.font = `900 ${fontPx}px Arial`;
+      for (const l of lines) maxTextPx = Math.max(maxTextPx, measure.measureText(l || ' ').width);
+    } else {
+      maxTextPx = Math.max(1, ...lines.map((l) => l.length)) * fontPx * 0.6;
+    }
+    const texW = Math.max(120, Math.min(1600, Math.round(maxTextPx + padX * 2)));
+    const texH = Math.round(lines.length * lineStep + padY * 2);
+
+    const tex = new DynamicTexture(`${name}_tex`, { width: texW, height: texH }, this.scene, true);
     tex.hasAlpha = true;
     const ctx = tex.getContext() as CanvasRenderingContext2D;
-    ctx.clearRect(0, 0, 512, 256);
+    ctx.clearRect(0, 0, texW, texH);
     ctx.fillStyle = 'rgba(12, 20, 42, 0.86)';
-    roundRect(ctx, 12, 12, 488, 232, 22);
+    roundRect(ctx, 6, 6, texW - 12, texH - 12, 20);
     ctx.fill();
     ctx.strokeStyle = 'rgba(120, 200, 255, 0.6)';
     ctx.lineWidth = 4;
-    roundRect(ctx, 12, 12, 488, 232, 22);
+    roundRect(ctx, 6, 6, texW - 12, texH - 12, 20);
     ctx.stroke();
     ctx.fillStyle = '#eef4ff';
     ctx.textAlign = 'center';
     ctx.textBaseline = 'middle';
-    const lines = text.split('\n').slice(0, 3);
-    const fontSize = lines.length > 1 ? 52 : 64;
-    ctx.font = `900 ${fontSize}px Arial`;
-    const lineH = fontSize + 12;
-    const startY = 128 - ((lines.length - 1) * lineH) / 2;
-    lines.forEach((line, i) => ctx.fillText(line, 256, startY + i * lineH));
+    ctx.font = `900 ${fontPx}px Arial`;
+    const startY = texH / 2 - ((lines.length - 1) * lineStep) / 2;
+    lines.forEach((line, i) => ctx.fillText(line, texW / 2, startY + i * lineStep));
     tex.update(true);
 
     const mat = new StandardMaterial(`${name}_mat`, this.scene);
@@ -799,7 +842,10 @@ export class CreatorGeometry {
     mat.backFaceCulling = false;
     mat.transparencyMode = Material.MATERIAL_ALPHABLEND;
 
-    const mesh = MeshBuilder.CreatePlane(name, { width, height }, this.scene);
+    // World size shares the texture aspect (no stretch); a constant world-per-pixel keeps text height
+    // uniform while the banner grows/shrinks with the content.
+    const worldPerPx = 0.011;
+    const mesh = MeshBuilder.CreatePlane(name, { width: texW * worldPerPx, height: texH * worldPerPx }, this.scene);
     mesh.material = mat;
     this.perBuild.push(tex, mat);
     return mesh;

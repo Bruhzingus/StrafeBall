@@ -35,9 +35,11 @@ export class PracticeBot {
   constructor(
     private readonly scene: Scene,
     private readonly ballManager: BallManager,
-    public readonly mode: BotThrowMode
+    public readonly mode: BotThrowMode,
+    /** Optional spawn position (used by the Creator playtest bot spawners); defaults to the gym slot. */
+    position?: Vector3
   ) {
-    this.basePosition = mode === 'quick' ? QUICK_BOT_POS.clone() : CHARGE_BOT_POS.clone();
+    this.basePosition = position ? position.clone() : (mode === 'quick' ? QUICK_BOT_POS.clone() : CHARGE_BOT_POS.clone());
 
     // Teal = quick bot, orange = charge bot (distinct, same palette as moving dummy)
     const bodyColor = mode === 'quick'

@@ -91,6 +91,37 @@ describe('CreatorLayout — collision sub-boxes', () => {
     expect(a.maxZ - a.minZ).toBeLessThan(40);
   });
 
+  it('wallrun_wall collider matches its visual solid box (center/half-extents/ry) when rotated', () => {
+    // The oriented collider must equal the visual box exactly, or the wall collides off-position.
+    for (const deg of [0, 30, 45, 90, 137]) {
+      const { layout } = validateLayout({
+        objects: [{ type: 'wallrun_wall', position: [5, 0, -7], rotation: [0, deg, 0], scale: [2, 1, 0.5] }]
+      });
+      const obj = layout.objects[0];
+      const solid = objectCollisionBoxes(obj)[0]; // the visual/collision truth box
+      const colliders = buildCreatorCollisionBoxes(layout, 'creator_');
+      expect(colliders.length).toBe(1);
+      const c = colliders[0];
+      const nearAxis = Math.abs(Math.sin(solid.ry)) < 1e-3 || Math.abs(Math.cos(solid.ry)) < 1e-3;
+      if (nearAxis) {
+        // Axis-aligned: exact enclosing AABB, no oriented fields (proven fast path).
+        expect(c.ry).toBeUndefined();
+        const a = orientedBoxAabb(solid);
+        expect(c.minX).toBeCloseTo(a.minX, 4);
+        expect(c.maxX).toBeCloseTo(a.maxX, 4);
+        expect(c.minZ).toBeCloseTo(a.minZ, 4);
+        expect(c.maxZ).toBeCloseTo(a.maxZ, 4);
+      } else {
+        // Rotated: a true oriented box whose center/half-extents/angle equal the visual box.
+        expect(c.ry).toBeCloseTo(solid.ry, 6);
+        expect(c.cx).toBeCloseTo(solid.cx, 4);
+        expect(c.cz).toBeCloseTo(solid.cz, 4);
+        expect(c.hx).toBeCloseTo(solid.w / 2, 4);
+        expect(c.hz).toBeCloseTo(solid.d / 2, 4);
+      }
+    }
+  });
+
   it('collision-disabled and invisible objects contribute no collision boxes', () => {
     const { layout } = validateLayout({
       objects: [

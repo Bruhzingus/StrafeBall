@@ -81,6 +81,17 @@ export interface CreatorEditorHooks {
   resumeSandbox(): void;
   /** Hide/show the gameplay HUD (scoreboard, hands, crosshair, music…) while the editor is up. */
   setHudVisible(visible: boolean): void;
+  /** Entering Playtest: spawn the layout's functional ball/bot/dummy actors (offline only). */
+  onPlaytestStart(markers: CreatorSpawnerMarkers): void;
+  /** Leaving Playtest (to Build, exit, or online): despawn those actors. */
+  onPlaytestEnd(): void;
+}
+
+/** World-space positions of the layout's functional spawner markers, handed to the playtest host. */
+export interface CreatorSpawnerMarkers {
+  balls: Array<{ x: number; y: number; z: number }>;
+  bots: Array<{ x: number; y: number; z: number; charge: boolean }>;
+  dummies: Array<{ x: number; y: number; z: number }>;
 }
 
 type Mode = 'build' | 'playtest';
@@ -163,6 +174,19 @@ export class CreatorEditor implements CreatorBridge {
   // Lean listeners used ONLY for the playtest free-fly (movement + RMB look; no tools/placement).
   private readonly onFlyKeyDown = (e: KeyboardEvent) => {
     if (isEditableTarget(e.target)) return;
+    // Fly-exit / mode keys MUST be handled here: while flying, input is suppressed (RMB-look needs no
+    // pointer lock), and the suppressed InputManager drops every keydown — so ArenaScene.stepCreator
+    // never sees `=` / B / F1 / Esc and you'd be stuck in fly (the reported "can't press = to unfly").
+    if (e.code === 'Equal' || e.code === 'NumpadAdd') {
+      e.preventDefault();
+      this.togglePlaytestFly();
+      return;
+    }
+    if (e.code === 'KeyB' || e.code === 'F1' || e.code === 'Escape') {
+      e.preventDefault();
+      this.setMode('build');
+      return;
+    }
     if (!FLY_CODES.has(e.code)) return;
     const isFlyModifier = e.code === 'ShiftLeft' || e.code === 'ControlLeft' || e.code === 'ControlRight';
     if (isFlyModifier || (!e.ctrlKey && !e.altKey && !e.metaKey)) {
@@ -430,6 +454,8 @@ export class CreatorEditor implements CreatorBridge {
 
   private enterBuildMode(): void {
     this.disablePlaytestFly(false);
+    // Leaving playtest → despawn its functional actors (no-op if none / already in build).
+    this.hooks.onPlaytestEnd();
     this.mode = 'build';
     this.uninstallWorldAndCollision();
     this.player.movement.setWorld(null);
@@ -465,6 +491,8 @@ export class CreatorEditor implements CreatorBridge {
     this.pads.reset();
     this.player.setRespawn(new Vector3(spawn.x, spawn.y, spawn.z), spawn.yaw);
     this.player.teleportTo(new Vector3(spawn.x, spawn.y, spawn.z), spawn.yaw, 0);
+    // Spawn the layout's functional ball/bot/dummy actors for this run (host owns their lifecycle).
+    this.hooks.onPlaytestStart(this.collectSpawnerMarkers());
     this.ui.toast('Playtest Mode — F1 to return to Build');
   }
 
@@ -486,6 +514,7 @@ export class CreatorEditor implements CreatorBridge {
 
   private teardownActive(restoreSandbox: boolean): void {
     this.disablePlaytestFly(false);
+    this.hooks.onPlaytestEnd(); // despawn any playtest actors before tearing down
     this.removeListeners();
     this.detachGizmo();
     this.uninstallWorldAndCollision();
@@ -789,7 +818,19 @@ export class CreatorEditor implements CreatorBridge {
   }
 
   private handleWheel(e: WheelEvent): void {
-    if (!this.armedModule) return;
+    if (!this.armedModule) {
+      // No module armed: the wheel rotates the SELECTED object around Y, so a placed wall (whose thin
+      // profile makes the gizmo ring hard to grab) can be spun with the wheel. Shift = fine 1° step;
+      // otherwise the rotation snap. Does nothing when nothing is selected.
+      const selected = this.getSelectedObject();
+      if (!selected) return;
+      e.preventDefault();
+      this.chordSuppressUntilMs = performance.now() + 220;
+      const dir = e.deltaY > 0 ? 1 : -1;
+      const stepDeg = e.shiftKey ? 1 : Math.max(1, this.snap.rotationSnapDeg || 15);
+      this.rotateSelectedYaw(dir * stepDeg);
+      return;
+    }
     e.preventDefault();
     // Scrolling to adjust the preview means Ctrl/Shift are held as a chord — keep them from also
     // driving the fly camera for a moment (fixes "Ctrl+scroll height also sinks the camera").
@@ -947,6 +988,19 @@ export class CreatorEditor implements CreatorBridge {
   // ---------------------------------------------------------------------------------------------
   // Layout edits
   // ---------------------------------------------------------------------------------------------
+
+  /** World-space positions of the visible ball/bot/dummy spawner markers for the playtest host. */
+  private collectSpawnerMarkers(): CreatorSpawnerMarkers {
+    const markers: CreatorSpawnerMarkers = { balls: [], bots: [], dummies: [] };
+    for (const o of this.layout.objects) {
+      if (o.visible === false) continue;
+      const [x, y, z] = o.position;
+      if (o.type === 'ball_spawn') markers.balls.push({ x, y, z });
+      else if (o.type === 'bot_spawn') markers.bots.push({ x, y, z, charge: /charge/i.test(o.metadata?.label ?? '') });
+      else if (o.type === 'target_dummy') markers.dummies.push({ x, y, z });
+    }
+    return markers;
+  }
 
   private findObject(id: string): CreatorLayoutObject | undefined {
     return this.layout.objects.find((o) => o.id === id);
@@ -1133,6 +1187,14 @@ export class CreatorEditor implements CreatorBridge {
     this.commit(null);
   }
 
+  /** Wheel-rotate the selected object around Y by deltaDeg (updates visual + collision via commit). */
+  private rotateSelectedYaw(deltaDeg: number): void {
+    const obj = this.getSelectedObject();
+    if (!obj) return;
+    obj.rotation = [obj.rotation[0], normalizeDegrees((obj.rotation[1] ?? 0) + deltaDeg), obj.rotation[2]];
+    this.commit(obj.id);
+  }
+
   resetSelectedTransform(): void {
     const obj = this.getSelectedObject();
     if (!obj) return;
@@ -1200,6 +1262,14 @@ export class CreatorEditor implements CreatorBridge {
   setSelectedMetadata(patch: Partial<CreatorObjectMetadata>): void {
     const obj = this.getSelectedObject();
     if (!obj) return;
+    // Choosing a new default spawn must actually switch it: clear the flag on every OTHER spawn first,
+    // otherwise enforceSingleDefaultSpawn (which keeps the FIRST flagged spawn in array order) would
+    // just revert your pick and the default could never be changed.
+    if (patch.defaultSpawn === true && obj.type === 'spawn_point') {
+      for (const other of this.layout.objects) {
+        if (other !== obj && other.type === 'spawn_point' && other.metadata) other.metadata.defaultSpawn = false;
+      }
+    }
     obj.metadata = { ...(obj.metadata ?? {}), ...patch };
     this.commit(obj.id);
   }

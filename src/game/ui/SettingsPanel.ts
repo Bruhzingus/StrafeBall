@@ -21,6 +21,7 @@ export class SettingsPanel {
   private readonly battleMusicSlider: HTMLInputElement;
   private readonly battleMusicReadout: HTMLSpanElement;
   private readonly reducedEffectsToggle: HTMLInputElement;
+  private readonly scoreboardToggle: HTMLInputElement;
   private readonly graphicsSelect: HTMLSelectElement;
   private readonly preventKeySteal = (event: KeyboardEvent): void => event.preventDefault();
   private expanded = false;
@@ -74,6 +75,17 @@ export class SettingsPanel {
     this.reducedEffectsToggle.addEventListener('keydown', this.preventKeySteal);
     effectsLabel.append(effectsName, this.reducedEffectsToggle);
 
+    const scoreboardLabel = document.createElement('label');
+    scoreboardLabel.className = 'settings-row settings-row--toggle';
+    const scoreboardName = document.createElement('span');
+    scoreboardName.textContent = 'Scoreboard';
+    this.scoreboardToggle = document.createElement('input');
+    this.scoreboardToggle.type = 'checkbox';
+    this.scoreboardToggle.checked = settings.showScoreboard;
+    this.scoreboardToggle.addEventListener('input', this.onScoreboardInput);
+    this.scoreboardToggle.addEventListener('keydown', this.preventKeySteal);
+    scoreboardLabel.append(scoreboardName, this.scoreboardToggle);
+
     // Graphics preset selector. Lighting/post are built once at scene construction, so a change is
     // persisted and applied with a reload (the dropdown swaps Competitive ↔ Showcase High/Ultra).
     const graphicsRow = document.createElement('label');
@@ -108,6 +120,7 @@ export class SettingsPanel {
       battleMusicLabel.label,
       this.battleMusicSlider,
       effectsLabel,
+      scoreboardLabel,
       graphicsRow,
       graphicsHint
     );
@@ -125,6 +138,8 @@ export class SettingsPanel {
     this.lobbyMusicSlider.removeEventListener('input', this.onLobbyMusicInput);
     this.battleMusicSlider.removeEventListener('input', this.onBattleMusicInput);
     this.reducedEffectsToggle.removeEventListener('input', this.onReducedEffectsInput);
+    this.scoreboardToggle.removeEventListener('input', this.onScoreboardInput);
+    this.scoreboardToggle.removeEventListener('keydown', this.preventKeySteal);
     this.graphicsSelect.removeEventListener('change', this.onGraphicsPresetChange);
     this.graphicsSelect.removeEventListener('keydown', this.preventKeySteal);
     this.sensitivitySlider.removeEventListener('keydown', this.preventKeySteal);
@@ -157,6 +172,11 @@ export class SettingsPanel {
 
   private onReducedEffectsInput = (): void => {
     settings.setReducedEffects(this.reducedEffectsToggle.checked);
+    this.updateReadout();
+  };
+
+  private onScoreboardInput = (): void => {
+    settings.setShowScoreboard(this.scoreboardToggle.checked);
     this.updateReadout();
   };
 

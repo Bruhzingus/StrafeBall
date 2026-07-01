@@ -52,14 +52,19 @@ export const GAME_CONSTANTS = {
     airBufferSeconds: 0.18,
     // Slide entry preserves momentum; low-speed entries are lifted to minStartBoostSpeed instead.
     impulse: 0,
-    // Slide bleeds preserved speed smoothly over time.
-    frictionMultiplier: 0.55,
+    // A slide is a MOMENTUM slide: it keeps the speed you entered with and bleeds it off gradually
+    // rather than instantly dropping you to walking speed. friction here is player.friction (10) *
+    // this multiplier, so 0.08 → ~0.8/s exponential decay (e.g. a 15 m/s slide is still ~10 m/s after
+    // 0.5s, ~6.7 after 1.5s) instead of the old 0.55 (5.5/s) which killed the speed almost at once.
+    frictionMultiplier: 0.08,
     minDuration: 0.28,
-    // Shortened from 1.2 → slides end sooner.
-    maxDuration: 1.0,
+    // Long enough that the momentum bleeds off naturally (via the low-speed cutoff) before this hard cap
+    // ends the slide and normal ground friction takes over.
+    maxDuration: 1.6,
     jumpBonus: 1.12,
-    // Holding slide/crouch keeps the burst briefly, then bleeds into a slow crouch walk.
-    overholdBrakeDelay: 0.75,
+    // Holding slide/crouch keeps the momentum longer now, then (past this delay) brakes into a crouch
+    // walk — so a deliberate hold can still stop you, but it no longer cuts the slide's momentum short.
+    overholdBrakeDelay: 1.1,
     overholdFrictionMultiplier: 2.6,
     overholdStopSpeed: 0.85
   },

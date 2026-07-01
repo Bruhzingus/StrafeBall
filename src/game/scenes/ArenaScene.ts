@@ -1,4 +1,4 @@
-import { Engine, Mesh, PBRMaterial, Scene, Vector3 } from '@babylonjs/core';
+import { Color3, Engine, Mesh, MeshBuilder, PBRMaterial, Scene, StandardMaterial, Vector3 } from '@babylonjs/core';
 import { FxaaPostProcess } from '@babylonjs/core/PostProcesses/fxaaPostProcess';
 import { InputManager } from '../input/InputManager';
 import { PlayerController } from '../player/PlayerController';
@@ -31,6 +31,7 @@ import { disposeGymReflectionProbe, getGymReflectionProbeDebugInfo } from '../ma
 import { MatObstacle } from '../map/MatObstacle';
 import { ModelLoader } from '../assets/ModelLoader';
 import { BallManager } from '../ball/BallManager';
+import { Ball } from '../ball/Ball';
 import { BallVisualEffects } from '../ball/BallVisualEffects';
 import { BallState } from '../ball/BallState';
 import { Hud } from '../ui/Hud';
@@ -43,6 +44,7 @@ import { MatchRules } from '../rules/MatchRules';
 import { TUNING } from '../config/tuning';
 import { CONTROL_KEYS, MOUSE_BUTTON } from '../config/controls';
 import { practiceCheats } from '../config/practiceCheats';
+import { settings } from '../config/Settings';
 import { SoundManager } from '../audio/SoundManager';
 import { MusicManager } from '../audio/MusicManager';
 import { Effects } from '../effects/Effects';
@@ -52,7 +54,7 @@ import { LobbyModePortals } from '../practice/LobbyModePortals';
 import type { LobbyMode, LobbyPortalAction } from '../practice/LobbyModePortals';
 import { GuideWall } from '../practice/GuideWall';
 import { MovementSandbox, type SandboxAction } from '../practice/MovementSandbox';
-import { CreatorEditor, CREATOR_ENTRY_RADIUS, CREATOR_ENTRY_HOLD_SECONDS } from '../practice/creator/CreatorEditor';
+import { CreatorEditor, CREATOR_ENTRY_RADIUS, CREATOR_ENTRY_HOLD_SECONDS, type CreatorSpawnerMarkers } from '../practice/creator/CreatorEditor';
 import { createPracticeState } from '../practice/PracticeState';
 import type { PracticeState } from '../practice/PracticeState';
 import { MultiplayerClient } from '../network/MultiplayerClient';
@@ -118,6 +120,12 @@ export class ArenaScene {
   // from the offline step path, and force-deactivated before connected online play.
   private creator: CreatorEditor | null = null;
   private creatorEntryHold = 0;
+  // Tracks the last-applied "show scoreboard" setting so we only toggle the 3D boards on change.
+  private lastScoreboardVisible = true;
+  // Functional Creator-playtest actors (spawned from ball/bot/dummy markers; despawned on exit).
+  private readonly creatorBalls: Ball[] = [];
+  private readonly creatorBots: PracticeBot[] = [];
+  private readonly creatorDummies: Mesh[] = [];
   private readonly practiceState: PracticeState = createPracticeState();
   private readonly settingsPanel: SettingsPanel;
   private readonly gym: GymArena;
@@ -356,6 +364,12 @@ export class ArenaScene {
       this.hud.toggleDebug();
     }
 
+    // Apply the "disable scoreboard" setting (change-detected so it's a no-op on unchanged frames).
+    if (this.lastScoreboardVisible !== settings.showScoreboard) {
+      this.lastScoreboardVisible = settings.showScoreboard;
+      this.gym.setScoreboardsVisible(settings.showScoreboard);
+    }
+
     // While the Creator Sandbox owns the screen (its password modal or an active editor session) it
     // is the sole owner of cursor-lock suppression — skip the lobby overlay's per-frame suppression so
     // it can't fight the editor (which would break free-look / re-grab the pointer every frame).
@@ -416,6 +430,8 @@ export class ArenaScene {
   }
 
   dispose(): void {
+    this.clearCreatorActors();
+    this.creatorDummyMat?.dispose();
     this.input.dispose();
     this.hud.dispose();
     this.nametags.dispose();
@@ -2082,8 +2098,84 @@ export class ArenaScene {
       isOnline: () => this.onlineModeActive || this.multiplayer.connected,
       suspendSandbox: () => this.movementSandbox?.suspend(),
       resumeSandbox: () => this.movementSandbox?.resume(this.player),
-      setHudVisible: (visible: boolean) => this.hud.setVisible(visible)
+      setHudVisible: (visible: boolean) => this.hud.setVisible(visible),
+      onPlaytestStart: (markers) => this.spawnCreatorActors(markers),
+      onPlaytestEnd: () => this.clearCreatorActors()
     });
+  }
+
+  /**
+   * Spawn the Creator layout's functional playtest actors — pickup balls, target dummies, and practice
+   * bots — from the layout's spawner markers. Offline/local only; despawned by clearCreatorActors on
+   * leaving playtest. Kept entirely separate from the gym's own balls/bots/dummies.
+   */
+  private spawnCreatorActors(markers: CreatorSpawnerMarkers): void {
+    this.clearCreatorActors();
+    const ballR = TUNING.ball.radius;
+    markers.balls.forEach((m, i) => {
+      const ball = this.ballManager.createBall(`creator_ball_${i}`, new Vector3(m.x, ballR + 0.05, m.z));
+      this.ballManager.balls.push(ball);
+      this.creatorBalls.push(ball);
+    });
+    for (const m of markers.bots) {
+      const bot = new PracticeBot(this.scene, this.ballManager, m.charge ? 'charge' : 'quick', new Vector3(m.x, 0, m.z));
+      bot.setEnabled(true);
+      this.creatorBots.push(bot);
+    }
+    markers.dummies.forEach((m, i) => {
+      const dummy = MeshBuilder.CreateCapsule(`creator_dummy_${i}`, { height: 1.9, radius: 0.34, tessellation: 12 }, this.scene);
+      dummy.position.set(m.x, 0.95, m.z);
+      dummy.material = this.creatorDummyMaterial();
+      dummy.isPickable = false;
+      dummy.metadata = { targetDummy: true, hitCount: 0 };
+      this.creatorDummies.push(dummy);
+    });
+  }
+
+  /** Despawn everything spawnCreatorActors created (idempotent; safe to call when nothing is spawned). */
+  private clearCreatorActors(): void {
+    for (const ball of this.creatorBalls) {
+      const idx = this.ballManager.balls.indexOf(ball);
+      if (idx >= 0) this.ballManager.balls.splice(idx, 1);
+      ball.mesh.dispose();
+    }
+    this.creatorBalls.length = 0;
+    for (const bot of this.creatorBots) bot.dispose();
+    this.creatorBots.length = 0;
+    for (const dummy of this.creatorDummies) dummy.dispose();
+    this.creatorDummies.length = 0;
+  }
+
+  private creatorDummyMat: StandardMaterial | null = null;
+  private creatorDummyMaterial(): StandardMaterial {
+    if (!this.creatorDummyMat) {
+      const mat = new StandardMaterial('creator_dummy_mat', this.scene);
+      mat.diffuseColor = new Color3(0.9, 0.32, 0.34);
+      mat.emissiveColor = new Color3(0.25, 0.05, 0.06);
+      this.creatorDummyMat = mat;
+    }
+    return this.creatorDummyMat;
+  }
+
+  /** Per-frame update of the Creator playtest actors (balls physics + pickup, bots, dummy scoring). */
+  private updateCreatorActors(dt: number): void {
+    if (this.creatorBalls.length === 0 && this.creatorBots.length === 0 && this.creatorDummies.length === 0) return;
+    this.ballManager.setPickupHighlight(
+      this.ballManager.findPickupLookCandidate(this.player.camera.globalPosition, cameraForward(this.player.camera))
+    );
+    this.ballManager.update(dt);
+    const eye = this.player.camera.globalPosition;
+    for (const bot of this.creatorBots) {
+      if (bot.update(dt, eye)) this.effects.botThrow();
+    }
+    if (this.creatorDummies.length > 0) {
+      const hits = this.rules.scoring.updateAgainstDummies(this.ballManager.balls, this.creatorDummies, dt);
+      for (const hit of hits) {
+        this.player.dash.addChargeFromHit();
+        this.effects.onDummyHit(hit.speed);
+        this.hud.showHitMarker('good');
+      }
+    }
   }
 
   /** Offline step while the Creator Sandbox is active (replaces the normal sandbox/practice step). */
@@ -2099,6 +2191,7 @@ export class ArenaScene {
         // Real local first-person movement against the editor's collision/world.
         this.player.update(dt, false);
         const snap = this.player.lastMovementSnapshot;
+        this.updateCreatorActors(dt);
         this.updateLocalMovementFoley(dt, vector3ToVec3(snap.velocity), snap.grounded, snap.sliding, snap.dashingThisFrame, snap.wallRunning);
         this.effects.update(dt);
       } else {

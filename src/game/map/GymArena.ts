@@ -573,6 +573,11 @@ export class GymArena {
     for (const board of this.scoreboards) board.buzz();
   }
 
+  /** Show/hide the 3D end-wall scoreboards (drives the "disable scoreboard" setting). */
+  setScoreboardsVisible(visible: boolean): void {
+    for (const board of this.scoreboards) board.setVisible(visible);
+  }
+
   dispose(): void {
     for (const board of this.scoreboards) board.dispose();
   }

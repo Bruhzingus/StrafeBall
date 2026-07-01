@@ -729,7 +729,7 @@ export class CreatorUI {
     this.outlinerEl.style.display = editing ? '' : 'none';
     this.snapEl.style.display = editing ? '' : 'none';
     this.helpEl.textContent = editing
-      ? 'WASD fly · Space/Ctrl up/down · Shift faster · hold RMB look · LMB place preview/select · RMB-tap cancel · 1–0 pick module · wheel swap module · R/Shift+R rotate preview · Q/E height · [/ ] scale · C reset preview · G/R/T/V move/rotate/scale/select · arrows/PgUp/PgDn nudge selected · F focus · B duplicate · Ctrl+C/V copy/paste · Del delete · Ctrl+Z/Y undo/redo · Ctrl+S save · F1 playtest'
+      ? 'WASD fly · Space/Ctrl up/down · Shift faster · hold RMB look · LMB place preview/select · RMB-tap cancel · 1–0 pick module · wheel swap module (or rotate selected) · R/Shift+R rotate preview · Q/E height · [/ ] scale · C reset preview · G/R/T/V move/rotate/scale/select · arrows/PgUp/PgDn nudge selected · F focus · B duplicate · Ctrl+C/V copy/paste · Del delete · Ctrl+Z/Y undo/redo · Ctrl+S save · F1 playtest'
       : 'PLAYTEST — real movement. B / F1 / Esc → Build · = → free-fly (noclip) · Reset Player to respawn · O → no-cooldown · step on ability pads to trigger them.';
 
     this.refreshPaletteArmed();

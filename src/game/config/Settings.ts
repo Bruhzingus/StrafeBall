@@ -18,6 +18,8 @@ class SettingsStore {
   public lobbyMusicVolume = MUSIC_VOLUME_DEFAULT;
   public battleMusicVolume = MUSIC_VOLUME_DEFAULT;
   public reducedEffects = false;
+  /** Show the 3D end-wall scoreboards. Off = hide them (some players find them distracting). */
+  public showScoreboard = true;
 
   constructor() {
     this.load();
@@ -48,6 +50,11 @@ class SettingsStore {
     this.save();
   }
 
+  setShowScoreboard(value: boolean): void {
+    this.showScoreboard = value;
+    this.save();
+  }
+
   private load(): void {
     try {
       const raw = localStorage.getItem(STORAGE_KEY);
@@ -59,6 +66,7 @@ class SettingsStore {
         lobbyMusicVolume?: unknown;
         battleMusicVolume?: unknown;
         reducedEffects?: unknown;
+        showScoreboard?: unknown;
       };
       if (typeof parsed.mouseSensitivity === 'number' && Number.isFinite(parsed.mouseSensitivity)) {
         this.mouseSensitivity = clamp(parsed.mouseSensitivity, SENSITIVITY_MIN, SENSITIVITY_MAX);
@@ -81,6 +89,9 @@ class SettingsStore {
       if (typeof parsed.reducedEffects === 'boolean') {
         this.reducedEffects = parsed.reducedEffects;
       }
+      if (typeof parsed.showScoreboard === 'boolean') {
+        this.showScoreboard = parsed.showScoreboard;
+      }
     } catch {
       // Corrupt/unavailable storage — fall back to defaults silently.
     }
@@ -93,7 +104,8 @@ class SettingsStore {
         sfxVolume: this.sfxVolume,
         lobbyMusicVolume: this.lobbyMusicVolume,
         battleMusicVolume: this.battleMusicVolume,
-        reducedEffects: this.reducedEffects
+        reducedEffects: this.reducedEffects,
+        showScoreboard: this.showScoreboard
       }));
     } catch {
       // Storage may be unavailable (private mode); ignore.
