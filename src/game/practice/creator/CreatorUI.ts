@@ -126,6 +126,7 @@ export class CreatorUI {
   private outlinerSearch!: HTMLInputElement;
   private outlinerFilter = '';
   private outlinerSig = '';
+  private outlinerSelectedId: string | null = null;
   private readonly outlinerRows = new Map<string, HTMLDivElement>();
 
   private readonly paletteButtons = new Map<string, HTMLButtonElement>();
@@ -140,6 +141,10 @@ export class CreatorUI {
   private settingsDropdown!: HTMLDivElement;
 
   private inspectorObjectId: string | null = null;
+  // Non-numeric state of the inspected object (material/texture/toggles/metadata…). When it changes
+  // (e.g. via undo/redo) the inspector is REBUILT — the in-place sync only covers the number inputs,
+  // so without this the dropdowns/checkboxes would show stale values.
+  private inspectorSig = '';
   private toolbarVisible = false;
   private settingsOpen = false;
   private toastTimer: number | null = null;
@@ -619,6 +624,11 @@ export class CreatorUI {
     for (const [id, row] of this.outlinerRows) {
       row.classList.toggle('creator-outliner-row--active', id === selectedId);
     }
+    // Selecting in the viewport should reveal the object in the (possibly long) list too.
+    if (selectedId && selectedId !== this.outlinerSelectedId) {
+      this.outlinerRows.get(selectedId)?.scrollIntoView({ block: 'nearest' });
+    }
+    this.outlinerSelectedId = selectedId;
     this.applyOutlinerFilter();
   }
 
@@ -720,6 +730,8 @@ export class CreatorUI {
 
     // In playtest, collapse the editing sections to the minimal overlay + hide the build hotbar.
     const editing = mode === 'build';
+    // Don't leave the settings dropdown hanging open over the playtest view.
+    if (!editing && this.settingsOpen) this.setSettingsOpen(false);
     this.playtestBar.classList.toggle('creator-playtest-bar--visible', this.toolbarVisible && !editing);
     const flying = this.bridge.isPlaytestFlying();
     this.playtestFlyBtn.classList.toggle('creator-mode-btn--active', flying);
@@ -735,8 +747,21 @@ export class CreatorUI {
     this.refreshPaletteArmed();
     const selected = this.bridge.getSelectedObject();
     if (editing) {
-      if ((selected?.id ?? null) !== this.inspectorObjectId) this.buildInspector(selected);
-      else this.syncInspectorValues(selected);
+      const sig = selected ? inspectorSignature(selected) : '';
+      if ((selected?.id ?? null) !== this.inspectorObjectId) {
+        this.inspectorSig = sig;
+        this.buildInspector(selected);
+      } else if (sig !== this.inspectorSig) {
+        this.inspectorSig = sig;
+        // A sig change while focus is INSIDE the inspector came from the user's own edit — the DOM
+        // already shows it, and a rebuild would steal their focus (e.g. tabbing between trigger
+        // fields). Rebuild only for outside changes (undo/redo, outliner visibility toggles…).
+        const active = document.activeElement;
+        if (active && this.inspectorEl.contains(active)) this.syncInspectorValues(selected);
+        else this.buildInspector(selected);
+      } else {
+        this.syncInspectorValues(selected);
+      }
       this.refreshOutliner();
     }
   }
@@ -835,6 +860,9 @@ export class CreatorUI {
 
   setModalMessage(message: string): void {
     this.modalMessage.textContent = message;
+    // After a failed attempt the field was cleared on submit — refocus so the user can retype
+    // immediately instead of having to click back into the input.
+    if (this.isModalOpen() && !this.awaitingModalFocus) this.modalInput.focus();
   }
 
   closePasswordModal(): void {
@@ -943,6 +971,22 @@ export class CreatorUI {
 const GAMEPLAY_HOLD_CODES = new Set<string>([
   'KeyE', 'KeyW', 'KeyA', 'KeyS', 'KeyD', 'Space', 'ShiftLeft', 'ControlLeft', 'ControlRight'
 ]);
+
+/**
+ * Everything the inspector shows that the in-place number sync does NOT cover. Transform fields are
+ * deliberately excluded so gizmo drags keep updating inputs in place without a rebuild (focus-safe).
+ */
+function inspectorSignature(obj: CreatorLayoutObject): string {
+  return [
+    obj.id,
+    obj.name ?? '',
+    obj.material ?? '',
+    obj.texture ?? '',
+    obj.collision !== false ? 1 : 0,
+    obj.visible !== false ? 1 : 0,
+    JSON.stringify(obj.metadata ?? {})
+  ].join('|');
+}
 
 function el<K extends keyof HTMLElementTagNameMap>(tag: K, className: string): HTMLElementTagNameMap[K] {
   const node = document.createElement(tag);

@@ -19,6 +19,7 @@ import {
   layoutWorldBounds,
   CreatorWorld
 } from '../src/game/practice/creator/CreatorWorld';
+import { SANDBOX_CENTER } from '../src/game/practice/MovementSandboxLayout';
 
 describe('CreatorLayout — default + validation', () => {
   it('default layout is valid, versioned, and has a default spawn', () => {
@@ -53,7 +54,19 @@ describe('CreatorLayout — default + validation', () => {
     expect(problems.length).toBeGreaterThan(0);
     const wall = layout.objects[0];
     expect(wall.scale.every((s) => s <= CREATOR_LIMITS.maxScale)).toBe(true);
-    expect(Math.abs(wall.position[0])).toBeLessThan(100000);
+    // Positions clamp to the documented build range (yard centre ± maxRadiusFromCenter) — no tighter,
+    // so an export → import round trip preserves far-out builds up to the real limit.
+    expect(wall.position[0]).toBeLessThanOrEqual(SANDBOX_CENTER.x + CREATOR_LIMITS.maxRadiusFromCenter + 1e-6);
+    expect(wall.position[0]).toBeLessThan(999999);
+  });
+
+  it('round-trips far-out (but in-range) positions without squashing them', () => {
+    const farX = SANDBOX_CENTER.x + 50000;
+    const { layout } = validateLayout({
+      objects: [{ type: 'tall_wall', position: [farX, 20, SANDBOX_CENTER.z], rotation: [0, 0, 0], scale: [1, 1, 1] }]
+    });
+    expect(layout.objects[0].position[0]).toBeCloseTo(farX, 4);
+    expect(layout.objects[0].position[1]).toBeCloseTo(20, 4);
   });
 
   it('enforces a single default spawn on import', () => {

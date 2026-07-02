@@ -13,6 +13,7 @@ import { registerGymShadowCaster } from '../map/GymShadowCasters';
 import type { BallVisualEffects } from '../ball/BallVisualEffects';
 import { BALL_QTE_TRAIL_SPEED_THRESHOLD, BALL_TRAIL_INTERVAL_SECONDS } from '../ball/BallVisualEffects';
 import {
+  ADAPTIVE_INTERP_ENABLED,
   EXTRAPOLATION_LIMIT_MS,
   HUGE_ERROR_SNAP_METERS,
   INTERPOLATION_DELAY_MS,
@@ -20,6 +21,7 @@ import {
   SNAPSHOT_BUFFER_LIMIT_MS,
   SNAPSHOT_INTERVAL_MS
 } from '../../../shared/netConfig';
+import { AdaptiveInterpDelay } from './AdaptiveInterpDelay';
 
 interface PlayerVisual {
   root: TransformNode;
@@ -201,6 +203,9 @@ export class NetworkRenderer {
   // (latestServerTime - INTERPOLATION_DELAY_MS). Decoupling it from packet arrival is the core fix.
   private renderServerTime = 0;
   private interpolationDelayMs = INTERPOLATION_DELAY_MS;
+  // Per-connection delay controller fed once per metric window (~1s). Survives round resets
+  // (resetSerial) on purpose — connection quality persists across rounds; cleared with clear().
+  private readonly adaptiveDelay = new AdaptiveInterpDelay();
   private renderClockInitialized = false;
   // Reconstruct a server timeline from tick deltas when serverTimeMs looks unusable.
   private serverTimeBaseMs = 0;
@@ -359,6 +364,8 @@ export class NetworkRenderer {
     this.latestPlayerSampleReceivedAtMs = 0;
     this.resetRenderClock();
     this.resetMetrics();
+    this.adaptiveDelay.reset();
+    this.interpolationDelayMs = ADAPTIVE_INTERP_ENABLED ? this.adaptiveDelay.currentDelayMs : INTERPOLATION_DELAY_MS;
     this.debugStats = emptyDebugStats();
   }
 
@@ -623,8 +630,24 @@ export class NetworkRenderer {
     this.metricBallSnaps = 0;
   }
 
+  /**
+   * Called once per ~1s metric window (before the window counters reset) with fresh delivery
+   * measurements. metricIntervalMaxMs is the worst player-lane snapshot inter-arrival gap this
+   * window; metricUnderruns counts frames sampled past the newest snapshot (extrapolated).
+   */
   private updateAdaptiveInterpolationDelay(): void {
-    this.interpolationDelayMs = INTERPOLATION_DELAY_MS;
+    if (!ADAPTIVE_INTERP_ENABLED) {
+      this.interpolationDelayMs = INTERPOLATION_DELAY_MS;
+      return;
+    }
+    const previous = this.interpolationDelayMs;
+    this.interpolationDelayMs = this.adaptiveDelay.observeWindow(this.metricIntervalMaxMs, this.metricUnderruns);
+    if (isNetworkRenderDebugEnabled() && Math.abs(this.interpolationDelayMs - previous) >= 1) {
+      console.log(
+        `[net/interp] delay ${previous.toFixed(1)}ms -> ${this.interpolationDelayMs.toFixed(1)}ms ` +
+        `(maxGap=${this.metricIntervalMaxMs.toFixed(1)}ms underruns=${this.metricUnderruns})`
+      );
+    }
   }
 
   private updatePlayers(players: PlayerState[], localPlayerId: string, dt: number): void {

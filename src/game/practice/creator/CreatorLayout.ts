@@ -562,10 +562,13 @@ export function sanitizeObject(raw: unknown): CreatorLayoutObject | null {
   if (!isKnownModuleType(type)) return null; // ignore unknown module types safely
   const def = MODULE_BY_TYPE.get(type)!;
 
+  // Pre-clamp must cover the full allowed build range (maxRadiusFromCenter around the yard centre),
+  // otherwise an export → import round trip of a far-out build would silently squash its coordinates.
+  const posLimit = CREATOR_LIMITS.maxRadiusFromCenter + Math.max(Math.abs(SANDBOX_CENTER.x), Math.abs(SANDBOX_CENTER.z));
   const obj: CreatorLayoutObject = {
     id: typeof o.id === 'string' && o.id.length > 0 ? o.id.slice(0, 80) : createObjectId(type),
     type,
-    position: clampPositionToYard(clampTuple(o.position, -10000, 10000, [SANDBOX_CENTER.x, 0, SANDBOX_CENTER.z])),
+    position: clampPositionToYard(clampTuple(o.position, -posLimit, posLimit, [SANDBOX_CENTER.x, 0, SANDBOX_CENTER.z])),
     rotation: clampTuple(o.rotation, -360, 360, [0, def.defaultRotationY ?? 0, 0]),
     scale: [
       clampScale(asNumber(asArray(o.scale)[0], 1)),
@@ -800,13 +803,15 @@ export function committedCourseLayout(): CreatorLayout {
 export function layoutSpawn(layout: CreatorLayout): { x: number; y: number; z: number; yaw: number } {
   const spawn = layout.objects.find((o) => o.type === 'spawn_point' && o.metadata?.defaultSpawn)
     ?? layout.objects.find((o) => o.type === 'spawn_point');
+  // Never spawn below the layout's floor (which may itself be below 0 — ground.y goes to -50).
+  const floorY = layout.ground.bounds.y ?? 0;
   if (spawn) {
     return {
       x: spawn.position[0],
-      y: Math.max(0, spawn.position[1]),
+      y: Math.max(floorY, spawn.position[1]),
       z: spawn.position[2],
       yaw: (spawn.rotation[1] ?? 0) * DEG2RAD
     };
   }
-  return { x: SANDBOX_CENTER.x, y: 0, z: SANDBOX_CENTER.z, yaw: 0 };
+  return { x: SANDBOX_CENTER.x, y: Math.max(floorY, 0), z: SANDBOX_CENTER.z, yaw: 0 };
 }

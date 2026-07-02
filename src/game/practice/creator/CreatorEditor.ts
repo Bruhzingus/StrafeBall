@@ -30,6 +30,7 @@ import { InputManager } from '../../input/InputManager';
 import { AABB } from '../../map/Collider';
 import { sandboxSpawnWorld } from '../MovementSandboxLayout';
 import {
+  CREATOR_LIMITS,
   CREATOR_MODULES,
   CreatorLayout,
   CreatorLayoutObject,
@@ -623,7 +624,9 @@ export class CreatorEditor implements CreatorBridge {
       cam.position.y += dirY * scale;
       cam.position.z += dirZ * scale;
     }
-    cam.position.y = Math.max(-200, Math.min(2000, cam.position.y));
+    // Generous fly range: builds can be huge (size limits are ~unlimited), so don't strand the camera
+    // below a tall structure's top. Far plane is 40000, so 20000 up still renders everything.
+    cam.position.y = Math.max(-1000, Math.min(20000, cam.position.y));
   }
 
   // ---------------------------------------------------------------------------------------------
@@ -980,8 +983,11 @@ export class CreatorEditor implements CreatorBridge {
     obj.position = [node.position.x, node.position.y, node.position.z];
     const euler = node.rotationQuaternion ? node.rotationQuaternion.toEulerAngles() : node.rotation;
     const rad2deg = 180 / Math.PI;
-    obj.rotation = [euler.x * rad2deg, euler.y * rad2deg, euler.z * rad2deg];
-    obj.scale = [node.scaling.x, node.scaling.y, node.scaling.z];
+    obj.rotation = [euler.x * rad2deg, normalizeDegrees(euler.y * rad2deg), euler.z * rad2deg];
+    // The scale gizmo can be dragged through zero into negative values — that would invert the
+    // collision boxes (min > max) and make the object unpickable. Mirror back to positive and floor.
+    const safeScale = (v: number) => Math.max(CREATOR_LIMITS.minScale, Math.abs(Number.isFinite(v) ? v : 1));
+    obj.scale = [safeScale(node.scaling.x), safeScale(node.scaling.y), safeScale(node.scaling.z)];
     this.commit(obj.id);
   }
 
@@ -1142,13 +1148,17 @@ export class CreatorEditor implements CreatorBridge {
     this.geometry.clearPlacementPreview();
   }
 
+  /** Shared object-cap guard for place/duplicate/paste (import clamps to the same limit). */
+  private atObjectLimit(): boolean {
+    if (this.layout.objects.length < CREATOR_LIMITS.maxObjects) return false;
+    this.ui.toast(`Object limit reached (${CREATOR_LIMITS.maxObjects}).`);
+    return true;
+  }
+
   private placePlacementPreview(): void {
     const preview = this.placementPreview;
     if (!preview) return;
-    if (this.layout.objects.length >= 400) {
-      this.ui.toast('Object limit reached (400).');
-      return;
-    }
+    if (this.atObjectLimit()) return;
     const obj: CreatorLayoutObject = {
       ...preview,
       id: createObjectId(preview.type),
@@ -1166,10 +1176,7 @@ export class CreatorEditor implements CreatorBridge {
   duplicateSelected(): void {
     const obj = this.getSelectedObject();
     if (!obj) return;
-    if (this.layout.objects.length >= 400) {
-      this.ui.toast('Object limit reached (400).');
-      return;
-    }
+    if (this.atObjectLimit()) return;
     const copy: CreatorLayoutObject = cloneLayout({ version: 0, name: '', updatedAt: '', ground: this.layout.ground, objects: [obj] }).objects[0];
     copy.id = createObjectId(obj.type);
     copy.position = [obj.position[0] + Math.max(2, this.snap.gridSize), obj.position[1], obj.position[2] + Math.max(2, this.snap.gridSize)];
@@ -1222,7 +1229,12 @@ export class CreatorEditor implements CreatorBridge {
 
   setSelectedDimension(axis: 0 | 1 | 2, value: number): void {
     const obj = this.getSelectedObject();
-    if (!obj || !Number.isFinite(value) || value <= 0) return;
+    if (!obj || !Number.isFinite(value)) return;
+    if (value <= 0) {
+      // Don't silently swallow a zero/negative size — the input would keep showing a value that was
+      // never applied. Clamp to the minimum and commit, so the field snaps to what actually took.
+      value = CREATOR_LIMITS.minDimension;
+    }
     const dims = objectDimensions(obj);
     dims[axis] = value;
     obj.scale = scaleForDimensions(obj.type, dims as Vec3Tuple);
@@ -1301,10 +1313,7 @@ export class CreatorEditor implements CreatorBridge {
       this.ui.toast('Clipboard is empty');
       return;
     }
-    if (this.layout.objects.length >= 400) {
-      this.ui.toast('Object limit reached (400).');
-      return;
-    }
+    if (this.atObjectLimit()) return;
     const copy = this.cloneObject(this.clipboard);
     copy.id = createObjectId(copy.type);
     const groundY = this.layout.ground.bounds.y ?? 0;

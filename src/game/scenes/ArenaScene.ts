@@ -2112,19 +2112,21 @@ export class ArenaScene {
   private spawnCreatorActors(markers: CreatorSpawnerMarkers): void {
     this.clearCreatorActors();
     const ballR = TUNING.ball.radius;
+    // Markers keep their placed height so spawners on raised platforms spawn their actors up there
+    // (not at ground level under the platform). Y is floored at 0 — the sandbox floor.
     markers.balls.forEach((m, i) => {
-      const ball = this.ballManager.createBall(`creator_ball_${i}`, new Vector3(m.x, ballR + 0.05, m.z));
+      const ball = this.ballManager.createBall(`creator_ball_${i}`, new Vector3(m.x, Math.max(0, m.y) + ballR + 0.05, m.z));
       this.ballManager.balls.push(ball);
       this.creatorBalls.push(ball);
     });
     for (const m of markers.bots) {
-      const bot = new PracticeBot(this.scene, this.ballManager, m.charge ? 'charge' : 'quick', new Vector3(m.x, 0, m.z));
+      const bot = new PracticeBot(this.scene, this.ballManager, m.charge ? 'charge' : 'quick', new Vector3(m.x, Math.max(0, m.y), m.z));
       bot.setEnabled(true);
       this.creatorBots.push(bot);
     }
     markers.dummies.forEach((m, i) => {
       const dummy = MeshBuilder.CreateCapsule(`creator_dummy_${i}`, { height: 1.9, radius: 0.34, tessellation: 12 }, this.scene);
-      dummy.position.set(m.x, 0.95, m.z);
+      dummy.position.set(m.x, Math.max(0, m.y) + 0.95, m.z);
       dummy.material = this.creatorDummyMaterial();
       dummy.isPickable = false;
       dummy.metadata = { targetDummy: true, hitCount: 0 };

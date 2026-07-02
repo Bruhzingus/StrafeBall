@@ -937,8 +937,8 @@ function escapeHtml(value: string): string {
 
 /** Color the WS uplink-buffer line by its rolling peak. A healthy socket flushes to ~0 between
  *  sends; a sustained backlog is the signature of an uplink that can't keep up with the send rate,
- *  which is what inflates the measured ping. 4 KB warn / 16 KB bad are well below the server's
- *  64 KB backpressure threshold so the client flags trouble before the server starts skipping. */
+ *  which is what inflates the measured ping. 4 KB warn / 16 KB bad mirror the server's downlink
+ *  SNAPSHOT_BACKPRESSURE_BYTES (16 KB) so both directions flag trouble on the same scale. */
 function wsBufferColor(peakBytes: number): string {
   if (peakBytes >= 16 * 1024) return 'hud-bad';
   if (peakBytes >= 4 * 1024) return 'hud-warn';

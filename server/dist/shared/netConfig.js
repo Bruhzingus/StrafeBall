@@ -19,7 +19,7 @@
  *   E. 30 sim / 30 input / 30 snapshots   (baseline for constrained hosts)
  */
 Object.defineProperty(exports, "__esModule", { value: true });
-exports.LIVE_BALL_COMBAT_SUBSTEPS = exports.PERF_REPORT_INTERVAL_MS = exports.DEBUG_DEFAULTS = exports.USE_TIERED_SNAPSHOTS = exports.SNAPSHOT_TIER_MODE = exports.SNAPSHOT_BACKPRESSURE_BYTES = exports.USE_COMPACT_SNAPSHOTS = exports.SNAPSHOT_ENCODING = exports.HUGE_ERROR_SNAP_METERS = exports.EXTRAPOLATION_LIMIT_MS = exports.SNAPSHOT_BUFFER_LIMIT_MS = exports.SERVER_INPUT_QUEUE_LIMIT = exports.PENDING_INPUT_LIMIT = exports.MAX_ACCUMULATOR_CLAMP_MS = exports.MAX_ACCUMULATOR_STEPS = exports.ROOM_LOOP_WAKE_INTERVAL_MS = exports.ROOM_LOOP_WAKE_RATE = exports.INTERPOLATION_DELAY_MS = exports.SERVER_STEP_MS = exports.SNAPSHOT_INTERVAL_MS = exports.CLIENT_FIXED_DT = exports.SERVER_FIXED_DT = exports.SNAPSHOT_RATE = exports.CLIENT_INPUT_RATE = exports.SERVER_TICK_RATE = exports.ACTIVE_NET_MODE = exports.DEFAULT_NET_MODE = void 0;
+exports.LIVE_BALL_COMBAT_SUBSTEPS = exports.PERF_REPORT_INTERVAL_MS = exports.DEBUG_DEFAULTS = exports.USE_TIERED_SNAPSHOTS = exports.SNAPSHOT_TIER_MODE = exports.SNAPSHOT_BACKPRESSURE_BYTES = exports.USE_COMPACT_SNAPSHOTS = exports.SNAPSHOT_ENCODING = exports.HUGE_ERROR_SNAP_METERS = exports.EXTRAPOLATION_LIMIT_MS = exports.SNAPSHOT_BUFFER_LIMIT_MS = exports.SERVER_INPUT_QUEUE_LIMIT = exports.PENDING_INPUT_LIMIT = exports.MAX_ACCUMULATOR_CLAMP_MS = exports.MAX_ACCUMULATOR_STEPS = exports.ROOM_LOOP_WAKE_INTERVAL_MS = exports.ROOM_LOOP_WAKE_RATE = exports.ADAPTIVE_INTERP_UNDERRUN_TOLERANCE = exports.ADAPTIVE_INTERP_GAP_MARGIN_MS = exports.ADAPTIVE_INTERP_SHRINK_PER_WINDOW_MS = exports.ADAPTIVE_INTERP_GAP_DECAY_PER_WINDOW = exports.ADAPTIVE_INTERP_MAX_DELAY_MS = exports.ADAPTIVE_INTERP_MIN_DELAY_MS = exports.ADAPTIVE_INTERP_ENABLED = exports.INTERPOLATION_DELAY_MS = exports.SERVER_STEP_MS = exports.SNAPSHOT_INTERVAL_MS = exports.CLIENT_FIXED_DT = exports.SERVER_FIXED_DT = exports.SNAPSHOT_RATE = exports.CLIENT_INPUT_RATE = exports.SERVER_TICK_RATE = exports.ACTIVE_NET_MODE = exports.DEFAULT_NET_MODE = void 0;
 exports.netModeConfig = netModeConfig;
 exports.describeSnapshotProfile = describeSnapshotProfile;
 exports.resolveServerDebugFlags = resolveServerDebugFlags;
@@ -108,6 +108,28 @@ exports.SNAPSHOT_INTERVAL_MS = 1000 / exports.SNAPSHOT_RATE;
 exports.SERVER_STEP_MS = 1000 / exports.SERVER_TICK_RATE;
 exports.INTERPOLATION_DELAY_MS = active.interpolationDelayMs;
 /**
+ * Adaptive interpolation delay (client). Instead of every client paying the mode's fixed
+ * INTERPOLATION_DELAY_MS, each client sizes its own buffer from MEASURED snapshot delivery:
+ * smooth connections shrink toward the floor (less remote-render latency), jittery connections
+ * widen toward the ceiling (spikes absorbed instead of rendered). The controller starts at the
+ * mode's static delay, widens immediately when a delivery gap/underrun proves the buffer too
+ * small, and shrinks slowly (SHRINK_PER_WINDOW each ~1s window) so it never oscillates.
+ * Set ADAPTIVE_INTERP_ENABLED = false to restore the fixed-delay behavior (one-line revert).
+ */
+exports.ADAPTIVE_INTERP_ENABLED = true;
+/** Floor: two snapshot intervals + frame-timing slack. Below this even a perfect link underruns. */
+exports.ADAPTIVE_INTERP_MIN_DELAY_MS = Math.max(Math.ceil(exports.SNAPSHOT_INTERVAL_MS * 2) + 8, 30);
+/** Ceiling: cap how much delay a terrible connection can accumulate (playability bound). */
+exports.ADAPTIVE_INTERP_MAX_DELAY_MS = Math.max(150, exports.INTERPOLATION_DELAY_MS * 2);
+/** Decay applied to the tracked peak delivery gap per ~1s window (halves in ~8 windows). */
+exports.ADAPTIVE_INTERP_GAP_DECAY_PER_WINDOW = 0.92;
+/** Max ms the delay may shrink per ~1s window. Widening is immediate; shrinking is gradual. */
+exports.ADAPTIVE_INTERP_SHRINK_PER_WINDOW_MS = 5;
+/** Safety margin added on top of the tracked peak gap when computing the target delay. */
+exports.ADAPTIVE_INTERP_GAP_MARGIN_MS = Math.ceil(exports.SNAPSHOT_INTERVAL_MS * 0.5) + 4;
+/** Extrapolated frames per window tolerated before underruns force the buffer wider. */
+exports.ADAPTIVE_INTERP_UNDERRUN_TOLERANCE = 2;
+/**
  * How frequently the room loop wakes to drain the fixed-step accumulator. Wake faster than the sim
  * rate so timer jitter can't starve a step. 200Hz wake (5ms) comfortably feeds the high-rate modes
  * with headroom.
@@ -146,7 +168,15 @@ function resolveSnapshotEncoding(env = processEnv()) {
 /** Server-side snapshot payload encoding. Override with SNAPSHOT_ENCODING=full for debugging. */
 exports.SNAPSHOT_ENCODING = resolveSnapshotEncoding();
 exports.USE_COMPACT_SNAPSHOTS = exports.SNAPSHOT_ENCODING === 'compact';
-exports.SNAPSHOT_BACKPRESSURE_BYTES = 64 * 1024;
+/**
+ * Skip snapshot sends to a client whose socket buffer exceeds this. Sized in TIME, not just
+ * bytes: at ~60Hz × ~500B frames, 16KB is ~0.5s of queued snapshots. The old 64KB allowed a
+ * stalled TCP connection to accumulate 2+ SECONDS of stale snapshots that then had to flush
+ * through the recovering link before any fresh data — the main reason a jitter spike lasted
+ * long after the network recovered. Skipping sooner is safe: the client drops stale snapshots
+ * anyway, events broadcast separately, and tiered lanes re-include on cadence.
+ */
+exports.SNAPSHOT_BACKPRESSURE_BYTES = 16 * 1024;
 function resolveSnapshotTierMode(env = processEnv()) {
     const explicit = env.SNAPSHOT_TIER_MODE?.toLowerCase();
     if (explicit === 'tiered_v1')

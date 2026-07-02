@@ -88,7 +88,8 @@ export class CreatorPads {
       const height = trig ? trig.height : dims[1];
       const halfD = (trig ? trig.depth : dims[2]) / 2;
       if (this.insideOrientedBox(obj, p.x, p.y, p.z, halfW, height, halfD, r)) {
-        this.lastCheckpoint = { x: obj.position[0], y: Math.max(0, obj.position[1]), z: obj.position[2], yaw: (obj.rotation[1] ?? 0) * DEG2RAD };
+        const floorY = layout.ground.bounds.y ?? 0;
+        this.lastCheckpoint = { x: obj.position[0], y: Math.max(floorY, obj.position[1]), z: obj.position[2], yaw: (obj.rotation[1] ?? 0) * DEG2RAD };
       }
     }
 
