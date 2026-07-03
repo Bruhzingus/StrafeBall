@@ -38,7 +38,7 @@ import { Hud } from '../ui/Hud';
 import { Nametags } from '../ui/Nametags';
 import { BackflipQteController } from '../player/BackflipQteController';
 import { BackflipQteHud } from '../ui/BackflipQteHud';
-import { GAME_CONSTANTS } from '../../../shared/constants';
+import { GAME_CONSTANTS, deriveCombatTimingConstants, type CombatTiming } from '../../../shared/constants';
 import { SettingsPanel } from '../ui/SettingsPanel';
 import { MatchRules } from '../rules/MatchRules';
 import { TUNING } from '../config/tuning';
@@ -215,10 +215,16 @@ export class ArenaScene {
   // Freshly reset practice mats get a short grace period before player contact can knock them down.
   private readonly matPostResetKnockImmunityById = new Map<string, number>();
   private static readonly MAT_RESTORE_HOLD_SECONDS = TUNING.mat.restoreHoldSeconds;
-  // Fixed timestep for input send + prediction + reconciliation replay. Driven entirely by the
-  // shared net config (must equal the server's fixed dt for reconciliation residual ≈ 0). The
-  // fixed-step loop below sends at the active CLIENT_INPUT_RATE.
-  private static readonly NET_FIXED_DT = CLIENT_FIXED_DT;
+  // Fixed timestep for input send + prediction + reconciliation replay (must equal the ROOM's
+  // server fixed dt for reconciliation residual ≈ 0). Starts at the compiled default and is
+  // overwritten with the room's resolved rate in adoptRoomNetConfig() before prediction seeds —
+  // the same compiled client must run whichever tick preset the room negotiated.
+  private netFixedDt = CLIENT_FIXED_DT;
+  // Reconciliation ring cap ~1.5s at the room's input rate (mirrors PENDING_INPUT_LIMIT's formula).
+  private pendingInputLimit = PENDING_INPUT_LIMIT;
+  // Combat lag-comp windows sized to the ROOM's timing (cosmetic score/audio gating only — the
+  // authoritative windows live server-side). Compiled default until the room's config is adopted.
+  private onlineCombatTiming: CombatTiming = GAME_CONSTANTS.combat;
   private static readonly RECONCILE_SNAP_THRESHOLD_M = 0.5;
   private static readonly DESYNC_TRACKER_SECONDS = 5;
   private netAccumulator = 0;
@@ -1059,8 +1065,12 @@ export class ArenaScene {
       );
     }
 
-    // Initialise prediction from the first authoritative player state we receive.
+    // Initialise prediction from the first authoritative player state we receive. Adopting the
+    // room's net config HERE is the only provably-safe point: the fixed-step loop below never runs
+    // while predictedMovement is null, and a local player implies joined-room already delivered
+    // RoomState.netMode — so no prediction step can ever run against a stale/default fixed dt.
     if (local && !this.predictedMovement) {
+      this.adoptRoomNetConfig();
       this.predictedMovement = cloneMovement(local.movement);
       this.predictedInternal = { ...local.movementInternal };
       this.predictedDash = { ...local.dash };
@@ -1079,11 +1089,11 @@ export class ArenaScene {
     this.netAccumulator += dt;
     let fixedSteps = 0;
     while (
-      this.netAccumulator >= ArenaScene.NET_FIXED_DT &&
+      this.netAccumulator >= this.netFixedDt &&
       this.predictedMovement &&
       fixedSteps < MAX_ACCUMULATOR_STEPS
     ) {
-      this.netAccumulator -= ArenaScene.NET_FIXED_DT;
+      this.netAccumulator -= this.netFixedDt;
       fixedSteps += 1;
       this.inputSeq += 1;
 
@@ -1092,7 +1102,7 @@ export class ArenaScene {
 
       const res = stepMovement(
         this.predictedMovement, this.predictedInternal!, this.predictedDash!,
-        input, prev, ArenaScene.NET_FIXED_DT, this.predictionCollisionBoxes(),
+        input, prev, this.netFixedDt, this.predictionCollisionBoxes(),
         this.deriveCatchStance(local, input),
         undefined,
         this.deriveOnlineMovementScale(local),
@@ -1103,7 +1113,7 @@ export class ArenaScene {
       this.predictedDash = res.dash;
 
       this.pendingInputs.push({ seq: this.inputSeq, input, prev });
-      if (this.pendingInputs.length > PENDING_INPUT_LIMIT) {
+      if (this.pendingInputs.length > this.pendingInputLimit) {
         const dropped = this.pendingInputs.shift();
         if (dropped) this.sentInputClientTimeBySeq.delete(dropped.seq);
       }
@@ -1127,7 +1137,7 @@ export class ArenaScene {
       // Per-packet debug log (throttled to ~1 s, and off unless strafeball.debug.net === '1').
       // The timer resets on every threshold crossing regardless of the flag so it can't grow
       // unbounded while debug is off; the logging itself is gated.
-      this.debugLogTimer += ArenaScene.NET_FIXED_DT;
+      this.debugLogTimer += this.netFixedDt;
       if (this.debugLogTimer >= 1.0) {
         this.debugLogTimer = 0;
         if (isNetDebugEnabled()) {
@@ -1176,8 +1186,8 @@ export class ArenaScene {
     // Spiral guard: if we hit the per-frame step cap there was a large backlog (hitch). Drop it by
     // clamping the leftover accumulator to at most one fixed step so the next frame starts fresh
     // instead of trying to catch up dozens of ticks (which would dump a burst of packets).
-    if (fixedSteps >= MAX_ACCUMULATOR_STEPS && this.netAccumulator > ArenaScene.NET_FIXED_DT) {
-      this.netAccumulator = ArenaScene.NET_FIXED_DT;
+    if (fixedSteps >= MAX_ACCUMULATOR_STEPS && this.netAccumulator > this.netFixedDt) {
+      this.netAccumulator = this.netFixedDt;
     }
 
     // Fire one-shot effects from predicted state transitions (replaces offline controller callbacks).
@@ -1398,7 +1408,7 @@ export class ArenaScene {
     for (let i = 0; i < this.pendingInputs.length; i += 1) {
       if (this.pendingInputs[i].seq > local.lastProcessedInputSeq) unackedCount += 1;
     }
-    this.expectedLeadM = this.predictedMovement.speed * unackedCount * ArenaScene.NET_FIXED_DT;
+    this.expectedLeadM = this.predictedMovement.speed * unackedCount * this.netFixedDt;
 
     const replayed = this.replayUnackedFromServer(local, local.lastProcessedInputSeq);
     this.residualAfterReplayM = replayed
@@ -1432,7 +1442,7 @@ export class ArenaScene {
         dash,
         entry.input,
         entry.prev,
-        ArenaScene.NET_FIXED_DT,
+        this.netFixedDt,
         this.predictionCollisionBoxes(),
         this.deriveCatchStance(local, entry.input),
         undefined,
@@ -1445,6 +1455,31 @@ export class ArenaScene {
     }
 
     return { movement, internal, dash };
+  }
+
+  /**
+   * Adopt the joined room's negotiated net mode into every client-side rate-derived value: the
+   * prediction/input fixed dt, the reconciliation ring cap, cosmetic combat-timing windows, and the
+   * NetworkRenderer's interpolation/prediction timing. Called from the prediction-seed block (the
+   * only point proven safe — no fixed step can have run yet). Falls back to the compiled defaults
+   * when the server predates per-room presets (resolvedNetConfig null), preserving old behavior.
+   */
+  private adoptRoomNetConfig(): void {
+    const resolved = this.multiplayer.resolvedNetConfig;
+    if (!resolved) {
+      this.netFixedDt = CLIENT_FIXED_DT;
+      this.pendingInputLimit = PENDING_INPUT_LIMIT;
+      this.onlineCombatTiming = GAME_CONSTANTS.combat;
+      return;
+    }
+    this.netFixedDt = 1 / resolved.clientInputRate;
+    this.pendingInputLimit = Math.ceil(resolved.clientInputRate * 1.5);
+    this.onlineCombatTiming = deriveCombatTimingConstants({
+      serverStepMs: 1000 / resolved.serverTickRate,
+      interpolationDelayMs: resolved.interpolationDelayMs,
+      snapshotIntervalMs: 1000 / resolved.snapshotRate
+    });
+    this.networkRenderer.configureNetTiming(resolved);
   }
 
   /** Adopt the authoritative snapshot, drop acknowledged inputs, then replay the unacked ones. */
@@ -1470,7 +1505,7 @@ export class ArenaScene {
       if (ackedClientTime !== undefined) this.lastAckedInputClientTimeMs = ackedClientTime;
       // Prune ack-time bookkeeping for seqs older than the pending buffer window.
       for (const seq of this.sentInputClientTimeBySeq.keys()) {
-        if (seq < ack - PENDING_INPUT_LIMIT) this.sentInputClientTimeBySeq.delete(seq);
+        if (seq < ack - this.pendingInputLimit) this.sentInputClientTimeBySeq.delete(seq);
       }
     }
     while (this.pendingInputs.length > 0 && this.pendingInputs[0].seq <= ack) {
@@ -1484,7 +1519,7 @@ export class ArenaScene {
         this.predictedDash,
         entry.input,
         entry.prev,
-        ArenaScene.NET_FIXED_DT,
+        this.netFixedDt,
         this.predictionCollisionBoxes(),
         this.deriveCatchStance(local, entry.input),
         undefined,
@@ -1613,7 +1648,7 @@ export class ArenaScene {
   }
 
   private pruneSentInputClientTimes(): void {
-    const maxEntries = PENDING_INPUT_LIMIT * 2;
+    const maxEntries = this.pendingInputLimit * 2;
     while (this.sentInputClientTimeBySeq.size > maxEntries) {
       const oldest = this.sentInputClientTimeBySeq.keys().next().value;
       if (oldest === undefined) break;
@@ -1633,7 +1668,7 @@ export class ArenaScene {
     this.player.camera.rotation.x = this.networkPitch + backflipPitchOffset(internal.backflipActive, internal.backflipTimer);
     this.player.camera.rotation.y = 0;
     this.player.camera.rotation.z = 0;
-    this.player.applyWallRunLean(ArenaScene.NET_FIXED_DT, movement.wallRunning, internal.lastWallNormalX, internal.lastWallNormalZ);
+    this.player.applyWallRunLean(this.netFixedDt, movement.wallRunning, internal.lastWallNormalX, internal.lastWallNormalZ);
     // Crouch/slide lowers the eye height so the view follows the (shortened) body. Online mode
     // skips the offline MovementController, so the camera Y must be driven here from the predicted
     // crouch state. Smoothed exponentially toward the target so it dips/rises instead of snapping.
@@ -1980,7 +2015,7 @@ export class ArenaScene {
   }
 
   private queueOnlineScoreEvent(teamId: string, score: number, delta: number): void {
-    const dueAtMs = performance.now() + GAME_CONSTANTS.combat.catchHitGraceMs + 40;
+    const dueAtMs = performance.now() + this.onlineCombatTiming.catchHitGraceMs + 40;
     this.pendingOnlineScoreEvents.push({ teamId, score, delta, dueAtMs });
   }
 
@@ -2424,9 +2459,9 @@ export class ArenaScene {
     const now = Date.now();
     // Covers the server active catch window, rewind/history slack, and snapshot/network delay.
     const catchConfirmWindowMs =
-      GAME_CONSTANTS.combat.catchCooldownMs +
-      GAME_CONSTANTS.combat.defenseHistoryMs +
-      GAME_CONSTANTS.combat.defenseInputGraceMs +
+      this.onlineCombatTiming.catchCooldownMs +
+      this.onlineCombatTiming.defenseHistoryMs +
+      this.onlineCombatTiming.defenseInputGraceMs +
       500;
 
     for (const side of ['left', 'right'] as const) {

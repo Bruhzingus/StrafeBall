@@ -29,13 +29,17 @@ import {
   SNAPSHOT_INTERVAL_MS,
   SNAPSHOT_RATE,
   SNAPSHOT_TIER_MODE,
+  ACTIVE_NET_MODE,
   USE_COMPACT_SNAPSHOTS,
   USE_TIERED_SNAPSHOTS,
   describeSnapshotProfile,
   describeNetConfig,
+  netModeConfig,
   resolveServerDebugFlags,
-  type DebugFlags
+  type DebugFlags,
+  type NetModeConfig
 } from '../../../shared/netConfig';
+import { tickPresetById } from '../../../shared/tickPresets';
 import {
   NET_FLIGHT_RECORDER_DURATION_SECONDS,
   NET_FLIGHT_RECORDER_MAX_REPORT_BYTES,
@@ -82,6 +86,12 @@ export interface DuelRoomOptions {
   mode?: MatchFormat;
   /** Match format the host chose when creating the room. Drives the room's settings + size. */
   format?: MatchFormat;
+  /**
+   * Tick-rate preset id (shared/tickPresets.ts) the host chose when creating the room. Resolved
+   * ONCE in onCreate and locked for the room's lifetime — like format, but structurally excluded
+   * from RoomSettingsPatch instead of runtime-rejected. Missing/invalid falls back to the default.
+   */
+  tickPresetId?: string;
 }
 
 // All timing/rate constants now come from the centralized netConfig — never hardcode a rate here.
@@ -94,10 +104,6 @@ const RECONNECT_SECONDS = GAME_CONSTANTS.match.disconnectForfeitSeconds;
 const MAX_ROOMS = 200;
 let activeRoomCount = 0;
 
-// Per-message-type rate limits: { capacity (burst), refillPerSecond } (#11).
-// Input is sized from the active tick rate with burst headroom so a steady input stream is never
-// throttled, capacity ~1.5x the rate to absorb reconnection/jitter bursts.
-const RATE_LIMITS = buildInboundRateLimits(CLIENT_INPUT_RATE);
 
 interface Bucket {
   tokens: number;
@@ -203,7 +209,17 @@ export class DuelRoom extends Room {
   private tieredLaneByteSamples = 0;
   // When sim and snapshot rates are equal (mode A/C) we broadcast one snapshot per sim step, which
   // is exactly the old coupled behavior — no accumulator drift, lowest latency.
-  private readonly snapshotCoupledToTick = SNAPSHOT_RATE === SERVER_TICK_RATE;
+  // Per-room net timing, resolved ONCE in onCreate from the creator's tick preset. Field
+  // initializers carry the compiled defaults only as pre-onCreate safety; every real read happens
+  // after onCreate has overwritten them with the room's own resolved values.
+  private netTiming: NetModeConfig = netModeConfig(ACTIVE_NET_MODE) as NetModeConfig;
+  private serverStepMs = SERVER_STEP_MS;
+  private snapshotIntervalMs = SNAPSHOT_INTERVAL_MS;
+  // Per-message-type rate limits: { capacity (burst), refillPerSecond } (#11). Built per room from
+  // the ROOM's input rate — a process-wide table would be wrong the moment two rooms run different
+  // tick presets (one starved, the other under-throttled).
+  private rateLimits = buildInboundRateLimits(CLIENT_INPUT_RATE);
+  private snapshotCoupledToTick = SNAPSHOT_RATE === SERVER_TICK_RATE;
   private readonly eventLoopDelay = monitorEventLoopDelay({ resolution: 20 });
   private readonly flightRecorderEventLoopDelay = monitorEventLoopDelay({ resolution: 20 });
   private incomingMessagesThisWindow = 0;
@@ -246,21 +262,32 @@ export class DuelRoom extends Room {
     this.roomMode = matchSettings.format;
     this.playersPerTeam = matchSettings.teamSize;
     this.maxClients = matchSettings.maxPlayers;
+    // Resolve the creator's tick preset ONCE; everything rate-derived below (sim tick, snapshot
+    // cadence, inbound rate limits, telemetry) reads the ROOM's resolved timing, never the process
+    // globals. Locked for the room's lifetime (netMode is not a RoomSettingsPatch field).
+    const tickPreset = tickPresetById(options.tickPresetId);
+    this.netTiming = netModeConfig(tickPreset.netMode) as NetModeConfig;
+    this.serverStepMs = 1000 / this.netTiming.serverTickRate;
+    this.snapshotIntervalMs = 1000 / this.netTiming.snapshotRate;
+    this.snapshotCoupledToTick = this.netTiming.snapshotRate === this.netTiming.serverTickRate;
+    this.rateLimits = buildInboundRateLimits(this.netTiming.clientInputRate);
     // Colyseus 0.17 applies this PER CLIENT on inbound messages and force-closes the sender when
-    // exceeded, so size it to the active client input stream plus burst headroom.
-    this.maxMessagesPerSecond = computeMaxMessagesPerSecondPerClient(CLIENT_INPUT_RATE);
+    // exceeded, so size it to the room's client input stream plus burst headroom.
+    this.maxMessagesPerSecond = computeMaxMessagesPerSecondPerClient(this.netTiming.clientInputRate);
     this.game = new ServerGameLoop(this.roomId, {
-      tickRate: SERVER_TICK_RATE,
+      netMode: tickPreset.netMode,
       settings: this.roomSettings,
       logger: (message) => this.log(message),
       debug: this.debug
     });
-    // One-time room-created line describing the active net config + the manual-snapshot patch mode.
+    // One-time room-created line describing this room's resolved net config + the patch mode.
     this.log(
-      `room created mode=${this.roomMode} playersPerTeam=${this.playersPerTeam} preset=${this.roomSettings.preset} ${describeNetConfig()} ` +
+      `room created mode=${this.roomMode} playersPerTeam=${this.playersPerTeam} preset=${this.roomSettings.preset} ` +
+      `tickPreset=${tickPreset.id} netMode=${tickPreset.netMode} sim=${this.netTiming.serverTickRate}Hz input=${this.netTiming.clientInputRate}Hz snapshots=${this.netTiming.snapshotRate}Hz ` +
+      `processDefault={${describeNetConfig()}} ` +
       `snapshotEncoding=${SNAPSHOT_ENCODING} snapshotTierMode=${SNAPSHOT_TIER_MODE} snapshotProfile=${describeSnapshotProfile()} snapshotBackpressure=${SNAPSHOT_BACKPRESSURE_BYTES}B ` +
       `colyseusPatchRate=${formatPatchRate(COLYSEUS_PATCH_RATE_MS)} ` +
-      `colyseusMaxMessagesPerSecond=${this.maxMessagesPerSecond}/s(per-client inbound, expected~${expectedPerClientMessagesPerSecond(CLIENT_INPUT_RATE)}/s)`
+      `colyseusMaxMessagesPerSecond=${this.maxMessagesPerSecond}/s(per-client inbound, expected~${expectedPerClientMessagesPerSecond(this.netTiming.clientInputRate)}/s)`
     );
     if (this.netFlightRecorderEnabled) {
       this.log(
@@ -413,7 +440,7 @@ export class DuelRoom extends Room {
 
       const rawElapsedMs = this.lastLoopWakeAtMs === 0 ? 0 : now - this.lastLoopWakeAtMs;
       if (rawElapsedMs > 0) this.recordLoopWakeDelay(rawElapsedMs);
-      if (this.nextSnapshotDueAtMs === 0) this.nextSnapshotDueAtMs = now + SNAPSHOT_INTERVAL_MS;
+      if (this.nextSnapshotDueAtMs === 0) this.nextSnapshotDueAtMs = now + this.snapshotIntervalMs;
       // Monotonic clock; clamp the elapsed slice so an alt-tab/GC pause can't dump a huge backlog.
       const elapsedMs = Math.min(MAX_ACCUMULATOR_CLAMP_MS, rawElapsedMs);
       this.lastLoopWakeAtMs = now;
@@ -421,8 +448,8 @@ export class DuelRoom extends Room {
 
       // Drain fixed sim steps, capped to avoid a spiral-of-death after a long pause.
       let steps = 0;
-      while (this.simulationAccumulatorMs + 0.001 >= SERVER_STEP_MS && steps < MAX_ACCUMULATOR_STEPS) {
-        this.simulationAccumulatorMs -= SERVER_STEP_MS;
+      while (this.simulationAccumulatorMs + 0.001 >= this.serverStepMs && steps < MAX_ACCUMULATOR_STEPS) {
+        this.simulationAccumulatorMs -= this.serverStepMs;
         steps += 1;
 
         const startedAt = performance.now();
@@ -444,15 +471,18 @@ export class DuelRoom extends Room {
 
       // Step cap hit with backlog remaining: discard the backlog (don't time-warp) and report only
       // under PERF_DEBUG so a real playtest stays silent.
-      if (steps >= MAX_ACCUMULATOR_STEPS && this.simulationAccumulatorMs >= SERVER_STEP_MS) {
+      if (steps >= MAX_ACCUMULATOR_STEPS && this.simulationAccumulatorMs >= this.serverStepMs) {
         this.stepCapHitsThisWindow += 1;
-        this.simulationAccumulatorMs = SERVER_STEP_MS;
+        this.simulationAccumulatorMs = this.serverStepMs;
       }
 
       if (!this.snapshotCoupledToTick) {
         this.broadcastDueSnapshot(performance.now());
       }
       this.maybeRecordFlightSample();
+      // The wake cadence stays a single process-wide 200Hz (5ms) regardless of the room's preset:
+      // even the fastest selectable preset (180Hz sim, ~5.56ms step) gets >1 wake per step, and
+      // MAX_ACCUMULATOR_STEPS absorbs timer jitter. Only the drain above is per-room.
     }, ROOM_LOOP_WAKE_INTERVAL_MS);
   }
 
@@ -700,7 +730,7 @@ export class DuelRoom extends Room {
     this.log(
       `[perf] roomAgeSec=${roomAgeSec.toFixed(1)} ` +
       `snapshotMode=${SNAPSHOT_TIER_MODE} profile=${describeSnapshotProfile()} ` +
-      `sim=${SERVER_TICK_RATE}Hz input=${CLIENT_INPUT_RATE}Hz snapshots=${SNAPSHOT_RATE}Hz ` +
+      `sim=${this.netTiming.serverTickRate}Hz input=${this.netTiming.clientInputRate}Hz snapshots=${this.netTiming.snapshotRate}Hz ` +
       `simTicks=${(this.simTicksThisWindow / elapsedSeconds).toFixed(1)}/s ` +
       `snapshotsSent=${(this.snapshotsThisWindow / elapsedSeconds).toFixed(1)}/s snapshotClientSends=${(this.snapshotClientSendsThisWindow / elapsedSeconds).toFixed(1)}/s ` +
       `simTickMs avg=${avgSimTickMs.toFixed(2)} max=${this.simTickMsMax.toFixed(2)} ` +
@@ -791,7 +821,7 @@ export class DuelRoom extends Room {
     this.snapshotLateMsTotal += lateMs;
     this.snapshotLateMsMax = Math.max(this.snapshotLateMsMax, lateMs);
     this.recordTieredLanePresence(payload);
-    const sampleStride = Math.max(1, Math.floor(SNAPSHOT_RATE / 4));
+    const sampleStride = Math.max(1, Math.floor(this.netTiming.snapshotRate / 4));
     if (this.debug.PERF_DEBUG && this.snapshotPayloadSamples < 8 && this.snapshotsThisWindow % sampleStride === 1) {
       const activeBytes = JSON.stringify(payload).length;
       const fullBytes = JSON.stringify(snapshot).length;
@@ -853,7 +883,7 @@ export class DuelRoom extends Room {
     if (actualNowMs + 0.001 < this.nextSnapshotDueAtMs) return;
 
     const dueAtMs = this.nextSnapshotDueAtMs;
-    const schedule = advanceSnapshotDeadline(dueAtMs, actualNowMs, SNAPSHOT_INTERVAL_MS);
+    const schedule = advanceSnapshotDeadline(dueAtMs, actualNowMs, this.snapshotIntervalMs);
     this.snapshotDeadlineSkipsThisWindow += schedule.skippedIntervals;
     this.nextSnapshotDueAtMs = schedule.nextDueAtMs;
 
@@ -1144,7 +1174,7 @@ export class DuelRoom extends Room {
       atMs: nowMs,
       room: shortSessionId(this.roomId),
       activePlayers: connectedPlayers.length,
-      simTargetHz: SERVER_TICK_RATE,
+      simTargetHz: this.netTiming.serverTickRate,
       simSteps: this.flightRecorderSecond.simSteps,
       snapshotsSent: this.flightRecorderSecond.snapshotsSent,
       snapshotsSkipped: this.flightRecorderSecond.snapshotsSkipped,
@@ -1191,7 +1221,7 @@ export class DuelRoom extends Room {
         (client.wsBufferedMaxBytes >= NET_FLIGHT_RECORDER_WS_BUFFER_THRESHOLD_BYTES) ||
         (client.inputAgeMs >= NET_FLIGHT_RECORDER_SERVER_INPUT_AGE_THRESHOLD_MS) ||
         (client.inputQueueDepthMax >= NET_FLIGHT_RECORDER_PENDING_INPUT_THRESHOLD))
-      || sample.snapshotsSent < Math.floor(SNAPSHOT_RATE * NET_FLIGHT_RECORDER_SERVER_SNAPSHOT_RATE_FLOOR_RATIO);
+      || sample.snapshotsSent < Math.floor(this.netTiming.snapshotRate * NET_FLIGHT_RECORDER_SERVER_SNAPSHOT_RATE_FLOOR_RATIO);
     if (!shouldLog) return;
     if (!severe && nowMs - this.lastFlightRecorderAnomalyAtMs < NET_FLIGHT_RECORDER_SERVER_COOLDOWN_MS) return;
     this.lastFlightRecorderAnomalyAtMs = nowMs;
@@ -1363,7 +1393,7 @@ export class DuelRoom extends Room {
 
   /** Token-bucket rate limit per client per message type (#11). Returns false if over limit. */
   private allow(client: Client, type: InboundMessageType): boolean {
-    const limit = RATE_LIMITS[type];
+    const limit = this.rateLimits[type];
     if (!limit) return true;
 
     let perClient = this.buckets.get(client.sessionId);

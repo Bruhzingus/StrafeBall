@@ -62,8 +62,15 @@ export interface CreatorLayoutObject {
   color?: string;
   collision?: boolean;
   visible?: boolean;
+  /** Whether this collidable solid contributes wall-run faces. Missing = enabled for old layouts. */
+  wallrunEnabled?: boolean;
   metadata?: CreatorObjectMetadata;
 }
+
+export const CREATOR_LABEL_SIZES = ['small', 'medium', 'large'] as const;
+export type CreatorLabelSize = typeof CREATOR_LABEL_SIZES[number];
+export const CREATOR_LABEL_COLORS = ['white', 'gold', 'blue', 'green', 'red'] as const;
+export type CreatorLabelColor = typeof CREATOR_LABEL_COLORS[number];
 
 /** Restricted, well-known metadata fields (no arbitrary scripting / URLs). */
 export interface CreatorObjectMetadata {
@@ -80,6 +87,11 @@ export interface CreatorObjectMetadata {
   oneWayYawDeg?: number;
   /** Route label / sign text (plain text, sanitised + length-capped on apply). */
   label?: string;
+  /** Editor label display controls. Empty text still renders a placeholder unless hidden. */
+  labelVisible?: boolean;
+  labelSize?: CreatorLabelSize;
+  labelColor?: CreatorLabelColor;
+  labelOffsetY?: number;
   enabled?: boolean;
   /** Ability-pad strength multiplier (bounce launch / speed boost). 1 = default; clamped on apply. */
   padStrength?: number;
@@ -104,6 +116,8 @@ export const CREATOR_LIMITS = {
   maxLabelLength: 64,
   maxNameLength: 48,
   maxTriggerDimension: 100000,
+  minLabelOffsetY: -10,
+  maxLabelOffsetY: 30,
   // Ability-pad strength multiplier bounds (bounce launch / speed boost).
   minPadStrength: 0.1,
   maxPadStrength: 20
@@ -310,7 +324,7 @@ export function isSolidModule(type: string): boolean {
 // Oriented sub-box derivation (shared by visuals, collision, and the movement world)
 // ---------------------------------------------------------------------------------------------
 
-/** A single axis-of-Y-rotation box in world space (its own slope baked into stacks for ramps). */
+/** A single axis-of-Y-rotation box in world space. */
 export interface OrientedBox {
   cx: number;
   cy: number;
@@ -320,6 +334,20 @@ export interface OrientedBox {
   d: number;
   /** Y rotation in radians. */
   ry: number;
+}
+
+/** Smooth wedge ramp prism in world space. Local +X is uphill, then rotated by ry. */
+export interface RampPrism {
+  cx: number;
+  baseY: number;
+  cz: number;
+  w: number;
+  h: number;
+  d: number;
+  /** Y rotation in radians. */
+  ry: number;
+  /** Up-facing sloped surface normal in world space. */
+  normal: Vec3Tuple;
 }
 
 interface LocalBox {
@@ -361,17 +389,8 @@ function localBoxes(def: CreatorModuleDef): LocalBox[] {
     }
 
     case 'ramp': {
-      // A walkable incline built from short AABB steps (engine is AABB-only; stepHeight ~0.45 lets
-      // the player run smoothly up steps below that). Visual == collision, so what you see is solid.
-      const steps = Math.max(2, Math.min(24, Math.ceil(h / 0.4)));
-      const stepLen = w / steps;
-      const out: LocalBox[] = [];
-      for (let i = 0; i < steps; i += 1) {
-        const top = (h * (i + 1)) / steps;
-        const cx = -w / 2 + stepLen * (i + 0.5);
-        out.push({ o: [cx, top / 2, 0], s: [stepLen, top, d] });
-      }
-      return out;
+      // Ramps are smooth wedge prisms, not box stacks. They are returned by objectRampPrisms().
+      return [];
     }
 
     case 'tunnel': {
@@ -401,6 +420,42 @@ export function objectCollisionBoxes(obj: CreatorLayoutObject): OrientedBox[] {
   return objectSolidBoxes(obj);
 }
 
+/** Smooth ramp prisms of an object in WORLD space, regardless of collision/visibility flags. */
+export function objectRampPrisms(obj: CreatorLayoutObject): RampPrism[] {
+  const def = MODULE_BY_TYPE.get(obj.type);
+  if (!def || def.shape !== 'ramp') return [];
+  const ry = (obj.rotation[1] ?? 0) * DEG2RAD;
+  const [sx, sy, sz] = obj.scale;
+  const [px, py, pz] = obj.position;
+  const [w, h, d] = def.baseSize;
+  const width = w * sx;
+  const height = h * sy;
+  const depth = d * sz;
+  const slope = height / Math.max(0.0001, width);
+  const cos = Math.cos(ry);
+  const sin = Math.sin(ry);
+  const nLen = Math.hypot(slope, 1);
+  return [{
+    cx: px,
+    baseY: py,
+    cz: pz,
+    w: width,
+    h: height,
+    d: depth,
+    ry,
+    normal: [(-slope * cos) / nLen, 1 / nLen, (slope * sin) / nLen]
+  }];
+}
+
+/** Smooth ramp prisms that should collide with the player. */
+export function objectCollisionRamps(obj: CreatorLayoutObject): RampPrism[] {
+  const def = MODULE_BY_TYPE.get(obj.type);
+  if (!def || !isSolidModule(obj.type)) return [];
+  if (obj.visible === false) return [];
+  if (obj.collision === false) return [];
+  return objectRampPrisms(obj);
+}
+
 /**
  * Local (pre-scale, base-frame) solid sub-boxes for a module type — used to build parented visual
  * meshes whose object-root TransformNode then carries position / Y-rotation / scale. Empty for markers.
@@ -414,10 +469,16 @@ export function moduleLocalBoxes(type: string): Array<{ o: Vec3Tuple; s: Vec3Tup
 /** Enclosing world AABB of any object (solid boxes, or the marker footprint) — for selection highlight. */
 export function objectWorldAabb(obj: CreatorLayoutObject): { minX: number; maxX: number; minY: number; maxY: number; minZ: number; maxZ: number } {
   const solids = objectSolidBoxes(obj);
-  if (solids.length > 0) {
+  const ramps = objectRampPrisms(obj);
+  if (solids.length > 0 || ramps.length > 0) {
     let minX = Infinity, minY = Infinity, minZ = Infinity, maxX = -Infinity, maxY = -Infinity, maxZ = -Infinity;
     for (const box of solids) {
       const a = orientedBoxAabb(box);
+      minX = Math.min(minX, a.minX); minY = Math.min(minY, a.minY); minZ = Math.min(minZ, a.minZ);
+      maxX = Math.max(maxX, a.maxX); maxY = Math.max(maxY, a.maxY); maxZ = Math.max(maxZ, a.maxZ);
+    }
+    for (const ramp of ramps) {
+      const a = rampPrismAabb(ramp);
       minX = Math.min(minX, a.minX); minY = Math.min(minY, a.minY); minZ = Math.min(minZ, a.minZ);
       maxX = Math.max(maxX, a.maxX); maxY = Math.max(maxY, a.maxY); maxZ = Math.max(maxZ, a.maxZ);
     }
@@ -482,6 +543,21 @@ export function orientedBoxAabb(box: OrientedBox): Aabb {
     maxY: box.cy + box.h / 2,
     minZ: box.cz - hz,
     maxZ: box.cz + hz
+  };
+}
+
+export function rampPrismAabb(ramp: RampPrism): Aabb {
+  const c = Math.abs(Math.cos(ramp.ry));
+  const s = Math.abs(Math.sin(ramp.ry));
+  const hx = (ramp.w / 2) * c + (ramp.d / 2) * s;
+  const hz = (ramp.w / 2) * s + (ramp.d / 2) * c;
+  return {
+    minX: ramp.cx - hx,
+    maxX: ramp.cx + hx,
+    minY: ramp.baseY,
+    maxY: ramp.baseY + ramp.h,
+    minZ: ramp.cz - hz,
+    maxZ: ramp.cz + hz
   };
 }
 
@@ -577,7 +653,8 @@ export function sanitizeObject(raw: unknown): CreatorLayoutObject | null {
     ],
     material: CREATOR_MATERIAL_IDS.includes(String(o.material)) ? String(o.material) : def.material,
     collision: typeof o.collision === 'boolean' ? o.collision : def.collision,
-    visible: typeof o.visible === 'boolean' ? o.visible : true
+    visible: typeof o.visible === 'boolean' ? o.visible : true,
+    wallrunEnabled: typeof o.wallrunEnabled === 'boolean' ? o.wallrunEnabled : true
   };
   if (typeof o.name === 'string') obj.name = sanitizeText(o.name, CREATOR_LIMITS.maxNameLength);
   if (typeof o.color === 'string') obj.color = sanitizeText(o.color, 16);
@@ -598,6 +675,12 @@ function sanitizeMetadata(raw: unknown, def: CreatorModuleDef): CreatorObjectMet
   if (typeof m.checkpointOrder === 'number') out.checkpointOrder = clampNumber(m.checkpointOrder, 0, 999, 1);
   if (typeof m.oneWayYawDeg === 'number') out.oneWayYawDeg = clampNumber(m.oneWayYawDeg, -360, 360, 0);
   if (typeof m.label === 'string') out.label = sanitizeText(m.label, CREATOR_LIMITS.maxLabelLength);
+  if (typeof m.labelVisible === 'boolean') out.labelVisible = m.labelVisible;
+  if ((CREATOR_LABEL_SIZES as readonly string[]).includes(String(m.labelSize))) out.labelSize = m.labelSize as CreatorLabelSize;
+  if ((CREATOR_LABEL_COLORS as readonly string[]).includes(String(m.labelColor))) out.labelColor = m.labelColor as CreatorLabelColor;
+  if (typeof m.labelOffsetY === 'number' && Number.isFinite(m.labelOffsetY)) {
+    out.labelOffsetY = clampNumber(m.labelOffsetY, CREATOR_LIMITS.minLabelOffsetY, CREATOR_LIMITS.maxLabelOffsetY, 0);
+  }
   if (typeof m.enabled === 'boolean') out.enabled = m.enabled;
   if (typeof m.padStrength === 'number' && Number.isFinite(m.padStrength)) {
     out.padStrength = clampNumber(m.padStrength, CREATOR_LIMITS.minPadStrength, CREATOR_LIMITS.maxPadStrength, 1);
@@ -774,6 +857,8 @@ export function defaultCreatorLayout(): CreatorLayout {
     visible: true,
     metadata: { yawDeg: 0, label: 'LEAVE' }
   });
+
+  for (const obj of objects) obj.wallrunEnabled = true;
 
   return {
     version: CREATOR_SCHEMA_VERSION,

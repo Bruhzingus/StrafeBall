@@ -28,7 +28,6 @@ const SPAWN_BASE_BY_SIDE = {
 };
 // Max inputs buffered per player before we drop the oldest. Driven by netConfig so the buffer
 // scales with the active tick rate (~1 s of headroom) instead of a hardcoded 30Hz assumption.
-const MAX_INPUT_QUEUE = netConfig_1.SERVER_INPUT_QUEUE_LIMIT;
 // If no fresh input arrives for this long, the player's input is treated as neutral (so a
 // backgrounded/frozen tab doesn't keep walking or charging on the last-held input).
 const STALE_INPUT_MS = 1000;
@@ -50,6 +49,13 @@ const INTERMISSION_TIMEOUT_MS = 30_000;
 const LAST_PLAYER_BUFF_MS = constants_1.GAME_CONSTANTS.match.lastPlayerBuffSeconds * 1000;
 class ServerGameLoop {
     tickRate;
+    /** The room's net mode (creation-time tick preset), echoed on RoomState for clients to adopt. */
+    netMode;
+    // Combat lag-comp windows derived from THIS room's tick/snapshot/interp timing — never read
+    // GAME_CONSTANTS.combat here, it is frozen to the compiled default mode.
+    combatTiming;
+    // ~1s of input buffer at this room's tick rate (was the process-global SERVER_INPUT_QUEUE_LIMIT).
+    maxInputQueue;
     state;
     roomId;
     tickSeconds;
@@ -87,12 +93,20 @@ class ServerGameLoop {
     playerCollisionScratch = [];
     ballCollisionScratch = [];
     knockedOverMatIds = new Set();
-    // Hold-E mat restore: per-player progress (seconds) toward standing the nearest knocked-over mat
-    // back up. Resets when E is released or the player moves out of reach.
-    matRestoreHoldByPlayerId = new Map();
+    // Hold-E mat restore: per-player CONSECUTIVE HELD TICKS toward standing the nearest knocked-over
+    // mat back up. Resets when E is released or the player moves out of reach. Tick count, not
+    // accumulated dt seconds: summing float dts lands just below the threshold at rates whose dt
+    // isn't dyadic (e.g. 180Hz: 63 × fl(1/180) = 0.34999999999999976 < fl(0.35)), demanding a
+    // spurious extra tick — the same boundary bug class as the knock-immunity timer below.
+    matRestoreHoldTicksByPlayerId = new Map();
     // Brief per-mat grace after a reset so the restoring player can step clear before contact
-    // knock-over is allowed again.
-    matPostResetKnockImmunityById = new Map();
+    // knock-over is allowed again. Keyed by ABSOLUTE expiry tick (not seconds-remaining decremented
+    // per step): a decrementing-float timer loses exactly one tick of grace whenever
+    // ticks * dt lands past the target with no slack, which floating-point rounding masked at some
+    // tick rates (90Hz) and exposed at others (128Hz, where dt is exactly dyadic) — same duration,
+    // different apparent behavior depending on server tick rate. Tick-count comparison is exact at
+    // any rate, which matters once tick rate is player-selectable.
+    matPostResetKnockImmunityUntilTickById = new Map();
     static MAT_RESTORE_HOLD_SECONDS = constants_1.GAME_CONSTANTS.mat.restoreHoldSeconds;
     static MAT_RESTORE_REACH = constants_1.GAME_CONSTANTS.mat.restoreReach;
     static MAT_POST_RESET_KNOCK_IMMUNITY_SECONDS = constants_1.GAME_CONSTANTS.mat.postResetKnockImmunitySeconds;
@@ -169,8 +183,17 @@ class ServerGameLoop {
     nextBattleMusicSessionId = 0;
     constructor(roomId, options = {}) {
         this.roomId = roomId;
-        this.tickRate = options.tickRate ?? netConfig_1.SERVER_TICK_RATE;
+        this.netMode = options.netMode ?? netConfig_1.ACTIVE_NET_MODE;
+        // Every NetMode key resolves; the cast documents that invariant (tickPresets only maps to keys).
+        const netTiming = (0, netConfig_1.netModeConfig)(this.netMode);
+        this.tickRate = options.tickRate ?? netTiming.serverTickRate;
         this.tickSeconds = 1 / this.tickRate;
+        this.maxInputQueue = Math.max(30, Math.ceil(this.tickRate));
+        this.combatTiming = (0, constants_1.deriveCombatTimingConstants)({
+            serverStepMs: this.tickSeconds * 1000,
+            interpolationDelayMs: netTiming.interpolationDelayMs,
+            snapshotIntervalMs: 1000 / netTiming.snapshotRate
+        });
         this.logger = options.logger ?? (() => undefined);
         this.now = options.now ?? Date.now;
         this.teamIds = options.teamIds?.length ? [...options.teamIds] : [...constants_1.GAME_CONSTANTS.match.teamIds];
@@ -372,7 +395,7 @@ class ServerGameLoop {
         this.lastInputAtByPlayerId.set(playerId, this.now());
         const queue = this.inputQueueByPlayerId.get(playerId) ?? [];
         queue.push({ seq: sequence || lastSeq, input });
-        while (queue.length > MAX_INPUT_QUEUE)
+        while (queue.length > this.maxInputQueue)
             queue.shift();
         this.inputQueueByPlayerId.set(playerId, queue);
         return true;
@@ -380,14 +403,14 @@ class ServerGameLoop {
     updateInputRttEstimate(playerId, rttMs) {
         if (typeof rttMs !== 'number' || !Number.isFinite(rttMs))
             return;
-        const clamped = (0, CollisionMath_1.clamp)(rttMs, 0, constants_1.GAME_CONSTANTS.combat.catchMaxRttMs);
+        const clamped = (0, CollisionMath_1.clamp)(rttMs, 0, this.combatTiming.catchMaxRttMs);
         const previous = this.inputRttMsByPlayerId.get(playerId);
         this.inputRttMsByPlayerId.set(playerId, previous === undefined ? clamped : previous * 0.85 + clamped * 0.15);
     }
     catchRewindMsForPlayer(playerId) {
-        const rttMs = this.inputRttMsByPlayerId.get(playerId) ?? constants_1.GAME_CONSTANTS.combat.catchDefaultRttMs;
-        const raw = constants_1.GAME_CONSTANTS.combat.catchRewindMs + (rttMs - constants_1.GAME_CONSTANTS.combat.catchDefaultRttMs);
-        return (0, CollisionMath_1.clamp)(raw, constants_1.GAME_CONSTANTS.combat.defenseInputGraceMs, constants_1.GAME_CONSTANTS.combat.defenseMaxRewindMs);
+        const rttMs = this.inputRttMsByPlayerId.get(playerId) ?? this.combatTiming.catchDefaultRttMs;
+        const raw = this.combatTiming.catchRewindMs + (rttMs - this.combatTiming.catchDefaultRttMs);
+        return (0, CollisionMath_1.clamp)(raw, this.combatTiming.defenseInputGraceMs, this.combatTiming.defenseMaxRewindMs);
     }
     catchTrace(message) {
         if (!this.debug.CATCH_TRACE_DEBUG && !this.debug.CATCH_DEBUG)
@@ -955,7 +978,7 @@ class ServerGameLoop {
                     waiting.lives = this.matchSettings.livesPerPlayer;
             }
             this.knockedOverMatIds.clear();
-            this.matPostResetKnockImmunityById.clear();
+            this.matPostResetKnockImmunityUntilTickById.clear();
             this.state.mats = (0, MatchSim_1.createMatStates)(this.activeMatSpecs);
             this.rebuildCollisionBoxes();
         }
@@ -1022,7 +1045,6 @@ class ServerGameLoop {
         this.pruneStartVotes(this.stepNowMs);
         this.pruneResetVotes(this.stepNowMs);
         this.pruneEndVotes(this.stepNowMs);
-        this.tickMatPostResetKnockImmunity(fixedDt);
         // Advance the pre-round countdown. While counting down, players are frozen (look only) and no
         // combat resolves; when it elapses, flip to 'playing' so this tick already runs live.
         this.advanceCountdown(fixedDt);
@@ -1048,7 +1070,7 @@ class ServerGameLoop {
             // Mat knock-over uses the player's PRE-resolution velocity: the collision solver zeros the
             // component pushing into the mat, so post-resolution speed can be ~0 on a head-on walk-in.
             this.knockOverMatsForPlayer(player, preVelocity);
-            this.updateMatRestoreForPlayer(player, command.input, fixedDt);
+            this.updateMatRestoreForPlayer(player, command.input);
             // Record this player's post-update defensive state for lag-compensated catch/parry rewind.
             this.recordDefenseSample(player);
         }
@@ -1071,6 +1093,7 @@ class ServerGameLoop {
         this.tickIntermission(this.stepNowMs);
         this.syncRoomPhase();
         this.syncBattleMusicForMatchTransition(previousMatchStatus, this.stepNowMs);
+        this.pruneExpiredMatPostResetKnockImmunity();
     }
     /** Tick the pre-round countdown timer; flip to 'playing' once it reaches 0. */
     advanceCountdown(dt) {
@@ -1182,7 +1205,7 @@ class ServerGameLoop {
         return this.lastSnapshotBuildMs;
     }
     historyMaxSamples() {
-        return Math.max(16, Math.ceil(this.tickRate * ((constants_1.GAME_CONSTANTS.combat.defenseHistoryMs / 1000) + 0.25)));
+        return Math.max(16, Math.ceil(this.tickRate * ((this.combatTiming.defenseHistoryMs / 1000) + 0.25)));
     }
     getDebugBufferStats() {
         let inputQueues = 0;
@@ -1734,8 +1757,8 @@ class ServerGameLoop {
             this.seedInputTracking(player.id, slot.yawRadians);
         }
         this.knockedOverMatIds.clear();
-        this.matRestoreHoldByPlayerId.clear();
-        this.matPostResetKnockImmunityById.clear();
+        this.matRestoreHoldTicksByPlayerId.clear();
+        this.matPostResetKnockImmunityUntilTickById.clear();
         this.state.mats = (0, MatchSim_1.createMatStates)(this.activeMatSpecs);
         this.rebuildCollisionBoxes();
         const balls = {};
@@ -1904,7 +1927,7 @@ class ServerGameLoop {
         for (const spec of this.activeMatSpecs) {
             if (this.knockedOverMatIds.has(spec.id))
                 continue;
-            if ((this.matPostResetKnockImmunityById.get(spec.id) ?? 0) > 0)
+            if ((this.matPostResetKnockImmunityUntilTickById.get(spec.id) ?? 0) >= this.state.tick)
                 continue;
             const box = (0, MapGeometry_1.matCollisionBox)(spec);
             // Vertical band: the player's body must overlap the mat height (feet below top, head above base).
@@ -1938,9 +1961,9 @@ class ServerGameLoop {
      * mat state, so the client-only restore never reached other players). Picks the nearest downed mat
      * within reach; releasing E or stepping out of reach resets the hold timer.
      */
-    updateMatRestoreForPlayer(player, input, dt) {
+    updateMatRestoreForPlayer(player, input) {
         if (!input.interactHeld || this.knockedOverMatIds.size === 0) {
-            this.matRestoreHoldByPlayerId.delete(player.id);
+            this.matRestoreHoldTicksByPlayerId.delete(player.id);
             return;
         }
         const pos = player.movement.position;
@@ -1959,29 +1982,30 @@ class ServerGameLoop {
             }
         }
         if (!nearestId) {
-            this.matRestoreHoldByPlayerId.delete(player.id);
+            this.matRestoreHoldTicksByPlayerId.delete(player.id);
             return;
         }
-        const hold = (this.matRestoreHoldByPlayerId.get(player.id) ?? 0) + dt;
-        if (hold < ServerGameLoop.MAT_RESTORE_HOLD_SECONDS) {
-            this.matRestoreHoldByPlayerId.set(player.id, hold);
+        // Tick counting, not dt accumulation — exact at every selectable tick rate (see field comment).
+        const heldTicks = (this.matRestoreHoldTicksByPlayerId.get(player.id) ?? 0) + 1;
+        const requiredTicks = Math.max(1, Math.ceil(ServerGameLoop.MAT_RESTORE_HOLD_SECONDS * this.tickRate));
+        if (heldTicks < requiredTicks) {
+            this.matRestoreHoldTicksByPlayerId.set(player.id, heldTicks);
             return;
         }
-        this.matRestoreHoldByPlayerId.delete(player.id);
+        this.matRestoreHoldTicksByPlayerId.delete(player.id);
         this.state.mats[nearestId] = { ...this.state.mats[nearestId], knockedOver: false, knockDirection: (0, CollisionMath_1.vec3)() };
         this.knockedOverMatIds.delete(nearestId);
-        this.matPostResetKnockImmunityById.set(nearestId, ServerGameLoop.MAT_POST_RESET_KNOCK_IMMUNITY_SECONDS);
+        const immunityTicks = Math.max(1, Math.ceil(ServerGameLoop.MAT_POST_RESET_KNOCK_IMMUNITY_SECONDS * this.tickRate));
+        this.matPostResetKnockImmunityUntilTickById.set(nearestId, this.state.tick + immunityTicks);
         this.rebuildCollisionBoxes();
         if (this.debug.COLLISION_DEBUG)
             this.logger(`mat restored id=${nearestId} by player=${player.id}`);
     }
-    tickMatPostResetKnockImmunity(dt) {
-        for (const [matId, remaining] of this.matPostResetKnockImmunityById) {
-            const next = remaining - dt;
-            if (next > 0)
-                this.matPostResetKnockImmunityById.set(matId, next);
-            else
-                this.matPostResetKnockImmunityById.delete(matId);
+    /** Drop expired grace entries so the map doesn't grow unboundedly over a long match. */
+    pruneExpiredMatPostResetKnockImmunity() {
+        for (const [matId, expiryTick] of this.matPostResetKnockImmunityUntilTickById) {
+            if (expiryTick < this.state.tick)
+                this.matPostResetKnockImmunityUntilTickById.delete(matId);
         }
     }
     updateRules(dt) {
@@ -2024,7 +2048,7 @@ class ServerGameLoop {
     recordDefenseSample(player) {
         let ring = this.defenseHistoryByPlayerId.get(player.id);
         if (!ring) {
-            ring = new DefenseHistory_1.TimeRing(constants_1.GAME_CONSTANTS.combat.defenseHistoryMs, this.historyMaxSamples());
+            ring = new DefenseHistory_1.TimeRing(this.combatTiming.defenseHistoryMs, this.historyMaxSamples());
             this.defenseHistoryByPlayerId.set(player.id, ring);
         }
         const m = player.movement;
@@ -2057,7 +2081,7 @@ class ServerGameLoop {
         }
         let ring = this.ballHistoryById.get(ball.id);
         if (!ring) {
-            ring = new DefenseHistory_1.TimeRing(constants_1.GAME_CONSTANTS.combat.defenseHistoryMs, this.historyMaxSamples());
+            ring = new DefenseHistory_1.TimeRing(this.combatTiming.defenseHistoryMs, this.historyMaxSamples());
             this.ballHistoryById.set(ball.id, ring);
         }
         ring.push({
@@ -2119,14 +2143,14 @@ class ServerGameLoop {
         const rewindMs = this.catchRewindMsForPlayer(player.id);
         // Sub-tick anchor: clamp clientTimeMs offset to one tick window so clock skew can't corrupt it.
         const clientClickMs = input.clientTimeMs ?? 0;
-        const subTickOffset = clientClickMs > 0 ? (0, CollisionMath_1.clamp)(now - clientClickMs, 0, netConfig_1.SERVER_STEP_MS) : 0;
+        const subTickOffset = clientClickMs > 0 ? (0, CollisionMath_1.clamp)(now - clientClickMs, 0, this.tickSeconds * 1000) : 0;
         const openedAtMs = now - subTickOffset;
         this.catchAttemptByKey.set(key, {
             hand,
             attemptId,
             openedAtMs,
-            activeUntilMs: openedAtMs + constants_1.GAME_CONSTANTS.combat.catchStartupMs + constants_1.GAME_CONSTANTS.combat.catchActiveMs,
-            cooldownUntilMs: openedAtMs + constants_1.GAME_CONSTANTS.combat.catchCooldownMs,
+            activeUntilMs: openedAtMs + this.combatTiming.catchStartupMs + this.combatTiming.catchActiveMs,
+            cooldownUntilMs: openedAtMs + this.combatTiming.catchCooldownMs,
             clickTimeMs: openedAtMs - rewindMs,
             rewindMs,
             clientClickMs,
@@ -2135,7 +2159,7 @@ class ServerGameLoop {
         this.combatMetrics.catchAttemptsOpened += 1;
         this.catchTrace(`attempt-ingest player=${player.id} hand=${hand} id=${attemptId} result=accepted` +
             ` last=${lastId} handEmpty=${Number(handEmptyAtIngest)} cooldown=${handCooldownSeconds.toFixed(3)}` +
-            ` openedAtMs=${Math.round(openedAtMs)} activeUntilMs=${Math.round(openedAtMs + constants_1.GAME_CONSTANTS.combat.catchStartupMs + constants_1.GAME_CONSTANTS.combat.catchActiveMs)}` +
+            ` openedAtMs=${Math.round(openedAtMs)} activeUntilMs=${Math.round(openedAtMs + this.combatTiming.catchStartupMs + this.combatTiming.catchActiveMs)}` +
             ` clickTimeMs=${Math.round(openedAtMs - rewindMs)} rewindMs=${Math.round(rewindMs)} clientClickMs=${Math.round(clientClickMs)}`);
     }
     /**
@@ -2248,7 +2272,7 @@ class ServerGameLoop {
      * ball and reverts a hit it superseded. Cheap: only runs while an attempt window is open.
      */
     resolveCatchReclaim(nowMs) {
-        const minTime = nowMs - constants_1.GAME_CONSTANTS.combat.defenseMaxRewindMs - constants_1.GAME_CONSTANTS.combat.defenseInputGraceMs;
+        const minTime = nowMs - this.combatTiming.defenseMaxRewindMs - this.combatTiming.defenseInputGraceMs;
         for (const defenderId in this.state.players) {
             const defender = this.state.players[defenderId];
             if (defender.connected === false)
@@ -2260,7 +2284,7 @@ class ServerGameLoop {
                 const attempt = this.catchAttemptByKey.get(`${defenderId}:${hand}`);
                 if (!attempt || attempt.resolved)
                     continue;
-                if (nowMs < attempt.openedAtMs + constants_1.GAME_CONSTANTS.combat.catchStartupMs)
+                if (nowMs < attempt.openedAtMs + this.combatTiming.catchStartupMs)
                     continue; // startup
                 if (nowMs > attempt.activeUntilMs)
                     continue; // expired
@@ -2375,7 +2399,7 @@ class ServerGameLoop {
             return;
         if (hit.defenderId !== defenderId)
             return; // a catch only cancels a hit that landed on this defender
-        if (nowMs - hit.atMs > constants_1.GAME_CONSTANTS.combat.catchHitGraceMs)
+        if (nowMs - hit.atMs > this.combatTiming.catchHitGraceMs)
             return;
         this.revertHit(hit);
         this.recentHitByBallId.delete(ballId);
@@ -2420,7 +2444,7 @@ class ServerGameLoop {
     /** Drop recorded hits older than the catch-undo grace so the map stays bounded. */
     pruneRecentHits(nowMs) {
         for (const [ballId, hit] of this.recentHitByBallId) {
-            if (nowMs - hit.atMs > constants_1.GAME_CONSTANTS.combat.catchHitGraceMs)
+            if (nowMs - hit.atMs > this.combatTiming.catchHitGraceMs)
                 this.recentHitByBallId.delete(ballId);
         }
     }
@@ -2442,14 +2466,14 @@ class ServerGameLoop {
                 timing: {
                     nowMs: now,
                     openedAtMs: attempt.openedAtMs,
-                    startupMs: constants_1.GAME_CONSTANTS.combat.catchStartupMs,
+                    startupMs: this.combatTiming.catchStartupMs,
                     activeUntilMs: attempt.activeUntilMs
                 }
             });
         }
         /*
         // Timing window: too-early before startup elapses, too-late after the active window.
-        if (now < attempt.openedAtMs + GAME_CONSTANTS.combat.catchStartupMs) return 'too-early';
+        if (now < attempt.openedAtMs + this.combatTiming.catchStartupMs) return 'too-early';
         if (now > attempt.activeUntilMs) return 'too-late';
         // Eligibility from the rewound sample (fall back to present state if no history yet).
         const handEmpty = sample
@@ -2474,7 +2498,7 @@ class ServerGameLoop {
         const ring = this.defenseHistoryByPlayerId.get(playerId);
         if (!ring)
             return null;
-        const minTime = this.stepNowMs - constants_1.GAME_CONSTANTS.combat.defenseMaxRewindMs - constants_1.GAME_CONSTANTS.combat.defenseInputGraceMs;
+        const minTime = this.stepNowMs - this.combatTiming.defenseMaxRewindMs - this.combatTiming.defenseInputGraceMs;
         const target = Math.max(minTime, atServerTimeMs);
         return ring.nearest(target);
     }
@@ -3122,7 +3146,7 @@ class ServerGameLoop {
             player.lastProcessedInputSeq = 0;
         // Fresh defense history + cleared catch-attempt state (reset/respawn/rejoin must not reuse old
         // history across a discontinuity — that would lag-comp against pre-reset positions).
-        this.defenseHistoryByPlayerId.set(playerId, new DefenseHistory_1.TimeRing(constants_1.GAME_CONSTANTS.combat.defenseHistoryMs, this.historyMaxSamples()));
+        this.defenseHistoryByPlayerId.set(playerId, new DefenseHistory_1.TimeRing(this.combatTiming.defenseHistoryMs, this.historyMaxSamples()));
         this.catchAttemptByKey.delete(`${playerId}:left`);
         this.catchAttemptByKey.delete(`${playerId}:right`);
         this.lastCatchAttemptIdByKey.set(`${playerId}:left`, 0);
@@ -3132,8 +3156,8 @@ class ServerGameLoop {
         // All active mats stand again on a fresh state / reset; rebuild both collision sets from the
         // current host mat preset so the rebuilt world matches the authoritative mat state.
         this.knockedOverMatIds.clear();
-        this.matRestoreHoldByPlayerId.clear();
-        this.matPostResetKnockImmunityById.clear();
+        this.matRestoreHoldTicksByPlayerId.clear();
+        this.matPostResetKnockImmunityUntilTickById.clear();
         this.roundRebuildPending = false;
         this.activeMatSpecs = (0, MapGeometry_1.matSpecsForPreset)(this.matchSettings.matPreset);
         this.rebuildCollisionBoxes();
@@ -3168,6 +3192,7 @@ class ServerGameLoop {
             players,
             balls: createInitialBalls(this.matchSettings.dodgeballCount),
             settings: this.settings,
+            netMode: this.netMode,
             hostPlayerId: this.hostPlayerId,
             phase: (0, roomSettings_1.roomPhaseFromMatchStatus)('warmup'),
             mats: (0, MatchSim_1.createMatStates)(this.activeMatSpecs),

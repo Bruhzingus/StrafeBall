@@ -1,3 +1,5 @@
+import type { NetMode } from './netConfig';
+
 export interface Vec3 {
   x: number;
   y: number;
@@ -412,6 +414,14 @@ export interface RoomState {
   phase: RoomLifecyclePhase;
   /** Authoritative, host-controlled room configuration (source of truth; host-only mutation). */
   settings: RoomSettings;
+  /**
+   * The net mode this room runs (sim/input/snapshot rates), resolved ONCE from the creator's tick
+   * preset and locked for the room's lifetime. Deliberately a sibling of `settings`, NOT a
+   * RoomSettings field, so it can never ride an `update-room-settings` patch. Clients must adopt it
+   * from the `joined-room` message (always a full snapshot) — under tiered snapshot encoding,
+   * room-level fields are only present on the world lane's cadence, not every snapshot.
+   */
+  netMode: NetMode;
   match: MatchState;
   players: Record<string, PlayerState>;
   balls: Record<string, BallState>;

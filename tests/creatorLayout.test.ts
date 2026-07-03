@@ -1,5 +1,7 @@
 import { describe, it, expect } from 'vitest';
 import {
+  CREATOR_LABEL_COLORS,
+  CREATOR_LABEL_SIZES,
   CREATOR_LIMITS,
   CREATOR_SCHEMA_VERSION,
   defaultCreatorLayout,
@@ -9,6 +11,7 @@ import {
   objectDimensions,
   scaleForDimensions,
   objectCollisionBoxes,
+  objectCollisionRamps,
   orientedBoxAabb,
   cloneLayout,
   type CreatorLayout
@@ -88,6 +91,52 @@ describe('CreatorLayout — default + validation', () => {
     const dims2 = objectDimensions(wall);
     expect(dims2[1]).toBeCloseTo(dims[1] * 2, 4);
   });
+
+  it('sanitizes label display settings while preserving intentionally blank labels', () => {
+    const { layout } = validateLayout({
+      objects: [
+        {
+          type: 'route_arrow',
+          position: [0, 0, 0],
+          metadata: {
+            label: '',
+            labelVisible: false,
+            labelSize: 'large',
+            labelColor: 'gold',
+            labelOffsetY: 999,
+            unexpected: '<script>'
+          }
+        },
+        {
+          type: 'signboard',
+          position: [0, 0, 0],
+          metadata: { labelSize: 'giant', labelColor: 'plaid', labelOffsetY: -999 }
+        }
+      ]
+    });
+    const arrow = layout.objects[0];
+    expect(arrow.metadata?.label).toBe('');
+    expect(arrow.metadata?.labelVisible).toBe(false);
+    expect(CREATOR_LABEL_SIZES).toContain(arrow.metadata?.labelSize);
+    expect(CREATOR_LABEL_COLORS).toContain(arrow.metadata?.labelColor);
+    expect(arrow.metadata?.labelOffsetY).toBe(CREATOR_LIMITS.maxLabelOffsetY);
+
+    const sign = layout.objects[1];
+    expect(sign.metadata?.labelSize).toBeUndefined();
+    expect(sign.metadata?.labelColor).toBeUndefined();
+    expect(sign.metadata?.labelOffsetY).toBe(CREATOR_LIMITS.minLabelOffsetY);
+  });
+
+  it('defaults old objects to wallrun-enabled and preserves explicit wallrun opt-outs', () => {
+    const { layout } = validateLayout({
+      objects: [
+        { type: 'long_wall', position: [0, 0, 0] },
+        { type: 'long_wall', position: [10, 0, 0], wallrunEnabled: false }
+      ]
+    });
+    expect(layout.objects[0].wallrunEnabled).toBe(true);
+    expect(layout.objects[1].wallrunEnabled).toBe(false);
+  });
 });
 
 describe('CreatorLayout — collision sub-boxes', () => {
@@ -160,13 +209,20 @@ describe('CreatorLayout — collision sub-boxes', () => {
     expect(objectCollisionBoxes(spawn).length).toBe(0);
   });
 
-  it('a ramp generates a walkable stair stack (multiple steps under stepHeight)', () => {
-    const { layout } = validateLayout({ objects: [{ type: 'ramp', position: [0, 0, 0] }] });
-    const boxes = objectCollisionBoxes(layout.objects[0]);
-    expect(boxes.length).toBeGreaterThan(1);
-    const tops = boxes.map((b) => b.cy + b.h / 2).sort((x, y) => x - y);
-    for (let i = 1; i < tops.length; i += 1) {
-      expect(tops[i] - tops[i - 1]).toBeLessThanOrEqual(0.45 + 1e-6);
+  it('ramps generate one smooth wedge collider instead of a stair stack', () => {
+    for (const type of ['ramp', 'wide_ramp'] as const) {
+      const { layout } = validateLayout({ objects: [{ type, position: [0, 0, 0] }] });
+      expect(objectCollisionBoxes(layout.objects[0]).length).toBe(0);
+
+      const ramps = objectCollisionRamps(layout.objects[0]);
+      expect(ramps.length).toBe(1);
+      expect(ramps[0].baseY).toBe(0);
+      expect(ramps[0].normal[1]).toBeGreaterThan(0.8);
+
+      const colliders = buildCreatorCollisionBoxes(layout, 'creator_');
+      expect(colliders.length).toBe(1);
+      expect(colliders[0].ramp).toBeDefined();
+      expect(colliders[0].id).toContain('_ramp_0');
     }
   });
 });
@@ -184,6 +240,17 @@ describe('CreatorWorld — bounds, collision, wall-run faces', () => {
     const bounds = layoutWorldBounds(layout);
     expect(bounds.maxX).toBeGreaterThan(bounds.minX);
     expect(bounds.maxZ).toBeGreaterThan(bounds.minZ);
+  });
+
+  it('wallrun-disabled solids still collide but do not contribute wall-run faces', () => {
+    const enabled = validateLayout({ objects: [{ type: 'long_wall', position: [0, 0, 0] }] }).layout;
+    const disabled = validateLayout({
+      objects: [{ type: 'long_wall', position: [0, 0, 0], wallrunEnabled: false }]
+    }).layout;
+
+    expect(buildCreatorCollisionBoxes(disabled, 'creator_').length).toBe(1);
+    expect(buildCreatorWallFaces(enabled).length).toBe(8); // 4 wall faces + 4 arena boundary faces
+    expect(buildCreatorWallFaces(disabled).length).toBe(4); // only arena boundary faces
   });
 
   it('wallNormalAt returns a unit-ish normal near a wall and null in the open', () => {

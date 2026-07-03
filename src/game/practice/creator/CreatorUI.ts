@@ -10,6 +10,8 @@
  */
 
 import {
+  CREATOR_LABEL_COLORS,
+  CREATOR_LABEL_SIZES,
   CREATOR_MATERIALS,
   CREATOR_MODULES,
   CREATOR_TEXTURES,
@@ -84,6 +86,7 @@ export interface CreatorBridge {
   setSelectedTexture(id: string | null): void;
   setSelectedCollision(value: boolean): void;
   setSelectedVisible(value: boolean): void;
+  setSelectedWallrun(value: boolean): void;
   setSelectedMetadata(patch: Partial<CreatorObjectMetadata>): void;
   duplicateSelected(): void;
   deleteSelected(): void;
@@ -98,6 +101,20 @@ const CATEGORY_LABELS: Record<CreatorModuleCategory, string> = {
   pad: 'Pads & Zones',
   marker: 'Course Markers',
   optional: 'Optional Markers'
+};
+
+const LABEL_COLOR_LABELS: Record<string, string> = {
+  white: 'White',
+  gold: 'Gold',
+  blue: 'Blue',
+  green: 'Green',
+  red: 'Red'
+};
+
+const LABEL_SIZE_LABELS: Record<string, string> = {
+  small: 'Small',
+  medium: 'Medium',
+  large: 'Large'
 };
 
 export class CreatorUI {
@@ -499,7 +516,8 @@ export class CreatorUI {
     const toggles = el('div', 'creator-field-row');
     toggles.append(
       this.checkbox('Collision', obj.collision !== false, (v) => this.bridge.setSelectedCollision(v)),
-      this.checkbox('Visible', obj.visible !== false, (v) => this.bridge.setSelectedVisible(v))
+      this.checkbox('Visible', obj.visible !== false, (v) => this.bridge.setSelectedVisible(v)),
+      this.checkbox('Wallrun', obj.wallrunEnabled !== false, (v) => this.bridge.setSelectedWallrun(v))
     );
     this.inspectorEl.appendChild(toggles);
 
@@ -527,10 +545,24 @@ export class CreatorUI {
     const labelInput = document.createElement('input');
     labelInput.type = 'text';
     labelInput.className = 'creator-text';
+    labelInput.placeholder = 'Label';
     labelInput.value = meta.label ?? '';
     labelInput.addEventListener('change', () => this.bridge.setSelectedMetadata({ label: labelInput.value }));
     labelRow.appendChild(labelInput);
     wrap.appendChild(labelRow);
+
+    const labelSettings = el('div', 'creator-label-settings');
+    labelSettings.append(
+      this.checkbox('Show label', meta.labelVisible !== false, (v) => this.bridge.setSelectedMetadata({ labelVisible: v })),
+      this.optionRow('Size', CREATOR_LABEL_SIZES, meta.labelSize ?? 'medium', LABEL_SIZE_LABELS, (v) => {
+        this.bridge.setSelectedMetadata({ labelSize: v as CreatorObjectMetadata['labelSize'] });
+      }),
+      this.optionRow('Color', CREATOR_LABEL_COLORS, meta.labelColor ?? 'white', LABEL_COLOR_LABELS, (v) => {
+        this.bridge.setSelectedMetadata({ labelColor: v as CreatorObjectMetadata['labelColor'] });
+      }),
+      this.compactNumberRow('Height +', meta.labelOffsetY ?? 0, 0.25, (v) => this.bridge.setSelectedMetadata({ labelOffsetY: v }))
+    );
+    wrap.appendChild(labelSettings);
 
     if (obj.type === 'spawn_point') {
       wrap.appendChild(this.checkbox('Default Spawn', !!meta.defaultSpawn, (v) => this.bridge.setSelectedMetadata({ defaultSpawn: v })));
@@ -964,6 +996,36 @@ export class CreatorUI {
     row.appendChild(sel);
     return row;
   }
+
+  private optionRow(
+    labelText: string,
+    options: readonly string[],
+    value: string,
+    labels: Record<string, string>,
+    onChange: (value: string) => void
+  ): HTMLDivElement {
+    const row = el('div', 'creator-field creator-field--compact');
+    row.appendChild(label(labelText));
+    const sel = document.createElement('select');
+    sel.className = 'creator-select';
+    for (const o of options) {
+      const opt = document.createElement('option');
+      opt.value = o;
+      opt.textContent = labels[o] ?? o;
+      sel.appendChild(opt);
+    }
+    sel.value = value;
+    sel.addEventListener('change', () => onChange(sel.value));
+    row.appendChild(sel);
+    return row;
+  }
+
+  private compactNumberRow(labelText: string, value: number, step: number, onChange: (value: number) => void): HTMLDivElement {
+    const row = el('div', 'creator-field creator-field--compact');
+    row.appendChild(label(labelText));
+    row.appendChild(this.numberInput(value, step, onChange));
+    return row;
+  }
 }
 
 // Gameplay keys that might be physically held when the password modal opens (interact + movement);
@@ -984,6 +1046,7 @@ function inspectorSignature(obj: CreatorLayoutObject): string {
     obj.texture ?? '',
     obj.collision !== false ? 1 : 0,
     obj.visible !== false ? 1 : 0,
+    obj.wallrunEnabled !== false ? 1 : 0,
     JSON.stringify(obj.metadata ?? {})
   ].join('|');
 }

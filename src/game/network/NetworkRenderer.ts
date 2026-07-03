@@ -17,9 +17,12 @@ import {
   EXTRAPOLATION_LIMIT_MS,
   HUGE_ERROR_SNAP_METERS,
   INTERPOLATION_DELAY_MS,
+  LIVE_BALL_COMBAT_SUBSTEPS,
   SERVER_STEP_MS,
   SNAPSHOT_BUFFER_LIMIT_MS,
-  SNAPSHOT_INTERVAL_MS
+  SNAPSHOT_INTERVAL_MS,
+  deriveAdaptiveInterpBounds,
+  type NetModeConfig
 } from '../../../shared/netConfig';
 import { AdaptiveInterpDelay } from './AdaptiveInterpDelay';
 
@@ -166,7 +169,8 @@ export interface NetworkRendererDebugStats {
 
 export class NetworkRenderer {
   // All timing now derives from the shared net config (single source of truth) — no hardcoded ms.
-  private static readonly INTERPOLATION_DELAY_MS = INTERPOLATION_DELAY_MS;
+  // BALL_EXTRAPOLATION_MAX_MS / MAX_BUFFER_MS are flat absolute-ms safety caps (not rate-derived),
+  // so they stay class statics even with per-room tick presets.
   static readonly BALL_EXTRAPOLATION_MAX_MS = EXTRAPOLATION_LIMIT_MS;
   private static readonly MAX_BUFFER_MS = SNAPSHOT_BUFFER_LIMIT_MS;
   static readonly HUGE_ERROR_SNAP_METERS = HUGE_ERROR_SNAP_METERS;
@@ -174,7 +178,11 @@ export class NetworkRenderer {
   // smoothly instead of snapping on every jittery arrival.
   private static readonly CURSOR_CORRECTION_PER_FRAME = 0.1;
   // If the cursor drifts further than this from its target we resync hard (big stall / tab resume).
-  private static readonly CURSOR_RESYNC_THRESHOLD_MS = Math.max(250, SNAPSHOT_INTERVAL_MS * 8);
+  // Rate-derived (8 snapshot intervals): must track the ROOM's snapshot rate, so instance, not
+  // static. Reconfigured by configureNetTiming(); default = compiled mode.
+  private cursorResyncThresholdMs = Math.max(250, SNAPSHOT_INTERVAL_MS * 8);
+  private serverStepMs = SERVER_STEP_MS;
+  private baseInterpolationDelayMs = INTERPOLATION_DELAY_MS;
 
   private readonly players = new Map<string, PlayerVisual>();
   private readonly playerDebug = new Map<string, RemotePlayerDebug>();
@@ -185,7 +193,7 @@ export class NetworkRenderer {
   // the wall during a wall-run — mirroring the local player's first-person camera/body lean.
   private readonly wallLeanByPlayerId = new Map<string, number>();
   // Deterministic visual prediction for live thrown balls (seeded by throw events). Visual only.
-  private readonly ballPredictor = new BallPredictor();
+  private ballPredictor = new BallPredictor();
   private readonly materials = new Map<string, PBRMaterial>();
   // Reused per-frame "seen this update" sets — cleared in place each frame instead of reallocated.
   private readonly seenPlayers = new Set<string>();
@@ -205,7 +213,7 @@ export class NetworkRenderer {
   private interpolationDelayMs = INTERPOLATION_DELAY_MS;
   // Per-connection delay controller fed once per metric window (~1s). Survives round resets
   // (resetSerial) on purpose — connection quality persists across rounds; cleared with clear().
-  private readonly adaptiveDelay = new AdaptiveInterpDelay();
+  private adaptiveDelay = new AdaptiveInterpDelay();
   private renderClockInitialized = false;
   // Reconstruct a server timeline from tick deltas when serverTimeMs looks unusable.
   private serverTimeBaseMs = 0;
@@ -232,6 +240,32 @@ export class NetworkRenderer {
   private readonly renderPlayerScratch: PlayerState = createScratchPlayer(this.renderPlayerMovement);
 
   constructor(private readonly scene: Scene, private readonly ballVisualEffects?: BallVisualEffects) {}
+
+  /**
+   * Adopt the joined room's negotiated net timing. Rebuilds every rate-derived piece of render
+   * state: the cursor-resync threshold (8 snapshot intervals), the tick→ms timeline reconstruction
+   * step, the adaptive-delay controller (start delay AND its rate-derived bounds — reusing the
+   * compiled ADAPTIVE_INTERP_* globals here would clamp a non-default room against the wrong
+   * floor/ceiling), and the ball predictor's replay dt. Called once per join, before any
+   * prediction/interpolation has run for that room; safe to call again on rejoin.
+   */
+  configureNetTiming(config: NetModeConfig): void {
+    const snapshotIntervalMs = 1000 / config.snapshotRate;
+    this.serverStepMs = 1000 / config.serverTickRate;
+    this.cursorResyncThresholdMs = Math.max(250, snapshotIntervalMs * 8);
+    this.baseInterpolationDelayMs = config.interpolationDelayMs;
+    this.adaptiveDelay = new AdaptiveInterpDelay({
+      startDelayMs: config.interpolationDelayMs,
+      nominalIntervalMs: snapshotIntervalMs,
+      ...deriveAdaptiveInterpBounds(config)
+    });
+    this.interpolationDelayMs = ADAPTIVE_INTERP_ENABLED
+      ? this.adaptiveDelay.currentDelayMs
+      : this.baseInterpolationDelayMs;
+    this.ballPredictor = new BallPredictor({
+      fixedDt: 1 / config.serverTickRate / Math.max(1, LIVE_BALL_COMBAT_SUBSTEPS)
+    });
+  }
 
   /**
    * @param localPredicted the local player's present-time PREDICTED movement (from ArenaScene's
@@ -365,7 +399,7 @@ export class NetworkRenderer {
     this.resetRenderClock();
     this.resetMetrics();
     this.adaptiveDelay.reset();
-    this.interpolationDelayMs = ADAPTIVE_INTERP_ENABLED ? this.adaptiveDelay.currentDelayMs : INTERPOLATION_DELAY_MS;
+    this.interpolationDelayMs = ADAPTIVE_INTERP_ENABLED ? this.adaptiveDelay.currentDelayMs : this.baseInterpolationDelayMs;
     this.debugStats = emptyDebugStats();
   }
 
@@ -468,7 +502,7 @@ export class NetworkRenderer {
         this.serverTimeBaseTick = snapshot.tick;
         this.serverTimeBaseInitialized = true;
       }
-      return this.serverTimeBaseMs + (snapshot.tick - this.serverTimeBaseTick) * SERVER_STEP_MS;
+      return this.serverTimeBaseMs + (snapshot.tick - this.serverTimeBaseTick) * this.serverStepMs;
     };
 
     if (!Number.isFinite(reported) || reported <= 0) return reconstructed();
@@ -476,8 +510,8 @@ export class NetworkRenderer {
     // Sanity-check the reported clock against the tick-derived expectation. A wildly inconsistent
     // serverTimeMs (clock reset, synthetic snapshot) falls back to the reconstructed timeline.
     if (this.serverTimeBaseInitialized) {
-      const expected = this.serverTimeBaseMs + (snapshot.tick - this.serverTimeBaseTick) * SERVER_STEP_MS;
-      if (Math.abs(reported - expected) > NetworkRenderer.CURSOR_RESYNC_THRESHOLD_MS) {
+      const expected = this.serverTimeBaseMs + (snapshot.tick - this.serverTimeBaseTick) * this.serverStepMs;
+      if (Math.abs(reported - expected) > this.cursorResyncThresholdMs) {
         // Re-anchor reconstruction to the reported value and trust the server clock going forward.
         this.serverTimeBaseMs = reported;
         this.serverTimeBaseTick = snapshot.tick;
@@ -515,7 +549,7 @@ export class NetworkRenderer {
     // in seconds (matches the rest of the scene loop); convert to ms.
     this.renderServerTime += dt * 1000;
     const error = target - this.renderServerTime;
-    if (Math.abs(error) > NetworkRenderer.CURSOR_RESYNC_THRESHOLD_MS) {
+    if (Math.abs(error) > this.cursorResyncThresholdMs) {
       // Hard resync after a large stall so we don't crawl back over many seconds.
       this.renderServerTime = target;
     } else {
@@ -637,7 +671,7 @@ export class NetworkRenderer {
    */
   private updateAdaptiveInterpolationDelay(): void {
     if (!ADAPTIVE_INTERP_ENABLED) {
-      this.interpolationDelayMs = INTERPOLATION_DELAY_MS;
+      this.interpolationDelayMs = this.baseInterpolationDelayMs;
       return;
     }
     const previous = this.interpolationDelayMs;

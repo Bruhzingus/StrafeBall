@@ -1138,6 +1138,7 @@ export class CreatorEditor implements CreatorBridge {
       material: def.material,
       collision: def.collision,
       visible: true,
+      wallrunEnabled: true,
       metadata: cloneMetadata(def.defaultMetadata)
     };
     this.geometry.setPlacementPreview(this.placementPreview);
@@ -1268,6 +1269,13 @@ export class CreatorEditor implements CreatorBridge {
     const obj = this.getSelectedObject();
     if (!obj) return;
     obj.visible = value;
+    this.commit(obj.id);
+  }
+
+  setSelectedWallrun(value: boolean): void {
+    const obj = this.getSelectedObject();
+    if (!obj) return;
+    obj.wallrunEnabled = value;
     this.commit(obj.id);
   }
 

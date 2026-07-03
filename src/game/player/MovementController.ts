@@ -6,7 +6,7 @@ import { safeNormalize, DEG2RAD } from '../utils/math';
 import { airStrafeWishDirection, movementWishDirection, yawForward } from '../utils/vector';
 import { DashController } from './DashController';
 import { BackflipController } from './BackflipController';
-import { CollisionWorld } from '../map/Collider';
+import { CollisionWorld, type RampCollider } from '../map/Collider';
 
 export type FrictionMode = 'air' | 'normal' | 'slide' | 'dashSuppressed';
 
@@ -68,6 +68,8 @@ export class MovementController {
   // Height of the surface currently under the player's feet (floor = 0, or a bleacher/mat
   // top). Recomputed each tick by collision resolution and used as the "ground" level.
   private groundHeight = 0;
+  private readonly groundNormal = new Vector3(0, 1, 0);
+  private groundIsSlope = false;
   // Normal (pointing into the court) of the wall currently being run on; drives wall-jump.
   private lastWallNormal = Vector3.Zero();
   private catchRecoilOffset = 0;
@@ -107,6 +109,8 @@ export class MovementController {
     this.catchBoostTimer = 0;
     this.dashActiveTimer = 0;
     this.groundHeight = 0;
+    this.groundNormal.set(0, 1, 0);
+    this.groundIsSlope = false;
     this.lastWallNormal.setAll(0);
     this.catchRecoilOffset = 0;
     this.slideHoldActive = false;
@@ -166,6 +170,7 @@ export class MovementController {
     }
 
     this.applyGravity(dt);
+    this.applySlopeForces(dt);
     this.applySoftSpeedLimit(dt);
     this.applyCrouchWalkSpeedLimit();
 
@@ -493,7 +498,8 @@ export class MovementController {
       this.sliding && this.slideHoldActive && this.slideTimer >= TUNING.slide.overholdBrakeDelay
         ? TUNING.slide.overholdFrictionMultiplier
         : TUNING.slide.frictionMultiplier;
-    const friction = TUNING.player.friction * (this.sliding ? slideFrictionMultiplier : 1);
+    const slopeMultiplier = this.groundIsSlope ? TUNING.slope.frictionMultiplier : 1;
+    const friction = TUNING.player.friction * (this.sliding ? slideFrictionMultiplier : 1) * slopeMultiplier;
     // Exponential decay = exactly frame-rate independent (v(t) = v0 * e^(-friction*t)).
     const decay = Math.exp(-friction * dt);
     this.velocity.x *= decay;
@@ -522,6 +528,26 @@ export class MovementController {
     // Snappier (non-floaty) jumps: gravity is stronger on the way down than the way up.
     const fallScale = this.velocity.y < 0 ? TUNING.player.fallGravityMultiplier : 1;
     this.velocity.y -= TUNING.player.gravity * fallScale * dt;
+  }
+
+  private applySlopeForces(dt: number): void {
+    if (!this.grounded || !this.groundIsSlope) return;
+    const n = this.groundNormal;
+    const gravity = TUNING.player.gravity * (this.sliding ? TUNING.slope.slideGravityScale : TUNING.slope.gravityScale);
+    // Gravity projected onto the ramp plane. The horizontal part accelerates downhill and slows uphill
+    // movement; the projection below keeps carried velocity tangent to the sloped top.
+    this.velocity.x += gravity * n.y * n.x * dt;
+    this.velocity.z += gravity * n.y * n.z * dt;
+    this.projectVelocityOntoGroundPlane();
+  }
+
+  private projectVelocityOntoGroundPlane(): void {
+    if (!this.groundIsSlope) return;
+    const n = this.groundNormal;
+    const dot = this.velocity.x * n.x + this.velocity.y * n.y + this.velocity.z * n.z;
+    this.velocity.x -= n.x * dot;
+    this.velocity.y -= n.y * dot;
+    this.velocity.z -= n.z * dot;
   }
 
   private applySoftSpeedLimit(dt: number): void {
@@ -559,7 +585,8 @@ export class MovementController {
         this.jumpGraceTimer = TUNING.player.bhopGraceSeconds;
       }
       this.root.position.y = this.groundHeight;
-      this.velocity.y = Math.max(0, this.velocity.y);
+      if (this.groundIsSlope) this.projectVelocityOntoGroundPlane();
+      else this.velocity.y = Math.max(0, this.velocity.y);
       this.grounded = true;
       this.doubleJumpAvailable = true;
       this.wallRunning = false;
@@ -582,6 +609,8 @@ export class MovementController {
     const boxes = this.collision.boxes;
     if (boxes.length === 0) {
       this.groundHeight = 0;
+      this.groundNormal.set(0, 1, 0);
+      this.groundIsSlope = false;
       return;
     }
 
@@ -592,7 +621,23 @@ export class MovementController {
 
     // Pass 1: ground support (skip boxes whose top is too high to stand on from here).
     let support = 0;
+    let supportNormalX = 0;
+    let supportNormalY = 1;
+    let supportNormalZ = 0;
+    let supportIsSlope = false;
     for (const b of boxes) {
+      if (b.ramp) {
+        const hit = this.rampSupportAt(b.ramp, p.x, p.z, r);
+        if (!hit) continue;
+        if (hit.y <= p.y + stepTolerance && hit.y > support) {
+          support = hit.y;
+          supportNormalX = b.ramp.normalX;
+          supportNormalY = b.ramp.normalY;
+          supportNormalZ = b.ramp.normalZ;
+          supportIsSlope = true;
+        }
+        continue;
+      }
       if (b.ry !== undefined) {
         // Oriented box: test the footprint in the box's local frame (exact).
         const cos = Math.cos(b.ry);
@@ -609,9 +654,20 @@ export class MovementController {
       if (b.maxY <= p.y + stepTolerance && b.maxY > support) support = b.maxY;
     }
     this.groundHeight = support;
+    this.groundNormal.set(supportNormalX, supportNormalY, supportNormalZ);
+    this.groundIsSlope = supportIsSlope;
+    if (this.grounded && support <= p.y + stepTolerance && p.y - support <= TUNING.slope.groundSnapDistance) {
+      p.y = support;
+      if (this.groundIsSlope) this.projectVelocityOntoGroundPlane();
+      else this.velocity.y = Math.max(0, this.velocity.y);
+    }
 
     // Pass 2: horizontal push-out for boxes acting as walls (rising above the support).
     for (const b of boxes) {
+      if (b.ramp) {
+        this.resolveRampWalls(b.ramp, p, r, bodyHeight, support);
+        continue;
+      }
       if (b.maxY <= support + 1e-3) continue; // it's the surface we stand on, not a wall
       const bodyMinY = Math.max(p.y, support);
       const bodyMaxY = p.y + bodyHeight;
@@ -662,6 +718,85 @@ export class MovementController {
         this.velocity.z = 0;
       }
     }
+  }
+
+  private rampSupportAt(ramp: RampCollider, x: number, z: number, radius: number): { y: number } | null {
+    const local = this.rampLocal(ramp, x, z);
+    const hw = ramp.width / 2;
+    const hd = ramp.depth / 2;
+    if (local.x < -hw - radius || local.x > hw + radius) return null;
+    if (Math.abs(local.z) > hd + radius) return null;
+    const lx = Math.max(-hw, Math.min(hw, local.x));
+    return { y: this.rampHeightAtLocalX(ramp, lx) };
+  }
+
+  private resolveRampWalls(ramp: RampCollider, p: Vector3, radius: number, bodyHeight: number, support: number): void {
+    const local = this.rampLocal(ramp, p.x, p.z);
+    const hw = ramp.width / 2;
+    const hd = ramp.depth / 2;
+    const bodyMinY = Math.max(p.y, support);
+    const bodyMaxY = p.y + bodyHeight;
+    let bestPen = Infinity;
+    let bestClx = 0;
+    let bestClz = 0;
+    const consider = (clx: number, clz: number): void => {
+      const pen = Math.hypot(clx, clz);
+      if (pen > 0 && pen < bestPen) {
+        bestPen = pen;
+        bestClx = clx;
+        bestClz = clz;
+      }
+    };
+
+    // High vertical back face of the wedge.
+    if (local.x > hw && local.x < hw + radius && bodyMaxY > ramp.baseY && bodyMinY < ramp.baseY + ramp.height) {
+      consider(hw + radius - local.x, 0);
+    }
+
+    // Triangular side faces. The solid height at the current X decides whether the body overlaps the
+    // side wall or is above the sloped top.
+    if (local.x >= -hw - radius && local.x <= hw + radius) {
+      const lx = Math.max(-hw, Math.min(hw, local.x));
+      const topY = this.rampHeightAtLocalX(ramp, lx);
+      if (bodyMaxY > ramp.baseY && bodyMinY < topY) {
+        if (local.z > hd && local.z < hd + radius) consider(0, hd + radius - local.z);
+        else if (local.z < -hd && local.z > -hd - radius) consider(0, -hd - radius - local.z);
+      }
+    }
+
+    if (!Number.isFinite(bestPen)) return;
+    const cos = Math.cos(ramp.ry);
+    const sin = Math.sin(ramp.ry);
+    const cwx = cos * bestClx + sin * bestClz;
+    const cwz = -sin * bestClx + cos * bestClz;
+    p.x += cwx;
+    p.z += cwz;
+    const len = Math.hypot(cwx, cwz);
+    if (len <= 1e-6) return;
+    const nx = cwx / len;
+    const nz = cwz / len;
+    const vn = this.velocity.x * nx + this.velocity.z * nz;
+    if (vn < 0) {
+      this.velocity.x -= vn * nx;
+      this.velocity.z -= vn * nz;
+    }
+  }
+
+  private rampLocal(ramp: RampCollider, x: number, z: number): { x: number; z: number } {
+    const cos = Math.cos(ramp.ry);
+    const sin = Math.sin(ramp.ry);
+    const dwx = x - ramp.centerX;
+    const dwz = z - ramp.centerZ;
+    return {
+      x: cos * dwx - sin * dwz,
+      z: sin * dwx + cos * dwz
+    };
+  }
+
+  private rampHeightAtLocalX(ramp: RampCollider, localX: number): number {
+    const hw = ramp.width / 2;
+    const t = (localX + hw) / Math.max(0.0001, ramp.width);
+    return ramp.baseY + Math.max(0, Math.min(1, t)) * ramp.height;
   }
 
   private currentBodyHeight(): number {

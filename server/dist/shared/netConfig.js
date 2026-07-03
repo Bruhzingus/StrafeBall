@@ -19,8 +19,9 @@
  *   E. 30 sim / 30 input / 30 snapshots   (baseline for constrained hosts)
  */
 Object.defineProperty(exports, "__esModule", { value: true });
-exports.LIVE_BALL_COMBAT_SUBSTEPS = exports.PERF_REPORT_INTERVAL_MS = exports.DEBUG_DEFAULTS = exports.USE_TIERED_SNAPSHOTS = exports.SNAPSHOT_TIER_MODE = exports.SNAPSHOT_BACKPRESSURE_BYTES = exports.USE_COMPACT_SNAPSHOTS = exports.SNAPSHOT_ENCODING = exports.HUGE_ERROR_SNAP_METERS = exports.EXTRAPOLATION_LIMIT_MS = exports.SNAPSHOT_BUFFER_LIMIT_MS = exports.SERVER_INPUT_QUEUE_LIMIT = exports.PENDING_INPUT_LIMIT = exports.MAX_ACCUMULATOR_CLAMP_MS = exports.MAX_ACCUMULATOR_STEPS = exports.ROOM_LOOP_WAKE_INTERVAL_MS = exports.ROOM_LOOP_WAKE_RATE = exports.ADAPTIVE_INTERP_UNDERRUN_TOLERANCE = exports.ADAPTIVE_INTERP_GAP_MARGIN_MS = exports.ADAPTIVE_INTERP_SHRINK_PER_WINDOW_MS = exports.ADAPTIVE_INTERP_GAP_DECAY_PER_WINDOW = exports.ADAPTIVE_INTERP_MAX_DELAY_MS = exports.ADAPTIVE_INTERP_MIN_DELAY_MS = exports.ADAPTIVE_INTERP_ENABLED = exports.INTERPOLATION_DELAY_MS = exports.SERVER_STEP_MS = exports.SNAPSHOT_INTERVAL_MS = exports.CLIENT_FIXED_DT = exports.SERVER_FIXED_DT = exports.SNAPSHOT_RATE = exports.CLIENT_INPUT_RATE = exports.SERVER_TICK_RATE = exports.ACTIVE_NET_MODE = exports.DEFAULT_NET_MODE = void 0;
+exports.LIVE_BALL_COMBAT_SUBSTEPS = exports.PERF_REPORT_INTERVAL_MS = exports.DEBUG_DEFAULTS = exports.USE_TIERED_SNAPSHOTS = exports.SNAPSHOT_TIER_MODE = exports.SNAPSHOT_BACKPRESSURE_BYTES = exports.USE_COMPACT_SNAPSHOTS = exports.SNAPSHOT_ENCODING = exports.HUGE_ERROR_SNAP_METERS = exports.EXTRAPOLATION_LIMIT_MS = exports.SNAPSHOT_BUFFER_LIMIT_MS = exports.SERVER_INPUT_QUEUE_LIMIT = exports.PENDING_INPUT_LIMIT = exports.MAX_ACCUMULATOR_CLAMP_MS = exports.MAX_ACCUMULATOR_STEPS = exports.ROOM_LOOP_WAKE_INTERVAL_MS = exports.ROOM_LOOP_WAKE_RATE = exports.ADAPTIVE_INTERP_UNDERRUN_TOLERANCE = exports.ADAPTIVE_INTERP_SHRINK_PER_WINDOW_MS = exports.ADAPTIVE_INTERP_GAP_DECAY_PER_WINDOW = exports.ADAPTIVE_INTERP_GAP_MARGIN_MS = exports.ADAPTIVE_INTERP_MAX_DELAY_MS = exports.ADAPTIVE_INTERP_MIN_DELAY_MS = exports.ADAPTIVE_INTERP_ENABLED = exports.INTERPOLATION_DELAY_MS = exports.SERVER_STEP_MS = exports.SNAPSHOT_INTERVAL_MS = exports.CLIENT_FIXED_DT = exports.SERVER_FIXED_DT = exports.SNAPSHOT_RATE = exports.CLIENT_INPUT_RATE = exports.SERVER_TICK_RATE = exports.ACTIVE_NET_MODE = exports.DEFAULT_NET_MODE = void 0;
 exports.netModeConfig = netModeConfig;
+exports.deriveAdaptiveInterpBounds = deriveAdaptiveInterpBounds;
 exports.describeSnapshotProfile = describeSnapshotProfile;
 exports.resolveServerDebugFlags = resolveServerDebugFlags;
 exports.describeNetConfig = describeNetConfig;
@@ -50,6 +51,10 @@ const MODES = {
     A_72_72_60: { serverTickRate: 72, clientInputRate: 72, snapshotRate: 60, interpolationDelayMs: 75 },
     // Legacy full 60Hz. Snapshot interval ~16.7ms; a 75ms delay covers ~4 snapshots of jitter headroom.
     A_60_60_60: { serverTickRate: 60, clientInputRate: 60, snapshotRate: 60, interpolationDelayMs: 75 },
+    // Ultra Low host preset: 60Hz sim/input with 48Hz snapshots — the lowest-bandwidth selectable tier.
+    // Snapshot interval ~20.8ms. 85ms interp covers ~4 snapshots, interpolated between the 60Hz-snapshot
+    // tier (75ms, ~4.5x interval) and the 30Hz tier (110ms, ~3.3x interval). New tuning — playtest it.
+    A_60_60_48: { serverTickRate: 60, clientInputRate: 60, snapshotRate: 48, interpolationDelayMs: 85 },
     // B — 60 sim/input, 30 snapshots. Snapshot interval ~33ms; 110ms delay covers ~3 snapshots.
     B_60_60_30: { serverTickRate: 60, clientInputRate: 60, snapshotRate: 30, interpolationDelayMs: 110 },
     // C — classic 30Hz everything. Snapshot interval ~33ms; 110ms delay covers ~3 snapshots.
@@ -80,8 +85,8 @@ function resolveProcessMode() {
         return fromProcess;
     return exports.DEFAULT_NET_MODE;
 }
-/** Compiled default mode. Stable public-playtest baseline: 90 sim/input, 60 snapshots. */
-exports.DEFAULT_NET_MODE = 'A_90_90_60';
+/** Compiled default mode. 128 sim/input, 96 snapshots — restored once the host no longer stalls. */
+exports.DEFAULT_NET_MODE = 'A_128_128_96';
 /**
  * Active mode resolved at module load from process.env (server) or the compiled default (client).
  * Client and server rates are resolved eagerly from this mode. The browser warns if VITE_NET_MODE
@@ -117,16 +122,31 @@ exports.INTERPOLATION_DELAY_MS = active.interpolationDelayMs;
  * Set ADAPTIVE_INTERP_ENABLED = false to restore the fixed-delay behavior (one-line revert).
  */
 exports.ADAPTIVE_INTERP_ENABLED = true;
-/** Floor: two snapshot intervals + frame-timing slack. Below this even a perfect link underruns. */
-exports.ADAPTIVE_INTERP_MIN_DELAY_MS = Math.max(Math.ceil(exports.SNAPSHOT_INTERVAL_MS * 2) + 8, 30);
-/** Ceiling: cap how much delay a terrible connection can accumulate (playability bound). */
-exports.ADAPTIVE_INTERP_MAX_DELAY_MS = Math.max(150, exports.INTERPOLATION_DELAY_MS * 2);
+/**
+ * Rate-derived bounds for the adaptive controller, as a function of an arbitrary mode config. The
+ * compiled ADAPTIVE_INTERP_* globals below are this function applied to the ACTIVE mode; per-room
+ * tick presets must call this with the ROOM's resolved config instead — reusing the frozen globals
+ * for a non-default room would clamp its delay against the wrong floor/ceiling.
+ */
+function deriveAdaptiveInterpBounds(config) {
+    const snapshotIntervalMs = 1000 / config.snapshotRate;
+    return {
+        // Floor: two snapshot intervals + frame-timing slack. Below this even a perfect link underruns.
+        minDelayMs: Math.max(Math.ceil(snapshotIntervalMs * 2) + 8, 30),
+        // Ceiling: cap how much delay a terrible connection can accumulate (playability bound).
+        maxDelayMs: Math.max(150, config.interpolationDelayMs * 2),
+        // Safety margin added on top of the tracked peak gap when computing the target delay.
+        gapMarginMs: Math.ceil(snapshotIntervalMs * 0.5) + 4
+    };
+}
+const activeAdaptiveBounds = deriveAdaptiveInterpBounds(active);
+exports.ADAPTIVE_INTERP_MIN_DELAY_MS = activeAdaptiveBounds.minDelayMs;
+exports.ADAPTIVE_INTERP_MAX_DELAY_MS = activeAdaptiveBounds.maxDelayMs;
+exports.ADAPTIVE_INTERP_GAP_MARGIN_MS = activeAdaptiveBounds.gapMarginMs;
 /** Decay applied to the tracked peak delivery gap per ~1s window (halves in ~8 windows). */
 exports.ADAPTIVE_INTERP_GAP_DECAY_PER_WINDOW = 0.92;
 /** Max ms the delay may shrink per ~1s window. Widening is immediate; shrinking is gradual. */
 exports.ADAPTIVE_INTERP_SHRINK_PER_WINDOW_MS = 5;
-/** Safety margin added on top of the tracked peak gap when computing the target delay. */
-exports.ADAPTIVE_INTERP_GAP_MARGIN_MS = Math.ceil(exports.SNAPSHOT_INTERVAL_MS * 0.5) + 4;
 /** Extrapolated frames per window tolerated before underruns force the buffer wider. */
 exports.ADAPTIVE_INTERP_UNDERRUN_TOLERANCE = 2;
 /**

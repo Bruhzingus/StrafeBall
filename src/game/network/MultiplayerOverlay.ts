@@ -2,6 +2,13 @@ import { GAME_CONSTANTS } from '../../../shared/constants';
 import type { LobbyMode } from '../practice/LobbyModePortals';
 import type { MatchMode, MatchPresetId, PlayerState, RoomState } from '../../../shared/types';
 import { ALLOWED_MAT_PRESETS, ROOM_SETTINGS_LIMITS, type RoomSettingsPatch, votesRequiredForPass } from '../../../shared/roomSettings';
+import {
+  DEFAULT_TICK_PRESET_ID,
+  TICK_PRESETS,
+  tickPresetById,
+  tickPresetForNetMode,
+  type TickPresetId
+} from '../../../shared/tickPresets';
 import type { InputManager } from '../input/InputManager';
 import { MultiplayerClient } from './MultiplayerClient';
 
@@ -34,6 +41,7 @@ export class MultiplayerOverlay {
   private readonly copyButton: HTMLButtonElement;
   private readonly closeButton: HTMLButtonElement;
   private readonly modeButtons: NodeListOf<HTMLButtonElement>;
+  private readonly tickPresetButtons: NodeListOf<HTMLButtonElement>;
   private readonly modeTitle: HTMLDivElement;
   private readonly modeSubtitle: HTMLDivElement;
   private readonly modeNotice: HTMLDivElement;
@@ -42,6 +50,7 @@ export class MultiplayerOverlay {
   private readonly fullscreenRequest: HTMLButtonElement;
   private readonly fullscreenCancel: HTMLButtonElement;
   private selectedMode: LobbyMode = '1v1';
+  private selectedTickPresetId: TickPresetId = DEFAULT_TICK_PRESET_ID;
   private modalOpen = false;
   private settingsOpen = false;
   private wasLiveMatch = false;
@@ -57,6 +66,7 @@ export class MultiplayerOverlay {
     pingMs: undefined as number | null | undefined,
     errorMessage: '',
     selectedMode: null as LobbyMode | null,
+    selectedTickPresetId: null as TickPresetId | null,
     nameReady: false,
     modalOpen: false,
     settingsOpen: false,
@@ -103,7 +113,18 @@ export class MultiplayerOverlay {
           </div>
         </div>
 
-        <div class="multiplayer-step-label">2. CREATE A MATCH OR ENTER A CODE</div>
+        <div class="multiplayer-step-label">2. SELECT TICK PRESET</div>
+
+        <div class="multiplayer-tick-presets">
+          ${TICK_PRESETS.map((preset) => `
+            <button class="multiplayer-tick-preset" data-tick-preset="${preset.id}" type="button">
+              <div class="multiplayer-tick-preset__main">${escapeHtml(preset.label)}</div>
+              <div class="multiplayer-tick-preset__sub">${escapeHtml(preset.description)}</div>
+            </button>
+          `).join('')}
+        </div>
+
+        <div class="multiplayer-step-label">3. CREATE A MATCH OR ENTER A CODE</div>
 
         <div class="multiplayer-launch">
           <div class="multiplayer-launch-section">
@@ -184,6 +205,7 @@ export class MultiplayerOverlay {
     this.copyButton = this.mustQuery<HTMLButtonElement>('.multiplayer-copy');
     this.closeButton = this.mustQuery<HTMLButtonElement>('.multiplayer-close');
     this.modeButtons = this.root.querySelectorAll<HTMLButtonElement>('.multiplayer-mode-tab');
+    this.tickPresetButtons = this.root.querySelectorAll<HTMLButtonElement>('.multiplayer-tick-preset');
     this.modeTitle = this.mustQuery<HTMLDivElement>('.multiplayer-mode-title');
     this.modeSubtitle = this.mustQuery<HTMLDivElement>('.multiplayer-mode-subtitle');
     this.modeNotice = this.mustQuery<HTMLDivElement>('.multiplayer-mode-notice');
@@ -204,6 +226,7 @@ export class MultiplayerOverlay {
     this.fullscreenCancel.addEventListener('click', this.cancelFullscreenWarning);
     this.root.addEventListener('click', this.onRootClick);
     for (const button of this.modeButtons) button.addEventListener('click', this.onModeClick);
+    for (const button of this.tickPresetButtons) button.addEventListener('click', this.onTickPresetClick);
     window.addEventListener('keyup', this.onPortalFocusKeyUp);
     window.addEventListener('keydown', this.onPortalKeyDown);
     document.body.appendChild(this.root);
@@ -228,6 +251,7 @@ export class MultiplayerOverlay {
     this.fullscreenCancel.removeEventListener('click', this.cancelFullscreenWarning);
     this.root.removeEventListener('click', this.onRootClick);
     for (const button of this.modeButtons) button.removeEventListener('click', this.onModeClick);
+    for (const button of this.tickPresetButtons) button.removeEventListener('click', this.onTickPresetClick);
     window.removeEventListener('keyup', this.onPortalFocusKeyUp);
     window.removeEventListener('keydown', this.onPortalKeyDown);
     this.root.remove();
@@ -289,6 +313,7 @@ export class MultiplayerOverlay {
       this.lastRendered.pingMs === this.client.pingMs &&
       this.lastRendered.errorMessage === this.client.errorMessage &&
       this.lastRendered.selectedMode === this.selectedMode &&
+      this.lastRendered.selectedTickPresetId === this.selectedTickPresetId &&
       this.lastRendered.nameReady === nameReady &&
       this.lastRendered.modalOpen === this.modalOpen &&
       this.lastRendered.settingsOpen === this.settingsOpen &&
@@ -304,6 +329,7 @@ export class MultiplayerOverlay {
       pingMs: this.client.pingMs,
       errorMessage: this.client.errorMessage,
       selectedMode: this.selectedMode,
+      selectedTickPresetId: this.selectedTickPresetId,
       nameReady,
       modalOpen: this.modalOpen,
       settingsOpen: this.settingsOpen,
@@ -334,6 +360,9 @@ export class MultiplayerOverlay {
     for (const button of this.modeButtons) {
       button.classList.toggle('multiplayer-mode-tab--active', button.dataset.mode === this.selectedMode);
     }
+    for (const button of this.tickPresetButtons) {
+      button.classList.toggle('multiplayer-tick-preset--active', button.dataset.tickPreset === this.selectedTickPresetId);
+    }
 
     this.createButton.disabled = connected || busy || !supported;
     // Joining is format-independent (you adopt the room's settings), so it isn't gated by `supported`.
@@ -363,7 +392,7 @@ export class MultiplayerOverlay {
   private createRoom = (): void => {
     if (!this.modeSupported(this.selectedMode)) return;
     if (this.nameInput.value.trim().length === 0) return;
-    this.runWithFullscreenCheck(() => this.client.createRoom(this.nameInput.value, this.selectedMode));
+    this.runWithFullscreenCheck(() => this.client.createRoom(this.nameInput.value, this.selectedMode, this.selectedTickPresetId));
   };
 
   private joinRoom = (): void => {
@@ -470,6 +499,12 @@ export class MultiplayerOverlay {
     const mode = target.dataset.mode;
     if (mode !== '1v1' && mode !== '2v2') return;
     this.selectedMode = mode;
+    this.update();
+  };
+
+  private onTickPresetClick = (event: Event): void => {
+    const target = event.currentTarget as HTMLButtonElement;
+    this.selectedTickPresetId = tickPresetById(target.dataset.tickPreset).id;
     this.update();
   };
 
@@ -819,6 +854,7 @@ function summarizeRoom(room: RoomState | null, localPlayerId: string): {
       room.match.mode,
       room.match.status,
       room.match.countdownSeconds.toFixed(0),
+      room.netMode,
       room.phase,
       room.hostPlayerId ?? '',
       room.match.currentRound,
@@ -937,6 +973,11 @@ function presetLabel(preset: MatchPresetId): string {
   return preset === 'custom' ? 'Custom' : 'Recommended';
 }
 
+function tickPresetDisplay(netMode: RoomState['netMode']): string {
+  const preset = tickPresetForNetMode(netMode);
+  return preset ? escapeHtml(preset.label) : escapeHtml(netMode);
+}
+
 function textRow(label: string, text: string): string {
   return `<div class="multiplayer-controls__row"><span class="multiplayer-controls__label">${label}</span><span class="multiplayer-controls__field"><span class="multiplayer-controls__val">${text}</span></span></div>`;
 }
@@ -1001,6 +1042,7 @@ function buildControlsHtml(room: RoomState, localPlayerId: string): string {
   const rows = [
     textRow('Format', escapeHtml(s.format.toUpperCase())),
     textRow('Preset', presetLabel(s.preset)),
+    textRow('Tick preset', tickPresetDisplay(room.netMode)),
     stepRow(SETTING_FIELDS.livesPerPlayer.label, s.livesPerPlayer, 'livesPerPlayer', editable, ''),
     stepRow(SETTING_FIELDS.dodgeballCount.label, s.dodgeballCount, 'dodgeballCount', editable, ''),
     stepRow(SETTING_FIELDS.maxLiveBallBounces.label, s.maxLiveBallBounces, 'maxLiveBallBounces', editable, ''),
@@ -1041,7 +1083,7 @@ function buildControlsHtml(room: RoomState, localPlayerId: string): string {
       : '';
 
   const roundInfo = `Round ${room.match.currentRound} / ${room.match.roundCount}`;
-  const compactSummary = `${escapeHtml(s.format.toUpperCase())} - ${s.livesPerPlayer} lives - ${s.dodgeballCount} balls - ${s.roundCount} round${s.roundCount === 1 ? '' : 's'}`;
+  const compactSummary = `${escapeHtml(s.format.toUpperCase())} - ${tickPresetDisplay(room.netMode)} - ${s.livesPerPlayer} lives - ${s.dodgeballCount} balls - ${s.roundCount} round${s.roundCount === 1 ? '' : 's'}`;
 
   return `
     <div class="multiplayer-controls__panel multiplayer-controls__panel--compact" data-editable="${editable ? '1' : '0'}">
@@ -1069,6 +1111,7 @@ function buildSettingsHtml(room: RoomState, localPlayerId: string): string {
   const rows = [
     textRow('Format', escapeHtml(s.format.toUpperCase())),
     textRow('Preset', presetLabel(s.preset)),
+    textRow('Tick preset', tickPresetDisplay(room.netMode)),
     stepRow(SETTING_FIELDS.livesPerPlayer.label, s.livesPerPlayer, 'livesPerPlayer', editable, ''),
     stepRow(SETTING_FIELDS.dodgeballCount.label, s.dodgeballCount, 'dodgeballCount', editable, ''),
     stepRow(SETTING_FIELDS.maxLiveBallBounces.label, s.maxLiveBallBounces, 'maxLiveBallBounces', editable, ''),

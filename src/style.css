@@ -2309,6 +2309,10 @@ html, body {
 
 /* Connected: the lobby setup + launch controls are done with; show the room status instead. */
 .multiplayer-modal--connected .multiplayer-setup,
+.multiplayer-modal--connected .multiplayer-step-label,
+.multiplayer-modal--connected .multiplayer-mode-tabs,
+.multiplayer-modal--connected .multiplayer-mode-card,
+.multiplayer-modal--connected .multiplayer-tick-presets,
 .multiplayer-modal--connected .multiplayer-launch {
   display: none;
 }
@@ -3191,6 +3195,10 @@ html, body {
 }
 
 .multiplayer-modal--compact .multiplayer-setup,
+.multiplayer-modal--compact .multiplayer-step-label,
+.multiplayer-modal--compact .multiplayer-mode-tabs,
+.multiplayer-modal--compact .multiplayer-mode-card,
+.multiplayer-modal--compact .multiplayer-tick-presets,
 .multiplayer-modal--compact .multiplayer-launch,
 .multiplayer-modal--compact .multiplayer-field {
   display: none;
@@ -3601,6 +3609,63 @@ html, body {
   background: linear-gradient(180deg, #ffe481, var(--school-gold));
 }
 
+.multiplayer-tick-presets {
+  display: grid;
+  grid-template-columns: repeat(5, minmax(0, 1fr));
+  gap: 8px;
+  margin: 0 0 12px;
+}
+
+.multiplayer-tick-preset {
+  min-width: 0;
+  min-height: 76px;
+  padding: 9px 8px;
+  border: 2px solid rgba(21, 33, 59, 0.38);
+  border-radius: 10px;
+  background: rgba(255, 255, 255, 0.62);
+  color: var(--ink);
+  cursor: pointer;
+  text-align: left;
+  box-shadow: 2px 2px 0 rgba(21, 33, 59, 0.55);
+  transition: transform 0.05s ease, box-shadow 0.05s ease, background 0.08s ease;
+}
+
+.multiplayer-tick-preset:hover:not(.multiplayer-tick-preset--active) {
+  transform: translate(-1px, -1px);
+  box-shadow: 3px 3px 0 rgba(21, 33, 59, 0.6);
+}
+
+.multiplayer-tick-preset--active {
+  background: linear-gradient(180deg, #d9fbff, var(--electric-cyan));
+  border-color: var(--ink);
+  transform: translate(-1px, -1px);
+  box-shadow: 3px 3px 0 var(--ink);
+}
+
+.multiplayer-tick-preset__main {
+  font-size: 12px;
+  font-weight: 900;
+  line-height: 1.05;
+}
+
+.multiplayer-tick-preset__sub {
+  margin-top: 4px;
+  font-size: 10px;
+  font-weight: 700;
+  line-height: 1.22;
+  color: rgba(21, 33, 59, 0.78);
+}
+
+@media (max-width: 720px) {
+  .multiplayer-tick-presets {
+    grid-template-columns: 1fr;
+  }
+
+  .multiplayer-tick-preset {
+    min-height: 0;
+  }
+}
+
 /* Mode info card with icon on left */
 .multiplayer-mode-card {
   margin: 0 0 12px;
@@ -3698,6 +3763,7 @@ html, body {
 /* You must enter a name before the mode + create/join options are revealed. */
 .multiplayer-modal:not(.multiplayer-modal--name-ready) .multiplayer-step-label,
 .multiplayer-modal:not(.multiplayer-modal--name-ready) .multiplayer-mode-tabs,
+.multiplayer-modal:not(.multiplayer-modal--name-ready) .multiplayer-tick-presets,
 .multiplayer-modal:not(.multiplayer-modal--name-ready) .multiplayer-mode-card {
   display: none;
 }
@@ -4978,13 +5044,45 @@ html, body {
 .creator-palette-btn:hover { background: rgba(90, 130, 200, 0.4); }
 .creator-palette-btn--armed { background: rgba(70, 150, 255, 0.85); border-color: #aaccff; color: #fff; }
 
-.creator-field { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
+.creator-field { display: flex; align-items: center; justify-content: space-between; gap: 8px; min-width: 0; }
+.creator-field--compact {
+  justify-content: flex-start;
+  gap: 6px;
+  min-width: 0;
+}
 .creator-field-row { display: flex; gap: 6px; flex-wrap: wrap; align-items: center; }
 .creator-field-col { display: flex; flex-direction: column; gap: 4px; }
 .creator-label { color: #9fb2d4; font-size: 11px; flex: 0 0 auto; }
 .creator-readonly { color: #cdd9ef; font-weight: 700; }
 .creator-empty { color: #8295b4; font-size: 11px; line-height: 1.4; }
 .creator-meta { display: flex; flex-direction: column; gap: 6px; border-top: 1px dashed rgba(255,255,255,0.12); padding-top: 6px; }
+.creator-label-settings {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+  gap: 6px;
+  align-items: center;
+}
+.creator-label-settings .creator-check {
+  min-width: 0;
+  overflow: hidden;
+}
+.creator-label-settings .creator-check span {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.creator-label-settings .creator-field--compact .creator-label {
+  min-width: 42px;
+}
+.creator-label-settings .creator-select {
+  width: 100%;
+  min-width: 0;
+}
+.creator-label-settings .creator-number {
+  width: 58px;
+  min-width: 0;
+}
 
 .creator-vec { display: flex; gap: 4px; }
 .creator-number {

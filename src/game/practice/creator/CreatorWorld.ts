@@ -10,12 +10,13 @@
  */
 
 import { Vector3 } from '@babylonjs/core';
-import { AABB, aabbFromCenter, orientedAabb } from '../../map/Collider';
+import { AABB, aabbFromCenter, orientedAabb, rampAabb } from '../../map/Collider';
 import { MovementWorld } from '../../player/MovementController';
 import { SANDBOX_CENTER, SANDBOX_CEILING_Y } from '../MovementSandboxLayout';
 import {
   CreatorLayout,
   objectCollisionBoxes,
+  objectCollisionRamps,
   orientedBoxAabb,
   type OrientedBox
 } from './CreatorLayout';
@@ -96,6 +97,13 @@ export function buildCreatorCollisionBoxes(layout: CreatorLayout, idPrefix: stri
       box.id = `${idPrefix}${obj.id}_${i}`;
       boxes.push(box);
     }
+    const ramps = objectCollisionRamps(obj);
+    for (let i = 0; i < ramps.length; i += 1) {
+      const r = ramps[i];
+      const box = rampAabb(r.cx, r.baseY, r.cz, r.w, r.h, r.d, r.ry);
+      box.id = `${idPrefix}${obj.id}_ramp_${i}`;
+      boxes.push(box);
+    }
   }
   return boxes;
 }
@@ -104,6 +112,7 @@ export function buildCreatorCollisionBoxes(layout: CreatorLayout, idPrefix: stri
 export function buildCreatorWallFaces(layout: CreatorLayout): CreatorWallFace[] {
   const faces: CreatorWallFace[] = [];
   for (const obj of layout.objects) {
+    if (obj.wallrunEnabled === false) continue;
     for (const box of objectCollisionBoxes(obj)) faces.push(...boxFaces(box));
   }
 

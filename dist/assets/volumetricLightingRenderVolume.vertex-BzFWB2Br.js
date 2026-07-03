@@ -1,4 +1,4 @@
-import{S as t}from"./index-ChtOxaUW.js";const e="volumetricLightingRenderVolumeVertexShader",o=`#include<sceneUboDeclaration>
+import{S as t}from"./index-BI8YErtM.js";const e="volumetricLightingRenderVolumeVertexShader",o=`#include<sceneUboDeclaration>
 #include<meshUboDeclaration>
 attribute position : vec3f;varying vWorldPos: vec4f;@vertex
 fn main(input : VertexInputs)->FragmentInputs {let worldPos=mesh.world*vec4f(vertexInputs.position,1.0);vertexOutputs.vWorldPos=worldPos;vertexOutputs.position=scene.viewProjection*worldPos;}

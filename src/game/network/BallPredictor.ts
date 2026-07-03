@@ -8,7 +8,7 @@ import { advanceBall, createBallState } from '../../../shared/simulation/BallSim
  * simulation from authoritative throw events, then reconciles toward authoritative snapshots.
  * It never decides hits, catches, parries, score, ownership, or rules.
  */
-const PREDICTION_FIXED_DT = SERVER_FIXED_DT / Math.max(1, LIVE_BALL_COMBAT_SUBSTEPS);
+const DEFAULT_PREDICTION_FIXED_DT = SERVER_FIXED_DT / Math.max(1, LIVE_BALL_COMBAT_SUBSTEPS);
 const PREDICTION_MAX_CATCHUP_MS = 500;
 const SOFT_CORRECT_PER_FRAME = 0.2;
 const MEDIUM_BLEND_PER_FRAME = 0.5;
@@ -49,6 +49,10 @@ export interface BallPredictorStats {
 }
 
 export class BallPredictor {
+  // Replay step matches the ROOM's server sim substep so the deterministic ball replay integrates
+  // with the same dt the server used. Default = compiled mode; NetworkRenderer passes the room's
+  // resolved rate when a tick preset is negotiated.
+  private readonly fixedDt: number;
   private readonly balls = new Map<string, PredictedBall>();
   private totalCorrections = 0;
   private maxCorrections = 0;
@@ -58,6 +62,10 @@ export class BallPredictor {
   private softCorrectionCount = 0;
   private mediumCorrectionCount = 0;
   private readonly snapReasonCounts: Record<string, number> = {};
+
+  constructor(options: { fixedDt?: number } = {}) {
+    this.fixedDt = options.fixedDt ?? DEFAULT_PREDICTION_FIXED_DT;
+  }
 
   /** Seed/replace a predicted ball from an authoritative throw event (new throw identity). */
   applyThrowEvent(event: ThrowEvent): void {
@@ -218,7 +226,7 @@ export class BallPredictor {
     if (renderServerTimeMs <= entry.simTimeMs) return;
     let remaining = Math.min(renderServerTimeMs - entry.simTimeMs, PREDICTION_MAX_CATCHUP_MS);
     while (remaining > 0) {
-      const step = Math.min(PREDICTION_FIXED_DT, remaining / 1000);
+      const step = Math.min(this.fixedDt, remaining / 1000);
       entry.sim = advanceBall(entry.sim, step);
       remaining -= step * 1000;
     }

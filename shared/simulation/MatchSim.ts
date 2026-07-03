@@ -1,4 +1,5 @@
 import type { BallState, EndVoteState, IntermissionVoteState, MatState, PlayerState, ResetVoteState, RoomLifecyclePhase, RoomSettings, RoomState, StartVoteState } from '../types';
+import { ACTIVE_NET_MODE, type NetMode } from '../netConfig';
 import { grantDashCharge } from './PlayerSim';
 import { applyScore, createMatchState } from './RuleSim';
 import { MAT_SPECS, matSpecsForPreset } from './MapGeometry';
@@ -39,6 +40,8 @@ export function createRoomState(options: {
   match?: RoomState['match'];
   hostPlayerId?: string | null;
   phase?: RoomLifecyclePhase;
+  /** The room's creation-time net mode. Defaults to the process/compiled active mode. */
+  netMode?: NetMode;
 } = {}): RoomState {
   const players: Record<string, PlayerState> = {};
   const balls: Record<string, BallState> = {};
@@ -70,6 +73,7 @@ export function createRoomState(options: {
     hostPlayerId: options.hostPlayerId ?? null,
     phase: options.phase ?? roomPhaseFromMatchStatus(match.status),
     settings,
+    netMode: options.netMode ?? ACTIVE_NET_MODE,
     match,
     players,
     balls,

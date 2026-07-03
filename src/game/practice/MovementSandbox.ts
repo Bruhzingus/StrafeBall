@@ -10,7 +10,8 @@ import {
   Texture,
   TransformNode,
   Vector3,
-  Vector4
+  Vector4,
+  VertexData
 } from '@babylonjs/core';
 import { GymArena } from '../map/GymArena';
 import { PlayerController } from '../player/PlayerController';
@@ -32,8 +33,10 @@ import {
   committedCourseLayout,
   isSolidModule,
   layoutSpawn,
+  objectRampPrisms,
   objectSolidBoxes,
-  type CreatorLayout
+  type CreatorLayout,
+  type Vec3Tuple
 } from './creator/CreatorLayout';
 import {
   buildCreatorCollisionBoxes,
@@ -351,6 +354,11 @@ export class MovementSandbox implements MovementWorld {
     for (const obj of this.courseLayout.objects) {
       if (!isSolidModule(obj.type) || obj.visible === false) continue;
       const mat = this.materialFor(styleForMaterial(obj.material));
+      for (const ramp of objectRampPrisms(obj)) {
+        const mesh = this.rampMesh(`sandbox_ramp_${obj.id}`, ramp.w, ramp.h, ramp.d, mat);
+        mesh.position.set(ramp.cx, ramp.baseY, ramp.cz);
+        mesh.rotation.y = ramp.ry;
+      }
       for (const box of objectSolidBoxes(obj)) {
         const mesh = this.gridBox(`sandbox_wall_${obj.id}`, box.cx, box.cy, box.cz, box.w, box.h, box.d, mat);
         mesh.rotation.y = box.ry;
@@ -420,6 +428,59 @@ export class MovementSandbox implements MovementWorld {
     const faceUV = [uv(w, h), uv(w, h), uv(d, h), uv(d, h), uv(w, d), uv(w, d)];
     const mesh = MeshBuilder.CreateBox(name, { width: w, height: h, depth: d, wrap: true, faceUV }, this.scene);
     mesh.position.set(cx, cy, cz);
+    mesh.material = material;
+    mesh.parent = this.root;
+    return mesh;
+  }
+
+  /** Smooth ramp wedge: base sits at local Y=0, low edge at -X, high edge at +X. */
+  private rampMesh(name: string, w: number, h: number, d: number, material: StandardMaterial): Mesh {
+    const hw = w / 2;
+    const hd = d / 2;
+    const positions: number[] = [];
+    const indices: number[] = [];
+    const uvs: number[] = [];
+    const addFace = (points: Vec3Tuple[], faceUvs: Array<[number, number]>): void => {
+      const base = positions.length / 3;
+      for (let i = 0; i < points.length; i += 1) {
+        const p = points[i];
+        positions.push(p[0], p[1], p[2]);
+        uvs.push(faceUvs[i][0], faceUvs[i][1]);
+      }
+      if (points.length === 3) indices.push(base, base + 1, base + 2);
+      else indices.push(base, base + 1, base + 2, base, base + 2, base + 3);
+    };
+    addFace(
+      [[-hw, 0, -hd], [-hw, 0, hd], [hw, h, hd], [hw, h, -hd]],
+      [[0, 0], [0, d / GRID_CELL_METRES], [w / GRID_CELL_METRES, d / GRID_CELL_METRES], [w / GRID_CELL_METRES, 0]]
+    );
+    addFace(
+      [[-hw, 0, -hd], [hw, 0, -hd], [hw, 0, hd], [-hw, 0, hd]],
+      [[0, 0], [w / GRID_CELL_METRES, 0], [w / GRID_CELL_METRES, d / GRID_CELL_METRES], [0, d / GRID_CELL_METRES]]
+    );
+    addFace(
+      [[hw, 0, -hd], [hw, h, -hd], [hw, h, hd], [hw, 0, hd]],
+      [[0, 0], [h / GRID_CELL_METRES, 0], [h / GRID_CELL_METRES, d / GRID_CELL_METRES], [0, d / GRID_CELL_METRES]]
+    );
+    addFace(
+      [[-hw, 0, -hd], [hw, h, -hd], [hw, 0, -hd]],
+      [[0, 0], [w / GRID_CELL_METRES, h / GRID_CELL_METRES], [w / GRID_CELL_METRES, 0]]
+    );
+    addFace(
+      [[-hw, 0, hd], [hw, 0, hd], [hw, h, hd]],
+      [[0, 0], [w / GRID_CELL_METRES, 0], [w / GRID_CELL_METRES, h / GRID_CELL_METRES]]
+    );
+
+    const normals: number[] = [];
+    VertexData.ComputeNormals(positions, indices, normals);
+    const mesh = new Mesh(name, this.scene);
+    const vd = new VertexData();
+    vd.positions = positions;
+    vd.indices = indices;
+    vd.normals = normals;
+    vd.uvs = uvs;
+    vd.applyToMesh(mesh);
+    material.backFaceCulling = false;
     mesh.material = material;
     mesh.parent = this.root;
     return mesh;

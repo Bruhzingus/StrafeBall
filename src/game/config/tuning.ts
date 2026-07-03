@@ -57,6 +57,15 @@ export const TUNING = {
     overholdStopSpeed: GAME_CONSTANTS.slide.overholdStopSpeed
   },
 
+  slope: {
+    // Offline creator/movement-course ramps: lower ground friction so gravity can pull the player
+    // downhill instead of the slope feeling sticky like flat ground.
+    frictionMultiplier: 0.18,
+    gravityScale: 1.0,
+    slideGravityScale: 1.15,
+    groundSnapDistance: GAME_CONSTANTS.player.stepHeight + 0.22
+  },
+
   dash: {
     maxCharges: GAME_CONSTANTS.dash.maxCharges,
     rechargeSeconds: GAME_CONSTANTS.dash.rechargeSeconds,

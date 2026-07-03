@@ -74,4 +74,25 @@ describe('settings music volume', () => {
     expect(settings.lobbyMusicVolume).toBe(0.42);
     expect(settings.battleMusicVolume).toBe(0.42);
   });
+
+  it('keeps the sensitivity slider value unchanged while halving gameplay sensitivity', async () => {
+    const storage = createStorage();
+    Object.defineProperty(globalThis, 'localStorage', {
+      configurable: true,
+      value: storage
+    });
+
+    const { settings, SENSITIVITY_DEFAULT, SENSITIVITY_EFFECTIVE_SCALE } = await import('../src/game/config/Settings');
+    expect(settings.mouseSensitivity).toBe(SENSITIVITY_DEFAULT);
+    expect(settings.effectiveMouseSensitivity).toBe(SENSITIVITY_DEFAULT * SENSITIVITY_EFFECTIVE_SCALE);
+
+    settings.setMouseSensitivity(0.004);
+    expect(settings.mouseSensitivity).toBe(0.004);
+    expect(settings.effectiveMouseSensitivity).toBe(0.002);
+
+    const stored = JSON.parse(storage.getItem('strafeball.settings.v1') ?? '{}') as {
+      mouseSensitivity?: number;
+    };
+    expect(stored.mouseSensitivity).toBe(0.004);
+  });
 });

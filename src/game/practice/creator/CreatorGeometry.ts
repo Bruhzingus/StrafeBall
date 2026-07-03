@@ -31,8 +31,12 @@ import {
   moduleDef,
   moduleLocalBoxes,
   objectCollisionBoxes,
+  objectCollisionRamps,
+  objectRampPrisms,
   objectWorldAabb,
   textureDef,
+  type CreatorLabelColor,
+  type CreatorLabelSize,
   type Vec3Tuple
 } from './CreatorLayout';
 import { layoutWorldBounds } from './CreatorWorld';
@@ -41,6 +45,30 @@ import { SANDBOX_CENTER } from '../MovementSandboxLayout';
 const OBJECT_ID_KEY = 'creatorObjectId';
 const GRID_CELL_METRES = 5;
 const DEG2RAD = Math.PI / 180;
+const EMPTY_LABEL_PLACEHOLDER = 'LABEL';
+const LABEL_SIZE_WORLD_PER_PX: Record<CreatorLabelSize, number> = {
+  small: 0.0085,
+  medium: 0.011,
+  large: 0.014
+};
+const LABEL_COLOR_STYLES: Record<CreatorLabelColor, { text: string; border: string }> = {
+  white: { text: '#eef4ff', border: 'rgba(120, 200, 255, 0.6)' },
+  gold: { text: '#ffdf74', border: 'rgba(255, 210, 90, 0.72)' },
+  blue: { text: '#83d8ff', border: 'rgba(95, 190, 255, 0.72)' },
+  green: { text: '#90f7ae', border: 'rgba(120, 245, 165, 0.72)' },
+  red: { text: '#ff9da8', border: 'rgba(255, 130, 145, 0.72)' }
+};
+
+interface LabelRenderOptions {
+  color: CreatorLabelColor;
+  size: CreatorLabelSize;
+  placeholder: boolean;
+}
+
+interface ResolvedLabelText {
+  text: string;
+  placeholder: boolean;
+}
 
 export class CreatorGeometry {
   private readonly root: TransformNode;
@@ -137,8 +165,17 @@ export class CreatorGeometry {
   }
 
   private buildSolid(obj: CreatorLayoutObject, node: TransformNode): void {
+    const def = moduleDef(obj.type);
+    if (!def) return;
     const texId = obj.texture && textureDef(obj.texture) ? obj.texture : null;
     const mat = texId ? this.texturedMaterial(texId) : this.terrainMaterial(obj.material ?? 'concrete');
+    if (def.shape === 'ramp') {
+      const [w, h, d] = def.baseSize;
+      const mesh = this.rampMesh(`creator_${obj.id}_ramp`, w, h, d, mat);
+      mesh.parent = node;
+      this.tagPickable(mesh, obj.id);
+      return;
+    }
     // For real image textures, tile to the texture's metre size and account for the object's scale so a
     // stretched wall keeps a consistent texel density (the abstract grid keeps its per-build local UVs).
     const cell = texId ? textureDef(texId)!.tile : GRID_CELL_METRES;
@@ -190,8 +227,7 @@ export class CreatorGeometry {
     pad.parent = node;
     this.tagPickable(pad, obj.id);
 
-    const label = this.markerLabel(obj);
-    if (label) this.attachLabel(obj, node, label, 1.6);
+    this.attachLabel(obj, node, this.markerLabel(obj), 1.6);
 
     // Facing chevron so spawn / pad orientation is readable — a flat triangle pointing LOCAL +Z (the
     // node's facing), sitting just above the pad surface.
@@ -210,8 +246,7 @@ export class CreatorGeometry {
     box.material = this.translucentMaterial('creator_hazard_mat', new Color3(0.95, 0.22, 0.22), 0.34);
     box.parent = node;
     this.tagPickable(box, obj.id);
-    const label = this.markerLabel(obj);
-    if (label) this.attachLabel(obj, node, label, h + 0.4);
+    this.attachLabel(obj, node, this.markerLabel(obj), h + 0.4);
   }
 
   private buildGate(obj: CreatorLayoutObject, node: TransformNode, w: number, h: number, d: number, mat: StandardMaterial): void {
@@ -231,7 +266,7 @@ export class CreatorGeometry {
 
     const order = obj.metadata?.checkpointOrder;
     const text = obj.type === 'finish_gate' ? 'FINISH' : order != null ? `CP ${order}` : 'GATE';
-    this.attachLabel(obj, node, obj.metadata?.label ? `${text}\n${obj.metadata.label}` : text, h + 0.5);
+    this.attachLabel(obj, node, this.labelWithPrefix(obj, text), h + 0.5);
   }
 
   private buildArrow(obj: CreatorLayoutObject, node: TransformNode, w: number, d: number, mat: StandardMaterial): void {
@@ -247,7 +282,7 @@ export class CreatorGeometry {
     head.position.set(0, 0.07, 0);
     head.parent = node;
     this.tagPickable(head, obj.id);
-    if (obj.metadata?.label) this.attachLabel(obj, node, obj.metadata.label, 1.4);
+    this.attachLabel(obj, node, this.arrowLabel(obj), 1.4);
   }
 
   private buildSignboard(obj: CreatorLayoutObject, node: TransformNode, w: number, h: number): void {
@@ -257,8 +292,7 @@ export class CreatorGeometry {
     post.material = this.solidMaterial('marker_gold');
     post.parent = node;
     this.tagPickable(post, obj.id);
-    const text = obj.metadata?.label || obj.name || 'SIGN';
-    this.attachLabel(obj, node, text, postH + h / 2);
+    this.attachLabel(obj, node, this.labelWithDefault(obj, obj.name || 'SIGN'), postH + h / 2);
   }
 
   private buildPortal(obj: CreatorLayoutObject, node: TransformNode, w: number, h: number, mat: StandardMaterial): void {
@@ -274,26 +308,51 @@ export class CreatorGeometry {
     beam.material = this.solidMaterial('marker_gold');
     beam.parent = node;
     this.tagPickable(beam, obj.id);
-    this.attachLabel(obj, node, obj.metadata?.label || 'LEAVE', h + 0.6);
+    this.attachLabel(obj, node, this.labelWithDefault(obj, 'LEAVE'), h + 0.6);
   }
 
-  private markerLabel(obj: CreatorLayoutObject): string {
-    if (obj.metadata?.label) return obj.metadata.label;
-    if (obj.name) return obj.name;
-    return moduleDef(obj.type)?.label ?? '';
+  private markerLabel(obj: CreatorLayoutObject): ResolvedLabelText {
+    return this.labelWithDefault(obj, obj.name || moduleDef(obj.type)?.label || EMPTY_LABEL_PLACEHOLDER);
   }
 
-  private attachLabel(obj: CreatorLayoutObject, node: TransformNode, text: string, y: number): void {
+  private arrowLabel(obj: CreatorLayoutObject): ResolvedLabelText {
+    return this.labelWithDefault(obj, obj.name || EMPTY_LABEL_PLACEHOLDER);
+  }
+
+  private labelWithDefault(obj: CreatorLayoutObject, fallback: string): ResolvedLabelText {
+    return this.explicitLabel(obj) ?? { text: fallback, placeholder: fallback === EMPTY_LABEL_PLACEHOLDER };
+  }
+
+  private labelWithPrefix(obj: CreatorLayoutObject, prefix: string): ResolvedLabelText {
+    const extra = this.explicitLabel(obj);
+    if (!extra) return { text: prefix, placeholder: false };
+    return { text: `${prefix}\n${extra.text}`, placeholder: extra.placeholder };
+  }
+
+  private explicitLabel(obj: CreatorLayoutObject): ResolvedLabelText | null {
+    if (!obj.metadata || !Object.prototype.hasOwnProperty.call(obj.metadata, 'label')) return null;
+    const text = obj.metadata.label ?? '';
+    if (text.trim().length === 0) return { text: EMPTY_LABEL_PLACEHOLDER, placeholder: true };
+    return { text, placeholder: false };
+  }
+
+  private attachLabel(obj: CreatorLayoutObject, node: TransformNode, label: ResolvedLabelText, y: number): void {
     // Hidden objects' labels are skipped: the label is parented to the (always-on) root for billboarding,
     // so it can't be toggled off with the object node — and a hidden object shouldn't show a floating label.
     if (obj.visible === false) return;
-    const mesh = this.signPlane(`creator_${obj.id}_label`, text);
+    if (obj.metadata?.labelVisible === false) return;
+    const mesh = this.signPlane(`creator_${obj.id}_label`, label.text, {
+      color: obj.metadata?.labelColor ?? 'white',
+      size: obj.metadata?.labelSize ?? 'medium',
+      placeholder: label.placeholder
+    });
     // Parent to the (unrotated, unscaled) geometry root at the marker's WORLD position and billboard it,
     // so the text always faces the camera and can never render mirrored/backwards, whatever the object's
     // rotation. Billboarding a child of a ROTATED node misbehaves, so we root-parent + position in world.
     // The label mesh isn't owned by `node` anymore, so it must be tracked for per-build disposal.
     const scaleY = obj.scale[1] ?? 1;
-    mesh.position.set(obj.position[0], obj.position[1] + y * scaleY, obj.position[2]);
+    const offsetY = clamp(obj.metadata?.labelOffsetY ?? 0, -10, 30);
+    mesh.position.set(obj.position[0], obj.position[1] + y * scaleY + offsetY, obj.position[2]);
     mesh.parent = this.root;
     mesh.billboardMode = Mesh.BILLBOARDMODE_ALL;
     mesh.isPickable = false;
@@ -312,6 +371,58 @@ export class CreatorGeometry {
     vd.indices = [0, 1, 2, 0, 2, 1]; // both windings → visible from above and below
     vd.normals = [0, 1, 0, 0, 1, 0, 0, 1, 0];
     vd.applyToMesh(mesh);
+    mesh.material = mat;
+    return mesh;
+  }
+
+  /** Smooth ramp wedge: base sits at local Y=0, low edge at -X, high edge at +X. */
+  private rampMesh(name: string, w: number, h: number, d: number, mat: StandardMaterial): Mesh {
+    const hw = w / 2;
+    const hd = d / 2;
+    const positions: number[] = [];
+    const indices: number[] = [];
+    const uvs: number[] = [];
+    const addFace = (points: Vec3Tuple[], faceUvs: Array<[number, number]>): void => {
+      const base = positions.length / 3;
+      for (let i = 0; i < points.length; i += 1) {
+        const p = points[i];
+        positions.push(p[0], p[1], p[2]);
+        uvs.push(faceUvs[i][0], faceUvs[i][1]);
+      }
+      if (points.length === 3) indices.push(base, base + 1, base + 2);
+      else indices.push(base, base + 1, base + 2, base, base + 2, base + 3);
+    };
+    addFace(
+      [[-hw, 0, -hd], [-hw, 0, hd], [hw, h, hd], [hw, h, -hd]],
+      [[0, 0], [0, d / GRID_CELL_METRES], [w / GRID_CELL_METRES, d / GRID_CELL_METRES], [w / GRID_CELL_METRES, 0]]
+    );
+    addFace(
+      [[-hw, 0, -hd], [hw, 0, -hd], [hw, 0, hd], [-hw, 0, hd]],
+      [[0, 0], [w / GRID_CELL_METRES, 0], [w / GRID_CELL_METRES, d / GRID_CELL_METRES], [0, d / GRID_CELL_METRES]]
+    );
+    addFace(
+      [[hw, 0, -hd], [hw, h, -hd], [hw, h, hd], [hw, 0, hd]],
+      [[0, 0], [h / GRID_CELL_METRES, 0], [h / GRID_CELL_METRES, d / GRID_CELL_METRES], [0, d / GRID_CELL_METRES]]
+    );
+    addFace(
+      [[-hw, 0, -hd], [hw, h, -hd], [hw, 0, -hd]],
+      [[0, 0], [w / GRID_CELL_METRES, h / GRID_CELL_METRES], [w / GRID_CELL_METRES, 0]]
+    );
+    addFace(
+      [[-hw, 0, hd], [hw, 0, hd], [hw, h, hd]],
+      [[0, 0], [w / GRID_CELL_METRES, 0], [w / GRID_CELL_METRES, h / GRID_CELL_METRES]]
+    );
+
+    const normals: number[] = [];
+    VertexData.ComputeNormals(positions, indices, normals);
+    const mesh = new Mesh(name, this.scene);
+    const vd = new VertexData();
+    vd.positions = positions;
+    vd.indices = indices;
+    vd.normals = normals;
+    vd.uvs = uvs;
+    vd.applyToMesh(mesh);
+    mat.backFaceCulling = false;
     mesh.material = mat;
     return mesh;
   }
@@ -347,6 +458,15 @@ export class CreatorGeometry {
         box.parent = this.root;
         this.collisionMeshes.push(box);
         this.perBuild.push(box);
+      }
+      for (const ramp of objectCollisionRamps(obj)) {
+        const mesh = this.rampMesh(`creator_col_${obj.id}_ramp`, ramp.w, ramp.h, ramp.d, collisionMat);
+        mesh.position.set(ramp.cx, ramp.baseY, ramp.cz);
+        mesh.rotation.y = ramp.ry;
+        mesh.isPickable = false;
+        mesh.parent = this.root;
+        this.collisionMeshes.push(mesh);
+        this.perBuild.push(mesh);
       }
     }
   }
@@ -477,10 +597,15 @@ export class CreatorGeometry {
 
     const fill = this.previewMaterial();
     if (def.category === 'terrain') {
-      for (const b of moduleLocalBoxes(obj.type)) {
-        const mesh = MeshBuilder.CreateBox(`creator_preview_${obj.type}_box`, { width: b.s[0], height: b.s[1], depth: b.s[2] }, this.scene);
-        mesh.position.set(b.o[0], b.o[1], b.o[2]);
-        this.configurePreviewMesh(mesh, fill, node);
+      if (def.shape === 'ramp') {
+        const [w, h, d] = def.baseSize;
+        this.configurePreviewMesh(this.rampMesh(`creator_preview_${obj.type}_ramp`, w, h, d, fill), fill, node);
+      } else {
+        for (const b of moduleLocalBoxes(obj.type)) {
+          const mesh = MeshBuilder.CreateBox(`creator_preview_${obj.type}_box`, { width: b.s[0], height: b.s[1], depth: b.s[2] }, this.scene);
+          mesh.position.set(b.o[0], b.o[1], b.o[2]);
+          this.configurePreviewMesh(mesh, fill, node);
+        }
       }
     } else {
       this.buildMarkerPreview(obj, node, fill);
@@ -831,12 +956,13 @@ export class CreatorGeometry {
    * longest line (measured), the height with the line count. So "GO" gets a small tag and a long label
    * a wide banner, with a consistent text height and no stretching (texture + plane share one aspect).
    */
-  private signPlane(name: string, text: string): Mesh {
+  private signPlane(name: string, text: string, options: LabelRenderOptions): Mesh {
     const lines = text.split('\n').map((l) => l.slice(0, 40)).slice(0, 3);
     const fontPx = 64;
     const padX = 46;
     const padY = 28;
     const lineStep = fontPx + 18;
+    const color = LABEL_COLOR_STYLES[options.color];
 
     // Measure the text on a scratch 2D context so the texture is only as wide as the content needs.
     const measure = document.createElement('canvas').getContext('2d');
@@ -857,11 +983,13 @@ export class CreatorGeometry {
     ctx.fillStyle = 'rgba(12, 20, 42, 0.86)';
     roundRect(ctx, 6, 6, texW - 12, texH - 12, 20);
     ctx.fill();
-    ctx.strokeStyle = 'rgba(120, 200, 255, 0.6)';
+    ctx.strokeStyle = options.placeholder ? 'rgba(150, 170, 205, 0.72)' : color.border;
     ctx.lineWidth = 4;
+    if (options.placeholder) ctx.setLineDash([14, 10]);
     roundRect(ctx, 6, 6, texW - 12, texH - 12, 20);
     ctx.stroke();
-    ctx.fillStyle = '#eef4ff';
+    ctx.setLineDash([]);
+    ctx.fillStyle = options.placeholder ? 'rgba(190, 205, 232, 0.78)' : color.text;
     ctx.textAlign = 'center';
     ctx.textBaseline = 'middle';
     ctx.font = `900 ${fontPx}px Arial`;
@@ -881,7 +1009,7 @@ export class CreatorGeometry {
 
     // World size shares the texture aspect (no stretch); a constant world-per-pixel keeps text height
     // uniform while the banner grows/shrinks with the content.
-    const worldPerPx = 0.011;
+    const worldPerPx = LABEL_SIZE_WORLD_PER_PX[options.size];
     const mesh = MeshBuilder.CreatePlane(name, { width: texW * worldPerPx, height: texH * worldPerPx }, this.scene);
     mesh.material = mat;
     this.perBuild.push(tex, mat);
@@ -939,6 +1067,10 @@ function lighten(c: Color3, amount: number): Color3 {
 function toCss(c: Color3): string {
   const ch = (v: number) => Math.max(0, Math.min(255, Math.round(v * 255)));
   return `rgb(${ch(c.r)}, ${ch(c.g)}, ${ch(c.b)})`;
+}
+
+function clamp(v: number, min: number, max: number): number {
+  return Number.isFinite(v) ? Math.max(min, Math.min(max, v)) : min;
 }
 
 function roundRect(ctx: CanvasRenderingContext2D, x: number, y: number, w: number, h: number, r: number): void {

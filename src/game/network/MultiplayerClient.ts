@@ -30,7 +30,8 @@ import type {
   NetFlightRecorderClientReport,
   NetFlightRecorderConfigMessage
 } from '../../../shared/netFlightRecorder';
-import { PERF_REPORT_INTERVAL_MS } from '../../../shared/netConfig';
+import { PERF_REPORT_INTERVAL_MS, netModeConfig, type NetMode, type NetModeConfig } from '../../../shared/netConfig';
+import type { TickPresetId } from '../../../shared/tickPresets';
 import {
   hydrateSnapshotRoster,
   inflateCompactSnapshot,
@@ -81,6 +82,8 @@ export class MultiplayerClient {
   public latestSnapshot: ServerSnapshot | null = null;
   public latestSnapshotLanes: SnapshotLaneInfo | null = null;
   public snapshotTierMode: SnapshotLaneInfo['mode'] = 'baseline';
+  // The room's creation-time net mode, captured from `joined-room` (see resolvedNetConfig getter).
+  private joinedRoomNetMode: NetMode | null = null;
   public battleMusicSync: BattleMusicSyncState | null = null;
   // Throw events received since the last drain. The renderer drains these each frame to seed/refresh
   // deterministic live-ball visual prediction. Bounded: cleared on drain and on leave/reset.
@@ -235,8 +238,23 @@ export class MultiplayerClient {
     };
   }
 
-  async createRoom(name: string, mode: MatchMode = '1v1'): Promise<void> {
-    await this.connect(() => this.client.create('duel', { name: cleanName(name), mode }));
+  async createRoom(name: string, mode: MatchMode = '1v1', tickPresetId?: TickPresetId): Promise<void> {
+    await this.connect(() => this.client.create('duel', { name: cleanName(name), mode, tickPresetId }));
+  }
+
+  /**
+   * The room's net mode, learned from the `joined-room` message (ALWAYS a full snapshot — never
+   * read this off later snapshots, whose room fields are cadence-gated under tiered encoding).
+   * Null until joined, or against a server build that predates per-room tick presets; callers must
+   * fall back to the compiled defaults in that case.
+   */
+  get resolvedNetConfig(): NetModeConfig | null {
+    return this.joinedRoomNetMode ? netModeConfig(this.joinedRoomNetMode) : null;
+  }
+
+  /** Raw NetMode for UI labeling (e.g. showing the room's tick preset in the lobby). */
+  get roomNetMode(): NetMode | null {
+    return this.joinedRoomNetMode;
   }
 
   async joinRoom(roomId: string, name: string): Promise<void> {
@@ -259,6 +277,7 @@ export class MultiplayerClient {
     this.latestSnapshot = null;
     this.latestSnapshotLanes = null;
     this.snapshotTierMode = 'baseline';
+    this.joinedRoomNetMode = null;
     this.battleMusicSync = null;
     this.throwEventQueue = [];
     this.catchEventQueue = [];
@@ -538,6 +557,9 @@ export class MultiplayerClient {
     room.onMessage('joined-room', (message: Extract<ServerMessage, { type: 'joined-room' }>) => {
       if (this.room !== room) return;
       this.localPlayerId = message.playerId;
+      // Adopt the room's net mode here and only here: joined-room always carries the full room
+      // state, unlike tiered snapshots. `?? null` tolerates an older server without the field.
+      this.joinedRoomNetMode = message.room.netMode ?? null;
       replaceRoster(this.roster, rosterFromRoom(message.room));
       this.latestSnapshot = {
         type: 'snapshot',
@@ -630,6 +652,7 @@ export class MultiplayerClient {
       this.latestSnapshot = null;
       this.latestSnapshotLanes = null;
       this.snapshotTierMode = 'baseline';
+      this.joinedRoomNetMode = null;
       this.battleMusicSync = null;
       this.throwEventQueue = [];
       this.catchEventQueue = [];

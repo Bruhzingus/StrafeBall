@@ -2,13 +2,14 @@ import { clamp } from '../utils/math';
 
 /**
  * User-adjustable settings that persist across reloads (localStorage). Kept tiny and framework-
- * free: gameplay code reads `settings.mouseSensitivity` directly, UI calls `setMouseSensitivity`.
+ * free: UI reads/stores `mouseSensitivity`, gameplay reads `effectiveMouseSensitivity`.
  */
 const STORAGE_KEY = 'strafeball.settings.v1';
 
 export const SENSITIVITY_MIN = 0.0006;
 export const SENSITIVITY_MAX = 0.006;
 export const SENSITIVITY_DEFAULT = 0.0022;
+export const SENSITIVITY_EFFECTIVE_SCALE = 0.5;
 export const SFX_VOLUME_DEFAULT = 0.8;
 export const MUSIC_VOLUME_DEFAULT = 0.2;
 
@@ -28,6 +29,10 @@ class SettingsStore {
   setMouseSensitivity(value: number): void {
     this.mouseSensitivity = clamp(value, SENSITIVITY_MIN, SENSITIVITY_MAX);
     this.save();
+  }
+
+  get effectiveMouseSensitivity(): number {
+    return this.mouseSensitivity * SENSITIVITY_EFFECTIVE_SCALE;
   }
 
   setSfxVolume(value: number): void {

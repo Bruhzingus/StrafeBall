@@ -7,6 +7,7 @@ exports.createIntermissionVoteState = createIntermissionVoteState;
 exports.createResetVoteState = createResetVoteState;
 exports.createStartVoteState = createStartVoteState;
 exports.registerPlayerHit = registerPlayerHit;
+const netConfig_1 = require("../netConfig");
 const PlayerSim_1 = require("./PlayerSim");
 const RuleSim_1 = require("./RuleSim");
 const MapGeometry_1 = require("./MapGeometry");
@@ -56,6 +57,7 @@ function createRoomState(options = {}) {
         hostPlayerId: options.hostPlayerId ?? null,
         phase: options.phase ?? (0, roomSettings_1.roomPhaseFromMatchStatus)(match.status),
         settings,
+        netMode: options.netMode ?? netConfig_1.ACTIVE_NET_MODE,
         match,
         players,
         balls,

@@ -133,8 +133,9 @@ export class PlayerController {
   // no added input delay). Yaw rotates the body root; pitch tilts the camera (clamped).
   private updateLook(): void {
     const { dx, dy } = this.input.consumeMouseDelta();
-    this.yaw += dx * settings.mouseSensitivity;
-    this.pitch += dy * settings.mouseSensitivity;
+    const sensitivity = settings.effectiveMouseSensitivity;
+    this.yaw += dx * sensitivity;
+    this.pitch += dy * sensitivity;
     this.pitch = Math.max(-TUNING.player.lookPitchLimitRadians, Math.min(TUNING.player.lookPitchLimitRadians, this.pitch));
     this.root.rotation.y = this.yaw;
     // Backflip view tumble: add a full backward pitch rotation over the flip (shared easing with

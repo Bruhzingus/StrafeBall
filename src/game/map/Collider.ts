@@ -23,6 +23,25 @@ export interface AABB {
   cz?: number; // center Z
   hx?: number; // half-extent along the box's local X
   hz?: number; // half-extent along the box's local Z
+  /**
+   * Optional smooth ramp prism. min/max still hold the enclosing AABB for broad-phase/removal, while
+   * ramp data lets the offline player resolver use the sloped top plane instead of treating it as a
+   * full rectangular block. Non-ramp code can ignore this and keep seeing a conservative AABB.
+   */
+  ramp?: RampCollider;
+}
+
+export interface RampCollider {
+  centerX: number;
+  baseY: number;
+  centerZ: number;
+  width: number;
+  height: number;
+  depth: number;
+  ry: number;
+  normalX: number;
+  normalY: number;
+  normalZ: number;
 }
 
 /**
@@ -55,6 +74,46 @@ export function orientedAabb(
     cz: centerZ,
     hx: halfX,
     hz: halfZ
+  };
+}
+
+/** Build the enclosing AABB + exact top-plane metadata for a smooth wedge ramp. */
+export function rampAabb(
+  centerX: number,
+  baseY: number,
+  centerZ: number,
+  width: number,
+  height: number,
+  depth: number,
+  ry: number
+): AABB {
+  const c = Math.abs(Math.cos(ry));
+  const s = Math.abs(Math.sin(ry));
+  const ex = (width / 2) * c + (depth / 2) * s;
+  const ez = (width / 2) * s + (depth / 2) * c;
+  const slope = height / Math.max(0.0001, width);
+  const cos = Math.cos(ry);
+  const sin = Math.sin(ry);
+  const nLen = Math.hypot(slope, 1);
+  return {
+    minX: centerX - ex,
+    maxX: centerX + ex,
+    minY: baseY,
+    maxY: baseY + height,
+    minZ: centerZ - ez,
+    maxZ: centerZ + ez,
+    ramp: {
+      centerX,
+      baseY,
+      centerZ,
+      width,
+      height,
+      depth,
+      ry,
+      normalX: (-slope * cos) / nLen,
+      normalY: 1 / nLen,
+      normalZ: (slope * sin) / nLen
+    }
   };
 }
 

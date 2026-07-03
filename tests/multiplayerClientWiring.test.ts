@@ -55,6 +55,23 @@ function fullInput(overrides: Partial<PlayerInput> = {}): PlayerInput {
 }
 
 describe('MultiplayerClient room-control wiring', () => {
+  it('passes the selected tick preset when creating a room', async () => {
+    const client = new MultiplayerClient('ws://test');
+    let captured: unknown = null;
+    (client as unknown as { client: { create: (roomName: string, options: unknown) => Promise<never> } }).client = {
+      create: async (roomName, options) => {
+        expect(roomName).toBe('duel');
+        captured = options;
+        throw new Error('stop before opening a fake room');
+      }
+    };
+
+    await client.createRoom('Host', '2v2', 'high');
+
+    expect(captured).toEqual({ name: 'Host', mode: '2v2', tickPresetId: 'high' });
+    expect(client.status).toBe('error');
+  });
+
   it('sends a partial update-room-settings patch', () => {
     const { client, sent } = clientWithFakeRoom();
     client.requestRoomSettings({ livesPerPlayer: 4, matPreset: 2 });

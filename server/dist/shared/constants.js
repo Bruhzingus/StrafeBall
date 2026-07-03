@@ -1,16 +1,43 @@
 "use strict";
 Object.defineProperty(exports, "__esModule", { value: true });
 exports.GAME_CONSTANTS = void 0;
+exports.deriveCombatTimingConstants = deriveCombatTimingConstants;
 const netConfig_1 = require("./netConfig");
 const CATCH_ACTIVE_MS = 220;
 const CATCH_DEFAULT_RTT_MS = 50;
 const CATCH_MAX_RTT_MS = 200;
-const CATCH_REWIND_TICK_SLOP_MS = Math.ceil(netConfig_1.SERVER_STEP_MS * 2);
-const CATCH_DEFAULT_REWIND_MS = Math.ceil(netConfig_1.INTERPOLATION_DELAY_MS + CATCH_DEFAULT_RTT_MS + CATCH_REWIND_TICK_SLOP_MS);
-const CATCH_MAX_REWIND_MS = Math.ceil(netConfig_1.INTERPOLATION_DELAY_MS + CATCH_MAX_RTT_MS + CATCH_REWIND_TICK_SLOP_MS);
-const CATCH_INPUT_GRACE_MS = Math.max(60, Math.ceil(netConfig_1.SERVER_STEP_MS * 4));
-const CATCH_HIT_GRACE_MS = Math.ceil(CATCH_MAX_REWIND_MS + Math.max(40, netConfig_1.SNAPSHOT_INTERVAL_MS + netConfig_1.SERVER_STEP_MS));
-const DEFENSE_HISTORY_MS = Math.ceil(Math.max(700, CATCH_MAX_REWIND_MS + CATCH_ACTIVE_MS + CATCH_INPUT_GRACE_MS + 100));
+/**
+ * Derive the combat lag-comp windows from a net-timing config. GAME_CONSTANTS.combat below is this
+ * function applied to the COMPILED mode's timing; a room running a different tick preset must call
+ * this with the ROOM's timing (ServerGameLoop does, per instance) or its rewind/grace windows are
+ * silently sized for the wrong tick/snapshot cadence. Field semantics are documented on the
+ * GAME_CONSTANTS.combat literal below.
+ */
+function deriveCombatTimingConstants(timing) {
+    const catchRewindTickSlopMs = Math.ceil(timing.serverStepMs * 2);
+    const catchDefaultRewindMs = Math.ceil(timing.interpolationDelayMs + CATCH_DEFAULT_RTT_MS + catchRewindTickSlopMs);
+    const catchMaxRewindMs = Math.ceil(timing.interpolationDelayMs + CATCH_MAX_RTT_MS + catchRewindTickSlopMs);
+    const catchInputGraceMs = Math.max(60, Math.ceil(timing.serverStepMs * 4));
+    const catchHitGraceMs = Math.ceil(catchMaxRewindMs + Math.max(40, timing.snapshotIntervalMs + timing.serverStepMs));
+    const defenseHistoryMs = Math.ceil(Math.max(700, catchMaxRewindMs + CATCH_ACTIVE_MS + catchInputGraceMs + 100));
+    return {
+        catchStartupMs: 0,
+        catchActiveMs: CATCH_ACTIVE_MS,
+        catchCooldownMs: 470,
+        catchDefaultRttMs: CATCH_DEFAULT_RTT_MS,
+        catchMaxRttMs: CATCH_MAX_RTT_MS,
+        catchRewindMs: catchDefaultRewindMs,
+        catchHitGraceMs,
+        defenseMaxRewindMs: catchMaxRewindMs,
+        defenseInputGraceMs: catchInputGraceMs,
+        defenseHistoryMs
+    };
+}
+const COMPILED_COMBAT_TIMING = deriveCombatTimingConstants({
+    serverStepMs: netConfig_1.SERVER_STEP_MS,
+    interpolationDelayMs: netConfig_1.INTERPOLATION_DELAY_MS,
+    snapshotIntervalMs: netConfig_1.SNAPSHOT_INTERVAL_MS
+});
 exports.GAME_CONSTANTS = {
     simulation: {
         maxDeltaSeconds: 0.05
@@ -248,27 +275,18 @@ exports.GAME_CONSTANTS = {
      * click that arrives a touch early/late around the in-cone moment still lands. This makes a
      * single well-timed click reliably catch online without becoming a free block or being spammable.
      */
-    combat: {
-        catchStartupMs: 0, // 0–30ms: earliest the attempt can catch (0 = lands on the click tick)
-        catchActiveMs: CATCH_ACTIVE_MS, // active window the swept ball must cross the cone within (covers
-        // anticipation + the rewind scan; not a "free block" — cone/range gated)
-        catchCooldownMs: 470, // ~250–400ms recovery before another attempt is allowed
-        // LAG COMPENSATION. A catch click is judged against the world the defender SAW, not the present
-        // server state. Required rewind is roughly:
-        //   render interpolation delay + client RTT + a couple of server ticks of scheduling slop.
-        // The server sizes the final attempt rewind from the client's measured RTT and clamps it to
-        // `defenseMaxRewindMs`; `catchRewindMs` is the fallback/default RTT budget.
-        catchDefaultRttMs: CATCH_DEFAULT_RTT_MS,
-        catchMaxRttMs: CATCH_MAX_RTT_MS,
-        catchRewindMs: CATCH_DEFAULT_REWIND_MS,
-        // A hit's score is REVERTED if a lag-compensated catch legitimately claims the same ball within
-        // this window (a high-ping defender whose well-timed catch arrived after the server applied the
-        // hit). Must exceed max rewind so a catch rewound that far can still cancel the hit.
-        catchHitGraceMs: CATCH_HIT_GRACE_MS,
-        defenseMaxRewindMs: CATCH_MAX_REWIND_MS, // hard cap on how far catch evaluation may rewind from "now"
-        defenseInputGraceMs: CATCH_INPUT_GRACE_MS, // slack around the rewound moment when sampling history
-        defenseHistoryMs: DEFENSE_HISTORY_MS // recent defensive/ball history retained (must exceed maxRewind+active)
-    },
+    // Combat lag-comp windows for the COMPILED net mode (see deriveCombatTimingConstants above for
+    // the formulas and CombatTiming for field docs). Key semantics:
+    //   catchStartupMs   — earliest the attempt can catch (0 = lands on the click tick)
+    //   catchActiveMs    — window the swept ball must cross the cone within (not a free block)
+    //   catchCooldownMs  — recovery before another attempt is allowed
+    //   catchRewindMs    — default lag-comp rewind: interp delay + default RTT + tick slop; the server
+    //                      sizes the real rewind from measured RTT, clamped to defenseMaxRewindMs
+    //   catchHitGraceMs  — window in which a lag-comp catch claiming the same ball REVERTS the hit
+    //   defenseHistoryMs — retained defensive/ball history (must exceed maxRewind + active)
+    // Online rooms with a host-selected tick preset use ServerGameLoop's per-instance derivation, NOT
+    // this frozen object; offline code (CatchController) legitimately keeps reading the compiled values.
+    combat: COMPILED_COMBAT_TIMING,
     dash: {
         maxCharges: 3,
         rechargeSeconds: 3,
