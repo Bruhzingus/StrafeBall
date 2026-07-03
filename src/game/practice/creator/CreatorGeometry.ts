@@ -20,6 +20,7 @@ import {
   StandardMaterial,
   Texture,
   TransformNode,
+  Vector3,
   Vector4,
   VertexData
 } from '@babylonjs/core';
@@ -83,6 +84,8 @@ export class CreatorGeometry {
 
   private gridMesh: Mesh | null = null;
   private selectionBox: Mesh | null = null;
+  // Grab sphere at the move-gizmo origin: pick it to free-drag the object along the cursor ray.
+  private centerHandle: Mesh | null = null;
   private readonly previewBuild: Array<{ dispose(): void }> = [];
   // Persistent placement-preview handles (built once per shape, moved per frame — see setPlacementPreview).
   private previewShapeSig: string | null = null;
@@ -562,6 +565,44 @@ export class CreatorGeometry {
   }
 
   // ---------------------------------------------------------------------------------------------
+  // Center drag handle (grab sphere at the move-gizmo origin)
+  // ---------------------------------------------------------------------------------------------
+
+  private ensureCenterHandle(): void {
+    if (this.centerHandle) return;
+    const mat = new StandardMaterial('creator_center_handle_mat', this.scene);
+    mat.emissiveColor = new Color3(1.0, 0.85, 0.25);
+    mat.diffuseColor = new Color3(0, 0, 0);
+    mat.specularColor = new Color3(0, 0, 0);
+    mat.disableLighting = true;
+    this.cachedMaterials.set('__center_handle', mat);
+    const sphere = MeshBuilder.CreateSphere('creator_center_handle', { diameter: 1, segments: 12 }, this.scene);
+    sphere.material = mat;
+    sphere.isPickable = true;
+    sphere.renderingGroupId = 3; // draw over world geometry so the grab point is never buried inside a mesh
+    sphere.setEnabled(false);
+    sphere.parent = this.root;
+    this.centerHandle = sphere;
+  }
+
+  /** Show the free-drag grab sphere at the move-gizmo origin (null hides it). Caller passes a scale for ~constant screen size. */
+  setCenterHandle(position: Vector3 | null, scale: number): void {
+    this.ensureCenterHandle();
+    const handle = this.centerHandle!;
+    if (!position || !this.overlaysEnabled) {
+      handle.setEnabled(false);
+      return;
+    }
+    handle.position.copyFrom(position);
+    handle.scaling.setAll(Math.max(0.05, scale));
+    handle.setEnabled(true);
+  }
+
+  getCenterHandleMesh(): Mesh | null {
+    return this.centerHandle;
+  }
+
+  // ---------------------------------------------------------------------------------------------
   // Placement preview
   // ---------------------------------------------------------------------------------------------
 
@@ -774,6 +815,7 @@ export class CreatorGeometry {
     this.overlaysEnabled = enabled;
     this.applyOverlayVisibility();
     if (!enabled && this.selectionBox) this.selectionBox.setEnabled(false);
+    if (!enabled && this.centerHandle) this.centerHandle.setEnabled(false);
   }
 
   setGridVisible(v: boolean): void {
@@ -1079,6 +1121,7 @@ export class CreatorGeometry {
     this.disposePreview();
     this.disposePerBuild();
     this.selectionBox?.dispose();
+    this.centerHandle?.dispose();
     this.gridMesh?.dispose();
     for (const mat of this.cachedMaterials.values()) mat.dispose();
     this.cachedMaterials.clear();

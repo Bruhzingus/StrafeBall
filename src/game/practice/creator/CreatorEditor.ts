@@ -150,6 +150,14 @@ export class CreatorEditor implements CreatorBridge {
   private lookMoved = 0;
   private gizmoDragging = false;
   private ignoreClickUntilMs = 0;
+  // Center-handle free drag: grab the sphere at the move-gizmo origin and carry the object with the
+  // mouse; the wheel pushes/pulls it along the view ray. Distinct from Babylon's axis-arrow drags.
+  private centerDragging = false;
+  private centerDragMoved = false;
+  private centerDragDistance = 0;
+  private centerDragOrigin: Vec3Tuple | null = null;
+  // While the cursor is inside the grab sphere the axis arrows are disabled (the sphere wins).
+  private gizmoArrowsLocked = false;
   // While Ctrl/Shift are being used as a CHORD (Ctrl+scroll height, Ctrl+S save, Shift+wheel rotate…)
   // we briefly stop them from also driving the fly camera (down / sprint), so keybinds don't overlap.
   private chordSuppressUntilMs = 0;
@@ -315,6 +323,10 @@ export class CreatorEditor implements CreatorBridge {
     if (this.mode === 'build') {
       this.updateFlyCamera(dt);
       this.updatePlacementPreviewFromPointer();
+      // Carried object follows the view even when only the CAMERA moves (WASD fly mid-drag).
+      if (this.centerDragging) this.updateCenterDrag();
+      this.syncCenterHandle();
+      this.updateGizmoArrowLock();
     } else if (this.playtestFly) {
       this.updateFlyCamera(dt);
     } else {
@@ -662,6 +674,7 @@ export class CreatorEditor implements CreatorBridge {
     window.removeEventListener('pointerup', this.onPointerUp);
     window.removeEventListener('pointermove', this.onPointerMove);
     canvas?.removeEventListener('wheel', this.onWheel);
+    this.endCenterDrag(false);
     this.flyKeys.clear();
     this.looking = false;
     this.setCanvasCursor('');
@@ -670,6 +683,13 @@ export class CreatorEditor implements CreatorBridge {
   private handleKeyDown(e: KeyboardEvent): void {
     if (this.ui.isModalOpen() || isEditableTarget(e.target)) return;
     const code = e.code;
+
+    // Escape while carrying an object by the center handle cancels the drag (restores the position).
+    if (this.centerDragging && code === 'Escape') {
+      e.preventDefault();
+      this.endCenterDrag(false);
+      return;
+    }
 
     // Held fly keys. The fly modifiers (Ctrl/Shift) are always tracked so Ctrl=down / Shift=sprint
     // work, but a NON-modifier fly key (W/A/S/D/Space) is NOT consumed for movement while Ctrl/Alt/Meta
@@ -766,6 +786,10 @@ export class CreatorEditor implements CreatorBridge {
 
   private handlePointerDown(e: PointerEvent): void {
     if (e.pointerType !== 'mouse') return;
+    if (e.button === 0 && this.tryStartCenterDrag(e)) {
+      e.preventDefault();
+      return;
+    }
     if (e.button === 2) {
       // Free-look on hold-RMB using raw mouse deltas — deliberately NOT pointer-lock based, so it can't
       // be broken by the cursor-lock suppression machinery. Hide the cursor while dragging.
@@ -779,6 +803,10 @@ export class CreatorEditor implements CreatorBridge {
   private handlePointerMove(e: PointerEvent): void {
     this.previewPointerX = e.clientX;
     this.previewPointerY = e.clientY;
+    if (this.centerDragging) {
+      this.updateCenterDrag();
+      return;
+    }
     if (this.armedModule && !this.looking) this.updatePlacementPreviewFromPointer();
     if (!this.looking) return;
     const dx = e.movementX || 0;
@@ -792,6 +820,10 @@ export class CreatorEditor implements CreatorBridge {
 
   private handlePointerUp(e: PointerEvent): void {
     if (e.pointerType !== 'mouse') return;
+    if (e.button === 0 && this.centerDragging) {
+      this.endCenterDrag(true);
+      return;
+    }
     if (e.button === 2) {
       if (this.looking) {
         this.looking = false;
@@ -822,6 +854,15 @@ export class CreatorEditor implements CreatorBridge {
   }
 
   private handleWheel(e: WheelEvent): void {
+    if (this.centerDragging) {
+      // Physgun-style carry: wheel up pushes the object away, wheel down pulls it closer. Shift = fine.
+      e.preventDefault();
+      const dir = e.deltaY < 0 ? 1 : -1;
+      const step = e.shiftKey ? 1 : Math.max(2, this.centerDragDistance * 0.08);
+      this.centerDragDistance = Math.max(2, Math.min(4000, this.centerDragDistance + dir * step));
+      this.updateCenterDrag();
+      return;
+    }
     if (!this.armedModule) {
       // No module armed: the wheel rotates the SELECTED object around Y, so a placed wall (whose thin
       // profile makes the gizmo ring hard to grab) can be spun with the wheel. Shift = fine 1° step;
@@ -904,6 +945,7 @@ export class CreatorEditor implements CreatorBridge {
     const obj = this.getSelectedObject();
     this.geometry.setSelection(this.mode === 'build' && !this.armedModule ? obj : null);
     if (this.mode === 'build') this.reattachGizmo();
+    this.syncCenterHandle();
   }
 
   private ensureGizmoManager(): GizmoManager {
@@ -922,6 +964,8 @@ export class CreatorEditor implements CreatorBridge {
     gm.positionGizmoEnabled = this.snap.gizmo === 'move';
     gm.rotationGizmoEnabled = this.snap.gizmo === 'rotate';
     gm.scaleGizmoEnabled = this.snap.gizmo === 'scale';
+    // Mode switches recreate the position gizmo (drag behaviors re-enabled) — reset the arrow lock.
+    this.gizmoArrowsLocked = false;
     if (gm.gizmos.rotationGizmo) {
       // Collision + visuals honour Y-rotation only, so expose just the yaw ring — X/Z tilt would
       // silently snap back and feel broken.
@@ -990,6 +1034,114 @@ export class CreatorEditor implements CreatorBridge {
     const safeScale = (v: number) => Math.max(CREATOR_LIMITS.minScale, Math.abs(Number.isFinite(v) ? v : 1));
     obj.scale = [safeScale(node.scaling.x), safeScale(node.scaling.y), safeScale(node.scaling.z)];
     this.commit(obj.id);
+  }
+
+  // ---------------------------------------------------------------------------------------------
+  // Center-handle free drag (grab the sphere where the 3 arrows meet; wheel = carry distance)
+  // ---------------------------------------------------------------------------------------------
+
+  /** Keep the center grab sphere glued to the selected object's gizmo origin at ~constant screen size. */
+  private syncCenterHandle(): void {
+    const cam = this.editorCamera;
+    const obj = this.mode === 'build' && !this.armedModule && this.snap.gizmo === 'move' ? this.getSelectedObject() : null;
+    const node = obj ? this.geometry.getObjectRoot(obj.id) : undefined;
+    if (!cam || !node) {
+      this.geometry.setCenterHandle(null, 0);
+      return;
+    }
+    const dist = Vector3.Distance(cam.position, node.position);
+    this.geometry.setCenterHandle(node.position, dist * 0.024);
+  }
+
+  /** True when the cursor ray currently passes through the center grab sphere (analytic, no scene pick). */
+  private pointerOverCenterHandle(): boolean {
+    const handle = this.geometry.getCenterHandleMesh();
+    const cam = this.editorCamera;
+    const canvas = this.canvas();
+    if (!handle || !handle.isEnabled() || !cam || !canvas || this.previewPointerX === null || this.previewPointerY === null) return false;
+    const rect = canvas.getBoundingClientRect();
+    if (this.previewPointerX < rect.left || this.previewPointerX > rect.right || this.previewPointerY < rect.top || this.previewPointerY > rect.bottom) return false;
+    const ray = this.scene.createPickingRay(this.previewPointerX - rect.left, this.previewPointerY - rect.top, Matrix.Identity(), cam);
+    const toCenter = handle.position.subtract(ray.origin);
+    const along = Vector3.Dot(toCenter, ray.direction);
+    if (along < 0) return false;
+    const radius = handle.scaling.x * 0.5;
+    return toCenter.lengthSquared() - along * along <= radius * radius;
+  }
+
+  /**
+   * The grab sphere OWNS its screen footprint: while the cursor is inside it (or a center drag is
+   * running) the position gizmo's drag handles are disabled, so a click there always starts the free
+   * drag instead of an axis-arrow drag. Re-enabled the moment the cursor leaves the sphere.
+   */
+  private updateGizmoArrowLock(): void {
+    const pos = this.gizmoManager?.gizmos.positionGizmo;
+    const lock = !!pos && (this.centerDragging || this.pointerOverCenterHandle());
+    if (lock === this.gizmoArrowsLocked) return;
+    this.gizmoArrowsLocked = lock;
+    if (pos) {
+      for (const g of [pos.xGizmo, pos.yGizmo, pos.zGizmo, pos.xPlaneGizmo, pos.yPlaneGizmo, pos.zPlaneGizmo]) {
+        g.dragBehavior.enabled = !lock;
+      }
+    }
+    if (!this.looking && !this.centerDragging) this.setCanvasCursor(lock ? 'grab' : '');
+  }
+
+  private tryStartCenterDrag(e: PointerEvent): boolean {
+    if (this.mode !== 'build' || this.armedModule || this.looking || this.gizmoDragging) return false;
+    const handle = this.geometry.getCenterHandleMesh();
+    const obj = this.getSelectedObject();
+    const cam = this.editorCamera;
+    const canvas = this.canvas();
+    if (!handle || !handle.isEnabled() || !obj || !cam || !canvas) return false;
+    const node = this.geometry.getObjectRoot(obj.id);
+    if (!node) return false;
+    const rect = canvas.getBoundingClientRect();
+    const ray = this.scene.createPickingRay(e.clientX - rect.left, e.clientY - rect.top, Matrix.Identity(), cam);
+    const hit = this.scene.pickWithRay(ray, (m) => m === handle);
+    if (!hit?.hit) return false;
+    this.centerDragging = true;
+    this.centerDragMoved = false;
+    this.centerDragOrigin = [obj.position[0], obj.position[1], obj.position[2]];
+    // Carry distance = how far along the view ray the object's origin sits (not the sphere-surface hit).
+    this.centerDragDistance = Math.max(2, Vector3.Dot(node.position.subtract(ray.origin), ray.direction));
+    this.ui.setDragHint(true);
+    this.setCanvasCursor('grabbing');
+    return true;
+  }
+
+  /** Reproject the carried object onto the cursor ray at the current carry distance (grid-snapped). */
+  private updateCenterDrag(): void {
+    if (!this.centerDragging) return;
+    const obj = this.getSelectedObject();
+    const node = obj ? this.geometry.getObjectRoot(obj.id) : undefined;
+    const cam = this.editorCamera;
+    const canvas = this.canvas();
+    if (!obj || !node || !cam || !canvas || this.previewPointerX === null || this.previewPointerY === null) return;
+    const rect = canvas.getBoundingClientRect();
+    const ray = this.scene.createPickingRay(this.previewPointerX - rect.left, this.previewPointerY - rect.top, Matrix.Identity(), cam);
+    const p = ray.origin.add(ray.direction.scale(this.centerDragDistance));
+    const nx = this.snapValue(p.x);
+    const ny = this.snapValue(p.y);
+    const nz = this.snapValue(p.z);
+    if (nx !== node.position.x || ny !== node.position.y || nz !== node.position.z) this.centerDragMoved = true;
+    node.position.set(nx, ny, nz);
+  }
+
+  /** End the center drag: commit the move to history, or restore the original position on cancel. */
+  private endCenterDrag(commit: boolean): void {
+    if (!this.centerDragging) return;
+    this.centerDragging = false;
+    this.ui.setDragHint(false);
+    this.setCanvasCursor(this.pointerOverCenterHandle() ? 'grab' : '');
+    this.ignoreClickUntilMs = performance.now() + 250;
+    const obj = this.getSelectedObject();
+    const node = obj ? this.geometry.getObjectRoot(obj.id) : undefined;
+    if (obj && node) {
+      if (commit && this.centerDragMoved) this.commitGizmoTransform();
+      else if (this.centerDragOrigin) node.position.set(this.centerDragOrigin[0], this.centerDragOrigin[1], this.centerDragOrigin[2]);
+    }
+    this.centerDragOrigin = null;
   }
 
   // ---------------------------------------------------------------------------------------------

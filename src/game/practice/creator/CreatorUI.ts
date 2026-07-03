@@ -130,6 +130,7 @@ export class CreatorUI {
   private readonly playtestBar: HTMLDivElement;
   private playtestFlyBtn!: HTMLButtonElement;
   private readonly toastEl: HTMLDivElement;
+  private readonly dragHint: HTMLDivElement;
   private readonly entryPrompt: HTMLDivElement;
   private readonly entryFill: HTMLDivElement;
   private readonly modal: HTMLDivElement;
@@ -205,6 +206,10 @@ export class CreatorUI {
 
     this.toastEl = el('div', 'creator-toast');
     this.host.appendChild(this.toastEl);
+
+    this.dragHint = el('div', 'creator-drag-hint');
+    this.dragHint.textContent = '🖱️ Scroll — push / pull distance';
+    this.host.appendChild(this.dragHint);
 
     this.entryPrompt = el('div', 'creator-entry-prompt');
     this.entryPrompt.innerHTML =
@@ -840,6 +845,11 @@ export class CreatorUI {
     this.toastEl.classList.add('creator-toast--visible');
     if (this.toastTimer !== null) window.clearTimeout(this.toastTimer);
     this.toastTimer = window.setTimeout(() => this.toastEl.classList.remove('creator-toast--visible'), 2600);
+  }
+
+  /** Pill shown while free-dragging an object by its center handle (the wheel adjusts carry distance). */
+  setDragHint(visible: boolean): void {
+    this.dragHint.classList.toggle('creator-drag-hint--visible', visible);
   }
 
   // --- Password modal ---

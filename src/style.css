@@ -5156,6 +5156,25 @@ html, body {
 }
 .creator-toast--visible { opacity: 1; transform: translateX(-50%) translateY(0); }
 
+.creator-drag-hint {
+  position: absolute;
+  left: 50%;
+  bottom: 132px;
+  transform: translateX(-50%) translateY(6px);
+  padding: 7px 14px;
+  border-radius: 999px;
+  background: rgba(20, 36, 64, 0.95);
+  border: 1px solid rgba(255, 214, 110, 0.5);
+  color: #ffe9b0;
+  font-size: 12px;
+  font-weight: 700;
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity 0.15s ease, transform 0.15s ease;
+  z-index: 70;
+}
+.creator-drag-hint--visible { opacity: 1; transform: translateX(-50%) translateY(0); }
+
 .creator-entry-prompt {
   position: absolute;
   left: 50%;
