@@ -1,4 +1,4 @@
-import{S as t}from"./index-bpOG-dMU.js";const e="selectionVertexShader",i=`attribute position: vec3f;
+import{S as t}from"./index-X1Fu0M86.js";const e="selectionVertexShader",i=`attribute position: vec3f;
 #ifdef INSTANCES
 attribute instanceSelectionId: f32;
 #endif

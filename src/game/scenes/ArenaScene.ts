@@ -373,9 +373,11 @@ export class ArenaScene {
     }
 
     // Apply the "disable scoreboard" setting (change-detected so it's a no-op on unchanged frames).
-    if (this.lastScoreboardVisible !== settings.showScoreboard) {
-      this.lastScoreboardVisible = settings.showScoreboard;
-      this.gym.setScoreboardsVisible(settings.showScoreboard);
+    // The movement course hides the arena scoreboards entirely; its HUD/course state is separate.
+    const scoreboardsVisible = settings.showScoreboard && !this.movementSandbox?.active;
+    if (this.lastScoreboardVisible !== scoreboardsVisible) {
+      this.lastScoreboardVisible = scoreboardsVisible;
+      this.gym.setScoreboardsVisible(scoreboardsVisible);
     }
 
     // While the Creator Sandbox owns the screen (its password modal or an active editor session) it
@@ -429,7 +431,7 @@ export class ArenaScene {
       this.music.setBattleSyncState(null);
       this.music.setLobbyMusicActive(true);
       this.step(dt);
-      this.hud.update(this.player, this.rules, this.ballManager, engine.getFps(), frameMs);
+      this.hud.update(this.player, this.rules, this.ballManager, engine.getFps(), frameMs, !this.movementSandbox?.active);
       this.nametags.update([], this.scene);
     }
     this.music.update(dt);

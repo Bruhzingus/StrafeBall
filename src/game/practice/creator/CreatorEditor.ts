@@ -43,6 +43,7 @@ import {
   layoutSpawn,
   moduleDef,
   objectDimensions,
+  objectOpacity,
   objectWorldAabb,
   scaleForDimensions,
   textureDef,
@@ -995,11 +996,10 @@ export class CreatorEditor implements CreatorBridge {
   // Layout edits
   // ---------------------------------------------------------------------------------------------
 
-  /** World-space positions of the visible ball/bot/dummy spawner markers for the playtest host. */
+  /** World-space positions of the ball/bot/dummy spawner markers for the playtest host. */
   private collectSpawnerMarkers(): CreatorSpawnerMarkers {
     const markers: CreatorSpawnerMarkers = { balls: [], bots: [], dummies: [] };
     for (const o of this.layout.objects) {
-      if (o.visible === false) continue;
       const [x, y, z] = o.position;
       if (o.type === 'ball_spawn') markers.balls.push({ x, y, z });
       else if (o.type === 'bot_spawn') markers.bots.push({ x, y, z, charge: /charge/i.test(o.metadata?.label ?? '') });
@@ -1137,7 +1137,7 @@ export class CreatorEditor implements CreatorBridge {
       scale: [...this.previewScale],
       material: def.material,
       collision: def.collision,
-      visible: true,
+      opacity: 1,
       wallrunEnabled: true,
       metadata: cloneMetadata(def.defaultMetadata)
     };
@@ -1180,7 +1180,9 @@ export class CreatorEditor implements CreatorBridge {
     if (this.atObjectLimit()) return;
     const copy: CreatorLayoutObject = cloneLayout({ version: 0, name: '', updatedAt: '', ground: this.layout.ground, objects: [obj] }).objects[0];
     copy.id = createObjectId(obj.type);
-    copy.position = [obj.position[0] + Math.max(2, this.snap.gridSize), obj.position[1], obj.position[2] + Math.max(2, this.snap.gridSize)];
+    // Spawn the duplicate exactly on top of its source (same position) so it can be dragged out
+    // rather than appearing offset a grid step away.
+    copy.position = [...obj.position];
     if (copy.type === 'spawn_point' && copy.metadata) copy.metadata.defaultSpawn = false;
     this.layout.objects.push(copy);
     this.selectedId = copy.id;
@@ -1265,10 +1267,11 @@ export class CreatorEditor implements CreatorBridge {
     this.commit(obj.id);
   }
 
-  setSelectedVisible(value: boolean): void {
+  setSelectedOpacity(value: number): void {
     const obj = this.getSelectedObject();
     if (!obj) return;
-    obj.visible = value;
+    obj.opacity = Number.isFinite(value) ? Math.max(0, Math.min(1, value)) : 1;
+    delete obj.visible;
     this.commit(obj.id);
   }
 
@@ -1404,11 +1407,12 @@ export class CreatorEditor implements CreatorBridge {
     this.focusSelected();
   }
 
-  /** Toggle an object's visibility from the outliner. Hidden objects stay listed so they're recoverable. */
+  /** Toggle an object's opacity from the outliner. Transparent objects stay listed and selectable. */
   toggleObjectVisibility(id: string): void {
     const obj = this.findObject(id);
     if (!obj) return;
-    obj.visible = obj.visible === false; // was hidden → show; was visible → hide
+    obj.opacity = objectOpacity(obj) <= 0 ? 1 : 0;
+    delete obj.visible;
     this.commit(this.selectedId);
   }
 

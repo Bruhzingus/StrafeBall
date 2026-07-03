@@ -12,6 +12,7 @@ import {
   scaleForDimensions,
   objectCollisionBoxes,
   objectCollisionRamps,
+  objectOpacity,
   orientedBoxAabb,
   cloneLayout,
   type CreatorLayout
@@ -137,6 +138,23 @@ describe('CreatorLayout — default + validation', () => {
     expect(layout.objects[0].wallrunEnabled).toBe(true);
     expect(layout.objects[1].wallrunEnabled).toBe(false);
   });
+
+  it('migrates old visible flags to opacity and clamps imported opacity', () => {
+    const { layout } = validateLayout({
+      objects: [
+        { type: 'long_wall', position: [0, 0, 0], visible: true },
+        { type: 'long_wall', position: [10, 0, 0], visible: false },
+        { type: 'long_wall', position: [20, 0, 0], opacity: 0.4 },
+        { type: 'long_wall', position: [30, 0, 0], opacity: 99 },
+        { type: 'long_wall', position: [40, 0, 0] }
+      ]
+    });
+
+    expect(layout.objects.map((o) => o.opacity)).toEqual([1, 0, 0.4, 1, 1]);
+    expect(layout.objects.every((o) => o.visible === undefined)).toBe(true);
+    expect(objectOpacity({ visible: false })).toBe(0);
+    expect(objectOpacity({ opacity: 0.25, visible: false })).toBe(0.25);
+  });
 });
 
 describe('CreatorLayout — collision sub-boxes', () => {
@@ -184,15 +202,17 @@ describe('CreatorLayout — collision sub-boxes', () => {
     }
   });
 
-  it('collision-disabled and invisible objects contribute no collision boxes', () => {
+  it('collision-disabled objects contribute no collision boxes, but opacity does not affect collision', () => {
     const { layout } = validateLayout({
       objects: [
         { type: 'long_wall', position: [0, 0, 0], collision: false },
-        { type: 'long_wall', position: [10, 0, 0], visible: false }
+        { type: 'long_wall', position: [10, 0, 0], opacity: 0 },
+        { type: 'long_wall', position: [20, 0, 0], visible: false }
       ]
     });
     expect(objectCollisionBoxes(layout.objects[0]).length).toBe(0);
-    expect(objectCollisionBoxes(layout.objects[1]).length).toBe(0);
+    expect(objectCollisionBoxes(layout.objects[1]).length).toBe(1);
+    expect(objectCollisionBoxes(layout.objects[2]).length).toBe(1);
   });
 
   it('kill_block is a known walk-through volume (no collision boxes, has an AABB for selection)', () => {

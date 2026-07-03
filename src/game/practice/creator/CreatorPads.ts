@@ -45,19 +45,23 @@ export const PAD_TUNING = {
   speedBoostUp: 3,
   /** Seconds an impulse pad (bounce/speed) stays disarmed after firing while the player stays on it. */
   retriggerSeconds: 0.35,
-  /** How far above the pad base the player's feet can be and still count as standing on it (m). */
+  /** How far above the pad top the player's feet can be and still count as touching it (m). */
   activationHeight: 1.7,
   /** How far below the pad base the feet can be and still count (small slack for uneven ground). */
-  activationDepth: 0.6
+  activationDepth: 0.6,
+  /** Long moves are teleports/free-fly landings, not a physical step across a pad. */
+  maxSweepDistance: 24
 } as const;
 
 const DEG2RAD = Math.PI / 180;
+type PadProbePoint = { x: number; y: number; z: number };
 
 export class CreatorPads {
   // Impulse pads disarm after firing; the timer counts down while the player stays on the pad and is
   // cleared the moment they step off, so leaving + returning re-fires immediately.
   private readonly cooldownById = new Map<string, number>();
   private readonly occupied = new Set<string>();
+  private previousPlayerPosition: PadProbePoint | null = null;
   // Most-recently-touched checkpoint (kill blocks respawn you here, or at spawn if none touched yet).
   private lastCheckpoint: { x: number; y: number; z: number; yaw: number } | null = null;
 
@@ -65,6 +69,7 @@ export class CreatorPads {
   reset(): void {
     this.cooldownById.clear();
     this.occupied.clear();
+    this.previousPlayerPosition = null;
     this.lastCheckpoint = null;
   }
 
@@ -77,11 +82,12 @@ export class CreatorPads {
     }
 
     const p = player.root.position;
+    const previous = this.previousPlayerPosition;
     const r = TUNING.player.radius;
 
     // Checkpoints: touching a checkpoint gate's trigger volume records it as the respawn point.
     for (const obj of layout.objects) {
-      if (obj.type !== 'checkpoint_gate' || obj.visible === false) continue;
+      if (obj.type !== 'checkpoint_gate') continue;
       const trig = obj.metadata?.trigger;
       const dims = objectDimensions(obj);
       const halfW = (trig ? trig.width : dims[0]) / 2;
@@ -95,11 +101,12 @@ export class CreatorPads {
 
     // Kill blocks: entering one resets you to the last checkpoint (or spawn). Skip pads this frame.
     for (const obj of layout.objects) {
-      if (obj.type !== 'kill_block' || obj.visible === false) continue;
+      if (obj.type !== 'kill_block') continue;
       const [w, h, d] = objectDimensions(obj);
       if (this.insideOrientedBox(obj, p.x, p.y, p.z, w / 2, h, d / 2, r)) {
         const target = this.lastCheckpoint ?? layoutSpawn(layout);
         player.teleportTo(new Vector3(target.x, target.y, target.z), target.yaw, 0);
+        this.rememberPlayerPosition(player.root.position);
         return;
       }
     }
@@ -108,8 +115,8 @@ export class CreatorPads {
 
     for (const obj of layout.objects) {
       const kind = padKind(obj.type);
-      if (!kind || obj.visible === false) continue;
-      if (!this.isOnPad(obj, p.x, p.y, p.z, r)) continue;
+      if (!kind) continue;
+      if (!this.isOnPad(obj, p.x, p.y, p.z, r, previous)) continue;
       stillOn.add(obj.id);
 
       if (kind === 'stamina') {
@@ -133,6 +140,7 @@ export class CreatorPads {
     }
     this.occupied.clear();
     for (const id of stillOn) this.occupied.add(id);
+    this.rememberPlayerPosition(p);
   }
 
   /** Is the player's point inside an oriented (Y-rotated) box volume based at the object (checkpoint/kill)? */
@@ -149,19 +157,69 @@ export class CreatorPads {
     return Math.abs(lx) <= halfW + radius && Math.abs(lz) <= halfD + radius;
   }
 
-  /** Oriented footprint test: is the player standing within (and roughly at the height of) the pad? */
-  private isOnPad(obj: CreatorLayoutObject, px: number, py: number, pz: number, radius: number): boolean {
+  /**
+   * Oriented footprint test. Uses the current point plus a short XZ sweep from the previous point so a
+   * fast render tick cannot skip over a walk-over pad.
+   */
+  private isOnPad(obj: CreatorLayoutObject, px: number, py: number, pz: number, radius: number, previous: PadProbePoint | null): boolean {
     const base = obj.position[1];
-    if (py > base + PAD_TUNING.activationHeight || py < base - PAD_TUNING.activationDepth) return false;
-    const [w, , d] = objectDimensions(obj);
+    const [w, h, d] = objectDimensions(obj);
+    const minY = base - PAD_TUNING.activationDepth;
+    const maxY = base + Math.max(0, h) + PAD_TUNING.activationHeight;
+    const probeMinY = previous ? Math.min(previous.y, py) : py;
+    const probeMaxY = previous ? Math.max(previous.y, py) : py;
+    if (probeMaxY < minY || probeMinY > maxY) return false;
+
+    const halfW = w / 2 + radius;
+    const halfD = d / 2 + radius;
+    const current = this.padLocalPoint(obj, px, pz);
+    if (this.localPointInPad(current.x, current.z, halfW, halfD)) return true;
+
+    if (!previous) return false;
+    const sweepDx = px - previous.x;
+    const sweepDz = pz - previous.z;
+    if (sweepDx * sweepDx + sweepDz * sweepDz > PAD_TUNING.maxSweepDistance * PAD_TUNING.maxSweepDistance) {
+      return false;
+    }
+    const prev = this.padLocalPoint(obj, previous.x, previous.z);
+    return this.localSegmentIntersectsPad(prev.x, prev.z, current.x, current.z, halfW, halfD);
+  }
+
+  private padLocalPoint(obj: CreatorLayoutObject, px: number, pz: number): { x: number; z: number } {
     const ry = (obj.rotation[1] ?? 0) * DEG2RAD;
     const cos = Math.cos(ry);
     const sin = Math.sin(ry);
     const dx = px - obj.position[0];
     const dz = pz - obj.position[2];
-    const lx = cos * dx - sin * dz;
-    const lz = sin * dx + cos * dz;
-    return Math.abs(lx) <= w / 2 + radius && Math.abs(lz) <= d / 2 + radius;
+    return { x: cos * dx - sin * dz, z: sin * dx + cos * dz };
+  }
+
+  private localPointInPad(x: number, z: number, halfW: number, halfD: number): boolean {
+    return Math.abs(x) <= halfW && Math.abs(z) <= halfD;
+  }
+
+  private localSegmentIntersectsPad(x0: number, z0: number, x1: number, z1: number, halfW: number, halfD: number): boolean {
+    let tMin = 0;
+    let tMax = 1;
+    const clipAxis = (start: number, end: number, min: number, max: number): boolean => {
+      const delta = end - start;
+      if (Math.abs(delta) < 1e-6) return start >= min && start <= max;
+      let a = (min - start) / delta;
+      let b = (max - start) / delta;
+      if (a > b) {
+        const swap = a;
+        a = b;
+        b = swap;
+      }
+      tMin = Math.max(tMin, a);
+      tMax = Math.min(tMax, b);
+      return tMin <= tMax;
+    };
+    return clipAxis(x0, x1, -halfW, halfW) && clipAxis(z0, z1, -halfD, halfD);
+  }
+
+  private rememberPlayerPosition(position: Vector3): void {
+    this.previousPlayerPosition = { x: position.x, y: position.y, z: position.z };
   }
 
   private applyBounce(obj: CreatorLayoutObject, player: PlayerController): void {

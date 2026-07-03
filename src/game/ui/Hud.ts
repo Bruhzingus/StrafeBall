@@ -332,7 +332,7 @@ export class Hud {
     this.musicHud.update(state);
   }
 
-  update(player: PlayerController, rules: MatchRules, ballManager: BallManager, fps: number, frameMs: number): void {
+  update(player: PlayerController, rules: MatchRules, ballManager: BallManager, fps: number, frameMs: number, showPracticeScoreboard = true): void {
     // No countdown in offline practice.
     this.updateCountdown('playing', 0);
     this.hearts.style.display = 'none';
@@ -400,13 +400,18 @@ export class Hud {
     // Practice uses the same whiteboard scoreboard as real matches (consistent UI everywhere).
     // It's a 1v1: Blue = You, Red = opponent. The old dark STRAFEBALL panel is retired here and
     // now only carries the boundary status/message line beneath the board.
-    this.teamScoreboard.update({
-      mode: '1v1',
-      halfDropSecondsRemaining: rules.boundary.noBoundaries ? 0 : noBoundariesTime,
-      noBoundaries: rules.boundary.noBoundaries,
-      blueTeam: { name: 'BLUE TEAM', color: 'blue', score: rules.scoring.playerHits, players: ['You'] },
-      redTeam: { name: 'RED TEAM', color: 'red', score: rules.boundary.opponentPenaltyHits, players: ['Player 2'] }
-    });
+    if (showPracticeScoreboard) {
+      this.teamScoreboard.setVisible(true);
+      this.teamScoreboard.update({
+        mode: '1v1',
+        halfDropSecondsRemaining: rules.boundary.noBoundaries ? 0 : noBoundariesTime,
+        noBoundaries: rules.boundary.noBoundaries,
+        blueTeam: { name: 'BLUE TEAM', color: 'blue', score: rules.scoring.playerHits, players: ['You'] },
+        redTeam: { name: 'RED TEAM', color: 'red', score: rules.boundary.opponentPenaltyHits, players: ['Player 2'] }
+      });
+    } else {
+      this.teamScoreboard.setVisible(false);
+    }
     // The whiteboard is the only scoreboard now — the old dark top-center strip is retired.
     this.topCenter.style.display = 'none';
 

@@ -33,6 +33,7 @@ import {
   committedCourseLayout,
   isSolidModule,
   layoutSpawn,
+  objectOpacity,
   objectRampPrisms,
   objectSolidBoxes,
   type CreatorLayout,
@@ -352,16 +353,20 @@ export class MovementSandbox implements MovementWorld {
     // its own). Each module's oriented sub-boxes become grid boxes; collision + wall-run faces are
     // derived from the same data, so the live yard matches what you build/playtest in the editor.
     for (const obj of this.courseLayout.objects) {
-      if (!isSolidModule(obj.type) || obj.visible === false) continue;
+      if (!isSolidModule(obj.type)) continue;
+      const opacity = objectOpacity(obj);
+      if (opacity <= 0.001) continue;
       const mat = this.materialFor(styleForMaterial(obj.material));
       for (const ramp of objectRampPrisms(obj)) {
         const mesh = this.rampMesh(`sandbox_ramp_${obj.id}`, ramp.w, ramp.h, ramp.d, mat);
         mesh.position.set(ramp.cx, ramp.baseY, ramp.cz);
         mesh.rotation.y = ramp.ry;
+        mesh.visibility = opacity;
       }
       for (const box of objectSolidBoxes(obj)) {
         const mesh = this.gridBox(`sandbox_wall_${obj.id}`, box.cx, box.cy, box.cz, box.w, box.h, box.d, mat);
         mesh.rotation.y = box.ry;
+        mesh.visibility = opacity;
       }
     }
   }

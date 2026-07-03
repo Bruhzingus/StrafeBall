@@ -5113,6 +5113,21 @@ html, body {
   font-size: 11px;
 }
 .creator-check { display: flex; align-items: center; gap: 6px; cursor: pointer; color: #cdd9ef; font-size: 11px; }
+.creator-opacity-control {
+  width: 100%;
+  align-items: center;
+}
+.creator-opacity-control input[type="range"] {
+  flex: 1 1 auto;
+  min-width: 0;
+}
+.creator-opacity-value {
+  flex: 0 0 38px;
+  text-align: right;
+  color: #eaf1ff;
+  font-size: 11px;
+  font-weight: 800;
+}
 
 .creator-help {
   font-size: 10px;

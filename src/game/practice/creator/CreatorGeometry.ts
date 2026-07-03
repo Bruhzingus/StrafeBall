@@ -32,6 +32,7 @@ import {
   moduleLocalBoxes,
   objectCollisionBoxes,
   objectCollisionRamps,
+  objectOpacity,
   objectRampPrisms,
   objectWorldAabb,
   textureDef,
@@ -93,8 +94,8 @@ export class CreatorGeometry {
   private previewLocalMinY = 0;
   private readonly triggerMeshes: Mesh[] = [];
   private readonly collisionMeshes: Mesh[] = [];
-  // Object roots for gameplay-INVISIBLE objects: shown (ghosted) + selectable in Build, hidden in Playtest.
-  private readonly hiddenObjectNodes: TransformNode[] = [];
+  // Invisible editor-only pick volumes so 0%-opacity objects remain clickable in Build.
+  private readonly opacityPickMeshes: Mesh[] = [];
 
   private gridVisible = true;
   private triggersVisible = true;
@@ -122,24 +123,14 @@ export class CreatorGeometry {
     this.objectRoots.clear();
     this.triggerMeshes.length = 0;
     this.collisionMeshes.length = 0;
-    this.hiddenObjectNodes.length = 0;
+    this.opacityPickMeshes.length = 0;
 
     this.ensureGrid();
     this.ensureSelectionBox();
     this.positionGrid(layout);
 
     for (const obj of layout.objects) {
-      // Gameplay-invisible objects are STILL built for the editor (ghosted + selectable). They only
-      // vanish in Playtest — toggled off with the overlays. This is what makes an object you hid
-      // recoverable/clickable in the viewport instead of only via the Outliner.
       this.buildObject(obj);
-      if (obj.visible === false) {
-        const node = this.objectRoots.get(obj.id);
-        if (node) {
-          for (const mesh of node.getChildMeshes(false)) mesh.visibility = 0.3;
-          this.hiddenObjectNodes.push(node);
-        }
-      }
     }
 
     this.buildOverlays(layout);
@@ -162,6 +153,27 @@ export class CreatorGeometry {
     } else {
       this.buildMarker(obj, node);
     }
+    this.applyObjectOpacity(obj, node);
+  }
+
+  private applyObjectOpacity(obj: CreatorLayoutObject, node: TransformNode): void {
+    const opacity = objectOpacity(obj);
+    for (const mesh of node.getChildMeshes(false)) mesh.visibility = opacity;
+    if (opacity <= 0.001) this.buildOpacityPickProxy(obj);
+  }
+
+  private buildOpacityPickProxy(obj: CreatorLayoutObject): void {
+    const a = objectWorldAabb(obj);
+    const w = Math.max(0.1, a.maxX - a.minX);
+    const h = Math.max(0.1, a.maxY - a.minY);
+    const d = Math.max(0.1, a.maxZ - a.minZ);
+    const proxy = MeshBuilder.CreateBox(`creator_pick_${obj.id}`, { width: w, height: h, depth: d }, this.scene);
+    proxy.position.set((a.minX + a.maxX) / 2, (a.minY + a.maxY) / 2, (a.minZ + a.maxZ) / 2);
+    proxy.material = this.opacityPickMaterial();
+    proxy.parent = this.root;
+    this.opacityPickMeshes.push(proxy);
+    this.perBuild.push(proxy);
+    this.tagPickable(proxy, obj.id);
   }
 
   private buildSolid(obj: CreatorLayoutObject, node: TransformNode): void {
@@ -169,19 +181,19 @@ export class CreatorGeometry {
     if (!def) return;
     const texId = obj.texture && textureDef(obj.texture) ? obj.texture : null;
     const mat = texId ? this.texturedMaterial(texId) : this.terrainMaterial(obj.material ?? 'concrete');
+    const cell = texId ? textureDef(texId)!.tile : GRID_CELL_METRES;
     if (def.shape === 'ramp') {
       const [w, h, d] = def.baseSize;
-      const mesh = this.rampMesh(`creator_${obj.id}_ramp`, w, h, d, mat);
+      const mesh = this.rampMesh(`creator_${obj.id}_ramp`, w, h, d, mat, cell, obj.scale);
       mesh.parent = node;
       this.tagPickable(mesh, obj.id);
       return;
     }
-    // For real image textures, tile to the texture's metre size and account for the object's scale so a
-    // stretched wall keeps a consistent texel density (the abstract grid keeps its per-build local UVs).
-    const cell = texId ? textureDef(texId)!.tile : GRID_CELL_METRES;
+    // Per-mesh UVs use scaled world dimensions, so resizing objects keeps material density consistent
+    // without touching cached material texture scales shared by other objects.
     const boxes = moduleLocalBoxes(obj.type);
     boxes.forEach((b, i) => {
-      const mesh = this.gridBox(`creator_${obj.id}_${i}`, b.s[0], b.s[1], b.s[2], mat, cell, texId ? obj.scale : [1, 1, 1]);
+      const mesh = this.gridBox(`creator_${obj.id}_${i}`, b.s[0], b.s[1], b.s[2], mat, cell, obj.scale);
       mesh.position.set(b.o[0], b.o[1], b.o[2]);
       mesh.parent = node;
       this.tagPickable(mesh, obj.id);
@@ -337,9 +349,9 @@ export class CreatorGeometry {
   }
 
   private attachLabel(obj: CreatorLayoutObject, node: TransformNode, label: ResolvedLabelText, y: number): void {
-    // Hidden objects' labels are skipped: the label is parented to the (always-on) root for billboarding,
     // so it can't be toggled off with the object node — and a hidden object shouldn't show a floating label.
-    if (obj.visible === false) return;
+    const opacity = objectOpacity(obj);
+    if (opacity <= 0.001) return;
     if (obj.metadata?.labelVisible === false) return;
     const mesh = this.signPlane(`creator_${obj.id}_label`, label.text, {
       color: obj.metadata?.labelColor ?? 'white',
@@ -355,6 +367,7 @@ export class CreatorGeometry {
     mesh.position.set(obj.position[0], obj.position[1] + y * scaleY + offsetY, obj.position[2]);
     mesh.parent = this.root;
     mesh.billboardMode = Mesh.BILLBOARDMODE_ALL;
+    mesh.visibility = opacity;
     mesh.isPickable = false;
     this.perBuild.push(mesh);
   }
@@ -376,9 +389,13 @@ export class CreatorGeometry {
   }
 
   /** Smooth ramp wedge: base sits at local Y=0, low edge at -X, high edge at +X. */
-  private rampMesh(name: string, w: number, h: number, d: number, mat: StandardMaterial): Mesh {
+  private rampMesh(name: string, w: number, h: number, d: number, mat: StandardMaterial, cell = GRID_CELL_METRES, scale: readonly number[] = [1, 1, 1]): Mesh {
     const hw = w / 2;
     const hd = d / 2;
+    const sx = scale[0] ?? 1, sy = scale[1] ?? 1, sz = scale[2] ?? 1;
+    const ww = w * sx, hh = h * sy, dd = d * sz;
+    const slopedW = Math.hypot(ww, hh);
+    const u = (v: number) => Math.max(1, v / cell);
     const positions: number[] = [];
     const indices: number[] = [];
     const uvs: number[] = [];
@@ -394,23 +411,23 @@ export class CreatorGeometry {
     };
     addFace(
       [[-hw, 0, -hd], [-hw, 0, hd], [hw, h, hd], [hw, h, -hd]],
-      [[0, 0], [0, d / GRID_CELL_METRES], [w / GRID_CELL_METRES, d / GRID_CELL_METRES], [w / GRID_CELL_METRES, 0]]
+      [[0, 0], [0, u(dd)], [u(slopedW), u(dd)], [u(slopedW), 0]]
     );
     addFace(
       [[-hw, 0, -hd], [hw, 0, -hd], [hw, 0, hd], [-hw, 0, hd]],
-      [[0, 0], [w / GRID_CELL_METRES, 0], [w / GRID_CELL_METRES, d / GRID_CELL_METRES], [0, d / GRID_CELL_METRES]]
+      [[0, 0], [u(ww), 0], [u(ww), u(dd)], [0, u(dd)]]
     );
     addFace(
       [[hw, 0, -hd], [hw, h, -hd], [hw, h, hd], [hw, 0, hd]],
-      [[0, 0], [h / GRID_CELL_METRES, 0], [h / GRID_CELL_METRES, d / GRID_CELL_METRES], [0, d / GRID_CELL_METRES]]
+      [[0, 0], [u(hh), 0], [u(hh), u(dd)], [0, u(dd)]]
     );
     addFace(
       [[-hw, 0, -hd], [hw, h, -hd], [hw, 0, -hd]],
-      [[0, 0], [w / GRID_CELL_METRES, h / GRID_CELL_METRES], [w / GRID_CELL_METRES, 0]]
+      [[0, 0], [u(ww), u(hh)], [u(ww), 0]]
     );
     addFace(
       [[-hw, 0, hd], [hw, 0, hd], [hw, h, hd]],
-      [[0, 0], [w / GRID_CELL_METRES, 0], [w / GRID_CELL_METRES, h / GRID_CELL_METRES]]
+      [[0, 0], [u(ww), 0], [u(ww), u(hh)]]
     );
 
     const normals: number[] = [];
@@ -782,8 +799,7 @@ export class CreatorGeometry {
     if (this.gridMesh) this.gridMesh.setEnabled(this.gridVisible);
     for (const m of this.triggerMeshes) m.setEnabled(on && this.triggersVisible);
     for (const m of this.collisionMeshes) m.setEnabled(on && this.collisionVisible);
-    // Gameplay-invisible objects show (ghosted) only in Build; they disappear in Playtest.
-    for (const n of this.hiddenObjectNodes) n.setEnabled(on);
+    for (const m of this.opacityPickMeshes) m.setEnabled(on);
   }
 
   // ---------------------------------------------------------------------------------------------
@@ -874,6 +890,20 @@ export class CreatorGeometry {
     mat.backFaceCulling = false;
     mat.disableLighting = true;
     this.cachedMaterials.set(name, mat);
+    return mat;
+  }
+
+  private opacityPickMaterial(): StandardMaterial {
+    const cached = this.cachedMaterials.get('__opacity_pick');
+    if (cached) return cached;
+    const mat = new StandardMaterial('creator_opacity_pick_mat', this.scene);
+    mat.diffuseColor = new Color3(0, 0, 0);
+    mat.emissiveColor = new Color3(0, 0, 0);
+    mat.specularColor = new Color3(0, 0, 0);
+    mat.alpha = 0;
+    mat.disableLighting = true;
+    mat.transparencyMode = Material.MATERIAL_ALPHABLEND;
+    this.cachedMaterials.set('__opacity_pick', mat);
     return mat;
   }
 

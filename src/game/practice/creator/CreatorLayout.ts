@@ -61,6 +61,9 @@ export interface CreatorLayoutObject {
   texture?: string;
   color?: string;
   collision?: boolean;
+  /** Visual alpha, 0=invisible and 1=fully opaque. Does not affect collision or triggers. */
+  opacity?: number;
+  /** Back-compat only: old layouts used this for visual hiding. New saves use opacity. */
   visible?: boolean;
   /** Whether this collidable solid contributes wall-run faces. Missing = enabled for old layouts. */
   wallrunEnabled?: boolean;
@@ -123,6 +126,13 @@ export const CREATOR_LIMITS = {
   maxPadStrength: 20
 } as const;
 
+/** Modern visual alpha for a Creator object. Old `visible:false` layouts migrate to 0 opacity. */
+export function objectOpacity(obj: { opacity?: unknown; visible?: unknown }): number {
+  if (typeof obj.opacity === 'number' && Number.isFinite(obj.opacity)) return clampNumber(obj.opacity, 0, 1, 1);
+  if (typeof obj.visible === 'boolean') return obj.visible ? 1 : 0;
+  return 1;
+}
+
 // ---------------------------------------------------------------------------------------------
 // Material palette (restricted, from the existing safe sandbox styles)
 // ---------------------------------------------------------------------------------------------
@@ -142,6 +152,9 @@ export const CREATOR_MATERIALS: readonly CreatorMaterialDef[] = [
   { id: 'pad', label: 'Blue Deck', rgb: [0.14, 0.27, 0.52] },
   { id: 'accent', label: 'Teal Accent', rgb: [0.1, 0.4, 0.52] },
   { id: 'recovery', label: 'Recovery Green', rgb: [0.16, 0.42, 0.24] },
+  { id: 'orange_box_prototype', label: 'Orange Box Prototype', rgb: [0.96, 0.42, 0.08] },
+  { id: 'yellow_box_prototype', label: 'Yellow Box Prototype', rgb: [0.95, 0.76, 0.08] },
+  { id: 'purple_box_prototype', label: 'Purple Box Prototype', rgb: [0.5, 0.28, 0.86] },
   { id: 'boundary', label: 'Boundary', rgb: [0.3, 0.33, 0.38] },
   { id: 'marker_blue', label: 'Marker Blue', rgb: [0.2, 0.45, 0.95], solid: true },
   { id: 'marker_green', label: 'Marker Green', rgb: [0.2, 0.8, 0.4], solid: true },
@@ -411,16 +424,15 @@ function localBoxes(def: CreatorModuleDef): LocalBox[] {
   }
 }
 
-/** Solid oriented sub-boxes of an object in WORLD space (empty for markers / hidden / no-collision). */
+/** Solid oriented sub-boxes of an object in WORLD space (empty for markers / no-collision). */
 export function objectCollisionBoxes(obj: CreatorLayoutObject): OrientedBox[] {
   const def = MODULE_BY_TYPE.get(obj.type);
   if (!def || !isSolidModule(obj.type)) return [];
-  if (obj.visible === false) return [];
   if (obj.collision === false) return [];
   return objectSolidBoxes(obj);
 }
 
-/** Smooth ramp prisms of an object in WORLD space, regardless of collision/visibility flags. */
+/** Smooth ramp prisms of an object in WORLD space, regardless of collision/opacity flags. */
 export function objectRampPrisms(obj: CreatorLayoutObject): RampPrism[] {
   const def = MODULE_BY_TYPE.get(obj.type);
   if (!def || def.shape !== 'ramp') return [];
@@ -451,7 +463,6 @@ export function objectRampPrisms(obj: CreatorLayoutObject): RampPrism[] {
 export function objectCollisionRamps(obj: CreatorLayoutObject): RampPrism[] {
   const def = MODULE_BY_TYPE.get(obj.type);
   if (!def || !isSolidModule(obj.type)) return [];
-  if (obj.visible === false) return [];
   if (obj.collision === false) return [];
   return objectRampPrisms(obj);
 }
@@ -653,7 +664,7 @@ export function sanitizeObject(raw: unknown): CreatorLayoutObject | null {
     ],
     material: CREATOR_MATERIAL_IDS.includes(String(o.material)) ? String(o.material) : def.material,
     collision: typeof o.collision === 'boolean' ? o.collision : def.collision,
-    visible: typeof o.visible === 'boolean' ? o.visible : true,
+    opacity: objectOpacity(o),
     wallrunEnabled: typeof o.wallrunEnabled === 'boolean' ? o.wallrunEnabled : true
   };
   if (typeof o.name === 'string') obj.name = sanitizeText(o.name, CREATOR_LIMITS.maxNameLength);
@@ -805,7 +816,7 @@ export function defaultCreatorLayout(): CreatorLayout {
       scale: scaleForDimensions('wallrun_wall', [wall.size.width, wall.size.height, wall.size.depth]),
       material: wallStyleToMaterial[wall.style],
       collision: true,
-      visible: true
+      opacity: 1
     });
   }
 
@@ -828,7 +839,7 @@ export function defaultCreatorLayout(): CreatorLayout {
       scale: scaleForDimensions('boundary_wall', b.dims),
       material: 'boundary',
       collision: true,
-      visible: true
+      opacity: 1
     });
   }
 
@@ -842,7 +853,7 @@ export function defaultCreatorLayout(): CreatorLayout {
     scale: [1, 1, 1],
     material: 'marker_green',
     collision: false,
-    visible: true,
+    opacity: 1,
     metadata: { defaultSpawn: true }
   });
   objects.push({
@@ -854,7 +865,7 @@ export function defaultCreatorLayout(): CreatorLayout {
     scale: [1, 1, 1],
     material: 'marker_blue',
     collision: false,
-    visible: true,
+    opacity: 1,
     metadata: { yawDeg: 0, label: 'LEAVE' }
   });
 

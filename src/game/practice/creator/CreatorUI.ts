@@ -18,6 +18,7 @@ import {
   CreatorLayoutObject,
   CreatorObjectMetadata,
   moduleDef,
+  objectOpacity,
   objectDimensions,
   type CreatorModuleCategory
 } from './CreatorLayout';
@@ -85,7 +86,7 @@ export interface CreatorBridge {
   setSelectedMaterial(id: string): void;
   setSelectedTexture(id: string | null): void;
   setSelectedCollision(value: boolean): void;
-  setSelectedVisible(value: boolean): void;
+  setSelectedOpacity(value: number): void;
   setSelectedWallrun(value: boolean): void;
   setSelectedMetadata(patch: Partial<CreatorObjectMetadata>): void;
   duplicateSelected(): void;
@@ -512,14 +513,14 @@ export class CreatorUI {
       this.inspectorEl.appendChild(texRow);
     }
 
-    // Collision + visible toggles
+    // Collision + opacity + wallrun controls
     const toggles = el('div', 'creator-field-row');
     toggles.append(
       this.checkbox('Collision', obj.collision !== false, (v) => this.bridge.setSelectedCollision(v)),
-      this.checkbox('Visible', obj.visible !== false, (v) => this.bridge.setSelectedVisible(v)),
       this.checkbox('Wallrun', obj.wallrunEnabled !== false, (v) => this.bridge.setSelectedWallrun(v))
     );
     this.inspectorEl.appendChild(toggles);
+    this.inspectorEl.appendChild(this.opacitySlider(objectOpacity(obj), (v) => this.bridge.setSelectedOpacity(v)));
 
     // Marker-specific metadata
     if (def && def.category !== 'terrain') {
@@ -648,7 +649,7 @@ export class CreatorUI {
     const selectedId = this.bridge.getSelectedId();
     this.outlinerCountEl.textContent = String(objs.length);
     // Only rebuild the rows when the structure changes (keeps search focus + scroll position stable).
-    const sig = objs.map((o) => `${o.id}:${o.visible === false ? 0 : 1}:${o.name ?? ''}:${o.type}`).join('|');
+    const sig = objs.map((o) => `${o.id}:${Math.round(objectOpacity(o) * 100)}:${o.name ?? ''}:${o.type}`).join('|');
     if (sig !== this.outlinerSig) {
       this.outlinerSig = sig;
       this.rebuildOutlinerRows(objs);
@@ -676,12 +677,12 @@ export class CreatorUI {
     for (const obj of objs) {
       const def = moduleDef(obj.type);
       const text = obj.name || def?.label || obj.type;
-      const hidden = obj.visible === false;
+      const hidden = objectOpacity(obj) <= 0;
       const row = el('div', 'creator-outliner-row');
       row.dataset.search = text.toLowerCase();
 
       const eye = button(hidden ? '◌' : '◉', 'creator-outliner-eye', () => this.bridge.toggleObjectVisibility(obj.id));
-      eye.title = hidden ? 'Show' : 'Hide';
+      eye.title = hidden ? 'Set opacity to 100%' : 'Set opacity to 0%';
       const labelBtn = button(text, 'creator-outliner-label', () => this.bridge.selectObjectById(obj.id));
       labelBtn.title = def?.label ?? obj.type;
       if (hidden) labelBtn.classList.add('creator-outliner-label--hidden');
@@ -1026,6 +1027,31 @@ export class CreatorUI {
     row.appendChild(this.numberInput(value, step, onChange));
     return row;
   }
+
+  private opacitySlider(value: number, onChange: (value: number) => void): HTMLLabelElement {
+    const row = document.createElement('label');
+    row.className = 'creator-field creator-opacity-control';
+    row.appendChild(label('Opacity'));
+
+    const slider = document.createElement('input');
+    slider.type = 'range';
+    slider.min = '0';
+    slider.max = '100';
+    slider.step = '1';
+    slider.value = String(Math.round(Math.max(0, Math.min(1, value)) * 100));
+
+    const readout = document.createElement('span');
+    readout.className = 'creator-opacity-value';
+    readout.textContent = `${slider.value}%`;
+
+    slider.addEventListener('input', () => {
+      readout.textContent = `${slider.value}%`;
+      onChange(Number(slider.value) / 100);
+    });
+
+    row.append(slider, readout);
+    return row;
+  }
 }
 
 // Gameplay keys that might be physically held when the password modal opens (interact + movement);
@@ -1045,7 +1071,7 @@ function inspectorSignature(obj: CreatorLayoutObject): string {
     obj.material ?? '',
     obj.texture ?? '',
     obj.collision !== false ? 1 : 0,
-    obj.visible !== false ? 1 : 0,
+    Math.round(objectOpacity(obj) * 1000),
     obj.wallrunEnabled !== false ? 1 : 0,
     JSON.stringify(obj.metadata ?? {})
   ].join('|');
