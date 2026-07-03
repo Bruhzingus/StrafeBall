@@ -209,6 +209,7 @@ export class MultiplayerClient {
     lastSnapshotAgeMs: number | null;
   } {
     const now = Date.now();
+    const perfNow = performance.now();
     // Refresh the decayed peak even if no input was sent this tick (e.g. paused in a menu).
     this.sampleWsBufferedPeak();
     // Roll the "max recent ping" window every PERF_REPORT_INTERVAL_MS so the overlay shows the worst
@@ -234,7 +235,7 @@ export class MultiplayerClient {
       // time on the client's own uplink, not network round-trip.
       socketBufferedPeak: Math.round(this.wsBufferedPeakBytes),
       pingSendBufferedAmount: this.lastPingSendBufferedBytes,
-      lastSnapshotAgeMs: this.lastSnapshotReceivedAtMs > 0 ? Math.max(0, now - this.lastSnapshotReceivedAtMs) : null
+      lastSnapshotAgeMs: this.lastSnapshotReceivedAtMs > 0 ? Math.max(0, perfNow - this.lastSnapshotReceivedAtMs) : null
     };
   }
 

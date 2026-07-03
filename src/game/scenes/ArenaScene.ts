@@ -220,6 +220,8 @@ export class ArenaScene {
   // overwritten with the room's resolved rate in adoptRoomNetConfig() before prediction seeds —
   // the same compiled client must run whichever tick preset the room negotiated.
   private netFixedDt = CLIENT_FIXED_DT;
+  private netInputRateHz = CLIENT_INPUT_RATE;
+  private netSnapshotRateHz = SNAPSHOT_RATE;
   // Reconciliation ring cap ~1.5s at the room's input rate (mirrors PENDING_INPUT_LIMIT's formula).
   private pendingInputLimit = PENDING_INPUT_LIMIT;
   // Combat lag-comp windows sized to the ROOM's timing (cosmetic score/audio gating only — the
@@ -1288,7 +1290,7 @@ export class ArenaScene {
       console.log(
         `[perf] roomAgeSec=${roomAgeSec.toFixed(1)}` +
         ` snapshotMode=${this.multiplayer.snapshotTierMode}` +
-        ` input=${CLIENT_INPUT_RATE}Hz snapshots=${SNAPSHOT_RATE}Hz` +
+        ` input=${this.netInputRateHz}Hz snapshots=${this.netSnapshotRateHz}Hz` +
         ` fps=${fps.toFixed(1)} avgFrameMs=${avgFrameMs.toFixed(2)} p95FrameMs=${p95FrameMs.toFixed(2)} maxFrameMs=${this.perfReportFrameMsMax.toFixed(2)}` +
         ` framesOver={50:${this.perfReportFramesOver50Ms} 100:${this.perfReportFramesOver100Ms} 250:${this.perfReportFramesOver250Ms}}` +
         ` inputSent=${(this.perfReportInputCount / elapsed).toFixed(1)}/s` +
@@ -1312,7 +1314,7 @@ export class ArenaScene {
         ` renderDelay=${render.renderDelayMs.toFixed(1)}ms` +
         ` wsBuffered=${connectionDebug.socketBufferedAmount}B snapshotAge=${connectionDebug.lastSnapshotAgeMs ?? -1}ms` +
         ` remoteUnderruns=${render.bufferUnderrunsPerSec.toFixed(1)}/s` +
-        ` remoteOverruns=${render.bufferOverrunsPerSec.toFixed(1)}/s` +
+        ` bufferPrunes=${render.bufferOverrunsPerSec.toFixed(1)}/s` +
         ` remoteSnaps=${render.remoteSnapCount}` +
         ` ballSnaps=${render.ballSnapCount}` +
         ` lastSnapReason=${render.lastCorrectionReason || 'none'}` +
@@ -1338,7 +1340,7 @@ export class ArenaScene {
           ` pongAgeMs=${connectionDebug.lastPongAgeMs ?? -1}` +
           ` expectedLead=${this.expectedLeadM.toFixed(3)}m` +
           ` correctionsMax=${this.perfReportMaxCorrectionM.toFixed(3)}m` +
-          ` interp={avgMs=${render.avgSnapshotIntervalMs.toFixed(1)} maxMs=${render.maxSnapshotIntervalMs.toFixed(1)} underruns=${render.bufferUnderrunsPerSec.toFixed(1)}/s overruns=${render.bufferOverrunsPerSec.toFixed(1)}/s}` +
+          ` interp={avgMs=${render.avgSnapshotIntervalMs.toFixed(1)} maxMs=${render.maxSnapshotIntervalMs.toFixed(1)} underruns=${render.bufferUnderrunsPerSec.toFixed(1)}/s prunes=${render.bufferOverrunsPerSec.toFixed(1)}/s}` +
           ` heap=${heap ?? 'n/a'}`
         );
       }
@@ -1468,11 +1470,15 @@ export class ArenaScene {
     const resolved = this.multiplayer.resolvedNetConfig;
     if (!resolved) {
       this.netFixedDt = CLIENT_FIXED_DT;
+      this.netInputRateHz = CLIENT_INPUT_RATE;
+      this.netSnapshotRateHz = SNAPSHOT_RATE;
       this.pendingInputLimit = PENDING_INPUT_LIMIT;
       this.onlineCombatTiming = GAME_CONSTANTS.combat;
       return;
     }
     this.netFixedDt = 1 / resolved.clientInputRate;
+    this.netInputRateHz = resolved.clientInputRate;
+    this.netSnapshotRateHz = resolved.snapshotRate;
     this.pendingInputLimit = Math.ceil(resolved.clientInputRate * 1.5);
     this.onlineCombatTiming = deriveCombatTimingConstants({
       serverStepMs: 1000 / resolved.serverTickRate,
@@ -1768,7 +1774,7 @@ export class ArenaScene {
         ` oldestSnapshotAge=${renderStats.oldestSnapshotAgeMs}ms` +
         ` wsBuffered=${connectionDebug.socketBufferedAmount}B` +
         ` underruns=${renderStats.bufferUnderrunsPerSec.toFixed(1)}/s` +
-        ` overruns=${renderStats.bufferOverrunsPerSec.toFixed(1)}/s` +
+        ` prunes=${renderStats.bufferOverrunsPerSec.toFixed(1)}/s` +
         ` interpAvgMs=${renderStats.avgSnapshotIntervalMs.toFixed(1)}` +
         ` interpMaxMs=${renderStats.maxSnapshotIntervalMs.toFixed(1)}` +
         ` ballPred=${renderStats.ballPredictionCount}` +
