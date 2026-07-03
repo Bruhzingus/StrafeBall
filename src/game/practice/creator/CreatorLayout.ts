@@ -90,7 +90,7 @@ export interface CreatorObjectMetadata {
   oneWayYawDeg?: number;
   /** Route label / sign text (plain text, sanitised + length-capped on apply). */
   label?: string;
-  /** Editor label display controls. Empty text still renders a placeholder unless hidden. */
+  /** Editor label display controls. Empty text hides the label instead of rendering a placeholder. */
   labelVisible?: boolean;
   labelSize?: CreatorLabelSize;
   labelColor?: CreatorLabelColor;
@@ -780,6 +780,19 @@ export function enforceSingleDefaultSpawn(layout: CreatorLayout): void {
       first.metadata.defaultSpawn = true;
     }
   }
+}
+
+/** Make one spawn point the active default and clear the flag from every other spawn. */
+export function setExclusiveDefaultSpawn(layout: CreatorLayout, spawnId: string): void {
+  let matched = false;
+  for (const obj of layout.objects) {
+    if (obj.type !== 'spawn_point') continue;
+    if (!obj.metadata) obj.metadata = {};
+    const isTarget = obj.id === spawnId;
+    obj.metadata.defaultSpawn = isTarget;
+    if (isTarget) matched = true;
+  }
+  if (!matched) enforceSingleDefaultSpawn(layout);
 }
 
 /** Deep clone (structuredClone where available, JSON fallback) — used for history snapshots. */

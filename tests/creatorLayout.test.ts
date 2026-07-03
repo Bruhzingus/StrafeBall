@@ -8,6 +8,7 @@ import {
   validateLayout,
   isLayoutValid,
   layoutSpawn,
+  setExclusiveDefaultSpawn,
   objectDimensions,
   scaleForDimensions,
   objectCollisionBoxes,
@@ -82,6 +83,29 @@ describe('CreatorLayout — default + validation', () => {
     };
     const { layout } = validateLayout(raw);
     expect(layout.objects.filter((o) => o.metadata?.defaultSpawn).length).toBe(1);
+  });
+
+  it('can promote a newly added spawn so it becomes the only active default', () => {
+    const layout = defaultCreatorLayout();
+    const original = layout.objects.find((o) => o.type === 'spawn_point')!;
+    layout.objects.push({
+      id: 'new_spawn',
+      type: 'spawn_point',
+      position: [original.position[0] + 10, original.position[1], original.position[2]],
+      rotation: [0, 180, 0],
+      scale: [1, 1, 1],
+      material: 'marker_green',
+      collision: false,
+      opacity: 1,
+      wallrunEnabled: true,
+      metadata: {}
+    });
+
+    setExclusiveDefaultSpawn(layout, 'new_spawn');
+
+    const defaults = layout.objects.filter((o) => o.type === 'spawn_point' && o.metadata?.defaultSpawn);
+    expect(defaults).toHaveLength(1);
+    expect(defaults[0].id).toBe('new_spawn');
   });
 
   it('dimensions <-> scale round-trip', () => {

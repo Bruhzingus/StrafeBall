@@ -31,6 +31,7 @@ export interface CreatorSnapSettings {
   showGrid: boolean;
   showTriggers: boolean;
   showCollision: boolean;
+  showReplay: boolean;
   gizmo: 'move' | 'rotate' | 'scale' | 'off';
 }
 
@@ -131,6 +132,7 @@ export class CreatorUI {
   private playtestFlyBtn!: HTMLButtonElement;
   private readonly toastEl: HTMLDivElement;
   private readonly dragHint: HTMLDivElement;
+  private readonly recTimer: HTMLDivElement;
   private readonly entryPrompt: HTMLDivElement;
   private readonly entryFill: HTMLDivElement;
   private readonly modal: HTMLDivElement;
@@ -210,6 +212,10 @@ export class CreatorUI {
     this.dragHint = el('div', 'creator-drag-hint');
     this.dragHint.textContent = '🖱️ Scroll — push / pull distance';
     this.host.appendChild(this.dragHint);
+
+    // Playtest run-recording indicator (top-left, clear of the toolbar/HUD). Press 7 to start/stop.
+    this.recTimer = el('div', 'creator-rec-timer');
+    this.host.appendChild(this.recTimer);
 
     this.entryPrompt = el('div', 'creator-entry-prompt');
     this.entryPrompt.innerHTML =
@@ -745,7 +751,8 @@ export class CreatorUI {
     showRow.append(
       this.checkbox('Show grid', s.showGrid, (v) => this.bridge.setSnapSettings({ showGrid: v })),
       this.checkbox('Show trigger bounds', s.showTriggers, (v) => this.bridge.setSnapSettings({ showTriggers: v })),
-      this.checkbox('Show collision bounds', s.showCollision, (v) => this.bridge.setSnapSettings({ showCollision: v }))
+      this.checkbox('Show collision bounds', s.showCollision, (v) => this.bridge.setSnapSettings({ showCollision: v })),
+      this.checkbox('Show Replay', s.showReplay, (v) => this.bridge.setSnapSettings({ showReplay: v }))
     );
     this.snapEl.appendChild(showRow);
   }
@@ -850,6 +857,18 @@ export class CreatorUI {
   /** Pill shown while free-dragging an object by its center handle (the wheel adjusts carry distance). */
   setDragHint(visible: boolean): void {
     this.dragHint.classList.toggle('creator-drag-hint--visible', visible);
+  }
+
+  /** Recording indicator during playtest: pass elapsed seconds while recording, or null to hide. */
+  setRecordingTimer(seconds: number | null): void {
+    const on = seconds !== null;
+    this.recTimer.classList.toggle('creator-rec-timer--visible', on);
+    if (on) {
+      const total = Math.max(0, Math.floor(seconds));
+      const mm = Math.floor(total / 60);
+      const ss = String(total % 60).padStart(2, '0');
+      this.recTimer.textContent = `● REC  ${mm}:${ss}  ·  7 to stop`;
+    }
   }
 
   // --- Password modal ---

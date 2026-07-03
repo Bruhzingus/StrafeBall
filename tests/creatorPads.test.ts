@@ -22,12 +22,21 @@ function bouncePadLayout(position: Vec3Tuple = [0, 0, 0], rotationY = 0): Creato
 }
 
 function fakePlayer(position: Vector3): PlayerController {
+  let respawnPosition = position.clone();
+  let respawnYaw = 0;
   const player = {
     root: { position: position.clone() },
     movement: { velocity: Vector3.Zero(), grounded: true },
     dash: { refill: () => undefined },
     backflip: { cooldown: 1 },
-    teleportTo(pos: Vector3) {
+    setRespawn(pos: Vector3, yaw = 0) {
+      respawnPosition = pos.clone();
+      respawnYaw = yaw;
+    },
+    resetPosition() {
+      this.teleportTo(respawnPosition.clone(), respawnYaw);
+    },
+    teleportTo(pos: Vector3, _yaw?: number) {
       this.root.position.copyFrom(pos);
     }
   };
@@ -43,6 +52,30 @@ describe('CreatorPads', () => {
 
     expect(player.movement.velocity.y).toBe(PAD_TUNING.bounceLaunchSpeed);
     expect(player.movement.grounded).toBe(false);
+  });
+
+  it('lifts a GROUNDED player clear of the ground snap so walking onto the pad launches', () => {
+    const pads = new CreatorPads();
+    const player = fakePlayer(new Vector3(0, 0, 0));
+    player.movement.grounded = true;
+
+    pads.update(1 / 60, bouncePadLayout(), player);
+
+    // Without the lift, the movement pass re-grounds by position and its snap glues the player back
+    // to the floor with the launch velocity intact — the bounce only worked when already airborne.
+    expect(player.root.position.y).toBe(PAD_TUNING.launchLift);
+    expect(player.movement.grounded).toBe(false);
+  });
+
+  it('does not lift an already-airborne player', () => {
+    const pads = new CreatorPads();
+    const player = fakePlayer(new Vector3(0, 1, 0));
+    player.movement.grounded = false;
+
+    pads.update(1 / 60, bouncePadLayout(), player);
+
+    expect(player.root.position.y).toBe(1);
+    expect(player.movement.velocity.y).toBe(PAD_TUNING.bounceLaunchSpeed);
   });
 
   it('launches when a fast frame crosses the bounce pad footprint', () => {
@@ -72,5 +105,40 @@ describe('CreatorPads', () => {
 
     expect(player.movement.velocity.y).toBe(0);
     expect(player.movement.grounded).toBe(true);
+  });
+
+  it('updates the player respawn when a checkpoint is touched', () => {
+    const pads = new CreatorPads();
+    const { layout } = validateLayout({
+      name: 'checkpoint test',
+      ground: { bounds: { width: 40, depth: 40, y: 0 }, material: 'ground' },
+      objects: [
+        {
+          id: 'spawn',
+          type: 'spawn_point',
+          position: [0, 0, 0],
+          rotation: [0, 90, 0],
+          scale: [1, 1, 1],
+          metadata: { defaultSpawn: true }
+        },
+        {
+          id: 'checkpoint',
+          type: 'checkpoint_gate',
+          position: [12, 0, 4],
+          rotation: [0, 180, 0],
+          scale: [1, 1, 1],
+          metadata: { triggerType: 'checkpoint', trigger: { width: 6, height: 5, depth: 2 } }
+        }
+      ]
+    });
+    const player = fakePlayer(new Vector3(12, 1, 4));
+
+    pads.update(1 / 60, layout, player);
+    player.root.position.set(0, 0, 0);
+    player.resetPosition();
+
+    expect(player.root.position.x).toBeCloseTo(12, 4);
+    expect(player.root.position.y).toBeCloseTo(0, 4);
+    expect(player.root.position.z).toBeCloseTo(4, 4);
   });
 });

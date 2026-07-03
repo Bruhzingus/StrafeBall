@@ -46,11 +46,13 @@ import {
   objectOpacity,
   objectWorldAabb,
   scaleForDimensions,
+  setExclusiveDefaultSpawn,
   textureDef,
   type Vec3Tuple
 } from './CreatorLayout';
 import { CreatorWorld, buildCreatorCollisionBoxes } from './CreatorWorld';
 import { CreatorPads } from './CreatorPads';
+import { CreatorReplay } from './CreatorReplay';
 import { CreatorGeometry } from './CreatorGeometry';
 import { CreatorHistory } from './CreatorHistory';
 import { CreatorAccessLatch, isCreatorConfigured, verifyCreatorPassword } from './CreatorAccess';
@@ -108,6 +110,7 @@ export class CreatorEditor implements CreatorBridge {
   private readonly geometry: CreatorGeometry;
   private readonly world: CreatorWorld;
   private readonly pads = new CreatorPads();
+  private readonly replay: CreatorReplay;
   private readonly ui: CreatorUI;
 
   private editorCamera: FreeCamera | null = null;
@@ -133,6 +136,7 @@ export class CreatorEditor implements CreatorBridge {
     showGrid: true,
     showTriggers: true,
     showCollision: false,
+    showReplay: true,
     gizmo: 'move'
   };
 
@@ -239,6 +243,7 @@ export class CreatorEditor implements CreatorBridge {
     this.history = new CreatorHistory(this.layout);
     this.geometry = new CreatorGeometry(scene);
     this.geometry.setEnabled(false);
+    this.replay = new CreatorReplay(scene);
     this.world = new CreatorWorld(this.layout);
     const hud = document.getElementById('hud-root');
     this.ui = new CreatorUI(hud ?? document.body, this);
@@ -327,11 +332,19 @@ export class CreatorEditor implements CreatorBridge {
       if (this.centerDragging) this.updateCenterDrag();
       this.syncCenterHandle();
       this.updateGizmoArrowLock();
+      // Loop the last-attempt ghost along its recorded path.
+      this.replay.update(dt);
     } else if (this.playtestFly) {
       this.updateFlyCamera(dt);
     } else {
       // Playtest, first-person: apply ability-pad effects after the movement step ran this frame.
       this.pads.update(dt, this.layout, this.player);
+      // 7 toggles run recording; while armed, sample the player's pose each frame for the editor replay.
+      if (this.input.wasKeyPressed('Digit7') || this.input.wasKeyPressed('Numpad7')) {
+        this.replay.toggleRecording(this.player.root.position, this.player.root.rotation.y);
+      }
+      if (this.replay.isRecording()) this.replay.record(this.player.root.position, this.player.root.rotation.y);
+      this.ui.setRecordingTimer(this.replay.recordingSeconds());
     }
   }
 
@@ -422,6 +435,7 @@ export class CreatorEditor implements CreatorBridge {
     this.gizmoManager?.dispose();
     this.gizmoManager = null;
     this.geometry.dispose();
+    this.replay.dispose();
     this.editorCamera?.dispose();
     this.editorCamera = null;
     for (const m of this.entrySignMaterials) m.dispose();
@@ -482,6 +496,10 @@ export class CreatorEditor implements CreatorBridge {
     this.applyGizmoMode();
     this.refreshSelectionVisual();
     this.updatePlacementPreviewFromPointer();
+    // Show the last recorded run (ghost + dotted path) now we're back in Build; clear the REC HUD.
+    this.replay.setEnabled(this.snap.showReplay);
+    this.replay.onEnterBuild();
+    this.ui.setRecordingTimer(null);
   }
 
   private enterPlaytestMode(): void {
@@ -491,6 +509,8 @@ export class CreatorEditor implements CreatorBridge {
     this.detachGizmo();
     this.clearPlacementPreview();
     this.geometry.setOverlaysEnabled(false);
+    // Replay is never shown while playing; recording starts when the user presses 7.
+    this.replay.onEnterPlaytest();
     this.hooks.setHudVisible(true);
     // Install the editable layout's collision + movement world for real movement.
     this.installWorldAndCollision();
@@ -534,6 +554,8 @@ export class CreatorEditor implements CreatorBridge {
     this.uninstallWorldAndCollision();
     this.geometry.setOverlaysEnabled(false);
     this.geometry.setEnabled(false);
+    this.replay.hide();
+    this.ui.setRecordingTimer(null);
     this.clearPlacementPreview();
     this.ui.setToolbarVisible(false);
     this.ui.setEntryPromptVisible(false, 0);
@@ -1321,6 +1343,7 @@ export class CreatorEditor implements CreatorBridge {
       metadata: cloneMetadata(preview.metadata)
     };
     this.layout.objects.push(obj);
+    if (obj.type === 'spawn_point') setExclusiveDefaultSpawn(this.layout, obj.id);
     this.selectedId = obj.id;
     this.commit(obj.id);
     this.updatePlacementPreviewFromPointer();
@@ -1335,8 +1358,8 @@ export class CreatorEditor implements CreatorBridge {
     // Spawn the duplicate exactly on top of its source (same position) so it can be dragged out
     // rather than appearing offset a grid step away.
     copy.position = [...obj.position];
-    if (copy.type === 'spawn_point' && copy.metadata) copy.metadata.defaultSpawn = false;
     this.layout.objects.push(copy);
+    if (copy.type === 'spawn_point') setExclusiveDefaultSpawn(this.layout, copy.id);
     this.selectedId = copy.id;
     this.commit(copy.id);
   }
@@ -1438,12 +1461,9 @@ export class CreatorEditor implements CreatorBridge {
     const obj = this.getSelectedObject();
     if (!obj) return;
     // Choosing a new default spawn must actually switch it: clear the flag on every OTHER spawn first,
-    // otherwise enforceSingleDefaultSpawn (which keeps the FIRST flagged spawn in array order) would
-    // just revert your pick and the default could never be changed.
+    // otherwise the previous default would stay active and your pick could be reverted on commit.
     if (patch.defaultSpawn === true && obj.type === 'spawn_point') {
-      for (const other of this.layout.objects) {
-        if (other !== obj && other.type === 'spawn_point' && other.metadata) other.metadata.defaultSpawn = false;
-      }
+      setExclusiveDefaultSpawn(this.layout, obj.id);
     }
     obj.metadata = { ...(obj.metadata ?? {}), ...patch };
     this.commit(obj.id);
@@ -1487,8 +1507,8 @@ export class CreatorEditor implements CreatorBridge {
       const off = Math.max(2, this.snap.gridSize);
       copy.position = [copy.position[0] + off, copy.position[1], copy.position[2] + off];
     }
-    if (copy.type === 'spawn_point' && copy.metadata) copy.metadata.defaultSpawn = false;
     this.layout.objects.push(copy);
+    if (copy.type === 'spawn_point') setExclusiveDefaultSpawn(this.layout, copy.id);
     this.selectedId = copy.id;
     this.commit(copy.id);
     this.ui.toast('Pasted object');
@@ -1634,6 +1654,7 @@ export class CreatorEditor implements CreatorBridge {
     if (patch.showGrid !== undefined) this.geometry.setGridVisible(this.snap.showGrid);
     if (patch.showTriggers !== undefined) this.geometry.setTriggersVisible(this.snap.showTriggers);
     if (patch.showCollision !== undefined) this.geometry.setCollisionVisible(this.snap.showCollision);
+    if (patch.showReplay !== undefined) this.replay.setEnabled(this.snap.showReplay);
     if (patch.gizmo !== undefined) this.applyGizmoMode();
     if (patch.gridSnap !== undefined || patch.gridSize !== undefined || patch.rotationSnapDeg !== undefined || patch.scaleSnap !== undefined) {
       this.applyGizmoSnapping();
@@ -1806,8 +1827,7 @@ export class CreatorEditor implements CreatorBridge {
   }
 
   resetPlayer(): void {
-    const spawn = layoutSpawn(this.layout);
-    this.player.teleportTo(new Vector3(spawn.x, spawn.y, spawn.z), spawn.yaw, 0);
+    this.player.resetPosition();
   }
 
   // ---------------------------------------------------------------------------------------------

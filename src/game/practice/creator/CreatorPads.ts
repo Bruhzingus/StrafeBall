@@ -50,7 +50,9 @@ export const PAD_TUNING = {
   /** How far below the pad base the feet can be and still count (small slack for uneven ground). */
   activationDepth: 0.6,
   /** Long moves are teleports/free-fly landings, not a physical step across a pad. */
-  maxSweepDistance: 24
+  maxSweepDistance: 24,
+  /** Lift applied when launching a GROUNDED player so the ground snap can't re-glue them (m). */
+  launchLift: 0.05
 } as const;
 
 const DEG2RAD = Math.PI / 180;
@@ -95,7 +97,14 @@ export class CreatorPads {
       const halfD = (trig ? trig.depth : dims[2]) / 2;
       if (this.insideOrientedBox(obj, p.x, p.y, p.z, halfW, height, halfD, r)) {
         const floorY = layout.ground.bounds.y ?? 0;
-        this.lastCheckpoint = { x: obj.position[0], y: Math.max(floorY, obj.position[1]), z: obj.position[2], yaw: (obj.rotation[1] ?? 0) * DEG2RAD };
+        const checkpoint = {
+          x: obj.position[0],
+          y: Math.max(floorY, obj.position[1]),
+          z: obj.position[2],
+          yaw: (obj.rotation[1] ?? 0) * DEG2RAD
+        };
+        this.lastCheckpoint = checkpoint;
+        player.setRespawn(new Vector3(checkpoint.x, checkpoint.y, checkpoint.z), checkpoint.yaw);
       }
     }
 
@@ -227,7 +236,7 @@ export class CreatorPads {
     const launch = PAD_TUNING.bounceLaunchSpeed * strength;
     const v = player.movement.velocity;
     if (v.y < launch) v.y = launch;
-    player.movement.grounded = false;
+    this.liftOffGround(player);
   }
 
   private applySpeed(obj: CreatorLayoutObject, player: PlayerController): void {
@@ -241,6 +250,18 @@ export class CreatorPads {
     v.x = dirX * boost;
     v.z = dirZ * boost;
     if (v.y < PAD_TUNING.speedBoostUp) v.y = PAD_TUNING.speedBoostUp;
+    this.liftOffGround(player);
+  }
+
+  /**
+   * A launch from the GROUND must also lift the player out of ground-snap range. The movement pass
+   * re-grounds purely by position (updateGroundState) and its end-of-frame snap (groundSnapDistance
+   * 0.67m > one frame of launch rise) glues a grounded player straight back to the floor with the
+   * launch velocity intact — so walking onto a pad did nothing while jumping into it worked. The
+   * small hop puts the next frame's ground check into its airborne branch, where the launch carries.
+   */
+  private liftOffGround(player: PlayerController): void {
+    if (player.movement.grounded) player.root.position.y += PAD_TUNING.launchLift;
     player.movement.grounded = false;
   }
 }

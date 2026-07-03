@@ -5175,6 +5175,29 @@ html, body {
 }
 .creator-drag-hint--visible { opacity: 1; transform: translateX(-50%) translateY(0); }
 
+.creator-rec-timer {
+  position: absolute;
+  top: 16px;
+  left: 16px;
+  padding: 7px 14px;
+  border-radius: 8px;
+  background: rgba(40, 10, 14, 0.92);
+  border: 1px solid rgba(255, 90, 90, 0.65);
+  color: #ffd9d9;
+  font-size: 13px;
+  font-weight: 800;
+  letter-spacing: 0.02em;
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity 0.15s ease;
+  z-index: 72;
+}
+.creator-rec-timer--visible { opacity: 1; animation: creator-rec-pulse 1.1s ease-in-out infinite; }
+@keyframes creator-rec-pulse {
+  0%, 100% { border-color: rgba(255, 90, 90, 0.65); }
+  50% { border-color: rgba(255, 90, 90, 1); }
+}
+
 .creator-entry-prompt {
   position: absolute;
   left: 50%;

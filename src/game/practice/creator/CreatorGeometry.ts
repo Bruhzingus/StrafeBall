@@ -47,7 +47,6 @@ import { SANDBOX_CENTER } from '../MovementSandboxLayout';
 const OBJECT_ID_KEY = 'creatorObjectId';
 const GRID_CELL_METRES = 5;
 const DEG2RAD = Math.PI / 180;
-const EMPTY_LABEL_PLACEHOLDER = 'LABEL';
 const LABEL_SIZE_WORLD_PER_PX: Record<CreatorLabelSize, number> = {
   small: 0.0085,
   medium: 0.011,
@@ -327,15 +326,15 @@ export class CreatorGeometry {
   }
 
   private markerLabel(obj: CreatorLayoutObject): ResolvedLabelText {
-    return this.labelWithDefault(obj, obj.name || moduleDef(obj.type)?.label || EMPTY_LABEL_PLACEHOLDER);
+    return this.labelWithDefault(obj, obj.name || moduleDef(obj.type)?.label || '');
   }
 
   private arrowLabel(obj: CreatorLayoutObject): ResolvedLabelText {
-    return this.labelWithDefault(obj, obj.name || EMPTY_LABEL_PLACEHOLDER);
+    return this.labelWithDefault(obj, obj.name || '');
   }
 
   private labelWithDefault(obj: CreatorLayoutObject, fallback: string): ResolvedLabelText {
-    return this.explicitLabel(obj) ?? { text: fallback, placeholder: fallback === EMPTY_LABEL_PLACEHOLDER };
+    return this.explicitLabel(obj) ?? { text: fallback, placeholder: false };
   }
 
   private labelWithPrefix(obj: CreatorLayoutObject, prefix: string): ResolvedLabelText {
@@ -347,7 +346,7 @@ export class CreatorGeometry {
   private explicitLabel(obj: CreatorLayoutObject): ResolvedLabelText | null {
     if (!obj.metadata || !Object.prototype.hasOwnProperty.call(obj.metadata, 'label')) return null;
     const text = obj.metadata.label ?? '';
-    if (text.trim().length === 0) return { text: EMPTY_LABEL_PLACEHOLDER, placeholder: true };
+    if (text.trim().length === 0) return { text: '', placeholder: false };
     return { text, placeholder: false };
   }
 
@@ -356,6 +355,7 @@ export class CreatorGeometry {
     const opacity = objectOpacity(obj);
     if (opacity <= 0.001) return;
     if (obj.metadata?.labelVisible === false) return;
+    if (label.text.trim().length === 0) return;
     const mesh = this.signPlane(`creator_${obj.id}_label`, label.text, {
       color: obj.metadata?.labelColor ?? 'white',
       size: obj.metadata?.labelSize ?? 'medium',
