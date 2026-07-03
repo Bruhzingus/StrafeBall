@@ -160,6 +160,7 @@ export const CREATOR_MATERIALS: readonly CreatorMaterialDef[] = [
   { id: 'marker_green', label: 'Marker Green', rgb: [0.2, 0.8, 0.4], solid: true },
   { id: 'marker_red', label: 'Marker Red', rgb: [0.92, 0.3, 0.32], solid: true },
   { id: 'marker_gold', label: 'Marker Gold', rgb: [0.96, 0.78, 0.25], solid: true },
+  { id: 'marker_cyan', label: 'Marker Cyan', rgb: [0.16, 0.86, 0.92], solid: true },
   // Ability-pad colours (bright, distinct so each pad type reads at a glance).
   { id: 'pad_stamina', label: 'Pad · Stamina', rgb: [0.16, 0.78, 0.42], solid: true },
   { id: 'pad_backflip', label: 'Pad · Backflip', rgb: [0.64, 0.34, 0.95], solid: true },
@@ -258,6 +259,7 @@ export type CreatorModuleType =
   | 'recovery_floor'
   | 'boundary_wall'
   | 'spawn_point'
+  | 'test_spawn'
   | 'leave_portal'
   | 'start_pad'
   | 'checkpoint_gate'
@@ -292,6 +294,9 @@ export const CREATOR_MODULES: readonly CreatorModuleDef[] = [
 
   // --- Course markers ---
   { type: 'spawn_point', label: 'Spawn Point', category: 'marker', shape: 'pad', baseSize: [6, 0.12, 6], material: 'marker_green', collision: false, defaultMetadata: { yawDeg: 90, defaultSpawn: false } },
+  // Test Spawn: a playtest-debug override of the main spawn. Place as many as you like; a playtest
+  // starts at the MOST-RECENTLY-PLACED one (see layoutSpawn). "Destroy All" in its inspector clears them.
+  { type: 'test_spawn', label: 'Test Spawn', category: 'marker', shape: 'pad', baseSize: [6, 0.12, 6], material: 'marker_cyan', collision: false, defaultMetadata: { label: 'TEST SPAWN' } },
   { type: 'leave_portal', label: 'Leave Portal', category: 'marker', shape: 'portal', baseSize: [1.8, 3, 0.4], material: 'marker_blue', collision: false, defaultMetadata: { yawDeg: 0, label: 'LEAVE' } },
   { type: 'start_pad', label: 'Start Pad', category: 'marker', shape: 'pad', baseSize: [6, 0.12, 6], material: 'marker_gold', collision: false, defaultMetadata: { triggerType: 'start', trigger: { width: 6, height: 4, depth: 6 } } },
   { type: 'checkpoint_gate', label: 'Checkpoint Gate', category: 'marker', shape: 'gate', baseSize: [6, 5, 0.4], material: 'marker_blue', collision: false, defaultMetadata: { triggerType: 'checkpoint', checkpointOrder: 1, trigger: { width: 6, height: 5, depth: 2 } } },
@@ -910,7 +915,12 @@ export function committedCourseLayout(): CreatorLayout {
 
 /** World spawn (position + yaw radians) for playtest, from the active default spawn (or yard centre). */
 export function layoutSpawn(layout: CreatorLayout): { x: number; y: number; z: number; yaw: number } {
-  const spawn = layout.objects.find((o) => o.type === 'spawn_point' && o.metadata?.defaultSpawn)
+  // A Test Spawn overrides the main spawn. Several can exist; the most-recently-placed one (last in
+  // layout order) wins, so you always start a playtest from the newest one you dropped.
+  let testSpawn: CreatorLayoutObject | undefined;
+  for (const o of layout.objects) if (o.type === 'test_spawn') testSpawn = o;
+  const spawn = testSpawn
+    ?? layout.objects.find((o) => o.type === 'spawn_point' && o.metadata?.defaultSpawn)
     ?? layout.objects.find((o) => o.type === 'spawn_point');
   // Never spawn below the layout's floor (which may itself be below 0 — ground.y goes to -50).
   const floorY = layout.ground.bounds.y ?? 0;

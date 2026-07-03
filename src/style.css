@@ -5056,6 +5056,25 @@ html, body {
 .creator-readonly { color: #cdd9ef; font-weight: 700; }
 .creator-empty { color: #8295b4; font-size: 11px; line-height: 1.4; }
 .creator-meta { display: flex; flex-direction: column; gap: 6px; border-top: 1px dashed rgba(255,255,255,0.12); padding-top: 6px; }
+.creator-meta-note { font-size: 10px; line-height: 1.35; color: #9fb2d4; }
+
+/* Press-and-hold confirm button (Destroy All Test Spawns): a fill bar sweeps over the hold duration. */
+.creator-hold {
+  position: relative;
+  overflow: hidden;
+  width: 100%;
+  isolation: isolate;
+}
+.creator-hold-label { position: relative; z-index: 1; }
+.creator-hold-fill {
+  position: absolute;
+  inset: 0;
+  z-index: 0;
+  width: 0%;
+  background: rgba(255, 120, 110, 0.85);
+  pointer-events: none;
+}
+.creator-hold.creator-hold--active .creator-hold-fill { width: 100%; transition: width 0.8s linear; }
 .creator-label-settings {
   display: grid;
   grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);

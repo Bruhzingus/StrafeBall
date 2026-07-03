@@ -92,6 +92,7 @@ export interface CreatorBridge {
   setSelectedMetadata(patch: Partial<CreatorObjectMetadata>): void;
   duplicateSelected(): void;
   deleteSelected(): void;
+  destroyAllTestSpawns(): void;
   resetSelectedTransform(): void;
 
   getSnapSettings(): CreatorSnapSettings;
@@ -578,6 +579,15 @@ export class CreatorUI {
 
     if (obj.type === 'spawn_point') {
       wrap.appendChild(this.checkbox('Default Spawn', !!meta.defaultSpawn, (v) => this.bridge.setSelectedMetadata({ defaultSpawn: v })));
+    }
+
+    if (obj.type === 'test_spawn') {
+      const note = el('div', 'creator-meta-note');
+      note.textContent = 'Overrides the main spawn during playtest. The most recently placed Test Spawn wins.';
+      wrap.appendChild(note);
+      wrap.appendChild(
+        this.holdButton('Hold to Destroy All Test Spawns', 'creator-btn creator-btn-warn creator-hold', () => this.bridge.destroyAllTestSpawns())
+      );
     }
 
     if (obj.type === 'checkpoint_gate' || obj.type === 'finish_gate' || obj.type === 'start_pad') {
@@ -1080,6 +1090,45 @@ export class CreatorUI {
 
     row.append(slider, readout);
     return row;
+  }
+
+  /**
+   * A press-and-hold confirm button: the caller's action only fires after the pointer is held for the
+   * full duration (a fill bar sweeps to show progress), so a destructive action can't be a stray click.
+   * Releasing / leaving early cancels and resets.
+   */
+  private holdButton(text: string, className: string, onComplete: () => void): HTMLButtonElement {
+    const HOLD_MS = 800; // must match the .creator-hold-fill CSS transition duration
+    const btn = document.createElement('button');
+    btn.type = 'button';
+    btn.className = className;
+    const labelSpan = el('span', 'creator-hold-label');
+    labelSpan.textContent = text;
+    const fill = el('span', 'creator-hold-fill');
+    btn.append(fill, labelSpan);
+
+    let timer: number | null = null;
+    const cancel = (): void => {
+      if (timer !== null) {
+        window.clearTimeout(timer);
+        timer = null;
+      }
+      btn.classList.remove('creator-hold--active');
+    };
+    const start = (e: PointerEvent): void => {
+      if (e.button !== 0) return;
+      e.preventDefault();
+      btn.classList.add('creator-hold--active');
+      timer = window.setTimeout(() => {
+        cancel();
+        onComplete();
+      }, HOLD_MS);
+    };
+    btn.addEventListener('pointerdown', start);
+    btn.addEventListener('pointerup', cancel);
+    btn.addEventListener('pointerleave', cancel);
+    btn.addEventListener('pointercancel', cancel);
+    return btn;
   }
 }
 

@@ -1595,6 +1595,20 @@ export class CreatorEditor implements CreatorBridge {
     this.commit(this.selectedId);
   }
 
+  /** Remove every Test Spawn pad in one shot (the inspector's hold-to-confirm "Destroy All" button). */
+  destroyAllTestSpawns(): void {
+    const before = this.layout.objects.length;
+    this.layout.objects = this.layout.objects.filter((o) => o.type !== 'test_spawn');
+    const removed = before - this.layout.objects.length;
+    if (removed === 0) {
+      this.ui.toast('No test spawns to destroy');
+      return;
+    }
+    if (this.selectedId && !this.findObject(this.selectedId)) this.selectedId = null;
+    this.commit(this.selectedId);
+    this.ui.toast(`Destroyed ${removed} test spawn${removed === 1 ? '' : 's'}`);
+  }
+
   // ---------------------------------------------------------------------------------------------
   // Palette
   // ---------------------------------------------------------------------------------------------

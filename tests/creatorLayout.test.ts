@@ -108,6 +108,34 @@ describe('CreatorLayout — default + validation', () => {
     expect(defaults[0].id).toBe('new_spawn');
   });
 
+  it('a Test Spawn overrides the main spawn, and the most-recently-placed one wins', () => {
+    const { layout } = validateLayout({
+      ground: { bounds: { width: 40, depth: 40, y: 0 }, material: 'ground' },
+      objects: [
+        { type: 'spawn_point', position: [0, 0, 0], rotation: [0, 0, 0], metadata: { defaultSpawn: true } },
+        { type: 'test_spawn', position: [10, 1, 2], rotation: [0, 90, 0] },
+        { type: 'test_spawn', position: [20, 3, -5], rotation: [0, 180, 0] }
+      ]
+    });
+
+    const spawn = layoutSpawn(layout);
+    // The LAST test_spawn in layout order (the newest) wins over both the earlier one and the default.
+    expect(spawn.x).toBeCloseTo(20, 4);
+    expect(spawn.y).toBeCloseTo(3, 4);
+    expect(spawn.z).toBeCloseTo(-5, 4);
+    expect(spawn.yaw).toBeCloseTo(Math.PI, 4);
+  });
+
+  it('falls back to the default spawn when no Test Spawn exists', () => {
+    const { layout } = validateLayout({
+      ground: { bounds: { width: 40, depth: 40, y: 0 }, material: 'ground' },
+      objects: [{ type: 'spawn_point', position: [7, 0, 8], rotation: [0, 0, 0], metadata: { defaultSpawn: true } }]
+    });
+    const spawn = layoutSpawn(layout);
+    expect(spawn.x).toBeCloseTo(7, 4);
+    expect(spawn.z).toBeCloseTo(8, 4);
+  });
+
   it('dimensions <-> scale round-trip', () => {
     const layout = defaultCreatorLayout();
     const wall = layout.objects.find((o) => o.type === 'wallrun_wall')!;
