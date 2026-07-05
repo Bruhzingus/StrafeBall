@@ -43,6 +43,14 @@ export interface CreatorLayout {
     material: string;
   };
   objects: CreatorLayoutObject[];
+  /** Optional prefab library carried by Export File / Import so saved assemblies survive a browser
+   *  wipe. Object positions are RELATIVE to the prefab origin (selection center XZ, lowest Y). */
+  prefabs?: CreatorPrefab[];
+}
+
+export interface CreatorPrefab {
+  name: string;
+  objects: CreatorLayoutObject[];
 }
 
 export interface CreatorLayoutObject {
@@ -98,6 +106,12 @@ export interface CreatorObjectMetadata {
   enabled?: boolean;
   /** Ability-pad strength multiplier (bounce launch / speed boost). 1 = default; clamped on apply. */
   padStrength?: number;
+  /**
+   * Moving platform (solid terrain only): a deterministic linear ping-pong between the placed
+   * position and position+(dx,dy,dz), at `speed` m/s with `pauseSeconds` dwell at each end.
+   * Offline-only runtime (CreatorMovers); translation only — the object's yaw never animates.
+   */
+  mover?: { dx: number; dy: number; dz: number; speed: number; pauseSeconds: number };
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -247,6 +261,7 @@ export interface CreatorModuleDef {
 export type CreatorModuleType =
   | 'flat_ground'
   | 'raised_platform'
+  | 'moving_platform'
   | 'long_wall'
   | 'tall_wall'
   | 'wallrun_wall'
@@ -280,6 +295,9 @@ export const CREATOR_MODULES: readonly CreatorModuleDef[] = [
   // --- Terrain / structure ---
   { type: 'flat_ground', label: 'Flat Ground Tile', category: 'terrain', shape: 'box', baseSize: [20, 0.3, 20], material: 'ground', collision: true },
   { type: 'raised_platform', label: 'Raised Platform', category: 'terrain', shape: 'box', baseSize: [8, 3, 8], material: 'concrete', collision: true },
+  // Deterministic linear ping-pong mover (offline-only runtime). Accent material so it reads as a
+  // distinct "this one moves" piece; the travel path previews in Build (line + far-end ghost).
+  { type: 'moving_platform', label: 'Moving Platform', category: 'terrain', shape: 'box', baseSize: [6, 1, 6], material: 'accent', collision: true, defaultMetadata: { mover: { dx: 10, dy: 0, dz: 0, speed: 4, pauseSeconds: 0.5 } } },
   { type: 'long_wall', label: 'Long Wall', category: 'terrain', shape: 'box', baseSize: [40, 8, 1.5], material: 'concrete', collision: true },
   { type: 'tall_wall', label: 'Tall Wall', category: 'terrain', shape: 'box', baseSize: [10, 18, 1.5], material: 'pad', collision: true },
   { type: 'wallrun_wall', label: 'Wall-run Wall', category: 'terrain', shape: 'box', baseSize: [3, 14, 90], material: 'pad', collision: true },
@@ -712,6 +730,16 @@ function sanitizeMetadata(raw: unknown, def: CreatorModuleDef): CreatorObjectMet
       depth: clampNumber(t.depth, CREATOR_LIMITS.minDimension, CREATOR_LIMITS.maxTriggerDimension, 4)
     };
   }
+  if (m.mover && typeof m.mover === 'object') {
+    const mv = m.mover as Record<string, unknown>;
+    out.mover = {
+      dx: clampNumber(mv.dx, -2000, 2000, 0),
+      dy: clampNumber(mv.dy, -2000, 2000, 0),
+      dz: clampNumber(mv.dz, -2000, 2000, 0),
+      speed: clampNumber(mv.speed, 0.1, 100, 4),
+      pauseSeconds: clampNumber(mv.pauseSeconds, 0, 30, 0.5)
+    };
+  }
   return out;
 }
 
@@ -762,6 +790,11 @@ export function validateLayout(raw: unknown): { layout: CreatorLayout; problems:
     },
     objects
   };
+
+  // Optional prefab library (carried by Export File / Import). Sanitized like any other input;
+  // absent/invalid ⇒ simply no prefabs on this layout.
+  const prefabs = sanitizePrefabs(r.prefabs);
+  if (prefabs.length > 0) layout.prefabs = prefabs;
 
   enforceSingleDefaultSpawn(layout);
   return { layout, problems };
@@ -933,4 +966,121 @@ export function layoutSpawn(layout: CreatorLayout): { x: number; y: number; z: n
     };
   }
   return { x: SANDBOX_CENTER.x, y: Math.max(floorY, 0), z: SANDBOX_CENTER.z, yaw: 0 };
+}
+
+/** World-space positions of a layout's functional spawner markers (balls / bots / target dummies).
+ *  Pure + Babylon-free — shared by the Creator editor's Playtest AND the live Movement Sandbox so a
+ *  published course spawns exactly the same actors as a playtest run. */
+export interface CreatorSpawnerMarkers {
+  balls: Array<{ x: number; y: number; z: number }>;
+  bots: Array<{ x: number; y: number; z: number; charge: boolean }>;
+  dummies: Array<{ x: number; y: number; z: number }>;
+}
+
+export function collectSpawnerMarkers(layout: CreatorLayout): CreatorSpawnerMarkers {
+  const markers: CreatorSpawnerMarkers = { balls: [], bots: [], dummies: [] };
+  for (const o of layout.objects) {
+    const [x, y, z] = o.position;
+    if (o.type === 'ball_spawn') markers.balls.push({ x, y, z });
+    else if (o.type === 'bot_spawn') markers.bots.push({ x, y, z, charge: /charge/i.test(o.metadata?.label ?? '') });
+    else if (o.type === 'target_dummy') markers.dummies.push({ x, y, z });
+  }
+  return markers;
+}
+
+// --- Multi-select group math + prefabs (pure; unit-tested) ---------------------------------------
+
+/** Max prefabs kept in the library (oldest dropped beyond this — mirrors the named-slot bound). */
+export const MAX_PREFABS = 16;
+
+/** XZ centroid + lowest Y of a set of objects — the shared pivot for group rotate and the prefab origin. */
+export function objectsGroupOrigin(objects: readonly CreatorLayoutObject[]): { x: number; y: number; z: number } {
+  if (objects.length === 0) return { x: 0, y: 0, z: 0 };
+  let sx = 0;
+  let sz = 0;
+  let minY = Infinity;
+  for (const o of objects) {
+    sx += o.position[0];
+    sz += o.position[2];
+    minY = Math.min(minY, o.position[1]);
+  }
+  return { x: sx / objects.length, y: minY, z: sz / objects.length };
+}
+
+/**
+ * Rotate objects IN PLACE around a shared (cx,cz) pivot by deltaDeg of yaw: each object's position
+ * orbits the pivot and its own yaw advances by the same delta — the group turns as one rigid unit.
+ * Yaw only, matching the single-object rotation rules (X/Z tilt is never authored).
+ */
+export function rotateObjectsAroundCenterYaw(objects: CreatorLayoutObject[], cx: number, cz: number, deltaDeg: number): void {
+  const rad = -deltaDeg * DEG2RAD; // world yaw is clockwise-positive around +Y (matches node.rotation.y)
+  const cos = Math.cos(rad);
+  const sin = Math.sin(rad);
+  for (const o of objects) {
+    const dx = o.position[0] - cx;
+    const dz = o.position[2] - cz;
+    o.position = [cx + dx * cos - dz * sin, o.position[1], cz + dx * sin + dz * cos];
+    o.rotation = [o.rotation[0], normalizeLayoutDegrees((o.rotation[1] ?? 0) + deltaDeg), o.rotation[2]];
+  }
+}
+
+function normalizeLayoutDegrees(deg: number): number {
+  const wrapped = deg % 360;
+  return wrapped < 0 ? wrapped + 360 : wrapped;
+}
+
+/** Capture objects as a prefab: deep-cloned, positions made RELATIVE to the group origin
+ *  (centroid XZ, lowest Y — so stamping at a ground point sits the assembly ON the ground). */
+export function makePrefabFromObjects(name: string, objects: readonly CreatorLayoutObject[]): CreatorPrefab {
+  const origin = objectsGroupOrigin(objects);
+  const cloned = objects.map((o) => {
+    const copy = JSON.parse(JSON.stringify(o)) as CreatorLayoutObject;
+    copy.position = [o.position[0] - origin.x, o.position[1] - origin.y, o.position[2] - origin.z];
+    return copy;
+  });
+  return { name: name.trim().slice(0, 48) || 'Prefab', objects: cloned };
+}
+
+/** Instantiate a prefab at a world point: fresh ids, absolute positions (origin + relative offset). */
+export function instantiatePrefab(prefab: CreatorPrefab, at: { x: number; y: number; z: number }): CreatorLayoutObject[] {
+  return prefab.objects.map((o) => {
+    const copy = JSON.parse(JSON.stringify(o)) as CreatorLayoutObject;
+    copy.id = createObjectId(o.type);
+    copy.position = [at.x + o.position[0], at.y + o.position[1], at.z + o.position[2]];
+    return copy;
+  });
+}
+
+/** World-space AABB of a prefab stamped at `at` — drives the placement ghost box. */
+export function prefabWorldBounds(prefab: CreatorPrefab, at: { x: number; y: number; z: number }): {
+  minX: number; minY: number; minZ: number; maxX: number; maxY: number; maxZ: number;
+} {
+  let minX = Infinity, minY = Infinity, minZ = Infinity, maxX = -Infinity, maxY = -Infinity, maxZ = -Infinity;
+  for (const o of prefab.objects) {
+    const world: CreatorLayoutObject = { ...o, position: [at.x + o.position[0], at.y + o.position[1], at.z + o.position[2]] };
+    const a = objectWorldAabb(world);
+    minX = Math.min(minX, a.minX); minY = Math.min(minY, a.minY); minZ = Math.min(minZ, a.minZ);
+    maxX = Math.max(maxX, a.maxX); maxY = Math.max(maxY, a.maxY); maxZ = Math.max(maxZ, a.maxZ);
+  }
+  if (!Number.isFinite(minX)) return { minX: at.x, minY: at.y, minZ: at.z, maxX: at.x, maxY: at.y, maxZ: at.z };
+  return { minX, minY, minZ, maxX, maxY, maxZ };
+}
+
+/** Sanitize an untrusted prefab list (import / storage): names trimmed, objects re-validated through
+ *  the standard object sanitizer, bounded to MAX_PREFABS, empty prefabs dropped. */
+export function sanitizePrefabs(raw: unknown): CreatorPrefab[] {
+  if (!Array.isArray(raw)) return [];
+  const out: CreatorPrefab[] = [];
+  for (const item of raw) {
+    if (out.length >= MAX_PREFABS) break;
+    if (!item || typeof item !== 'object') continue;
+    const p = item as { name?: unknown; objects?: unknown };
+    const name = typeof p.name === 'string' ? p.name.trim().slice(0, 48) : '';
+    if (!name || !Array.isArray(p.objects)) continue;
+    // Reuse the layout validator for the object list (types, sizes, metadata all sanitized). Prefab
+    // positions are relative offsets — small by construction — so the world clamps are harmless.
+    const objects = validateLayout({ objects: p.objects }).layout.objects;
+    if (objects.length > 0) out.push({ name, objects });
+  }
+  return out;
 }

@@ -83,6 +83,8 @@ export class CreatorGeometry {
 
   private gridMesh: Mesh | null = null;
   private selectionBox: Mesh | null = null;
+  /** Extra pooled highlight boxes for multi-select (selectionBox is index 0). */
+  private readonly extraSelectionBoxes: Mesh[] = [];
   // Grab sphere at the move-gizmo origin: pick it to free-drag the object along the cursor ray.
   private centerHandle: Mesh | null = null;
   private readonly previewBuild: Array<{ dispose(): void }> = [];
@@ -96,6 +98,8 @@ export class CreatorGeometry {
   private previewLocalMinY = 0;
   private readonly triggerMeshes: Mesh[] = [];
   private readonly collisionMeshes: Mesh[] = [];
+  /** Build-only moving-platform previews: the travel line + a far-end ghost box. */
+  private readonly moverPreviewMeshes: Mesh[] = [];
   // Invisible editor-only pick volumes so 0%-opacity objects remain clickable in Build.
   private readonly opacityPickMeshes: Mesh[] = [];
 
@@ -126,6 +130,7 @@ export class CreatorGeometry {
     this.triggerMeshes.length = 0;
     this.collisionMeshes.length = 0;
     this.opacityPickMeshes.length = 0;
+    this.moverPreviewMeshes.length = 0;
 
     this.ensureGrid();
     this.ensureSelectionBox();
@@ -152,10 +157,50 @@ export class CreatorGeometry {
 
     if (def.category === 'terrain') {
       this.buildSolid(obj, node);
+      if (obj.metadata?.mover) this.buildMoverPreview(obj);
     } else {
       this.buildMarker(obj, node);
     }
     this.applyObjectOpacity(obj, node);
+  }
+
+  /**
+   * Build-only moving-platform preview: a thin line from the placed position to the far end of the
+   * travel, plus a wireframe ghost box of the platform at that far end. World-space (NOT parented to
+   * the object node — the runtime moves that node), toggled off with the other editor overlays.
+   */
+  private buildMoverPreview(obj: CreatorLayoutObject): void {
+    const mover = obj.metadata?.mover;
+    if (!mover) return;
+    const len = Math.hypot(mover.dx, mover.dy, mover.dz);
+    if (len < 1e-3) return;
+    const mat = this.solidMaterial('marker_gold');
+
+    const a = objectWorldAabb(obj);
+    const cy = (a.minY + a.maxY) / 2;
+    const start = { x: obj.position[0], y: cy, z: obj.position[2] };
+    const line = MeshBuilder.CreateBox(`creator_mover_line_${obj.id}`, { width: 0.08, height: 0.08, depth: len }, this.scene);
+    line.position.set(start.x + mover.dx / 2, start.y + mover.dy / 2, start.z + mover.dz / 2);
+    // Aim local +Z along the travel direction (yaw from XZ, pitch from the vertical component).
+    line.rotation.set(-Math.asin(Math.max(-1, Math.min(1, mover.dy / len))), Math.atan2(mover.dx, mover.dz), 0);
+    line.material = mat;
+    line.isPickable = false;
+    line.parent = this.root;
+    this.perBuild.push(line);
+    this.moverPreviewMeshes.push(line);
+
+    const ghost = MeshBuilder.CreateBox(`creator_mover_ghost_${obj.id}`, {
+      width: Math.max(0.2, a.maxX - a.minX),
+      height: Math.max(0.2, a.maxY - a.minY),
+      depth: Math.max(0.2, a.maxZ - a.minZ)
+    }, this.scene);
+    ghost.position.set((a.minX + a.maxX) / 2 + mover.dx, cy + mover.dy, (a.minZ + a.maxZ) / 2 + mover.dz);
+    const ghostMat = this.selectionMaterial();
+    ghost.material = ghostMat;
+    ghost.isPickable = false;
+    ghost.parent = this.root;
+    this.perBuild.push(ghost);
+    this.moverPreviewMeshes.push(ghost);
   }
 
   private applyObjectOpacity(obj: CreatorLayoutObject, node: TransformNode): void {
@@ -526,6 +571,12 @@ export class CreatorGeometry {
 
   private ensureSelectionBox(): void {
     if (this.selectionBox) return;
+    this.selectionBox = this.createSelectionBoxMesh('creator_selection');
+  }
+
+  private selectionMaterial(): StandardMaterial {
+    const cached = this.cachedMaterials.get('__selection');
+    if (cached) return cached;
     const mat = new StandardMaterial('creator_selection_mat', this.scene);
     mat.emissiveColor = new Color3(1.0, 0.86, 0.2);
     mat.diffuseColor = new Color3(0, 0, 0);
@@ -533,20 +584,42 @@ export class CreatorGeometry {
     mat.disableLighting = true;
     mat.wireframe = true;
     this.cachedMaterials.set('__selection', mat);
-    const box = MeshBuilder.CreateBox('creator_selection', { size: 1 }, this.scene);
-    box.material = mat;
+    return mat;
+  }
+
+  private createSelectionBoxMesh(name: string): Mesh {
+    const box = MeshBuilder.CreateBox(name, { size: 1 }, this.scene);
+    box.material = this.selectionMaterial();
     box.isPickable = false;
     box.setEnabled(false);
     box.parent = this.root;
-    this.selectionBox = box;
+    return box;
   }
 
   setSelection(obj: CreatorLayoutObject | null): void {
+    this.setSelectionMany(obj ? [obj] : []);
+  }
+
+  /** Multi-select highlight: one oriented wireframe box per selected object (pooled, never rebuilt). */
+  setSelectionMany(objs: readonly CreatorLayoutObject[]): void {
     if (!this.selectionBox) return;
-    if (!obj || !this.overlaysEnabled) {
-      this.selectionBox.setEnabled(false);
-      return;
+    // Pool: box 0 is the original selectionBox; extras are created on demand and reused.
+    while (this.extraSelectionBoxes.length < Math.max(0, objs.length - 1)) {
+      this.extraSelectionBoxes.push(this.createSelectionBoxMesh(`creator_selection_${this.extraSelectionBoxes.length + 1}`));
     }
+    const pool: Mesh[] = [this.selectionBox, ...this.extraSelectionBoxes];
+    for (let i = 0; i < pool.length; i += 1) {
+      const box = pool[i];
+      const obj = i < objs.length && this.overlaysEnabled ? objs[i] : null;
+      if (!obj) {
+        box.setEnabled(false);
+        continue;
+      }
+      this.placeSelectionBox(box, obj);
+    }
+  }
+
+  private placeSelectionBox(box: Mesh, obj: CreatorLayoutObject): void {
     // Oriented highlight: size from the LOCAL extent × scale and rotate with the object so a rotated
     // piece gets a tight box that hugs it (not a fat axis-aligned one). ry=0 reduces to the old box.
     const local = objectWorldAabb({ ...obj, position: [0, 0, 0] as Vec3Tuple, rotation: [0, 0, 0] as Vec3Tuple, scale: [1, 1, 1] as Vec3Tuple });
@@ -558,10 +631,10 @@ export class CreatorGeometry {
     const lcz = ((local.minZ + local.maxZ) / 2) * sz;
     const cos = Math.cos(ry);
     const sin = Math.sin(ry);
-    this.selectionBox.rotation.set(0, ry, 0);
-    this.selectionBox.scaling.set((local.maxX - local.minX) * sx + pad, (local.maxY - local.minY) * sy + pad, (local.maxZ - local.minZ) * sz + pad);
-    this.selectionBox.position.set(obj.position[0] + lcx * cos + lcz * sin, obj.position[1] + lcy, obj.position[2] - lcx * sin + lcz * cos);
-    this.selectionBox.setEnabled(true);
+    box.rotation.set(0, ry, 0);
+    box.scaling.set((local.maxX - local.minX) * sx + pad, (local.maxY - local.minY) * sy + pad, (local.maxZ - local.minZ) * sz + pad);
+    box.position.set(obj.position[0] + lcx * cos + lcz * sin, obj.position[1] + lcy, obj.position[2] - lcx * sin + lcz * cos);
+    box.setEnabled(true);
   }
 
   // ---------------------------------------------------------------------------------------------
@@ -815,6 +888,7 @@ export class CreatorGeometry {
     this.overlaysEnabled = enabled;
     this.applyOverlayVisibility();
     if (!enabled && this.selectionBox) this.selectionBox.setEnabled(false);
+    if (!enabled) for (const box of this.extraSelectionBoxes) box.setEnabled(false);
     if (!enabled && this.centerHandle) this.centerHandle.setEnabled(false);
   }
 
@@ -842,6 +916,7 @@ export class CreatorGeometry {
     for (const m of this.triggerMeshes) m.setEnabled(on && this.triggersVisible);
     for (const m of this.collisionMeshes) m.setEnabled(on && this.collisionVisible);
     for (const m of this.opacityPickMeshes) m.setEnabled(on);
+    for (const m of this.moverPreviewMeshes) m.setEnabled(on); // Build-only travel-path previews
   }
 
   // ---------------------------------------------------------------------------------------------

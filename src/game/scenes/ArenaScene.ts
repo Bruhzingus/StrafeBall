@@ -883,6 +883,8 @@ export class ArenaScene {
     // (jump pending after `active` clears mid-air), until the landing QTE resolves. The backflip
     // throw is released only by the QTE click.
     const throwsSuppressed = this.player.backflip.active || this.backflipJumpPending || this.backflipQte.isActive();
+    // Moving platforms advance (and carry their rider) BEFORE movement resolves against them.
+    if (this.movementSandbox?.active) this.movementSandbox.preMovementUpdate(dt, this.player);
     this.player.update(dt, throwsSuppressed);
 
     const snap = this.player.lastMovementSnapshot;
@@ -1848,6 +1850,9 @@ export class ArenaScene {
     // Tear down the local Movement Sandbox before connected play: clears the player's world override
     // + respawn, disables its meshes, removes its collision boxes, and restores the sky/fog. The
     // standard online setup below (props off, balls cleared, mats reset) is idempotent with this.
+    // Course actors go first (before ballManager.clear below) so their balls are removed by
+    // reference while still tracked, and the bots/dummies never linger into online play.
+    this.clearCreatorActors();
     this.movementSandbox?.exit(this.player);
     this.resetBackflipQte();
     this.networkYaw = this.player.root.rotation.y;
@@ -2114,6 +2119,8 @@ export class ArenaScene {
     // Hide practice/match furniture (wall, portals, guide, bots, dummies) while in the sandbox.
     this.setPracticePropsEnabled(false);
     this.movementSandbox.enter(this.player);
+    // Course parity: spawn the published layout's ball/bot/dummy actors, exactly like a playtest run.
+    this.spawnCreatorActors(this.movementSandbox.getSpawnerMarkers());
     this.ensureCreator();
     this.creator?.setEntrySignVisible(true);
     this.creatorEntryHold = 0;
@@ -2126,6 +2133,7 @@ export class ArenaScene {
     const ret = sandbox.lobbyReturn;
     this.creator?.setEntrySignVisible(false);
     this.creatorEntryHold = 0;
+    this.clearCreatorActors();
     sandbox.exit(this.player);
     this.setPracticePropsEnabled(true);
     this.ballManager.spawnCenterLineBalls();
@@ -2139,8 +2147,17 @@ export class ArenaScene {
     if (this.creator) return;
     this.creator = new CreatorEditor(this.scene, this.gym, this.player, this.input, {
       isOnline: () => this.onlineModeActive || this.multiplayer.connected,
-      suspendSandbox: () => this.movementSandbox?.suspend(),
-      resumeSandbox: () => this.movementSandbox?.resume(this.player),
+      suspendSandbox: () => {
+        // The editor takes over the yard: despawn the LIVE course's actors so a playtest's own
+        // spawns (via onPlaytestStart) never double up with them.
+        this.clearCreatorActors();
+        this.movementSandbox?.suspend();
+      },
+      resumeSandbox: () => {
+        this.movementSandbox?.resume(this.player);
+        // Back in the live yard: restore the published course's actors.
+        if (this.movementSandbox?.active) this.spawnCreatorActors(this.movementSandbox.getSpawnerMarkers());
+      },
       setHudVisible: (visible: boolean) => this.hud.setVisible(visible),
       onPlaytestStart: (markers) => this.spawnCreatorActors(markers),
       onPlaytestEnd: () => this.clearCreatorActors()
@@ -2233,13 +2250,17 @@ export class ArenaScene {
       if (this.input.wasKeyPressed('KeyB') || this.input.wasKeyPressed('F1') || this.input.wasKeyPressed('Escape')) {
         creator.setMode('build');
       } else if (!creator.isPlaytestFlying()) {
-        // Real local first-person movement against the editor's collision/world.
+        // Real local first-person movement against the editor's collision/world. Moving platforms
+        // advance (and carry the player) first, so movement resolves against their new positions.
+        creator.preMovementUpdate(dt);
         this.player.update(dt, false);
         const snap = this.player.lastMovementSnapshot;
         this.updateCreatorActors(dt);
         this.updateLocalMovementFoley(dt, vector3ToVec3(snap.velocity), snap.grounded, snap.sliding, snap.dashingThisFrame, snap.wallRunning);
         this.effects.update(dt);
       } else {
+        // Free-fly noclip: platforms keep animating (no rider) so the route can be observed.
+        creator.preMovementUpdate(dt);
         this.effects.update(dt);
       }
     }
@@ -2273,9 +2294,10 @@ export class ArenaScene {
   }
 
   /**
-   * Offline-only lean step for the active Movement Sandbox: movement foley + effects + the hold-E
-   * leave portal. Pure free practice — no balls, bots, objectives, timers, checkpoints, or HUD, and
-   * all the normal practice/match systems are intentionally skipped while the sandbox is active.
+   * Offline-only step for the active Movement Sandbox: movement foley + effects, the published
+   * course's runtime (ability pads / kill blocks / checkpoints inside sandbox.update, plus the
+   * spawned ball/bot/dummy actors), and the hold-E leave portal. The normal practice/match systems
+   * are intentionally skipped while the sandbox is active.
    */
   private stepMovementSandbox(dt: number): void {
     const sandbox = this.movementSandbox;
@@ -2283,7 +2305,11 @@ export class ArenaScene {
     const snap = this.player.lastMovementSnapshot;
     this.updateLocalMovementFoley(dt, vector3ToVec3(snap.velocity), snap.grounded, snap.sliding, snap.dashingThisFrame, snap.wallRunning);
     this.effects.update(dt);
+    // sandbox.update runs the shared pad/kill-block/checkpoint runtime (after player.update, which
+    // ran earlier this frame) + the hold-E leave portal.
     sandbox.update(dt, this.player, this.input, (action) => this.handleSandboxAction(action));
+    // Course actors (balls physics/pickup, bots, dummy scoring) — same updater playtest uses.
+    this.updateCreatorActors(dt);
     this.updateCreatorEntry(dt);
   }
 

@@ -58,6 +58,43 @@ export const PAD_TUNING = {
 const DEG2RAD = Math.PI / 180;
 type PadProbePoint = { x: number; y: number; z: number };
 
+/**
+ * Pure oriented trigger-volume test shared by the pad runtime and the course-run controller: is the
+ * point (px,py,pz) — padded by `radius` horizontally — inside the object's Y-rotated box volume of
+ * half-width/height/half-depth, based at the object's Y? Babylon-free.
+ */
+export function insideOrientedVolume(
+  obj: CreatorLayoutObject,
+  px: number,
+  py: number,
+  pz: number,
+  halfW: number,
+  height: number,
+  halfD: number,
+  radius: number
+): boolean {
+  const base = obj.position[1];
+  if (py < base - 0.2 || py > base + height + 0.2) return false;
+  const ry = (obj.rotation[1] ?? 0) * DEG2RAD;
+  const cos = Math.cos(ry);
+  const sin = Math.sin(ry);
+  const dx = px - obj.position[0];
+  const dz = pz - obj.position[2];
+  const lx = cos * dx - sin * dz;
+  const lz = sin * dx + cos * dz;
+  return Math.abs(lx) <= halfW + radius && Math.abs(lz) <= halfD + radius;
+}
+
+/** Trigger-volume test using the object's metadata.trigger dims (falling back to its scaled size). */
+export function insideObjectTrigger(obj: CreatorLayoutObject, px: number, py: number, pz: number, radius: number): boolean {
+  const trig = obj.metadata?.trigger;
+  const dims = objectDimensions(obj);
+  const halfW = (trig ? trig.width : dims[0]) / 2;
+  const height = trig ? trig.height : dims[1];
+  const halfD = (trig ? trig.depth : dims[2]) / 2;
+  return insideOrientedVolume(obj, px, py, pz, halfW, height, halfD, radius);
+}
+
 export class CreatorPads {
   // Impulse pads disarm after firing; the timer counts down while the player stays on the pad and is
   // cleared the moment they step off, so leaving + returning re-fires immediately.
@@ -75,8 +112,12 @@ export class CreatorPads {
     this.lastCheckpoint = null;
   }
 
-  /** Run one frame of pad effects. Call in Playtest AFTER the player movement update. */
-  update(dt: number, layout: CreatorLayout, player: PlayerController): void {
+  /**
+   * Run one frame of pad effects. Call in Playtest / the live yard AFTER the player movement update.
+   * Returns true when a kill block killed (and respawned) the player this frame, so the course-run
+   * controller can reset a live timed run.
+   */
+  update(dt: number, layout: CreatorLayout, player: PlayerController): boolean {
     for (const [id, t] of this.cooldownById) {
       const next = t - dt;
       if (next <= 0) this.cooldownById.delete(id);
@@ -90,12 +131,7 @@ export class CreatorPads {
     // Checkpoints: touching a checkpoint gate's trigger volume records it as the respawn point.
     for (const obj of layout.objects) {
       if (obj.type !== 'checkpoint_gate') continue;
-      const trig = obj.metadata?.trigger;
-      const dims = objectDimensions(obj);
-      const halfW = (trig ? trig.width : dims[0]) / 2;
-      const height = trig ? trig.height : dims[1];
-      const halfD = (trig ? trig.depth : dims[2]) / 2;
-      if (this.insideOrientedBox(obj, p.x, p.y, p.z, halfW, height, halfD, r)) {
+      if (insideObjectTrigger(obj, p.x, p.y, p.z, r)) {
         const floorY = layout.ground.bounds.y ?? 0;
         const checkpoint = {
           x: obj.position[0],
@@ -112,7 +148,7 @@ export class CreatorPads {
     for (const obj of layout.objects) {
       if (obj.type !== 'kill_block') continue;
       const [w, h, d] = objectDimensions(obj);
-      if (this.insideOrientedBox(obj, p.x, p.y, p.z, w / 2, h, d / 2, r)) {
+      if (insideOrientedVolume(obj, p.x, p.y, p.z, w / 2, h, d / 2, r)) {
         const target = this.lastCheckpoint ?? layoutSpawn(layout);
         player.teleportTo(new Vector3(target.x, target.y, target.z), target.yaw, 0);
         // Death is a fresh start: refill stamina + clear the backflip cooldown, same as a K reset —
@@ -120,7 +156,7 @@ export class CreatorPads {
         player.dash.refill();
         player.backflip.cooldown = 0;
         this.rememberPlayerPosition(player.root.position);
-        return;
+        return true;
       }
     }
 
@@ -154,20 +190,7 @@ export class CreatorPads {
     this.occupied.clear();
     for (const id of stillOn) this.occupied.add(id);
     this.rememberPlayerPosition(p);
-  }
-
-  /** Is the player's point inside an oriented (Y-rotated) box volume based at the object (checkpoint/kill)? */
-  private insideOrientedBox(obj: CreatorLayoutObject, px: number, py: number, pz: number, halfW: number, height: number, halfD: number, radius: number): boolean {
-    const base = obj.position[1];
-    if (py < base - 0.2 || py > base + height + 0.2) return false;
-    const ry = (obj.rotation[1] ?? 0) * DEG2RAD;
-    const cos = Math.cos(ry);
-    const sin = Math.sin(ry);
-    const dx = px - obj.position[0];
-    const dz = pz - obj.position[2];
-    const lx = cos * dx - sin * dz;
-    const lz = sin * dx + cos * dz;
-    return Math.abs(lx) <= halfW + radius && Math.abs(lz) <= halfD + radius;
+    return false;
   }
 
   /**

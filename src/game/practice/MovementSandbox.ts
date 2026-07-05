@@ -10,8 +10,7 @@ import {
   Texture,
   TransformNode,
   Vector3,
-  Vector4,
-  VertexData
+  Vector4
 } from '@babylonjs/core';
 import { GymArena } from '../map/GymArena';
 import { PlayerController } from '../player/PlayerController';
@@ -26,18 +25,14 @@ import {
   SANDBOX_CENTER,
   SANDBOX_HALF_X,
   SANDBOX_HALF_Z,
-  WallStyle,
   sandboxLeaveWorld
 } from './MovementSandboxLayout';
 import {
+  collectSpawnerMarkers,
   committedCourseLayout,
-  isSolidModule,
   layoutSpawn,
-  objectOpacity,
-  objectRampPrisms,
-  objectSolidBoxes,
   type CreatorLayout,
-  type Vec3Tuple
+  type CreatorSpawnerMarkers
 } from './creator/CreatorLayout';
 import {
   buildCreatorCollisionBoxes,
@@ -46,6 +41,12 @@ import {
   type CreatorWallFace
 } from './creator/CreatorWorld';
 import { loadPublishedLayout } from './creator/CreatorStorage';
+import { CreatorGeometry } from './creator/CreatorGeometry';
+import { CreatorPads } from './creator/CreatorPads';
+import { CreatorMovers } from './creator/CreatorMovers';
+import { CourseRunTracker } from './creator/CourseRun';
+import { CourseRunHud } from './creator/CourseRunHud';
+import { TUNING } from '../config/tuning';
 
 export type SandboxAction = 'leave';
 
@@ -55,15 +56,17 @@ const WALL_RUN_MARGIN = 1.0;
 const GRID_CELL_METRES = 10;
 
 /**
- * Local outdoor Movement Sandbox: a large, mostly-flat free-movement yard placed far from the gym.
- * Free practice only — no timer, checkpoints, objectives, bots, leaderboard, or course HUD. It owns
- * its own cheap geometry (ground + outer boundary + a few big standalone walls), implements the
- * offline MovementController's world override (expanded bounds + wall-run on the standalone walls),
- * and a single hold-E leave portal.
+ * Local outdoor Movement Sandbox: a large free-movement yard placed far from the gym, running the
+ * user's published Creator course (else the committed one) with FULL playtest parity: the same
+ * renderer (solids with real textures, ability pads, kill blocks, gates, signs, arrows, labels via
+ * CreatorGeometry with editor overlays off), the same pad/kill-block/checkpoint runtime
+ * (CreatorPads), and the same spawner markers (balls/bots/dummies — spawned by ArenaScene from
+ * getSpawnerMarkers()). The yard owns its own ground + outer boundary + spawn/leave furniture,
+ * implements the offline MovementController's world override, and a single hold-E leave portal.
  *
  * Strictly offline/practice-only: ArenaScene updates it only from the offline step path, never from
  * stepOnline, and tears it down before connected play. It implements MovementWorld so the offline
- * controller can clamp to the yard and wall-run the standalone walls.
+ * controller can clamp to the yard and wall-run the course walls.
  */
 export class MovementSandbox implements MovementWorld {
   public active = false;
@@ -83,10 +86,24 @@ export class MovementSandbox implements MovementWorld {
   private built = false;
 
   // The committed course layout the yard renders. `courseLayout` excludes the outer boundary walls
-  // (the yard draws + clamps its own boundary), leaving the editable course pieces.
+  // (the yard draws + clamps its own boundary), leaving the editable course pieces. `visualLayout`
+  // further drops the spawn/leave/test-spawn markers whose furniture the yard builds itself.
   private readonly fullLayout: CreatorLayout;
   private readonly courseLayout: CreatorLayout;
+  private readonly visualLayout: CreatorLayout;
   private readonly leavePoint: { x: number; z: number; radius: number; holdSeconds: number };
+  // Course visuals: the SAME renderer the Creator editor uses (solids incl. real textures, ability
+  // pads, kill blocks, gates, signs, arrows, labels) with every editor-only overlay disabled — so a
+  // published course looks exactly like its playtest. Built lazily with the rest of the yard.
+  private geometry: CreatorGeometry | null = null;
+  // Course effects: the SAME pad/kill-block/checkpoint runtime playtest uses.
+  private readonly pads = new CreatorPads();
+  // Moving platforms — same deterministic runtime as creator playtest.
+  private readonly movers = new CreatorMovers();
+  // Timed course run (start → checkpoints → finish). Inert unless the layout has BOTH gates.
+  private courseRun: CourseRunTracker | null = null;
+  private courseHud: CourseRunHud | null = null;
+  private suspended = false;
 
   // Saved scene sky/fog state, restored on exit.
   private savedClearColor: Color4 | null = null;
@@ -101,6 +118,8 @@ export class MovementSandbox implements MovementWorld {
     const layout = loadPublishedLayout() ?? committedCourseLayout();
     this.fullLayout = layout;
     this.courseLayout = { ...layout, objects: layout.objects.filter((o) => o.type !== 'boundary_wall') };
+    const yardFurniture = new Set(['spawn_point', 'leave_portal', 'test_spawn']);
+    this.visualLayout = { ...layout, objects: this.courseLayout.objects.filter((o) => !yardFurniture.has(o.type)) };
 
     const b = layoutWorldBounds(layout);
     this.minX = b.minX;
@@ -151,6 +170,16 @@ export class MovementSandbox implements MovementWorld {
     this.active = true;
 
     this.root.setEnabled(true);
+    this.geometry?.setEnabled(true);
+    this.suspended = false;
+    this.pads.reset();
+    this.movers.resetPhase();
+    this.ensureCourseRun();
+    this.courseRun?.reset('leave');
+    if (this.courseRun?.isTimed()) {
+      this.courseHud?.setVisible(true);
+      this.courseHud?.showIdle(this.courseRun.bestMs());
+    }
     for (const box of this.collisionBoxes) this.gym.collision.add(box);
     this.applyOutdoorSky();
 
@@ -168,6 +197,10 @@ export class MovementSandbox implements MovementWorld {
     if (!this.active) return;
     this.active = false;
     this.root.setEnabled(false);
+    this.geometry?.setEnabled(false);
+    this.courseRun?.reset('leave');
+    this.courseHud?.setVisible(false);
+    this.movers.resetPhase();
     this.removeCollisionFromGym();
     this.restoreSky();
     if (player) {
@@ -176,7 +209,32 @@ export class MovementSandbox implements MovementWorld {
     }
   }
 
+  /** Ball/bot/dummy spawner markers of the course this yard is running (shared collector). */
+  getSpawnerMarkers(): CreatorSpawnerMarkers {
+    return collectSpawnerMarkers(this.fullLayout);
+  }
+
+  /** Lazily build the timed-course tracker + HUD (only shows anything for layouts with both gates). */
+  private ensureCourseRun(): void {
+    if (this.courseRun) return;
+    const hud = new CourseRunHud(document.getElementById('hud-root') ?? document.body, 'COURSE RUN');
+    this.courseHud = hud;
+    this.courseRun = new CourseRunTracker(this.fullLayout, {
+      onRunStart: () => {
+        // Deterministic routes: every attempt sees the platforms at their starting phase.
+        this.movers.resetPhase();
+        hud.tick(0, 0, this.courseRun?.state.checkpointCount ?? 0);
+      },
+      onCheckpoint: (collected, total, splitMs) => hud.showCheckpoint(collected, total, splitMs),
+      onMissedCheckpoint: (n) => hud.showMissedCheckpoint(n),
+      onFinish: (timeMs, bestMs, isPb) => hud.showFinish(timeMs, bestMs, isPb),
+      onRunReset: (reason) => hud.showRunReset(reason)
+    });
+  }
+
   dispose(): void {
+    this.courseHud?.dispose();
+    this.geometry?.dispose();
     for (const d of this.disposables) d.dispose();
     for (const m of this.materials) m.dispose();
     this.root.dispose();
@@ -189,7 +247,12 @@ export class MovementSandbox implements MovementWorld {
    */
   suspend(): void {
     if (!this.active) return;
+    this.suspended = true;
     this.root.setEnabled(false);
+    this.geometry?.setEnabled(false);
+    this.courseRun?.reset('leave');
+    this.courseHud?.setVisible(false);
+    this.movers.resetPhase(); // platforms home while the editor owns the yard
     this.removeCollisionFromGym();
   }
 
@@ -197,6 +260,14 @@ export class MovementSandbox implements MovementWorld {
   resume(player: PlayerController): void {
     if (!this.active) return;
     this.root.setEnabled(true);
+    this.geometry?.setEnabled(true);
+    this.suspended = false;
+    this.pads.reset();
+    this.movers.resetPhase();
+    if (this.courseRun?.isTimed()) {
+      this.courseHud?.setVisible(true);
+      this.courseHud?.showIdle(this.courseRun.bestMs());
+    }
     for (const box of this.collisionBoxes) this.gym.collision.add(box);
     player.hands.clearHands();
     player.movement.setWorld(this);
@@ -213,8 +284,37 @@ export class MovementSandbox implements MovementWorld {
   // Per-frame update (offline step only) — only the hold-E leave portal; pure free practice.
   // ---------------------------------------------------------------------------------------------
 
+  /**
+   * PRE-movement update, called by ArenaScene BEFORE player.update each frame while the yard is
+   * active: moving platforms advance, carry their rider, and translate their colliders so this
+   * frame's movement resolves against the new positions.
+   */
+  preMovementUpdate(dt: number, player: PlayerController): void {
+    if (!this.active || this.suspended) return;
+    this.movers.update(dt, player);
+  }
+
   update(dt: number, player: PlayerController, input: InputManager, onAction: (action: SandboxAction) => void): void {
     if (!this.active) return;
+    // Ability pads / kill blocks / checkpoint respawns — the SAME runtime creator Playtest runs,
+    // called (like playtest) AFTER the player's movement update for this frame, so velocity written
+    // by a pad carries into the next tick.
+    const killed = this.pads.update(dt, this.fullLayout, player);
+
+    // Timed course run: start/checkpoint/finish gate crossings + live clock. A kill-block death or
+    // the K reset cancels a live attempt (the checkpoint respawn itself is unchanged).
+    const run = this.courseRun;
+    if (run?.isTimed()) {
+      if (input.wasKeyPressed(CONTROL_KEYS.reset)) run.reset('reset');
+      const p = player.root.position;
+      run.update(performance.now(), p.x, p.y, p.z, TUNING.player.radius, killed);
+      if (run.state.phase === 'running') {
+        this.courseHud?.tick(run.state.elapsedMs(performance.now()), run.state.nextCheckpoint, run.state.checkpointCount);
+      } else {
+        this.courseHud?.showIdle(run.bestMs());
+      }
+    }
+
     const leave = this.leavePoint;
     const p = player.root.position;
     const dx = p.x - leave.x;
@@ -287,11 +387,13 @@ export class MovementSandbox implements MovementWorld {
     this.createMaterials();
     this.buildGround();
     this.buildBoundary();
-    this.buildWalls();
+    this.buildCourseGeometry();
     this.buildSpawn();
 
     this.collisionBoxes.push(...buildCreatorCollisionBoxes(this.courseLayout, COLLISION_ID_PREFIX));
     this.faces = buildCreatorWallFaces(this.courseLayout);
+    // Bind moving platforms to the built colliders + visuals (same runtime as creator playtest).
+    this.movers.build(this.courseLayout, this.collisionBoxes, this.geometry, COLLISION_ID_PREFIX);
 
     for (const child of this.root.getChildMeshes(false)) {
       if (child instanceof Mesh) {
@@ -302,22 +404,34 @@ export class MovementSandbox implements MovementWorld {
     this.built = true;
   }
 
+  /**
+   * Render the course through the Creator editor's own renderer so a published course looks exactly
+   * like its playtest: solids with their real textures, ability pads, kill-block hazard volumes,
+   * gates, signs, arrows, and labels. Every editor-only aid is off: overlays (trigger wireframes,
+   * collision debug, ghosted invisible objects, pick proxies) via setOverlaysEnabled(false), and the
+   * editor's grid floor via setGridVisible(false) — the yard draws its own ground. Enabled/disabled
+   * with the yard in enter/exit/suspend/resume; starts disabled like the root.
+   */
+  private buildCourseGeometry(): void {
+    this.geometry = new CreatorGeometry(this.scene);
+    this.geometry.rebuild(this.visualLayout);
+    this.geometry.setOverlaysEnabled(false);
+    this.geometry.setGridVisible(false);
+    this.geometry.setTriggersVisible(false);
+    this.geometry.setCollisionVisible(false);
+    this.geometry.setEnabled(false);
+  }
+
   private deckMat!: StandardMaterial;
   private padMat!: StandardMaterial;
-  private concreteMat!: StandardMaterial;
   private accentMat!: StandardMaterial;
   private boundaryMat!: StandardMaterial;
 
   private createMaterials(): void {
     this.deckMat = this.gridMaterial('sandbox_ground', new Color3(0.40, 0.43, 0.47));
     this.padMat = this.gridMaterial('sandbox_pad', new Color3(0.14, 0.27, 0.52));
-    this.concreteMat = this.gridMaterial('sandbox_concrete', new Color3(0.52, 0.54, 0.57));
     this.accentMat = this.gridMaterial('sandbox_accent', new Color3(0.10, 0.40, 0.52));
     this.boundaryMat = this.gridMaterial('sandbox_boundary', new Color3(0.30, 0.33, 0.38));
-  }
-
-  private materialFor(style: WallStyle): StandardMaterial {
-    return style === 'pad' ? this.padMat : style === 'accent' ? this.accentMat : this.concreteMat;
   }
 
   private buildGround(): void {
@@ -345,29 +459,6 @@ export class MovementSandbox implements MovementWorld {
     ];
     for (const [name, cx, cz, w, d] of walls) {
       this.gridBox(name, cx, h / 2, cz, w, h, d, this.boundaryMat);
-    }
-  }
-
-  private buildWalls(): void {
-    // Render every solid course piece from the committed layout (boundary excluded — the yard draws
-    // its own). Each module's oriented sub-boxes become grid boxes; collision + wall-run faces are
-    // derived from the same data, so the live yard matches what you build/playtest in the editor.
-    for (const obj of this.courseLayout.objects) {
-      if (!isSolidModule(obj.type)) continue;
-      const opacity = objectOpacity(obj);
-      if (opacity <= 0.001) continue;
-      const mat = this.materialFor(styleForMaterial(obj.material));
-      for (const ramp of objectRampPrisms(obj)) {
-        const mesh = this.rampMesh(`sandbox_ramp_${obj.id}`, ramp.w, ramp.h, ramp.d, mat);
-        mesh.position.set(ramp.cx, ramp.baseY, ramp.cz);
-        mesh.rotation.y = ramp.ry;
-        mesh.visibility = opacity;
-      }
-      for (const box of objectSolidBoxes(obj)) {
-        const mesh = this.gridBox(`sandbox_wall_${obj.id}`, box.cx, box.cy, box.cz, box.w, box.h, box.d, mat);
-        mesh.rotation.y = box.ry;
-        mesh.visibility = opacity;
-      }
     }
   }
 
@@ -438,59 +529,6 @@ export class MovementSandbox implements MovementWorld {
     return mesh;
   }
 
-  /** Smooth ramp wedge: base sits at local Y=0, low edge at -X, high edge at +X. */
-  private rampMesh(name: string, w: number, h: number, d: number, material: StandardMaterial): Mesh {
-    const hw = w / 2;
-    const hd = d / 2;
-    const positions: number[] = [];
-    const indices: number[] = [];
-    const uvs: number[] = [];
-    const addFace = (points: Vec3Tuple[], faceUvs: Array<[number, number]>): void => {
-      const base = positions.length / 3;
-      for (let i = 0; i < points.length; i += 1) {
-        const p = points[i];
-        positions.push(p[0], p[1], p[2]);
-        uvs.push(faceUvs[i][0], faceUvs[i][1]);
-      }
-      if (points.length === 3) indices.push(base, base + 1, base + 2);
-      else indices.push(base, base + 1, base + 2, base, base + 2, base + 3);
-    };
-    addFace(
-      [[-hw, 0, -hd], [-hw, 0, hd], [hw, h, hd], [hw, h, -hd]],
-      [[0, 0], [0, d / GRID_CELL_METRES], [w / GRID_CELL_METRES, d / GRID_CELL_METRES], [w / GRID_CELL_METRES, 0]]
-    );
-    addFace(
-      [[-hw, 0, -hd], [hw, 0, -hd], [hw, 0, hd], [-hw, 0, hd]],
-      [[0, 0], [w / GRID_CELL_METRES, 0], [w / GRID_CELL_METRES, d / GRID_CELL_METRES], [0, d / GRID_CELL_METRES]]
-    );
-    addFace(
-      [[hw, 0, -hd], [hw, h, -hd], [hw, h, hd], [hw, 0, hd]],
-      [[0, 0], [h / GRID_CELL_METRES, 0], [h / GRID_CELL_METRES, d / GRID_CELL_METRES], [0, d / GRID_CELL_METRES]]
-    );
-    addFace(
-      [[-hw, 0, -hd], [hw, h, -hd], [hw, 0, -hd]],
-      [[0, 0], [w / GRID_CELL_METRES, h / GRID_CELL_METRES], [w / GRID_CELL_METRES, 0]]
-    );
-    addFace(
-      [[-hw, 0, hd], [hw, 0, hd], [hw, h, hd]],
-      [[0, 0], [w / GRID_CELL_METRES, 0], [w / GRID_CELL_METRES, h / GRID_CELL_METRES]]
-    );
-
-    const normals: number[] = [];
-    VertexData.ComputeNormals(positions, indices, normals);
-    const mesh = new Mesh(name, this.scene);
-    const vd = new VertexData();
-    vd.positions = positions;
-    vd.indices = indices;
-    vd.normals = normals;
-    vd.uvs = uvs;
-    vd.applyToMesh(mesh);
-    material.backFaceCulling = false;
-    mesh.material = material;
-    mesh.parent = this.root;
-    return mesh;
-  }
-
   private sign(name: string, text: string, position: Vector3, width: number, height: number): Mesh {
     const tex = new DynamicTexture(`${name}_tex`, { width: 512, height: 256 }, this.scene, true);
     tex.hasAlpha = true;
@@ -536,11 +574,6 @@ export class MovementSandbox implements MovementWorld {
 function toCss(c: Color3): string {
   const ch = (v: number) => Math.max(0, Math.min(255, Math.round(v * 255)));
   return `rgb(${ch(c.r)}, ${ch(c.g)}, ${ch(c.b)})`;
-}
-
-/** Map a layout material id onto one of the yard's three wall styles (others fall back to concrete). */
-function styleForMaterial(material: string | undefined): WallStyle {
-  return material === 'pad' ? 'pad' : material === 'accent' ? 'accent' : 'concrete';
 }
 
 function roundRect(ctx: CanvasRenderingContext2D, x: number, y: number, w: number, h: number, r: number): void {

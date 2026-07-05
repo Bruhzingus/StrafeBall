@@ -5193,6 +5193,30 @@ html, body {
   white-space: nowrap;
 }
 
+/* Marquee (drag-rectangle) selection overlay — screen-space, never intercepts the pointer. */
+.creator-marquee {
+  position: fixed;
+  display: none;
+  border: 1px solid rgba(120, 200, 255, 0.9);
+  background: rgba(90, 170, 255, 0.14);
+  pointer-events: none;
+  z-index: 80;
+}
+
+/* Prefab chip delete (✕) — small affordance inside the hotbar chip. */
+.creator-chip-del {
+  margin-left: 6px;
+  padding: 0 4px;
+  font-size: 11px;
+  opacity: 0.65;
+  cursor: pointer;
+}
+.creator-chip-del:hover { opacity: 1; color: #ff9da8; }
+
+/* Multi-select outliner rows: every selected row is active; the PRIMARY (inspector/gizmo target)
+   gets a stronger edge. */
+.creator-outliner-row--primary { outline: 1px solid rgba(255, 214, 92, 0.75); }
+
 .creator-drag-hint {
   position: absolute;
   left: 50%;

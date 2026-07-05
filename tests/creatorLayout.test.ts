@@ -12,6 +12,13 @@ import {
   objectDimensions,
   scaleForDimensions,
   objectCollisionBoxes,
+  collectSpawnerMarkers,
+  objectsGroupOrigin,
+  rotateObjectsAroundCenterYaw,
+  makePrefabFromObjects,
+  instantiatePrefab,
+  sanitizePrefabs,
+  MAX_PREFABS,
   objectCollisionRamps,
   objectOpacity,
   orientedBoxAabb,
@@ -343,5 +350,111 @@ describe('CreatorWorld — bounds, collision, wall-run faces', () => {
     expect(s.x).toBeCloseTo(spawn.position[0], 4);
     expect(s.z).toBeCloseTo(spawn.position[2], 4);
     expect(s.yaw).toBeCloseTo((spawn.rotation[1] * Math.PI) / 180, 4);
+  });
+});
+
+describe('CreatorLayout — collectSpawnerMarkers (shared playtest ↔ live-yard collector)', () => {
+  it('collects balls, bots (with charge detection), and dummies at their placed heights', () => {
+    const layout = validateLayout({
+      objects: [
+        { type: 'spawn_point', position: [0, 0, 0], metadata: { defaultSpawn: true } },
+        { type: 'ball_spawn', position: [1, 2, 3] },
+        { type: 'ball_spawn', position: [4, 0, 6] },
+        { type: 'bot_spawn', position: [7, 5, 9], metadata: { label: 'Charge Bot' } },
+        { type: 'bot_spawn', position: [10, 0, 12], metadata: { label: 'quick' } },
+        { type: 'target_dummy', position: [13, 8, 15] },
+        { type: 'long_wall', position: [0, 0, 20] } // non-spawner: ignored
+      ]
+    }).layout;
+
+    const markers = collectSpawnerMarkers(layout);
+    expect(markers.balls).toEqual([
+      { x: 1, y: 2, z: 3 },
+      { x: 4, y: 0, z: 6 }
+    ]);
+    expect(markers.bots).toEqual([
+      { x: 7, y: 5, z: 9, charge: true },
+      { x: 10, y: 0, z: 12, charge: false }
+    ]);
+    expect(markers.dummies).toEqual([{ x: 13, y: 8, z: 15 }]);
+  });
+
+  it('returns empty marker sets for a layout with no spawners', () => {
+    const markers = collectSpawnerMarkers(defaultCreatorLayout());
+    expect(markers.balls.length + markers.bots.length + markers.dummies.length).toBe(0);
+  });
+});
+
+describe('CreatorLayout — group math + prefabs (multi-select)', () => {
+  const wallAt = (x: number, z: number, yaw = 0) =>
+    validateLayout({ objects: [{ type: 'long_wall', position: [x, 0, z], rotation: [0, yaw, 0] }] }).layout.objects[0];
+
+  it('objectsGroupOrigin is the XZ centroid at the lowest Y', () => {
+    const a = wallAt(0, 0);
+    const b = wallAt(10, 20);
+    b.position = [10, 5, 20];
+    const origin = objectsGroupOrigin([a, b]);
+    expect(origin).toEqual({ x: 5, y: 0, z: 10 });
+  });
+
+  it('rotateObjectsAroundCenterYaw turns the group rigidly: distances to the pivot are preserved and yaws advance', () => {
+    const a = wallAt(2, 0, 0);
+    const b = wallAt(-2, 0, 90);
+    rotateObjectsAroundCenterYaw([a, b], 0, 0, 90);
+    // 90° yaw about the origin: distances preserved, both yaws advanced by 90.
+    expect(Math.hypot(a.position[0], a.position[2])).toBeCloseTo(2, 6);
+    expect(Math.hypot(b.position[0], b.position[2])).toBeCloseTo(2, 6);
+    expect(a.rotation[1]).toBeCloseTo(90, 6);
+    expect(b.rotation[1]).toBeCloseTo(180, 6);
+    // The two objects stay diametrically opposite (rigid group).
+    expect(a.position[0] + b.position[0]).toBeCloseTo(0, 6);
+    expect(a.position[2] + b.position[2]).toBeCloseTo(0, 6);
+    // Full circle returns home.
+    rotateObjectsAroundCenterYaw([a, b], 0, 0, 270);
+    expect(a.position[0]).toBeCloseTo(2, 5);
+    expect(a.position[2]).toBeCloseTo(0, 5);
+    expect(a.rotation[1]).toBeCloseTo(0, 5);
+  });
+
+  it('makePrefabFromObjects stores positions relative to the origin; instantiatePrefab restores them at a new point with fresh ids', () => {
+    const a = wallAt(10, 10);
+    const b = wallAt(14, 10);
+    b.position = [14, 3, 10];
+    const prefab = makePrefabFromObjects('Stairs', [a, b]);
+    // Origin = centroid XZ (12, 10), lowest Y (0).
+    expect(prefab.objects[0].position).toEqual([-2, 0, 0]);
+    expect(prefab.objects[1].position).toEqual([2, 3, 0]);
+
+    const stamped = instantiatePrefab(prefab, { x: 100, y: 1, z: -50 });
+    expect(stamped[0].position).toEqual([98, 1, -50]);
+    expect(stamped[1].position).toEqual([102, 4, -50]);
+    expect(stamped[0].id).not.toBe(a.id);
+    expect(stamped[1].id).not.toBe(b.id);
+    expect(stamped[0].id).not.toBe(stamped[1].id);
+    // The prefab itself is untouched by instantiation.
+    expect(prefab.objects[0].position).toEqual([-2, 0, 0]);
+  });
+
+  it('sanitizePrefabs drops junk, bounds the list, and validates the objects', () => {
+    expect(sanitizePrefabs(null)).toEqual([]);
+    expect(sanitizePrefabs([{ name: '', objects: [] }, { name: 'x' }, 42])).toEqual([]);
+    const good = sanitizePrefabs([{ name: '  Tower  ', objects: [{ type: 'long_wall', position: [0, 0, 0] }, { type: 'not_a_module' }] }]);
+    expect(good.length).toBe(1);
+    expect(good[0].name).toBe('Tower');
+    expect(good[0].objects.length).toBe(1); // unknown module dropped by the standard sanitizer
+    const many = sanitizePrefabs(Array.from({ length: 30 }, (_, i) => ({ name: `p${i}`, objects: [{ type: 'long_wall', position: [0, 0, 0] }] })));
+    expect(many.length).toBe(MAX_PREFABS);
+  });
+
+  it('validateLayout carries a sanitized prefabs library through export/import round-trips', () => {
+    const layout = validateLayout({
+      objects: [{ type: 'long_wall', position: [0, 0, 0] }],
+      prefabs: [{ name: 'Bridge', objects: [{ type: 'long_wall', position: [1, 0, 2] }] }]
+    }).layout;
+    expect(layout.prefabs?.length).toBe(1);
+    expect(layout.prefabs?.[0].name).toBe('Bridge');
+    // Round-trip through JSON (what export/import does).
+    const round = validateLayout(JSON.parse(JSON.stringify(layout))).layout;
+    expect(round.prefabs?.[0].objects.length).toBe(1);
   });
 });

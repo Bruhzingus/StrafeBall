@@ -10,7 +10,7 @@
  * crashes the game. No network access; no plaintext secrets are ever written.
  */
 
-import { CreatorLayout, validateLayout } from './CreatorLayout';
+import { CreatorLayout, CreatorPrefab, MAX_PREFABS, sanitizePrefabs, validateLayout } from './CreatorLayout';
 
 const KEY_PREFIX = 'strafeball:creator-sandbox:v1';
 export const STORAGE_KEYS = {
@@ -19,7 +19,9 @@ export const STORAGE_KEYS = {
   slots: `${KEY_PREFIX}:slots`,
   // The user's "published" layout: what the LIVE Movement Sandbox plays (read on its build). Lets a
   // user save their own course and play it after a reload, even on the web (localStorage only).
-  published: `${KEY_PREFIX}:published`
+  published: `${KEY_PREFIX}:published`,
+  // Saved multi-object assemblies ("Save selection as prefab"), stamped from the hotbar.
+  prefabs: `${KEY_PREFIX}:prefabs`
 } as const;
 
 const MAX_SLOTS = 8;
@@ -177,6 +179,22 @@ export function clearPublishedLayout(): boolean {
   } catch {
     return false;
   }
+}
+
+// --- Prefab library (multi-object assemblies; bounded; validated on read) ------------------------
+
+export function loadPrefabLibrary(): CreatorPrefab[] {
+  const raw = readKey(STORAGE_KEYS.prefabs);
+  if (!raw) return [];
+  try {
+    return sanitizePrefabs(JSON.parse(raw));
+  } catch {
+    return [];
+  }
+}
+
+export function savePrefabLibrary(prefabs: CreatorPrefab[]): boolean {
+  return writeKey(STORAGE_KEYS.prefabs, JSON.stringify(prefabs.slice(0, MAX_PREFABS)));
 }
 
 // --- Named slots (a small recent list) ----------------------------------------------------------

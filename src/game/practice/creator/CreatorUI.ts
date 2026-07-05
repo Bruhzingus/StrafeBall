@@ -72,6 +72,18 @@ export interface CreatorBridge {
   toggleObjectVisibility(id: string): void;
   deleteObjectById(id: string): void;
 
+  // Multi-select.
+  toggleSelectObjectById(id: string): void;
+  getSelectedIds(): string[];
+  selectionCount(): number;
+
+  // Prefabs (saved multi-object assemblies).
+  savePrefabFromSelection(): void;
+  getPrefabNames(): string[];
+  armPrefab(name: string | null): void;
+  getArmedPrefabName(): string | null;
+  deletePrefab(name: string): void;
+
   resetPlayer(): void;
   exitCreator(): void;
   lockCreator(): void;
@@ -156,6 +168,9 @@ export class CreatorUI {
   private undoBtn!: HTMLButtonElement;
   private redoBtn!: HTMLButtonElement;
   private autosaveStatusEl!: HTMLSpanElement;
+  private prefabGroupEl!: HTMLDivElement;
+  private prefabChipsEl!: HTMLDivElement;
+  private prefabSig = '';
   private hotbarUndoBtn!: HTMLButtonElement;
   private hotbarRedoBtn!: HTMLButtonElement;
   private buildBtn!: HTMLButtonElement;
@@ -388,6 +403,7 @@ export class CreatorUI {
     tools.appendChild(this.hotbarButton('Focus', 'F', () => this.bridge.focusSelected()));
     tools.appendChild(this.hotbarButton('Copy', 'Ctrl+C', () => this.bridge.copySelected()));
     tools.appendChild(this.hotbarButton('Paste', 'Ctrl+V', () => this.bridge.paste()));
+    tools.appendChild(this.hotbarButton('Prefab+', '', () => this.bridge.savePrefabFromSelection()));
     this.hotbarUndoBtn = this.hotbarButton('Undo', 'Ctrl+Z', () => this.bridge.undo());
     this.hotbarRedoBtn = this.hotbarButton('Redo', 'Ctrl+Y', () => this.bridge.redo());
     tools.append(this.hotbarUndoBtn, this.hotbarRedoBtn);
@@ -423,7 +439,44 @@ export class CreatorUI {
       group.appendChild(chips);
       strip.appendChild(group);
     }
+
+    // Prefabs group: user-saved assemblies, refreshed dynamically (see refreshPrefabChips).
+    this.prefabGroupEl = el('div', 'creator-hotbar-group');
+    const prefabTitle = el('div', 'creator-hotbar-grouptitle');
+    prefabTitle.textContent = 'Prefabs';
+    this.prefabChipsEl = el('div', 'creator-hotbar-chips');
+    this.prefabGroupEl.append(prefabTitle, this.prefabChipsEl);
+    this.prefabGroupEl.style.display = 'none';
+    strip.appendChild(this.prefabGroupEl);
+
     this.hotbar.appendChild(strip);
+  }
+
+  /** Rebuild the prefab chips when the library changes; highlight the armed one. */
+  private refreshPrefabChips(): void {
+    const names = this.bridge.getPrefabNames();
+    const armed = this.bridge.getArmedPrefabName();
+    const sig = `${names.join('|')}::${armed ?? ''}`;
+    if (sig === this.prefabSig) return;
+    this.prefabSig = sig;
+    this.prefabGroupEl.style.display = names.length > 0 ? '' : 'none';
+    this.prefabChipsEl.innerHTML = '';
+    for (const name of names) {
+      const chip = button('', 'creator-chip', () => this.bridge.armPrefab(name));
+      if (name === armed) chip.classList.add('creator-chip--armed');
+      const labelSpan = el('span', 'creator-chip-label');
+      labelSpan.textContent = name;
+      chip.appendChild(labelSpan);
+      const del = el('span', 'creator-chip-del');
+      del.textContent = '✕';
+      del.title = 'Delete prefab';
+      del.addEventListener('click', (e) => {
+        e.stopPropagation(); // don't also arm the prefab
+        this.bridge.deletePrefab(name);
+      });
+      chip.appendChild(del);
+      this.prefabChipsEl.appendChild(chip);
+    }
   }
 
   private hotbarButton(label: string, key: string, onClick: () => void, keyOnly = false): HTMLButtonElement {
@@ -545,6 +598,12 @@ export class CreatorUI {
       this.buildMarkerMeta(obj);
     }
 
+    // Moving platform (solid terrain only): toggle + travel/speed/pause fields. The travel path
+    // previews in Build; the runtime animates only in Playtest / the live yard.
+    if (def && def.category === 'terrain') {
+      this.buildMoverMeta(obj);
+    }
+
     // Action buttons
     const actions = el('div', 'creator-field-row');
     actions.append(
@@ -553,6 +612,28 @@ export class CreatorUI {
       button('Delete', 'creator-btn creator-btn-warn', () => this.bridge.deleteSelected())
     );
     this.inspectorEl.appendChild(actions);
+  }
+
+  private buildMoverMeta(obj: CreatorLayoutObject): void {
+    const mover = obj.metadata?.mover;
+    const wrap = el('div', 'creator-meta');
+    wrap.appendChild(
+      this.checkbox('Moving platform', !!mover, (v) => {
+        this.bridge.setSelectedMetadata({ mover: v ? { dx: 10, dy: 0, dz: 0, speed: 4, pauseSeconds: 0.5 } : undefined });
+      })
+    );
+    if (mover) {
+      const patch = (p: Partial<NonNullable<CreatorObjectMetadata['mover']>>) =>
+        this.bridge.setSelectedMetadata({ mover: { ...mover, ...p } });
+      wrap.append(
+        this.compactNumberRow('Move X', mover.dx, 1, (v) => patch({ dx: v })),
+        this.compactNumberRow('Move Y', mover.dy, 1, (v) => patch({ dy: v })),
+        this.compactNumberRow('Move Z', mover.dz, 1, (v) => patch({ dz: v })),
+        this.compactNumberRow('Speed m/s', mover.speed, 0.5, (v) => patch({ speed: v })),
+        this.compactNumberRow('Pause s', mover.pauseSeconds, 0.25, (v) => patch({ pauseSeconds: v }))
+      );
+    }
+    this.inspectorEl.appendChild(wrap);
   }
 
   private buildMarkerMeta(obj: CreatorLayoutObject): void {
@@ -674,6 +755,7 @@ export class CreatorUI {
   private refreshOutliner(): void {
     const objs = this.bridge.listObjects();
     const selectedId = this.bridge.getSelectedId();
+    const selectedIds = new Set(this.bridge.getSelectedIds());
     this.outlinerCountEl.textContent = String(objs.length);
     // Only rebuild the rows when the structure changes (keeps search focus + scroll position stable).
     const sig = objs.map((o) => `${o.id}:${Math.round(objectOpacity(o) * 100)}:${o.name ?? ''}:${o.type}`).join('|');
@@ -682,7 +764,8 @@ export class CreatorUI {
       this.rebuildOutlinerRows(objs);
     }
     for (const [id, row] of this.outlinerRows) {
-      row.classList.toggle('creator-outliner-row--active', id === selectedId);
+      row.classList.toggle('creator-outliner-row--active', selectedIds.has(id));
+      row.classList.toggle('creator-outliner-row--primary', id === selectedId);
     }
     // Selecting in the viewport should reveal the object in the (possibly long) list too.
     if (selectedId && selectedId !== this.outlinerSelectedId) {
@@ -710,7 +793,12 @@ export class CreatorUI {
 
       const eye = button(hidden ? '◌' : '◉', 'creator-outliner-eye', () => this.bridge.toggleObjectVisibility(obj.id));
       eye.title = hidden ? 'Set opacity to 100%' : 'Set opacity to 0%';
-      const labelBtn = button(text, 'creator-outliner-label', () => this.bridge.selectObjectById(obj.id));
+      // Shift+click a row toggles the object in/out of the multi-selection (like the viewport).
+      const labelBtn = button(text, 'creator-outliner-label', () => {});
+      labelBtn.addEventListener('click', (e: MouseEvent) => {
+        if (e.shiftKey) this.bridge.toggleSelectObjectById(obj.id);
+        else this.bridge.selectObjectById(obj.id);
+      });
       labelBtn.title = def?.label ?? obj.type;
       if (hidden) labelBtn.classList.add('creator-outliner-label--hidden');
       const focusBtn = button('✛', 'creator-outliner-mini', () => this.bridge.focusObjectById(obj.id));
@@ -806,8 +894,20 @@ export class CreatorUI {
       : 'PLAYTEST — real movement. B / F1 / Esc → Build · = → free-fly (noclip) · Reset Player to respawn · O → no-cooldown · step on ability pads to trigger them.';
 
     this.refreshPaletteArmed();
+    this.refreshPrefabChips();
     const selected = this.bridge.getSelectedObject();
-    if (editing) {
+    const multiCount = this.bridge.selectionCount();
+    if (editing && multiCount > 1) {
+      // Multi-selection: the inspector stays single-object by design — show the count + the shared
+      // group actions instead of per-object fields.
+      if (this.inspectorObjectId !== '__multi' || this.inspectorSig !== String(multiCount)) {
+        this.inspectorObjectId = '__multi';
+        this.inspectorSig = String(multiCount);
+        this.buildMultiInspector(multiCount);
+      }
+      this.refreshOutliner();
+    } else if (editing) {
+      if (this.inspectorObjectId === '__multi') this.inspectorObjectId = null;
       const sig = selected ? inspectorSignature(selected) : '';
       if ((selected?.id ?? null) !== this.inspectorObjectId) {
         this.inspectorSig = sig;
@@ -825,6 +925,27 @@ export class CreatorUI {
       }
       this.refreshOutliner();
     }
+  }
+
+  /** Inspector panel for a MULTI-selection: the count + the shared group actions only. */
+  private buildMultiInspector(count: number): void {
+    this.inspectorEl.innerHTML = '';
+    const header = el('div', 'creator-section-title');
+    header.textContent = `${count} objects selected`;
+    this.inspectorEl.appendChild(header);
+
+    const hint = el('div', 'creator-empty');
+    hint.textContent = 'Group edit: move/rotate gizmo, arrows nudge, wheel rotates around the group center. Shift+click adds/removes.';
+    this.inspectorEl.appendChild(hint);
+
+    const row = el('div', 'creator-modebar-row');
+    row.append(
+      button('Duplicate', 'creator-btn', () => this.bridge.duplicateSelected()),
+      button('Copy', 'creator-btn', () => this.bridge.copySelected()),
+      button('Save Prefab', 'creator-btn creator-btn-primary', () => this.bridge.savePrefabFromSelection()),
+      button('Delete', 'creator-btn creator-btn-warn', () => this.bridge.deleteSelected())
+    );
+    this.inspectorEl.appendChild(row);
   }
 
   /** Update existing inspector inputs in place (skip the focused one) — used after gizmo drags. */

@@ -113,6 +113,9 @@ export function buildCreatorWallFaces(layout: CreatorLayout): CreatorWallFace[] 
   const faces: CreatorWallFace[] = [];
   for (const obj of layout.objects) {
     if (obj.wallrunEnabled === false) continue;
+    // Moving platforms translate at runtime; wall-run faces are static, so movers provide none
+    // (documented limitation — their COLLIDERS still move and push/carry the player correctly).
+    if (obj.metadata?.mover) continue;
     for (const box of objectCollisionBoxes(obj)) faces.push(...boxFaces(box));
   }
 

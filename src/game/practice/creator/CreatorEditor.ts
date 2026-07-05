@@ -35,16 +35,25 @@ import {
   CreatorLayout,
   CreatorLayoutObject,
   CreatorObjectMetadata,
+  type CreatorPrefab,
+  type CreatorSpawnerMarkers,
+  MAX_PREFABS,
   cloneLayout,
+  collectSpawnerMarkers,
   committedCourseLayout,
   createObjectId,
   enforceSingleDefaultSpawn,
+  instantiatePrefab,
   isLayoutValid,
   layoutSpawn,
+  makePrefabFromObjects,
   moduleDef,
   objectDimensions,
   objectOpacity,
   objectWorldAabb,
+  objectsGroupOrigin,
+  prefabWorldBounds,
+  rotateObjectsAroundCenterYaw,
   scaleForDimensions,
   setExclusiveDefaultSpawn,
   textureDef,
@@ -52,6 +61,11 @@ import {
 } from './CreatorLayout';
 import { CreatorWorld, buildCreatorCollisionBoxes } from './CreatorWorld';
 import { CreatorPads } from './CreatorPads';
+import { CreatorMovers } from './CreatorMovers';
+import { CourseRunTracker } from './CourseRun';
+import { CourseRunHud } from './CourseRunHud';
+import { TUNING } from '../../config/tuning';
+import { CONTROL_KEYS } from '../../config/controls';
 import { CreatorReplay } from './CreatorReplay';
 import { CreatorGeometry } from './CreatorGeometry';
 import { CreatorHistory } from './CreatorHistory';
@@ -62,9 +76,11 @@ import {
   importLayoutFromFile,
   loadAutosaveStored,
   loadLocalStored,
+  loadPrefabLibrary,
   loadPublishedLayout,
   saveAutosave,
   saveLocalLayout,
+  savePrefabLibrary,
   savePublishedLayout,
   shouldOfferAutosaveRecovery
 } from './CreatorStorage';
@@ -97,12 +113,9 @@ export interface CreatorEditorHooks {
   onPlaytestEnd(): void;
 }
 
-/** World-space positions of the layout's functional spawner markers, handed to the playtest host. */
-export interface CreatorSpawnerMarkers {
-  balls: Array<{ x: number; y: number; z: number }>;
-  bots: Array<{ x: number; y: number; z: number; charge: boolean }>;
-  dummies: Array<{ x: number; y: number; z: number }>;
-}
+// Re-exported for existing importers (ArenaScene); the type + collector now live in CreatorLayout so
+// the live Movement Sandbox can use them without importing the whole editor.
+export type { CreatorSpawnerMarkers } from './CreatorLayout';
 
 type Mode = 'build' | 'playtest';
 
@@ -116,6 +129,12 @@ export class CreatorEditor implements CreatorBridge {
   private readonly geometry: CreatorGeometry;
   private readonly world: CreatorWorld;
   private readonly pads = new CreatorPads();
+  /** Moving-platform runtime (Playtest only; Build shows the static piece + its path preview). */
+  private readonly movers = new CreatorMovers();
+  // Timed course run for Playtest (start → checkpoints → finish). Rebuilt on each playtest entry so
+  // it always tracks the CURRENT edited layout; inert unless the layout has both gates.
+  private courseRun: CourseRunTracker | null = null;
+  private courseHud: CourseRunHud | null = null;
   private readonly replay: CreatorReplay;
   private readonly ui: CreatorUI;
 
@@ -125,8 +144,27 @@ export class CreatorEditor implements CreatorBridge {
   private worldInstalled = false;
 
   private selectedId: string | null = null;
-  private clipboard: CreatorLayoutObject | null = null;
+  /** Full multi-selection (always contains selectedId when non-null). selectedId stays the PRIMARY
+   *  selection: the inspector target and the gizmo anchor. */
+  private readonly selectedIds = new Set<string>();
+  /** Clipboard is a GROUP: single-copy is just a group of one. Positions stay absolute; paste keeps
+   *  the group's internal offsets around its shared center. */
+  private clipboard: CreatorLayoutObject[] | null = null;
   private armedModule: string | null = null;
+  // --- Prefab library (saved multi-object assemblies; stamped from the hotbar) ---
+  private prefabs: CreatorPrefab[] = loadPrefabLibrary();
+  private armedPrefab: CreatorPrefab | null = null;
+  private prefabGhost: Mesh | null = null;
+  // --- Marquee (drag-rectangle) selection: Select tool + no armed module ---
+  private marqueeActive = false;
+  private marqueeMoved = false;
+  private marqueeStartX = 0;
+  private marqueeStartY = 0;
+  private marqueeEl: HTMLDivElement | null = null;
+  private marqueeAdditive = false;
+  // Gizmo group-drag baseline: the primary object's transform when the drag began, so the same
+  // delta can be applied to every other selected object on commit.
+  private gizmoStart: { pos: Vec3Tuple; yawDeg: number } | null = null;
   private placementPreview: CreatorLayoutObject | null = null;
   private previewPointerX: number | null = null;
   private previewPointerY: number | null = null;
@@ -356,6 +394,16 @@ export class CreatorEditor implements CreatorBridge {
   }
 
   /** Per-frame update while active. Build: fly camera. Playtest: handled by ArenaScene (player). */
+  /**
+   * PRE-movement update, called by ArenaScene BEFORE player.update each playtest frame: moving
+   * platforms advance, carry their rider, and translate their colliders so this frame's movement
+   * resolves against the new positions. In free-fly the platforms keep animating (null rider).
+   */
+  preMovementUpdate(dt: number): void {
+    if (!this.active || this.mode !== 'playtest') return;
+    this.movers.update(dt, this.playtestFly ? null : this.player);
+  }
+
   step(dt: number): void {
     if (!this.active) return;
     if (this.mode === 'build') {
@@ -371,7 +419,20 @@ export class CreatorEditor implements CreatorBridge {
       this.updateFlyCamera(dt);
     } else {
       // Playtest, first-person: apply ability-pad effects after the movement step ran this frame.
-      this.pads.update(dt, this.layout, this.player);
+      const killed = this.pads.update(dt, this.layout, this.player);
+      // Timed course run (same controller the live yard uses): gate crossings + live clock; a
+      // kill-block death or the K reset cancels a live attempt.
+      const run = this.courseRun;
+      if (run?.isTimed()) {
+        if (this.input.wasKeyPressed(CONTROL_KEYS.reset)) run.reset('reset');
+        const p = this.player.root.position;
+        run.update(performance.now(), p.x, p.y, p.z, TUNING.player.radius, killed);
+        if (run.state.phase === 'running') {
+          this.courseHud?.tick(run.state.elapsedMs(performance.now()), run.state.nextCheckpoint, run.state.checkpointCount);
+        } else {
+          this.courseHud?.showIdle(run.bestMs());
+        }
+      }
       // 7 toggles run recording; while armed, sample the player's pose each frame for the editor replay.
       if (this.input.wasKeyPressed('Digit7') || this.input.wasKeyPressed('Numpad7')) {
         this.replay.toggleRecording(this.player.root.position, this.player.root.rotation.y);
@@ -467,6 +528,9 @@ export class CreatorEditor implements CreatorBridge {
     this.flushAutosave();
     window.removeEventListener('beforeunload', this.onBeforeUnload);
     document.removeEventListener('visibilitychange', this.onVisibilityChange);
+    this.courseHud?.dispose();
+    this.prefabGhost?.dispose();
+    this.marqueeEl?.remove();
     this.removeListeners();
     this.gizmoManager?.dispose();
     this.gizmoManager = null;
@@ -526,6 +590,10 @@ export class CreatorEditor implements CreatorBridge {
     this.disablePlaytestFly(false);
     // Leaving playtest → despawn its functional actors (no-op if none / already in build).
     this.hooks.onPlaytestEnd();
+    this.courseRun?.reset('leave');
+    this.courseHud?.setVisible(false);
+    // Snap moving platforms back to their authored home positions for editing.
+    this.movers.resetPhase();
     this.mode = 'build';
     this.uninstallWorldAndCollision();
     this.player.movement.setWorld(null);
@@ -551,6 +619,7 @@ export class CreatorEditor implements CreatorBridge {
     this.removeListeners();
     this.detachGizmo();
     this.clearPlacementPreview();
+    this.disarmPrefab();
     this.geometry.setOverlaysEnabled(false);
     // Replay is never shown while playing; recording starts when the user presses 7.
     this.replay.onEnterPlaytest();
@@ -566,6 +635,26 @@ export class CreatorEditor implements CreatorBridge {
     this.player.dash.refill();
     this.player.backflip.cooldown = 0;
     this.pads.reset();
+    // Rebuild the timed-course tracker against the CURRENT layout (gates/edits since last playtest).
+    this.courseHud ??= new CourseRunHud(document.getElementById('hud-root') ?? document.body, 'COURSE RUN');
+    const hud = this.courseHud;
+    this.courseRun = new CourseRunTracker(this.layout, {
+      onRunStart: () => {
+        // Deterministic routes: every attempt sees the platforms at their starting phase.
+        this.movers.resetPhase();
+        hud.tick(0, 0, this.courseRun?.state.checkpointCount ?? 0);
+      },
+      onCheckpoint: (collected, total, splitMs) => hud.showCheckpoint(collected, total, splitMs),
+      onMissedCheckpoint: (n) => hud.showMissedCheckpoint(n),
+      onFinish: (timeMs, bestMs, isPb) => hud.showFinish(timeMs, bestMs, isPb),
+      onRunReset: (reason) => hud.showRunReset(reason)
+    });
+    if (this.courseRun.isTimed()) {
+      hud.setVisible(true);
+      hud.showIdle(this.courseRun.bestMs());
+    } else {
+      hud.setVisible(false);
+    }
     this.player.setRespawn(new Vector3(spawn.x, spawn.y, spawn.z), spawn.yaw);
     this.player.teleportTo(new Vector3(spawn.x, spawn.y, spawn.z), spawn.yaw, 0);
     // Spawn the layout's functional ball/bot/dummy actors for this run (host owns their lifecycle).
@@ -593,6 +682,9 @@ export class CreatorEditor implements CreatorBridge {
     this.flushAutosave(); // exit/lock/going-online: never leave a pending write behind
     this.disablePlaytestFly(false);
     this.hooks.onPlaytestEnd(); // despawn any playtest actors before tearing down
+    this.courseRun?.reset('leave');
+    this.courseHud?.setVisible(false);
+    this.movers.resetPhase(); // platforms home before the world tears down
     this.removeListeners();
     this.detachGizmo();
     this.uninstallWorldAndCollision();
@@ -601,6 +693,9 @@ export class CreatorEditor implements CreatorBridge {
     this.replay.hide();
     this.ui.setRecordingTimer(null);
     this.clearPlacementPreview();
+    this.disarmPrefab();
+    this.marqueeActive = false;
+    if (this.marqueeEl) this.marqueeEl.style.display = 'none';
     this.ui.setToolbarVisible(false);
     this.ui.setEntryPromptVisible(false, 0);
     this.ui.closePasswordModal();
@@ -633,6 +728,10 @@ export class CreatorEditor implements CreatorBridge {
     for (const box of this.creatorCollisionBoxes) this.gym.collision.add(box);
     this.player.movement.setWorld(this.world);
     this.worldInstalled = true;
+    // Bind the moving-platform runtime to the freshly built collider entries + visuals. Rebinding
+    // here also covers mid-playtest edits (rebuildAfterChange reinstalls the world).
+    this.movers.build(this.layout, this.creatorCollisionBoxes, this.geometry, COLLISION_ID_PREFIX);
+    this.movers.resetPhase();
   }
 
   private uninstallWorldAndCollision(): void {
@@ -790,6 +889,11 @@ export class CreatorEditor implements CreatorBridge {
       this.deleteSelected();
       return;
     }
+    if (e.ctrlKey && code === 'KeyA') {
+      e.preventDefault();
+      this.selectAll();
+      return;
+    }
     if (e.ctrlKey && code === 'KeyD') {
       e.preventDefault();
       this.duplicateSelected();
@@ -856,6 +960,19 @@ export class CreatorEditor implements CreatorBridge {
       e.preventDefault();
       return;
     }
+    // Marquee (drag-rectangle) selection: Select tool active, nothing armed, press began on the
+    // viewport. A negligible drag still resolves as a normal click in handlePointerUp.
+    if (
+      e.button === 0 &&
+      this.mode === 'build' &&
+      !this.armedModule &&
+      !this.armedPrefab &&
+      this.snap.gizmo === 'off' &&
+      !this.gizmoDragging
+    ) {
+      const target = e.target as Element | null;
+      if (!target || target === this.canvas()) this.beginMarquee(e);
+    }
     if (e.button === 2) {
       // Free-look on hold-RMB using raw mouse deltas — deliberately NOT pointer-lock based, so it can't
       // be broken by the cursor-lock suppression machinery. Hide the cursor while dragging.
@@ -873,6 +990,11 @@ export class CreatorEditor implements CreatorBridge {
       this.updateCenterDrag();
       return;
     }
+    if (this.marqueeActive) {
+      this.updateMarquee(e.clientX, e.clientY);
+      return;
+    }
+    if (this.armedPrefab && !this.looking) this.updatePrefabGhostFromPointer();
     if (this.armedModule && !this.looking) this.updatePlacementPreviewFromPointer();
     if (!this.looking) return;
     const dx = e.movementX || 0;
@@ -907,6 +1029,10 @@ export class CreatorEditor implements CreatorBridge {
       return;
     }
     if (e.button !== 0) return;
+    if (this.marqueeActive) {
+      const wasDrag = this.finishMarquee(e);
+      if (wasDrag) return; // a real box-select consumed this release
+    }
     if (this.looking) return;
     if (performance.now() < this.ignoreClickUntilMs || this.gizmoDragging) return;
     const target = e.target as Element | null;
@@ -962,6 +1088,73 @@ export class CreatorEditor implements CreatorBridge {
     this.ui.refresh();
   }
 
+  // ---------------------------------------------------------------------------------------------
+  // Marquee (drag-rectangle) selection
+  // ---------------------------------------------------------------------------------------------
+
+  private beginMarquee(e: PointerEvent): void {
+    this.marqueeActive = true;
+    this.marqueeMoved = false;
+    this.marqueeStartX = e.clientX;
+    this.marqueeStartY = e.clientY;
+    this.marqueeAdditive = e.shiftKey;
+    if (!this.marqueeEl) {
+      const el = document.createElement('div');
+      el.className = 'creator-marquee';
+      document.body.appendChild(el);
+      this.marqueeEl = el;
+    }
+    this.updateMarquee(e.clientX, e.clientY);
+  }
+
+  private updateMarquee(x: number, y: number): void {
+    if (!this.marqueeEl) return;
+    const left = Math.min(this.marqueeStartX, x);
+    const top = Math.min(this.marqueeStartY, y);
+    const w = Math.abs(x - this.marqueeStartX);
+    const h = Math.abs(y - this.marqueeStartY);
+    if (w + h > 6) this.marqueeMoved = true;
+    this.marqueeEl.style.display = this.marqueeMoved ? 'block' : 'none';
+    this.marqueeEl.style.left = `${left}px`;
+    this.marqueeEl.style.top = `${top}px`;
+    this.marqueeEl.style.width = `${w}px`;
+    this.marqueeEl.style.height = `${h}px`;
+  }
+
+  /** Ends the marquee. Returns true when it was a real drag (box-select performed). */
+  private finishMarquee(e: PointerEvent): boolean {
+    this.marqueeActive = false;
+    if (this.marqueeEl) this.marqueeEl.style.display = 'none';
+    if (!this.marqueeMoved) return false; // negligible drag → the caller treats it as a click
+
+    const canvas = this.canvas();
+    const cam = this.editorCamera;
+    if (!canvas || !cam) return true;
+    const rect = canvas.getBoundingClientRect();
+    const engine = this.scene.getEngine();
+    // Screen-project each object's world center; CSS px → render px via the canvas scale ratio.
+    const scaleX = engine.getRenderWidth() / Math.max(1, rect.width);
+    const scaleY = engine.getRenderHeight() / Math.max(1, rect.height);
+    const minX = (Math.min(this.marqueeStartX, e.clientX) - rect.left) * scaleX;
+    const maxX = (Math.max(this.marqueeStartX, e.clientX) - rect.left) * scaleX;
+    const minY = (Math.min(this.marqueeStartY, e.clientY) - rect.top) * scaleY;
+    const maxY = (Math.max(this.marqueeStartY, e.clientY) - rect.top) * scaleY;
+
+    const transform = this.scene.getTransformMatrix();
+    const viewport = cam.viewport.toGlobal(engine.getRenderWidth(), engine.getRenderHeight());
+    const ids: string[] = [];
+    for (const obj of this.layout.objects) {
+      const a = objectWorldAabb(obj);
+      const center = new Vector3((a.minX + a.maxX) / 2, (a.minY + a.maxY) / 2, (a.minZ + a.maxZ) / 2);
+      const p = Vector3.Project(center, Matrix.Identity(), transform, viewport);
+      if (p.z <= 0 || p.z >= 1) continue; // behind the camera / past the far plane
+      if (p.x >= minX && p.x <= maxX && p.y >= minY && p.y <= maxY) ids.push(obj.id);
+    }
+    this.selectMany(ids, this.marqueeAdditive);
+    if (ids.length > 0) this.ui.toast(`Selected ${this.selectedIds.size} object${this.selectedIds.size === 1 ? '' : 's'}`);
+    return true;
+  }
+
   private handleLeftClick(e: PointerEvent): void {
     const canvas = this.canvas();
     if (!canvas || !this.editorCamera) return;
@@ -969,11 +1162,20 @@ export class CreatorEditor implements CreatorBridge {
     const x = e.clientX - rect.left;
     const y = e.clientY - rect.top;
     const pick = this.pickWorld(x, y);
+    if (this.armedPrefab) {
+      if (pick) this.stampPrefab(pick.point);
+      return;
+    }
     if (this.armedModule) {
       if (pick) {
         this.updatePlacementPreview(pick.point);
         this.placePlacementPreview();
       }
+      return;
+    }
+    // Shift+click toggles membership in the multi-selection; a plain click replaces it.
+    if (e.shiftKey && pick?.objectId) {
+      this.toggleSelect(pick.objectId);
       return;
     }
     this.select(pick?.objectId ?? null);
@@ -1003,13 +1205,83 @@ export class CreatorEditor implements CreatorBridge {
 
   private select(id: string | null): void {
     this.selectedId = id && this.findObject(id) ? id : null;
+    this.selectedIds.clear();
+    if (this.selectedId) this.selectedIds.add(this.selectedId);
     this.refreshSelectionVisual();
     this.ui.refresh();
   }
 
+  /** Shift+click: toggle an object in/out of the multi-selection. The primary follows the newest add. */
+  private toggleSelect(id: string): void {
+    if (!this.findObject(id)) return;
+    if (this.selectedIds.has(id)) {
+      this.selectedIds.delete(id);
+      if (this.selectedId === id) this.selectedId = this.selectedIds.values().next().value ?? null;
+    } else {
+      this.selectedIds.add(id);
+      this.selectedId = id;
+    }
+    this.refreshSelectionVisual();
+    this.ui.refresh();
+  }
+
+  /** Ctrl+A: select every object in the layout. */
+  private selectAll(): void {
+    this.selectedIds.clear();
+    for (const o of this.layout.objects) this.selectedIds.add(o.id);
+    this.selectedId = this.layout.objects.length > 0 ? this.layout.objects[this.layout.objects.length - 1].id : null;
+    this.refreshSelectionVisual();
+    this.ui.refresh();
+  }
+
+  /** Marquee result: replace (or, additive, extend) the selection with the boxed ids. */
+  private selectMany(ids: readonly string[], additive: boolean): void {
+    if (!additive) this.selectedIds.clear();
+    for (const id of ids) if (this.findObject(id)) this.selectedIds.add(id);
+    if (!this.selectedId || !this.selectedIds.has(this.selectedId)) {
+      this.selectedId = this.selectedIds.values().next().value ?? null;
+    }
+    this.refreshSelectionVisual();
+    this.ui.refresh();
+  }
+
+  /** Drop selection ids whose objects no longer exist (after delete/undo/load). */
+  private pruneSelection(): void {
+    for (const id of [...this.selectedIds]) {
+      if (!this.findObject(id)) this.selectedIds.delete(id);
+    }
+    if (this.selectedId && !this.selectedIds.has(this.selectedId)) {
+      this.selectedId = this.selectedIds.values().next().value ?? null;
+    }
+    if (this.selectedId && !this.selectedIds.has(this.selectedId)) this.selectedIds.add(this.selectedId);
+  }
+
+  /** Every selected object, primary first (stable enough for group math; order is not meaningful). */
+  private getSelectedObjects(): CreatorLayoutObject[] {
+    const out: CreatorLayoutObject[] = [];
+    for (const id of this.selectedIds) {
+      const obj = this.findObject(id);
+      if (obj) out.push(obj);
+    }
+    return out;
+  }
+
+  /** UI accessors (outliner multi-highlight + inspector "N selected"). */
+  getSelectedIds(): string[] {
+    return [...this.selectedIds];
+  }
+
+  selectionCount(): number {
+    return this.selectedIds.size;
+  }
+
+  toggleSelectObjectById(id: string): void {
+    this.toggleSelect(id);
+  }
+
   private refreshSelectionVisual(): void {
-    const obj = this.getSelectedObject();
-    this.geometry.setSelection(this.mode === 'build' && !this.armedModule ? obj : null);
+    const objs = this.mode === 'build' && !this.armedModule && !this.armedPrefab ? this.getSelectedObjects() : [];
+    this.geometry.setSelectionMany(objs);
     if (this.mode === 'build') this.reattachGizmo();
     this.syncCenterHandle();
   }
@@ -1050,6 +1322,10 @@ export class CreatorEditor implements CreatorBridge {
       if (!gizmo) return;
       gizmo.onDragStartObservable.add(() => {
         this.gizmoDragging = true;
+        // Group-drag baseline: the primary's transform when the drag begins, so its delta can be
+        // applied to every other selected object on commit.
+        const obj = this.getSelectedObject();
+        this.gizmoStart = obj ? { pos: [...obj.position] as Vec3Tuple, yawDeg: obj.rotation[1] ?? 0 } : null;
       });
       gizmo.onDragEndObservable.add(() => {
         this.commitGizmoTransform();
@@ -1091,6 +1367,8 @@ export class CreatorEditor implements CreatorBridge {
     if (!obj) return;
     const node = this.geometry.getObjectRoot(obj.id);
     if (!node) return;
+    const start = this.gizmoStart;
+    this.gizmoStart = null;
     obj.position = [node.position.x, node.position.y, node.position.z];
     const euler = node.rotationQuaternion ? node.rotationQuaternion.toEulerAngles() : node.rotation;
     const rad2deg = 180 / Math.PI;
@@ -1099,6 +1377,26 @@ export class CreatorEditor implements CreatorBridge {
     // collision boxes (min > max) and make the object unpickable. Mirror back to positive and floor.
     const safeScale = (v: number) => Math.max(CREATOR_LIMITS.minScale, Math.abs(Number.isFinite(v) ? v : 1));
     obj.scale = [safeScale(node.scaling.x), safeScale(node.scaling.y), safeScale(node.scaling.z)];
+
+    // Multi-selection: carry the primary's drag delta onto every OTHER selected object so the group
+    // moves/turns as one unit — translation as a plain offset; rotation as a rigid yaw turn around
+    // the primary (the gizmo's visible pivot). Scale stays single-object by design.
+    if (start && this.selectedIds.size > 1) {
+      const others = this.getSelectedObjects().filter((o) => o.id !== obj.id);
+      const dx = obj.position[0] - start.pos[0];
+      const dy = obj.position[1] - start.pos[1];
+      const dz = obj.position[2] - start.pos[2];
+      if (Math.abs(dx) + Math.abs(dy) + Math.abs(dz) > 1e-6) {
+        for (const o of others) {
+          o.position = [o.position[0] + dx, o.position[1] + dy, o.position[2] + dz];
+        }
+      }
+      const dyaw = normalizeDegrees((obj.rotation[1] ?? 0) - start.yawDeg);
+      const effectiveYaw = dyaw > 180 ? dyaw - 360 : dyaw; // shortest arc
+      if (Math.abs(effectiveYaw) > 1e-4) {
+        rotateObjectsAroundCenterYaw(others, obj.position[0], obj.position[2], effectiveYaw);
+      }
+    }
     this.commit(obj.id);
   }
 
@@ -1216,14 +1514,9 @@ export class CreatorEditor implements CreatorBridge {
 
   /** World-space positions of the ball/bot/dummy spawner markers for the playtest host. */
   private collectSpawnerMarkers(): CreatorSpawnerMarkers {
-    const markers: CreatorSpawnerMarkers = { balls: [], bots: [], dummies: [] };
-    for (const o of this.layout.objects) {
-      const [x, y, z] = o.position;
-      if (o.type === 'ball_spawn') markers.balls.push({ x, y, z });
-      else if (o.type === 'bot_spawn') markers.bots.push({ x, y, z, charge: /charge/i.test(o.metadata?.label ?? '') });
-      else if (o.type === 'target_dummy') markers.dummies.push({ x, y, z });
-    }
-    return markers;
+    // Shared with the live Movement Sandbox (CreatorLayout.collectSpawnerMarkers) so playtest and a
+    // published course spawn identical actors.
+    return collectSpawnerMarkers(this.layout);
   }
 
   private findObject(id: string): CreatorLayoutObject | undefined {
@@ -1394,34 +1687,51 @@ export class CreatorEditor implements CreatorBridge {
   }
 
   duplicateSelected(): void {
-    const obj = this.getSelectedObject();
-    if (!obj) return;
-    if (this.atObjectLimit()) return;
-    const copy: CreatorLayoutObject = cloneLayout({ version: 0, name: '', updatedAt: '', ground: this.layout.ground, objects: [obj] }).objects[0];
-    copy.id = createObjectId(obj.type);
-    // Spawn the duplicate exactly on top of its source (same position) so it can be dragged out
-    // rather than appearing offset a grid step away.
-    copy.position = [...obj.position];
-    this.layout.objects.push(copy);
-    if (copy.type === 'spawn_point') setExclusiveDefaultSpawn(this.layout, copy.id);
-    this.selectedId = copy.id;
-    this.commit(copy.id);
+    const objs = this.getSelectedObjects();
+    if (objs.length === 0) return;
+    if (this.layout.objects.length + objs.length > CREATOR_LIMITS.maxObjects) {
+      this.ui.toast(`Object limit reached (${CREATOR_LIMITS.maxObjects}).`);
+      return;
+    }
+    // Duplicate the WHOLE selection as one unit (one history entry): each copy exactly on top of its
+    // source (same positions) so the group can be dragged out, and the clones become the selection.
+    const clones: CreatorLayoutObject[] = [];
+    for (const obj of objs) {
+      const copy = this.cloneObject(obj);
+      copy.id = createObjectId(obj.type);
+      copy.position = [...obj.position];
+      this.layout.objects.push(copy);
+      if (copy.type === 'spawn_point') setExclusiveDefaultSpawn(this.layout, copy.id);
+      clones.push(copy);
+    }
+    this.selectedIds.clear();
+    for (const c of clones) this.selectedIds.add(c.id);
+    this.selectedId = clones[clones.length - 1].id;
+    this.commit(this.selectedId);
   }
 
   deleteSelected(): void {
-    const obj = this.getSelectedObject();
-    if (!obj) return;
-    this.layout.objects = this.layout.objects.filter((o) => o.id !== obj.id);
+    if (this.selectedIds.size === 0) return;
+    const doomed = new Set(this.selectedIds);
+    this.layout.objects = this.layout.objects.filter((o) => !doomed.has(o.id));
+    this.selectedIds.clear();
     this.selectedId = null;
     this.commit(null);
   }
 
-  /** Wheel-rotate the selected object around Y by deltaDeg (updates visual + collision via commit). */
+  /** Wheel-rotate the selection around Y by deltaDeg: a single object spins in place; a multi-
+   *  selection turns as a rigid group around its shared XZ center. One history entry either way. */
   private rotateSelectedYaw(deltaDeg: number): void {
-    const obj = this.getSelectedObject();
-    if (!obj) return;
-    obj.rotation = [obj.rotation[0], normalizeDegrees((obj.rotation[1] ?? 0) + deltaDeg), obj.rotation[2]];
-    this.commit(obj.id);
+    const objs = this.getSelectedObjects();
+    if (objs.length === 0) return;
+    if (objs.length === 1) {
+      const obj = objs[0];
+      obj.rotation = [obj.rotation[0], normalizeDegrees((obj.rotation[1] ?? 0) + deltaDeg), obj.rotation[2]];
+    } else {
+      const origin = objectsGroupOrigin(objs);
+      rotateObjectsAroundCenterYaw(objs, origin.x, origin.z, deltaDeg);
+    }
+    this.commit(this.selectedId);
   }
 
   resetSelectedTransform(): void {
@@ -1522,40 +1832,54 @@ export class CreatorEditor implements CreatorBridge {
   }
 
   copySelected(): void {
-    const obj = this.getSelectedObject();
-    if (!obj) {
+    const objs = this.getSelectedObjects();
+    if (objs.length === 0) {
       this.ui.toast('Nothing selected to copy');
       return;
     }
-    this.clipboard = this.cloneObject(obj);
-    this.ui.toast('Copied object');
+    this.clipboard = objs.map((o) => this.cloneObject(o));
+    this.ui.toast(objs.length === 1 ? 'Copied object' : `Copied ${objs.length} objects`);
   }
 
   hasClipboard(): boolean {
-    return this.clipboard !== null;
+    return this.clipboard !== null && this.clipboard.length > 0;
   }
 
   paste(): void {
-    if (!this.clipboard) {
+    if (!this.clipboard || this.clipboard.length === 0) {
       this.ui.toast('Clipboard is empty');
       return;
     }
-    if (this.atObjectLimit()) return;
-    const copy = this.cloneObject(this.clipboard);
-    copy.id = createObjectId(copy.type);
+    if (this.layout.objects.length + this.clipboard.length > CREATOR_LIMITS.maxObjects) {
+      this.ui.toast(`Object limit reached (${CREATOR_LIMITS.maxObjects}).`);
+      return;
+    }
     const groundY = this.layout.ground.bounds.y ?? 0;
     const at = this.pasteWorldPoint();
-    if (at) {
-      copy.position = [this.snapValue(at.x), Math.max(groundY, copy.position[1]), this.snapValue(at.z)];
-    } else {
-      const off = Math.max(2, this.snap.gridSize);
-      copy.position = [copy.position[0] + off, copy.position[1], copy.position[2] + off];
+    // Group paste keeps the copies' offsets around their shared XZ center; the center lands at the
+    // cursor (or a grid-step offset from the originals when the cursor is off the viewport).
+    const origin = objectsGroupOrigin(this.clipboard);
+    const off = Math.max(2, this.snap.gridSize);
+    const targetX = at ? this.snapValue(at.x) : origin.x + off;
+    const targetZ = at ? this.snapValue(at.z) : origin.z + off;
+    const pasted: CreatorLayoutObject[] = [];
+    for (const source of this.clipboard) {
+      const copy = this.cloneObject(source);
+      copy.id = createObjectId(copy.type);
+      copy.position = [
+        targetX + (source.position[0] - origin.x),
+        Math.max(groundY, source.position[1]),
+        targetZ + (source.position[2] - origin.z)
+      ];
+      this.layout.objects.push(copy);
+      if (copy.type === 'spawn_point') setExclusiveDefaultSpawn(this.layout, copy.id);
+      pasted.push(copy);
     }
-    this.layout.objects.push(copy);
-    if (copy.type === 'spawn_point') setExclusiveDefaultSpawn(this.layout, copy.id);
-    this.selectedId = copy.id;
-    this.commit(copy.id);
-    this.ui.toast('Pasted object');
+    this.selectedIds.clear();
+    for (const c of pasted) this.selectedIds.add(c.id);
+    this.selectedId = pasted[pasted.length - 1].id;
+    this.commit(this.selectedId);
+    this.ui.toast(pasted.length === 1 ? 'Pasted object' : `Pasted ${pasted.length} objects`);
   }
 
   /** World XZ under the cursor if it's over the viewport, else null (paste falls back to an offset). */
@@ -1597,8 +1921,11 @@ export class CreatorEditor implements CreatorBridge {
     }
     e.preventDefault();
     const groundY = this.layout.ground.bounds.y ?? 0;
-    obj.position = [obj.position[0] + dx, Math.max(groundY, obj.position[1] + dy), obj.position[2] + dz];
-    this.commit(obj.id);
+    // Nudge the WHOLE selection as one unit — one history entry for the group.
+    for (const o of this.getSelectedObjects()) {
+      o.position = [o.position[0] + dx, Math.max(groundY, o.position[1] + dy), o.position[2] + dz];
+    }
+    this.commit(this.selectedId);
     return true;
   }
 
@@ -1658,11 +1985,137 @@ export class CreatorEditor implements CreatorBridge {
   // ---------------------------------------------------------------------------------------------
 
   armModule(type: string | null): void {
+    if (type) this.disarmPrefab(); // modules and prefabs are mutually exclusive placement modes
     this.armedModule = type && moduleDef(type) ? type : null;
     this.resetPlacementAdjustments();
     if (!this.armedModule) this.clearPlacementPreview();
     else this.updatePlacementPreviewFromPointer();
     this.refreshSelectionVisual();
+  }
+
+  // ---------------------------------------------------------------------------------------------
+  // Prefabs — save the current selection as a reusable assembly; stamp it from the hotbar.
+  // ---------------------------------------------------------------------------------------------
+
+  getPrefabNames(): string[] {
+    return this.prefabs.map((p) => p.name);
+  }
+
+  getArmedPrefabName(): string | null {
+    return this.armedPrefab?.name ?? null;
+  }
+
+  /** "Save selection as prefab": captures the selected objects with positions relative to the
+   *  selection center (XZ centroid, lowest Y) so stamping at a ground point seats it on the ground. */
+  savePrefabFromSelection(): void {
+    const objs = this.getSelectedObjects();
+    if (objs.length === 0) {
+      this.ui.toast('Select objects first, then save them as a prefab');
+      return;
+    }
+    const name = window.prompt(`Prefab name for ${objs.length} object${objs.length === 1 ? '' : 's'}:`, 'My Prefab');
+    if (!name || !name.trim()) return;
+    const prefab = makePrefabFromObjects(name, objs);
+    // Same-name replaces; the library is bounded (oldest dropped beyond MAX_PREFABS).
+    this.prefabs = [...this.prefabs.filter((p) => p.name !== prefab.name), prefab].slice(-MAX_PREFABS);
+    savePrefabLibrary(this.prefabs);
+    this.ui.toast(`Saved prefab "${prefab.name}"`);
+    this.ui.refresh();
+  }
+
+  /** Arm/toggle a prefab for stamping (disarms any module; ghost box follows the cursor). */
+  armPrefab(name: string | null): void {
+    const next = name ? this.prefabs.find((p) => p.name === name) ?? null : null;
+    if (this.armedPrefab && next && this.armedPrefab.name === next.name) {
+      this.disarmPrefab();
+      this.ui.refresh();
+      return;
+    }
+    this.armedModule = null;
+    this.clearPlacementPreview();
+    this.armedPrefab = next;
+    if (next) this.updatePrefabGhostFromPointer();
+    else this.hidePrefabGhost();
+    this.refreshSelectionVisual();
+    this.ui.refresh();
+  }
+
+  deletePrefab(name: string): void {
+    if (!window.confirm(`Delete prefab "${name}"?`)) return;
+    this.prefabs = this.prefabs.filter((p) => p.name !== name);
+    savePrefabLibrary(this.prefabs);
+    if (this.armedPrefab?.name === name) this.disarmPrefab();
+    this.ui.toast(`Deleted prefab "${name}"`);
+    this.ui.refresh();
+  }
+
+  private disarmPrefab(): void {
+    this.armedPrefab = null;
+    this.hidePrefabGhost();
+  }
+
+  /** Stamp the armed prefab at a picked world point: fresh ids, per-object validation via the normal
+   *  commit path, object cap respected, and the stamped copies become the selection (one history entry). */
+  private stampPrefab(point: Vector3): void {
+    const prefab = this.armedPrefab;
+    if (!prefab) return;
+    if (this.layout.objects.length + prefab.objects.length > CREATOR_LIMITS.maxObjects) {
+      this.ui.toast(`Object limit reached (${CREATOR_LIMITS.maxObjects}).`);
+      return;
+    }
+    const groundY = this.layout.ground.bounds.y ?? 0;
+    const at = { x: this.snapValue(point.x), y: Math.max(groundY, point.y), z: this.snapValue(point.z) };
+    const stamped = instantiatePrefab(prefab, at);
+    for (const obj of stamped) {
+      this.layout.objects.push(obj);
+      if (obj.type === 'spawn_point') setExclusiveDefaultSpawn(this.layout, obj.id);
+    }
+    this.selectedIds.clear();
+    for (const obj of stamped) this.selectedIds.add(obj.id);
+    this.selectedId = stamped[stamped.length - 1]?.id ?? null;
+    this.commit(this.selectedId);
+    this.ui.toast(`Placed prefab "${prefab.name}" (${stamped.length})`);
+  }
+
+  /** Wireframe bounding-box ghost showing where the armed prefab will land (screen-centre fallback). */
+  private updatePrefabGhostFromPointer(): void {
+    const prefab = this.armedPrefab;
+    const canvas = this.canvas();
+    if (!prefab || !canvas || this.mode !== 'build') return;
+    const rect = canvas.getBoundingClientRect();
+    const inViewport =
+      this.previewPointerX !== null && this.previewPointerY !== null &&
+      this.previewPointerX >= rect.left && this.previewPointerX <= rect.right &&
+      this.previewPointerY >= rect.top && this.previewPointerY <= rect.bottom;
+    const sx = inViewport ? this.previewPointerX! - rect.left : rect.width / 2;
+    const sy = inViewport ? this.previewPointerY! - rect.top : rect.height / 2;
+    const pick = this.pickWorld(sx, sy);
+    if (!pick) {
+      this.hidePrefabGhost();
+      return;
+    }
+    const groundY = this.layout.ground.bounds.y ?? 0;
+    const at = { x: this.snapValue(pick.point.x), y: Math.max(groundY, pick.point.y), z: this.snapValue(pick.point.z) };
+    const b = prefabWorldBounds(prefab, at);
+    if (!this.prefabGhost) {
+      const mat = new StandardMaterial('creator_prefab_ghost_mat', this.scene);
+      mat.emissiveColor = new Color3(0.35, 0.9, 1.0);
+      mat.diffuseColor = new Color3(0, 0, 0);
+      mat.specularColor = new Color3(0, 0, 0);
+      mat.disableLighting = true;
+      mat.wireframe = true;
+      const box = MeshBuilder.CreateBox('creator_prefab_ghost', { size: 1 }, this.scene);
+      box.material = mat;
+      box.isPickable = false;
+      this.prefabGhost = box;
+    }
+    this.prefabGhost.scaling.set(Math.max(0.2, b.maxX - b.minX), Math.max(0.2, b.maxY - b.minY), Math.max(0.2, b.maxZ - b.minZ));
+    this.prefabGhost.position.set((b.minX + b.maxX) / 2, (b.minY + b.maxY) / 2, (b.minZ + b.maxZ) / 2);
+    this.prefabGhost.setEnabled(true);
+  }
+
+  private hidePrefabGhost(): void {
+    this.prefabGhost?.setEnabled(false);
   }
 
   getArmedModule(): string | null {
@@ -1705,9 +2158,10 @@ export class CreatorEditor implements CreatorBridge {
   }
 
   setSnapSettings(patch: Partial<CreatorSnapSettings>): void {
-    // Choosing a transform tool (Move/Rotate/Scale/Select) exits placement: disarm the held module so
-    // the next click SELECTS what you clicked instead of stamping another copy.
+    // Choosing a transform tool (Move/Rotate/Scale/Select) exits placement: disarm the held module /
+    // prefab so the next click SELECTS what you clicked instead of stamping another copy.
     if (patch.gizmo !== undefined && this.armedModule) this.armModule(null);
+    if (patch.gizmo !== undefined && this.armedPrefab) this.disarmPrefab();
     Object.assign(this.snap, patch);
     if (patch.showGrid !== undefined) this.geometry.setGridVisible(this.snap.showGrid);
     if (patch.showTriggers !== undefined) this.geometry.setTriggersVisible(this.snap.showTriggers);
@@ -1747,6 +2201,14 @@ export class CreatorEditor implements CreatorBridge {
     enforceSingleDefaultSpawn(this.layout);
     this.history.commit(this.layout);
     this.selectedId = reselectId && this.findObject(reselectId) ? reselectId : this.selectedId && this.findObject(this.selectedId) ? this.selectedId : null;
+    // Multi-selection follows: a group op keeps its curated set (primary already a member); selecting
+    // a brand-new object (place/duplicate-single/paste) collapses the set down to just it.
+    if (this.selectedId && !this.selectedIds.has(this.selectedId)) {
+      this.selectedIds.clear();
+      this.selectedIds.add(this.selectedId);
+    } else {
+      this.pruneSelection();
+    }
     this.rebuildAfterChange();
     this.scheduleAutosave();
   }
@@ -1757,6 +2219,7 @@ export class CreatorEditor implements CreatorBridge {
     enforceSingleDefaultSpawn(this.layout);
     if (record) this.history.commit(this.layout);
     if (this.selectedId && !this.findObject(this.selectedId)) this.selectedId = null;
+    this.pruneSelection();
     this.rebuildAfterChange();
     this.scheduleAutosave();
   }
@@ -1873,7 +2336,8 @@ export class CreatorEditor implements CreatorBridge {
     const check = isLayoutValid(this.layout);
     if (!check.valid) this.ui.toast(`Exported (note: ${check.reason})`);
     else this.ui.toast('Exported layout JSON');
-    exportLayoutToFile(this.layout);
+    // Carry the prefab library in the export so saved assemblies survive a browser wipe.
+    exportLayoutToFile(this.prefabs.length > 0 ? { ...this.layout, prefabs: this.prefabs } : this.layout);
   }
 
   importJsonFile(file: File): void {
@@ -1881,6 +2345,14 @@ export class CreatorEditor implements CreatorBridge {
     importLayoutFromFile(file)
       .then(({ layout, problems }) => {
         this.selectedId = null;
+        // Merge any prefabs the file carries into the local library (same-name entries replaced).
+        if (layout.prefabs && layout.prefabs.length > 0) {
+          const incoming = layout.prefabs;
+          const kept = this.prefabs.filter((p) => !incoming.some((i) => i.name === p.name));
+          this.prefabs = [...kept, ...incoming].slice(-MAX_PREFABS);
+          savePrefabLibrary(this.prefabs);
+          delete layout.prefabs; // the working layout itself never carries the library
+        }
         this.applyLayout(layout, true);
         this.ui.toast(problems.length ? `Imported with ${problems.length} fix(es)` : 'Imported layout JSON');
       })
