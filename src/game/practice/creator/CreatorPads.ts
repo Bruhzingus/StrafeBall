@@ -115,6 +115,10 @@ export class CreatorPads {
       if (this.insideOrientedBox(obj, p.x, p.y, p.z, w / 2, h, d / 2, r)) {
         const target = this.lastCheckpoint ?? layoutSpawn(layout);
         player.teleportTo(new Vector3(target.x, target.y, target.z), target.yaw, 0);
+        // Death is a fresh start: refill stamina + clear the backflip cooldown, same as a K reset —
+        // the attempt that killed you shouldn't also drain the retry.
+        player.dash.refill();
+        player.backflip.cooldown = 0;
         this.rememberPlayerPosition(player.root.position);
         return;
       }

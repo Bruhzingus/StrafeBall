@@ -62,34 +62,91 @@ function readKey(key: string): string | null {
   }
 }
 
-/** Quick-save to the single local layout slot. */
+// --- Timestamped envelopes (quick-save + autosave slots) -----------------------------------------
+//
+// The quick-save and autosave slots store `{ savedAt, layout }` so recovery-on-open can tell which
+// state is newer. Reads accept BOTH shapes — the envelope AND the legacy bare layout written by
+// older builds (bare ⇒ savedAt 0, i.e. "older than any timestamped explicit save") — so upgrading
+// never loses an existing save.
+
+/** A layout + when it was written (ms epoch). savedAt = 0 marks the legacy bare-layout shape. */
+export interface StoredLayoutEnvelope {
+  layout: CreatorLayout;
+  savedAt: number;
+}
+
+/** Pure + exported for tests: interpret a parsed JSON value as a stored envelope (either shape). */
+export function parseStoredEnvelope(parsed: unknown): StoredLayoutEnvelope | null {
+  if (!parsed || typeof parsed !== 'object') return null;
+  const candidate = parsed as { savedAt?: unknown; layout?: unknown };
+  try {
+    if (typeof candidate.savedAt === 'number' && candidate.layout && typeof candidate.layout === 'object') {
+      const savedAt = Number.isFinite(candidate.savedAt) ? Math.max(0, candidate.savedAt) : 0;
+      return { layout: validateLayout(candidate.layout).layout, savedAt };
+    }
+    // Legacy bare layout (pre-envelope builds): valid, but never outranks a timestamped save.
+    return { layout: validateLayout(parsed).layout, savedAt: 0 };
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Recovery decision (pure; unit-tested): offer the autosave over what the editor would normally
+ * open ONLY when it is STRICTLY newer than the explicit quick-save (a tie — or a legacy bare
+ * autosave vs a timestamped explicit save — goes to the explicit save) AND its content actually
+ * differs from the resolved baseline (identical content means there is nothing to recover).
+ */
+export function shouldOfferAutosaveRecovery(
+  autosave: StoredLayoutEnvelope | null,
+  explicitLocal: StoredLayoutEnvelope | null,
+  baselineLayout: CreatorLayout
+): boolean {
+  if (!autosave) return false;
+  if (explicitLocal && explicitLocal.savedAt >= autosave.savedAt) return false;
+  return JSON.stringify(autosave.layout) !== JSON.stringify(baselineLayout);
+}
+
+function writeEnvelope(key: string, layout: CreatorLayout): boolean {
+  return writeKey(key, JSON.stringify({ savedAt: Date.now(), layout }));
+}
+
+function readEnvelope(key: string): StoredLayoutEnvelope | null {
+  const raw = readKey(key);
+  if (!raw) return null;
+  try {
+    return parseStoredEnvelope(JSON.parse(raw));
+  } catch {
+    return null;
+  }
+}
+
+/** Quick-save to the single local layout slot (timestamped). */
 export function saveLocalLayout(layout: CreatorLayout): boolean {
-  return writeKey(STORAGE_KEYS.layout, JSON.stringify(layout));
+  return writeEnvelope(STORAGE_KEYS.layout, layout);
 }
 
 /** Load the quick-save slot, validated. Returns null when absent/unreadable. */
 export function loadLocalLayout(): CreatorLayout | null {
-  const raw = readKey(STORAGE_KEYS.layout);
-  if (!raw) return null;
-  try {
-    return validateLayout(JSON.parse(raw)).layout;
-  } catch {
-    return null;
-  }
+  return readEnvelope(STORAGE_KEYS.layout)?.layout ?? null;
+}
+
+/** Quick-save slot WITH its timestamp (recovery comparisons). */
+export function loadLocalStored(): StoredLayoutEnvelope | null {
+  return readEnvelope(STORAGE_KEYS.layout);
 }
 
 export function saveAutosave(layout: CreatorLayout): boolean {
-  return writeKey(STORAGE_KEYS.autosave, JSON.stringify(layout));
+  return writeEnvelope(STORAGE_KEYS.autosave, layout);
 }
 
 export function loadAutosave(): CreatorLayout | null {
-  const raw = readKey(STORAGE_KEYS.autosave);
-  if (!raw) return null;
-  try {
-    return validateLayout(JSON.parse(raw)).layout;
-  } catch {
-    return null;
-  }
+  return readEnvelope(STORAGE_KEYS.autosave)?.layout ?? null;
+}
+
+/** Autosave slot WITH its timestamp (recovery comparisons). */
+export function loadAutosaveStored(): StoredLayoutEnvelope | null {
+  return readEnvelope(STORAGE_KEYS.autosave);
 }
 
 // --- Published course (the live Movement Sandbox reads this) ------------------------------------

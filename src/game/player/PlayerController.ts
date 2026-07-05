@@ -91,6 +91,11 @@ export class PlayerController {
 
   resetPosition(): void {
     this.teleportTo(this.respawnPosition.clone(), this.respawnYaw ?? this.yaw);
+    // A reset is a fresh start: refill stamina (dash charges) + clear the backflip cooldown so a
+    // botched attempt never carries its resource drain into the next try. Offline-only by
+    // construction — resetPosition is never reachable while online (movement is server-authoritative).
+    this.dash.refill();
+    this.backflip.cooldown = 0;
   }
 
   /** Set where the K reset teleports to (used by the Movement Sandbox; pass no args to restore gym). */

@@ -60,11 +60,13 @@ import { CreatorBridge, CreatorSnapSettings, CreatorUI } from './CreatorUI';
 import {
   exportLayoutToFile,
   importLayoutFromFile,
-  loadLocalLayout,
+  loadAutosaveStored,
+  loadLocalStored,
   loadPublishedLayout,
   saveAutosave,
   saveLocalLayout,
-  savePublishedLayout
+  savePublishedLayout,
+  shouldOfferAutosaveRecovery
 } from './CreatorStorage';
 
 const COLLISION_ID_PREFIX = 'creator_';
@@ -72,6 +74,10 @@ const FLY_BASE_SPEED = 20;
 const FLY_SPRINT = 3;
 const LOOK_SENSITIVITY = 0.0024;
 const PITCH_LIMIT = 1.52;
+// Autosave cadence: settle shortly after the last edit, but never let a long burst of continuous
+// editing go more than the max interval without a write. Timers only ever start on an edit.
+const AUTOSAVE_DEBOUNCE_MS = 1500;
+const AUTOSAVE_MAX_INTERVAL_MS = 10000;
 
 export const CREATOR_ENTRY_RADIUS = 2.7;
 export const CREATOR_ENTRY_HOLD_SECONDS = 0.6;
@@ -230,6 +236,19 @@ export class CreatorEditor implements CreatorBridge {
     }
   };
 
+  // --- Autosave (debounced) + crash/close recovery ---
+  private autosaveTimer: number | null = null;
+  private autosavePending = false;
+  private autosaveFirstPendingMs = 0;
+  private autosaveFailureNotified = false;
+  /** The explicitly-saved state to restore if the user clicks "Discard recovery"; null = no recovery. */
+  private recoveryBaseline: CreatorLayout | null = null;
+  private recoveryNoticePending = false;
+  private readonly onBeforeUnload = () => this.flushAutosave();
+  private readonly onVisibilityChange = () => {
+    if (document.visibilityState === 'hidden') this.flushAutosave();
+  };
+
   constructor(
     private readonly scene: Scene,
     private readonly gym: GymArena,
@@ -238,8 +257,18 @@ export class CreatorEditor implements CreatorBridge {
     private readonly hooks: CreatorEditorHooks
   ) {
     // Open on the quick-save slot, else the user's published course (their saved progress), else the
-    // committed default — so the editor and the live Movement Course stay in sync across reloads.
-    this.layout = loadLocalLayout() ?? loadPublishedLayout() ?? committedCourseLayout();
+    // committed default — THEN prefer a strictly-newer autosave over that baseline (crash/accidental-
+    // close recovery). The recovery is announced, with a one-click discard, on the next unlock.
+    const explicitLocal = loadLocalStored();
+    const baseline = explicitLocal?.layout ?? loadPublishedLayout() ?? committedCourseLayout();
+    const autosave = loadAutosaveStored();
+    if (autosave && shouldOfferAutosaveRecovery(autosave, explicitLocal, baseline)) {
+      this.layout = autosave.layout;
+      this.recoveryBaseline = baseline;
+      this.recoveryNoticePending = true;
+    } else {
+      this.layout = baseline;
+    }
     this.history = new CreatorHistory(this.layout);
     this.geometry = new CreatorGeometry(scene);
     this.geometry.setEnabled(false);
@@ -247,6 +276,10 @@ export class CreatorEditor implements CreatorBridge {
     this.world = new CreatorWorld(this.layout);
     const hud = document.getElementById('hud-root');
     this.ui = new CreatorUI(hud ?? document.body, this);
+    // Flush any pending debounced autosave when the tab closes or hides. Registered for the editor's
+    // whole lifetime (they no-op when nothing is pending) and removed in dispose().
+    window.addEventListener('beforeunload', this.onBeforeUnload);
+    document.addEventListener('visibilitychange', this.onVisibilityChange);
   }
 
   // ---------------------------------------------------------------------------------------------
@@ -431,6 +464,9 @@ export class CreatorEditor implements CreatorBridge {
   }
 
   dispose(): void {
+    this.flushAutosave();
+    window.removeEventListener('beforeunload', this.onBeforeUnload);
+    document.removeEventListener('visibilitychange', this.onVisibilityChange);
     this.removeListeners();
     this.gizmoManager?.dispose();
     this.gizmoManager = null;
@@ -465,7 +501,13 @@ export class CreatorEditor implements CreatorBridge {
     this.positionEditorCameraAtSpawn();
     this.enterBuildMode();
     this.ui.setToolbarVisible(true);
-    this.ui.toast('Creator Mode unlocked — Build Mode');
+    if (this.recoveryNoticePending) {
+      // Announce once, on the first unlock after a recovery-on-open, with a one-click revert.
+      this.recoveryNoticePending = false;
+      this.ui.toastAction('Recovered unsaved work from autosave', 'Discard recovery', () => this.discardRecovery());
+    } else {
+      this.ui.toast('Creator Mode unlocked — Build Mode');
+    }
     this.ui.refresh();
   }
 
@@ -503,6 +545,7 @@ export class CreatorEditor implements CreatorBridge {
   }
 
   private enterPlaytestMode(): void {
+    this.flushAutosave(); // leaving Build: persist pending edits before the run
     this.disablePlaytestFly(false);
     this.mode = 'playtest';
     this.removeListeners();
@@ -547,6 +590,7 @@ export class CreatorEditor implements CreatorBridge {
   }
 
   private teardownActive(restoreSandbox: boolean): void {
+    this.flushAutosave(); // exit/lock/going-online: never leave a pending write behind
     this.disablePlaytestFly(false);
     this.hooks.onPlaytestEnd(); // despawn any playtest actors before tearing down
     this.removeListeners();
@@ -1704,7 +1748,7 @@ export class CreatorEditor implements CreatorBridge {
     this.history.commit(this.layout);
     this.selectedId = reselectId && this.findObject(reselectId) ? reselectId : this.selectedId && this.findObject(this.selectedId) ? this.selectedId : null;
     this.rebuildAfterChange();
-    saveAutosave(this.layout);
+    this.scheduleAutosave();
   }
 
   /** Replace the whole layout (undo/redo/load/import/reset). `record` adds a history entry. */
@@ -1714,7 +1758,70 @@ export class CreatorEditor implements CreatorBridge {
     if (record) this.history.commit(this.layout);
     if (this.selectedId && !this.findObject(this.selectedId)) this.selectedId = null;
     this.rebuildAfterChange();
-    saveAutosave(this.layout);
+    this.scheduleAutosave();
+  }
+
+  // ---------------------------------------------------------------------------------------------
+  // Autosave — debounced write of the working layout so a closed tab never loses progress.
+  // ---------------------------------------------------------------------------------------------
+
+  /**
+   * Mark the layout dirty and (re)start the debounce. Only ever called from committed changes
+   * (history commits), never per frame or mid-gizmo-drag. A continuous editing burst still flushes
+   * at least every AUTOSAVE_MAX_INTERVAL_MS.
+   */
+  private scheduleAutosave(): void {
+    const now = performance.now();
+    if (!this.autosavePending) {
+      this.autosavePending = true;
+      this.autosaveFirstPendingMs = now;
+    }
+    if (this.autosaveTimer !== null) window.clearTimeout(this.autosaveTimer);
+    const untilMaxFlush = this.autosaveFirstPendingMs + AUTOSAVE_MAX_INTERVAL_MS - now;
+    const delay = Math.max(0, Math.min(AUTOSAVE_DEBOUNCE_MS, untilMaxFlush));
+    this.autosaveTimer = window.setTimeout(() => this.flushAutosave(), delay);
+  }
+
+  /** Cancel any scheduled autosave write without flushing (an explicit save just superseded it). */
+  private cancelPendingAutosave(): void {
+    this.autosavePending = false;
+    if (this.autosaveTimer !== null) {
+      window.clearTimeout(this.autosaveTimer);
+      this.autosaveTimer = null;
+    }
+  }
+
+  /**
+   * Write a pending autosave NOW — debounce elapsed, max interval hit, entering Playtest, the tab
+   * hiding/closing, or the editor tearing down. No-op when nothing is pending. Write failures
+   * (private mode / quota) surface as a status message ONCE, not per edit.
+   */
+  private flushAutosave(): void {
+    if (this.autosaveTimer !== null) {
+      window.clearTimeout(this.autosaveTimer);
+      this.autosaveTimer = null;
+    }
+    if (!this.autosavePending) return;
+    this.autosavePending = false;
+    if (saveAutosave(this.layout)) {
+      this.autosaveFailureNotified = false;
+      this.ui.setAutosaveStatus(`Autosaved ${new Date().toLocaleTimeString()}`);
+    } else if (!this.autosaveFailureNotified) {
+      this.autosaveFailureNotified = true;
+      this.ui.setAutosaveStatus('Autosave unavailable');
+    }
+  }
+
+  /** One-click "Discard recovery": restore the explicit save the autosave was preferred over. The
+   *  restore is a normal history entry, so Ctrl+Z brings the recovered work back if this was a
+   *  mistake. */
+  private discardRecovery(): void {
+    const baseline = this.recoveryBaseline;
+    if (!baseline) return;
+    this.recoveryBaseline = null;
+    this.selectedId = null;
+    this.applyLayout(baseline, true);
+    this.ui.toast('Recovery discarded — restored last saved layout');
   }
 
   private rebuildAfterChange(): void {
@@ -1736,11 +1843,22 @@ export class CreatorEditor implements CreatorBridge {
 
   quickSave(): void {
     const ok = saveLocalLayout(this.layout);
+    if (ok) {
+      // The explicit save IS the newest state: cancel any pending debounce (a stale write landing
+      // after it would be pointless) and refresh the autosave slot to match.
+      this.cancelPendingAutosave();
+      if (saveAutosave(this.layout)) {
+        this.autosaveFailureNotified = false;
+        this.ui.setAutosaveStatus(`Autosaved ${new Date().toLocaleTimeString()}`);
+      }
+      // An explicit save supersedes any still-offered recovery discard.
+      this.recoveryBaseline = null;
+    }
     this.ui.toast(ok ? 'Saved to local storage' : 'Save failed — storage unavailable');
   }
 
   quickLoad(): void {
-    const loaded = loadLocalLayout();
+    const loaded = loadLocalStored()?.layout ?? null;
     if (!loaded) {
       this.ui.toast('No local save found');
       return;

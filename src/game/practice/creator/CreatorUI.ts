@@ -155,6 +155,7 @@ export class CreatorUI {
   private readonly gizmoButtons = new Map<string, HTMLButtonElement>();
   private undoBtn!: HTMLButtonElement;
   private redoBtn!: HTMLButtonElement;
+  private autosaveStatusEl!: HTMLSpanElement;
   private hotbarUndoBtn!: HTMLButtonElement;
   private hotbarRedoBtn!: HTMLButtonElement;
   private buildBtn!: HTMLButtonElement;
@@ -298,10 +299,15 @@ export class CreatorUI {
     this.settingsBtn.setAttribute('aria-haspopup', 'true');
     this.settingsDropdown = el('div', 'creator-settings-dropdown');
 
+    // Autosave trust signal: "Autosaved HH:MM:SS" (or "Autosave unavailable"), driven by the editor.
+    this.autosaveStatusEl = document.createElement('span');
+    this.autosaveStatusEl.className = 'creator-autosave-status';
+
     const row1 = el('div', 'creator-modebar-row creator-modebar-row--primary');
     row1.append(
       modeGroup,
       button('Save', 'creator-btn', () => this.bridge.quickSave()),
+      this.autosaveStatusEl,
       this.settingsBtn
     );
     // Always-visible headline row: download a layout file + publish to the live Movement Course.
@@ -862,6 +868,28 @@ export class CreatorUI {
     this.toastEl.classList.add('creator-toast--visible');
     if (this.toastTimer !== null) window.clearTimeout(this.toastTimer);
     this.toastTimer = window.setTimeout(() => this.toastEl.classList.remove('creator-toast--visible'), 2600);
+  }
+
+  /**
+   * Toast with a one-click action button (e.g. autosave recovery → "Discard recovery"). Sticks
+   * around longer than a plain toast so the choice isn't missed; the action dismisses it, and any
+   * later plain toast() replaces it (textContent wipes the button).
+   */
+  toastAction(message: string, actionLabel: string, onAction: () => void): void {
+    this.toastEl.textContent = `${message} `;
+    const act = button(actionLabel, 'creator-btn creator-toast-action', () => {
+      this.toastEl.classList.remove('creator-toast--visible');
+      onAction();
+    });
+    this.toastEl.appendChild(act);
+    this.toastEl.classList.add('creator-toast--visible');
+    if (this.toastTimer !== null) window.clearTimeout(this.toastTimer);
+    this.toastTimer = window.setTimeout(() => this.toastEl.classList.remove('creator-toast--visible'), 12000);
+  }
+
+  /** Autosave status text beside the Save button ("Autosaved 14:03:22" / "Autosave unavailable"). */
+  setAutosaveStatus(text: string): void {
+    this.autosaveStatusEl.textContent = text;
   }
 
   /** Pill shown while free-dragging an object by its center handle (the wheel adjusts carry distance). */
