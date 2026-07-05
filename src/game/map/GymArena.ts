@@ -71,7 +71,6 @@ export class GymArena {
 
   build(): void {
     this.createFloor();
-    this.createHalfCourtZones();
     this.createWalls();
     this.createCourtLines();
     this.createHalfCourtCones();
@@ -209,38 +208,6 @@ export class GymArena {
       size: { width: TUNING.map.halfWidth * 2, depth: TUNING.map.halfLength * 2, height: 0.08 },
       position: new Vector3(0, -0.04, 0)
     });
-  }
-
-  /**
-   * Two opaque floor overlays (1 mm above floor surface) that tint each half of the court in
-   * the school color palette: cool blue on the player's side, warm red on the opponent's side.
-   * Opaque so they don't trigger the transparent render pass and appear under court lines.
-   */
-  private createHalfCourtZones(): void {
-    const halfW = TUNING.map.halfWidth;
-    const halfL = TUNING.map.halfLength;
-    const th = 0.004;
-    const y = th / 2 + 0.001; // just above floor surface
-
-    const playerMat = new StandardMaterial('zone_player_mat', this.scene);
-    playerMat.diffuseColor = new Color3(0.62, 0.65, 0.88);
-
-    const oppMat = new StandardMaterial('zone_opp_mat', this.scene);
-    oppMat.diffuseColor = new Color3(0.88, 0.58, 0.44);
-
-    for (const [name, zCenter, mat] of [
-      ['zone_player', -halfL / 2, playerMat],
-      ['zone_opp', halfL / 2, oppMat]
-    ] as [string, number, StandardMaterial][]) {
-      const zone = MeshBuilder.CreateBox(name, {
-        width: halfW * 2,
-        height: th,
-        depth: halfL - 0.02
-      }, this.scene);
-      zone.position.set(0, y, zCenter);
-      zone.material = mat;
-      zone.isPickable = false;
-    }
   }
 
   private createWalls(): void {

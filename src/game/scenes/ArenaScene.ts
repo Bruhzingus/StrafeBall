@@ -2991,7 +2991,9 @@ export class ArenaScene {
       const name = mesh.name;
       // Static occluders that visibly affect the court.
       const isBleacherStructure = name.startsWith('bleacher_');
-      const isWallPadStrip = name.startsWith('decor_wall_pad_raised_panel_');
+      // NOTE: the pad modules are named 'decor_wall_pad_module_*' (the old 'decor_wall_pad_raised_panel_'
+      // wildcard matched nothing, so pads silently never cast in Showcase).
+      const isWallPadStrip = name.startsWith('decor_wall_pad_module_');
       const isScoreboardCasing = name.startsWith('decor_scoreboard_back_panel_');
       if (isBleacherStructure || isWallPadStrip || isScoreboardCasing) {
         registerGymShadowCaster(mesh);

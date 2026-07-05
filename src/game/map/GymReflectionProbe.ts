@@ -29,7 +29,7 @@ const STATIC_INCLUDE_PREFIXES: readonly string[] = [
   'ceil_light_', // the actual ceiling fixture housings (the bright source we want reflected)
   'bleacher_', // bleacher structures + seats
   'decor_bleacher_', // bleacher trim
-  'decor_wall_pad_raised_panel_', // wall pads
+  'decor_wall_pad_module_', // wall pad modules
   'decor_scoreboard_back_panel_', // scoreboard casing
   'decor_ceiling_', // ceiling conduits / junction boxes / rim trim
   'decor_overhead_light_lens_', // fixture lens housings (bright fixtures)

@@ -149,10 +149,12 @@ function configureHemisphericLight(scene: Scene): HemisphericLight {
 
   // Straight-up ambient fill for competitive readability, not mood. This is the main broad-fill
   // lever: it lifts the ceiling underside, walls, and navy detail evenly like overhead gym lighting.
+  // Intensity nudged up (0.75 → 0.79) to replace the brightness the removed fake floor-wash decals
+  // used to fake — the room stays the bright baseline, now lit only by real lights.
   hemi.direction = new Vector3(0, 1, 0);
-  hemi.intensity = 0.75;
+  hemi.intensity = 0.79;
   hemi.diffuse = new Color3(1.0, 0.98, 0.93); // near-neutral, faint warm
-  hemi.groundColor = new Color3(0.44, 0.47, 0.53); // subdued cool-gray, lifted so it doesn't drag
+  hemi.groundColor = new Color3(0.46, 0.48, 0.52); // subdued neutral-gray, lifted so it doesn't drag
   hemi.specular = new Color3(0.12, 0.12, 0.13);
 
   // Defensive: collapse any duplicate hemispheric lights down to the single one we keep.

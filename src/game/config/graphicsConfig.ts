@@ -123,12 +123,9 @@ export function persistGraphicsPreset(preset: GraphicsPreset): void {
 }
 
 /**
- * Prefiltered Babylon environment (.env) used as hidden image-based lighting in Showcase mode only.
- * Centralized here so the asset path is trivially swappable. (The user-supplied
- * public/assets/environment/gym_indoor_lighting.env was not present; this points at the existing
- * prefiltered gym .env already shipped in the repo — swap this one constant if the asset moves.)
+ * Name once used by the (removed) Showcase .env loader. Retained ONLY as a defensive guard key in
+ * GymVisualRevamp.applyGymEnvironment so a stale texture from an old session can never be doubled.
  */
-export const SHOWCASE_ENV_FILE_URL = '/assets/textures/gym/Lighting/newman_cafeteria_2k.env';
 export const SHOWCASE_ENV_TEXTURE_NAME = 'gym_showcase_env';
 
 /**
@@ -247,9 +244,6 @@ export const SHOWCASE_CONFIG = {
     // lowered so the probe reflection stays a faint blurred response rather than a wet/strong highlight,
     // matching the Competitive baseline in GYM_MATERIAL_TUNING.floor.
     floor: { albedoTint: [1.0, 0.99, 0.955] as [number, number, number], roughness: 0.58, environmentIntensity: 0.065, specularIntensity: 0.22 },
-    // wallPad/wall are StandardMaterial-driven in practice and receive NO probe reflection ("nearly
-    // none"); these env values are inert without a reflectionTexture and are kept only for completeness.
-    wallPad: { roughness: 0.5, environmentIntensity: 0.0 },
     coverMat: { roughness: 0.48, environmentIntensity: 0.08 }, // tiny satin response
     bleacher: { roughness: 0.8, environmentIntensity: 0.05 }, // matte like Neutral — no glossy highlight
     wall: { roughness: 0.74, environmentIntensity: 0.0 }, // nearly none (no reflectionTexture wired)
