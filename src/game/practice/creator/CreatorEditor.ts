@@ -1,15 +1,15 @@
 /**
  * Creator Sandbox — editor orchestrator.
  *
- * Owns the whole developer-only movement-course editor: access gate, layout state + history,
- * geometry, the offline movement world + collision used in Playtest, the free-fly Build camera, the
- * editor input handling, Babylon gizmos, and the DOM UI. It is strictly offline/practice-only and
- * fully self-contained: ArenaScene only routes entry, the per-frame step, and the online lockout.
+ * Owns the whole player-facing course editor: project selection, layout state + history, geometry,
+ * the offline movement world + collision used in Playtest, the free-fly Build camera, the editor
+ * input handling, Babylon gizmos, and the DOM UI. It is strictly offline/practice-only and fully
+ * self-contained: ArenaScene only routes entry, the per-frame step, and the online lockout.
  *
  * Lifecycle:
- *   locked  → (correct password) → unlocked + active in BUILD mode
- *   BUILD  ↔ PLAYTEST  (free toggle within an unlocked session, no re-prompt)
- *   exit / lock / going online  → torn down, sandbox restored, access re-locked
+ *   idle  → (hold E at the entry sign) → active in BUILD mode
+ *   BUILD  ↔ PLAYTEST  (free toggle within a session)
+ *   exit / going online  → torn down, sandbox restored
  */
 
 import {
@@ -30,14 +30,17 @@ import { InputManager } from '../../input/InputManager';
 import { AABB } from '../../map/Collider';
 import { sandboxSpawnWorld } from '../MovementSandboxLayout';
 import {
+  COURSE_DIFFICULTIES,
   CREATOR_LIMITS,
   CREATOR_MODULES,
+  type CourseDifficulty,
   CreatorLayout,
   CreatorLayoutObject,
   CreatorObjectMetadata,
   type CreatorPrefab,
   type CreatorSpawnerMarkers,
   MAX_PREFABS,
+  blankCourseLayout,
   cloneLayout,
   collectSpawnerMarkers,
   committedCourseLayout,
@@ -69,20 +72,28 @@ import { CONTROL_KEYS } from '../../config/controls';
 import { CreatorReplay } from './CreatorReplay';
 import { CreatorGeometry } from './CreatorGeometry';
 import { CreatorHistory } from './CreatorHistory';
-import { CreatorAccessLatch, isCreatorConfigured, verifyCreatorPassword } from './CreatorAccess';
 import { CreatorBridge, CreatorSnapSettings, CreatorUI } from './CreatorUI';
 import {
+  type ProjectSummary,
   clearPublishedLayout,
+  createProject,
+  deleteProject,
+  duplicateProject,
   exportLayoutToFile,
+  hasSeenOnboarding,
   importLayoutFromFile,
-  loadCurrentCourseLayout,
-  loadLocalStored,
   loadPrefabLibrary,
+  loadProjectManual,
+  loadProjectWorking,
+  loadProjectsIndex,
   loadPublishedLayout,
-  saveAutosave,
-  saveLocalLayout,
+  markOnboardingSeen,
+  renameProject,
   savePrefabLibrary,
-  savePublishedLayout
+  saveProjectAutosave,
+  saveProjectManual,
+  savePublishedLayout,
+  setActiveProject
 } from './CreatorStorage';
 
 const COLLISION_ID_PREFIX = 'creator_';
@@ -129,8 +140,9 @@ export class CreatorEditor implements CreatorBridge {
   private mode: Mode = 'build';
 
   private layout: CreatorLayout;
+  /** The active course project this editor session reads/writes (see CreatorStorage projects). */
+  private projectId: string;
   private readonly history: CreatorHistory;
-  private readonly access = new CreatorAccessLatch();
   private readonly geometry: CreatorGeometry;
   private readonly world: CreatorWorld;
   private readonly pads = new CreatorPads();
@@ -215,7 +227,7 @@ export class CreatorEditor implements CreatorBridge {
   // we briefly stop them from also driving the fly camera (down / sprint), so keybinds don't overlap.
   private chordSuppressUntilMs = 0;
 
-  // Entry sign (3D prop near the sandbox spawn while creator is locked).
+  // Entry sign (3D prop near the sandbox spawn while the editor is not active).
   private entrySign: TransformNode | null = null;
   private entrySignMaterials: StandardMaterial[] = [];
   private entrySignBuilt = false;
@@ -296,11 +308,14 @@ export class CreatorEditor implements CreatorBridge {
     private readonly input: InputManager,
     private readonly hooks: CreatorEditorHooks
   ) {
-    // Open on the most recent state — the autosave IS the working copy, so the newest of
-    // (autosave, explicit quick-save) always wins, falling back to the published course, then the
-    // committed default. Going back to an older state is manual-only: Load (last explicit save),
-    // Load Course (published), or Revert to Default Map (committed).
-    this.layout = loadCurrentCourseLayout();
+    // Open on the active project's most recent state — the autosave IS the working copy, so the
+    // newest of (autosave, explicit quick-save) always wins. loadProjectsIndex() migrates any legacy
+    // single-layout save into the first project and seeds the starter course on a fresh install, so
+    // there is always a valid active project. Going back to an older state is manual-only: Load
+    // (last explicit save), Load Course (published), or Revert to Default Map (committed).
+    const index = loadProjectsIndex();
+    this.projectId = index.activeId;
+    this.layout = loadProjectWorking(this.projectId) ?? committedCourseLayout();
     this.history = new CreatorHistory(this.layout);
     this.geometry = new CreatorGeometry(scene);
     this.geometry.setEnabled(false);
@@ -322,9 +337,9 @@ export class CreatorEditor implements CreatorBridge {
     return this.active;
   }
 
-  /** Active editor session OR an open password modal — i.e. the creator owns the screen + input. */
+  /** True while the creator owns the screen + input (an active editor session). */
   isBusy(): boolean {
-    return this.active || this.ui.isModalOpen();
+    return this.active;
   }
 
   getModePublic(): Mode {
@@ -343,48 +358,17 @@ export class CreatorEditor implements CreatorBridge {
 
   /** Drive the on-screen "hold E" entry prompt (ArenaScene supplies proximity + hold progress). */
   showEntryPrompt(near: boolean, progress: number): void {
-    if (this.active || this.ui.isModalOpen()) {
+    if (this.active) {
       this.ui.setEntryPromptVisible(false, 0);
       return;
     }
     this.ui.setEntryPromptVisible(near, progress);
   }
 
-  /** Open the password gate (called on a completed hold-E at the entry sign). */
-  promptUnlock(): void {
+  /** Open the editor (called on a completed hold-E at the entry sign). Open to every player. */
+  requestEntry(): void {
     if (this.active || this.hooks.isOnline()) return;
-    if (this.ui.isModalOpen()) return;
-    if (!isCreatorConfigured()) {
-      this.ui.toast('Creator access is not configured.');
-      return;
-    }
-    this.input.setLockSuppressed(true);
-    this.ui.openPasswordModal(
-      (value) => {
-        void this.tryUnlock(value);
-      },
-      () => {
-        if (!this.active) this.input.setLockSuppressed(false);
-      }
-    );
-  }
-
-  private async tryUnlock(value: string): Promise<void> {
-    const result = await verifyCreatorPassword(value);
-    if (this.hooks.isOnline()) {
-      this.ui.closePasswordModal();
-      this.input.setLockSuppressed(false);
-      return;
-    }
-    if (result === 'granted') {
-      this.access.unlock();
-      this.ui.closePasswordModal();
-      this.enter();
-    } else if (result === 'denied') {
-      this.ui.setModalMessage('Access denied');
-    } else {
-      this.ui.setModalMessage('Creator access is not configured.');
-    }
+    this.enter();
   }
 
   /** Per-frame update while active. Build: fly camera. Playtest: handled by ArenaScene (player). */
@@ -509,13 +493,8 @@ export class CreatorEditor implements CreatorBridge {
 
   /** Hard shutdown for going online: tears down with no sandbox restore (the online path handles it). */
   forceDeactivate(): void {
-    if (!this.active) {
-      this.ui.closePasswordModal();
-      if (!this.hooks.isOnline()) this.input.setLockSuppressed(false);
-      return;
-    }
+    if (!this.active) return;
     this.teardownActive(false);
-    this.access.lock();
   }
 
   dispose(): void {
@@ -549,6 +528,9 @@ export class CreatorEditor implements CreatorBridge {
     this.active = true;
     this.mode = 'build';
     this.setEntrySignVisible(false);
+    // ArenaScene's hold-E loop stops calling showEntryPrompt() once isActive() is true, so this is
+    // the only place left to hide it — otherwise it freezes on screen at its last (visible) state.
+    this.ui.setEntryPromptVisible(false, 0);
     this.hooks.suspendSandbox();
     this.hooks.setHudVisible(false);
     this.hooks.setGameSettingsDock(this.ui.gameSettingsSlot());
@@ -563,8 +545,10 @@ export class CreatorEditor implements CreatorBridge {
     this.positionEditorCameraAtSpawn();
     this.enterBuildMode();
     this.ui.setToolbarVisible(true);
-    this.ui.toast('Creator Mode unlocked — Build Mode');
+    this.ui.toast('Course Creator — Build Mode');
     this.ui.refresh();
+    // First visit ever (per browser): a one-time help card. Marked seen only when dismissed.
+    if (!hasSeenOnboarding()) this.ui.showOnboarding(() => markOnboardingSeen());
   }
 
   setMode(mode: Mode): void {
@@ -657,17 +641,7 @@ export class CreatorEditor implements CreatorBridge {
   exitCreator(): void {
     if (!this.active) return;
     this.teardownActive(true);
-    this.ui.toast('Exited Creator Mode');
-  }
-
-  lockCreator(): void {
-    if (!this.active) {
-      this.access.lock();
-      return;
-    }
-    this.teardownActive(true);
-    this.access.lock();
-    this.ui.toast('Creator Mode locked');
+    this.ui.toast('Exited Course Creator');
   }
 
   private teardownActive(restoreSandbox: boolean): void {
@@ -690,7 +664,6 @@ export class CreatorEditor implements CreatorBridge {
     if (this.marqueeEl) this.marqueeEl.style.display = 'none';
     this.ui.setToolbarVisible(false);
     this.ui.setEntryPromptVisible(false, 0);
-    this.ui.closePasswordModal();
     this.flyKeys.clear();
     this.looking = false;
     if (document.pointerLockElement === this.canvas()) document.exitPointerLock?.();
@@ -839,7 +812,7 @@ export class CreatorEditor implements CreatorBridge {
   }
 
   private handleKeyDown(e: KeyboardEvent): void {
-    if (this.ui.isModalOpen() || isEditableTarget(e.target)) return;
+    if (this.ui.isOverlayOpen() || isEditableTarget(e.target)) return;
     const code = e.code;
 
     // Escape while carrying an object by the center handle cancels the drag (restores the position).
@@ -2259,7 +2232,7 @@ export class CreatorEditor implements CreatorBridge {
     }
     if (!this.autosavePending) return;
     this.autosavePending = false;
-    if (saveAutosave(this.layout)) {
+    if (saveProjectAutosave(this.projectId, this.layout)) {
       this.autosaveFailureNotified = false;
       this.ui.setAutosaveStatus(`Autosaved ${new Date().toLocaleTimeString()}`);
       this.ui.flashSaveIndicator('Autosaved');
@@ -2287,7 +2260,7 @@ export class CreatorEditor implements CreatorBridge {
   // ---------------------------------------------------------------------------------------------
 
   quickSave(): void {
-    const ok = saveLocalLayout(this.layout);
+    const ok = saveProjectManual(this.projectId, this.layout);
     if (!ok) {
       this.ui.toast('Save failed — storage unavailable');
       return;
@@ -2295,7 +2268,7 @@ export class CreatorEditor implements CreatorBridge {
     // The explicit save IS the newest state: cancel any pending debounce (a stale write landing
     // after it would be pointless) and refresh the autosave slot to match.
     this.cancelPendingAutosave();
-    if (saveAutosave(this.layout)) {
+    if (saveProjectAutosave(this.projectId, this.layout)) {
       this.autosaveFailureNotified = false;
       this.ui.setAutosaveStatus(`Autosaved ${new Date().toLocaleTimeString()}`);
     }
@@ -2305,15 +2278,15 @@ export class CreatorEditor implements CreatorBridge {
   }
 
   quickLoad(): void {
-    const loaded = loadLocalStored()?.layout ?? null;
+    const loaded = loadProjectManual(this.projectId)?.layout ?? null;
     if (!loaded) {
-      this.ui.toast('No local save found');
+      this.ui.toast('No manual save found for this course');
       return;
     }
-    if (!window.confirm('Load the last local save? Unsaved changes will be lost.')) return;
+    if (!window.confirm('Load the last manual save of this course? Unsaved changes will be lost.')) return;
     this.selectedId = null;
     this.applyLayout(loaded, true);
-    this.ui.toast('Loaded local save');
+    this.ui.toast('Loaded manual save');
   }
 
   exportJson(): void {
@@ -2422,6 +2395,149 @@ export class CreatorEditor implements CreatorBridge {
 
   resetPlayer(): void {
     this.player.resetPosition();
+  }
+
+  // ---------------------------------------------------------------------------------------------
+  // Course projects (multiple named local courses; see CreatorStorage)
+  // ---------------------------------------------------------------------------------------------
+
+  listProjects(): ProjectSummary[] {
+    return loadProjectsIndex().entries;
+  }
+
+  getActiveProjectId(): string {
+    return this.projectId;
+  }
+
+  starterCourseName(): string {
+    return committedCourseLayout().name;
+  }
+
+  /** Load another project into the editor. Flushes the current project's edits first. */
+  openProject(id: string): void {
+    if (id === this.projectId) return;
+    if (this.mode === 'playtest') this.setMode('build');
+    this.flushAutosave();
+    if (!setActiveProject(id)) {
+      this.ui.toast('Course not found');
+      return;
+    }
+    this.projectId = id;
+    this.adoptProjectLayout(loadProjectWorking(id) ?? committedCourseLayout());
+    this.ui.toast(`Opened “${this.layout.name}”`);
+  }
+
+  createNewProject(): void {
+    this.createAndOpen(blankCourseLayout(), 'New course created');
+  }
+
+  /** "Open a Copy" on the featured starter course: a fresh project pre-filled with it. */
+  createStarterCopyProject(): void {
+    const layout = committedCourseLayout();
+    layout.name = `${layout.name} (copy)`.slice(0, CREATOR_LIMITS.maxNameLength);
+    this.createAndOpen(layout, 'Starter course copied');
+  }
+
+  private createAndOpen(layout: CreatorLayout, toast: string): void {
+    if (this.mode === 'playtest') this.setMode('build');
+    this.flushAutosave();
+    const created = createProject(layout);
+    if (!created) {
+      this.ui.toast('Could not create course — storage unavailable');
+      return;
+    }
+    this.projectId = created.id;
+    this.adoptProjectLayout(layout);
+    this.ui.toast(toast);
+  }
+
+  renameProjectById(id: string): void {
+    const current = loadProjectsIndex().entries.find((e) => e.id === id);
+    if (!current) return;
+    const name = window.prompt('Course name', current.name);
+    if (name === null) return;
+    const clean = name.trim().slice(0, CREATOR_LIMITS.maxNameLength);
+    if (!clean) return;
+    if (id === this.projectId) {
+      this.setCourseInfo({ name: clean });
+    } else if (!renameProject(id, clean)) {
+      this.ui.toast('Rename failed — storage unavailable');
+    }
+    this.ui.refresh();
+  }
+
+  duplicateProjectById(id: string): void {
+    // Duplicating the active project must include the newest in-memory edits.
+    if (id === this.projectId) this.flushAutosave();
+    const copy = duplicateProject(id);
+    this.ui.toast(copy ? `Duplicated as “${copy.name}”` : 'Duplicate failed — storage unavailable');
+    this.ui.refresh();
+  }
+
+  deleteProjectById(id: string): void {
+    const target = loadProjectsIndex().entries.find((e) => e.id === id);
+    if (!target) return;
+    if (!window.confirm(`Delete “${target.name}”? This cannot be undone.`)) return;
+    const wasActive = id === this.projectId;
+    // A pending autosave must never land after the delete — under the OLD id it would resurrect the
+    // course; after the id switches it would overwrite the newly adopted project.
+    if (wasActive) this.cancelPendingAutosave();
+    if (!deleteProject(id)) {
+      this.ui.toast('Delete failed');
+      return;
+    }
+    if (wasActive) {
+      if (this.mode === 'playtest') this.setMode('build');
+      this.projectId = loadProjectsIndex().activeId;
+      this.adoptProjectLayout(loadProjectWorking(this.projectId) ?? committedCourseLayout());
+    }
+    this.ui.toast('Course deleted');
+    this.ui.refresh();
+  }
+
+  getCourseInfo(): { name: string; description: string; difficulty: CourseDifficulty | null } {
+    return {
+      name: this.layout.name,
+      description: this.layout.description ?? '',
+      difficulty: this.layout.difficulty ?? null
+    };
+  }
+
+  /** Edit the active course's listed metadata. Committed to history + flushed so the list updates. */
+  setCourseInfo(patch: { name?: string; description?: string; difficulty?: CourseDifficulty | null }): void {
+    if (patch.name !== undefined) {
+      const clean = patch.name.trim().slice(0, CREATOR_LIMITS.maxNameLength);
+      if (clean) this.layout.name = clean;
+    }
+    if (patch.description !== undefined) {
+      const clean = patch.description.slice(0, CREATOR_LIMITS.maxDescriptionLength);
+      if (clean) this.layout.description = clean;
+      else delete this.layout.description;
+    }
+    if (patch.difficulty !== undefined) {
+      if (patch.difficulty && (COURSE_DIFFICULTIES as readonly string[]).includes(patch.difficulty)) {
+        this.layout.difficulty = patch.difficulty;
+      } else {
+        delete this.layout.difficulty;
+      }
+    }
+    this.commit(null);
+    this.flushAutosave(); // immediate, so the course list + autosave summary reflect it now
+  }
+
+  /**
+   * Adopt a different project's layout as the editor state. Unlike quickLoad/import (which stay
+   * within one project), this RESETS undo history — undoing across a project switch would write one
+   * course's content into another's autosave slot.
+   */
+  private adoptProjectLayout(layout: CreatorLayout): void {
+    this.selectedId = null;
+    this.selectedIds.clear();
+    this.layout = layout;
+    enforceSingleDefaultSpawn(this.layout);
+    this.history.reset(this.layout);
+    this.rebuildAfterChange();
+    this.positionEditorCameraAtSpawn();
   }
 
   // ---------------------------------------------------------------------------------------------

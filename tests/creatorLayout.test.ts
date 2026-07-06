@@ -4,6 +4,7 @@ import {
   CREATOR_LABEL_SIZES,
   CREATOR_LIMITS,
   CREATOR_SCHEMA_VERSION,
+  blankCourseLayout,
   committedCourseLayout,
   defaultCreatorLayout,
   validateLayout,
@@ -62,6 +63,38 @@ describe('CreatorLayout — default + validation', () => {
       expect(layout.version).toBe(CREATOR_SCHEMA_VERSION);
       expect(Array.isArray(layout.objects)).toBe(true);
     }
+  });
+
+  it('sanitizes course metadata: valid difficulty kept, junk dropped, description clamped', () => {
+    const good = validateLayout({ name: 'x', objects: [], description: 'A fun sprint.', difficulty: 'advanced' }).layout;
+    expect(good.description).toBe('A fun sprint.');
+    expect(good.difficulty).toBe('advanced');
+
+    const junk = validateLayout({ name: 'x', objects: [], description: 42, difficulty: 'impossible' }).layout;
+    expect(junk.description).toBeUndefined();
+    expect(junk.difficulty).toBeUndefined();
+
+    const long = validateLayout({ name: 'x', objects: [], description: 'y'.repeat(1000) }).layout;
+    expect(long.description!.length).toBe(CREATOR_LIMITS.maxDescriptionLength);
+  });
+
+  it('metadata round-trips through validation (export → import keeps it)', () => {
+    const layout = blankCourseLayout();
+    layout.description = 'Round trip';
+    layout.difficulty = 'beginner';
+    const revalidated = validateLayout(JSON.parse(JSON.stringify(layout))).layout;
+    expect(revalidated.description).toBe('Round trip');
+    expect(revalidated.difficulty).toBe('beginner');
+  });
+
+  it('blankCourseLayout is a valid course with exactly a default spawn and a leave portal', () => {
+    const layout = blankCourseLayout();
+    const { problems } = validateLayout(layout);
+    expect(problems).toEqual([]);
+    expect(isLayoutValid(layout).valid).toBe(true);
+    expect(layout.objects.length).toBe(2);
+    expect(layout.objects.filter((o) => o.type === 'spawn_point' && o.metadata?.defaultSpawn).length).toBe(1);
+    expect(layout.objects.some((o) => o.type === 'leave_portal')).toBe(true);
   });
 
   it('drops unknown module types and clamps absurd dimensions/coords', () => {

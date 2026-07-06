@@ -34,9 +34,24 @@ export const CREATOR_SCHEMA_VERSION = 1;
 
 export type Vec3Tuple = [number, number, number];
 
+/** Creator-picked difficulty preset carried by a course (shown in the project list + exports). */
+export const COURSE_DIFFICULTIES = ['beginner', 'intermediate', 'advanced', 'expert'] as const;
+export type CourseDifficulty = typeof COURSE_DIFFICULTIES[number];
+
+export const COURSE_DIFFICULTY_LABELS: Record<CourseDifficulty, string> = {
+  beginner: 'Beginner',
+  intermediate: 'Intermediate',
+  advanced: 'Advanced',
+  expert: 'Expert'
+};
+
 export interface CreatorLayout {
   version: number;
   name: string;
+  /** Optional creator-written blurb (plain text, sanitised + length-capped on apply). */
+  description?: string;
+  /** Optional creator-picked difficulty preset. */
+  difficulty?: CourseDifficulty;
   updatedAt: string;
   ground: {
     bounds: { width: number; depth: number; y: number };
@@ -132,6 +147,7 @@ export const CREATOR_LIMITS = {
   maxY: SANDBOX_CEILING_Y + 100000,
   maxLabelLength: 64,
   maxNameLength: 48,
+  maxDescriptionLength: 240,
   maxTriggerDimension: 100000,
   minLabelOffsetY: -10,
   maxLabelOffsetY: 30,
@@ -791,6 +807,13 @@ export function validateLayout(raw: unknown): { layout: CreatorLayout; problems:
     objects
   };
 
+  // Optional course metadata: description + difficulty preset (both survive export/import).
+  const description = sanitizeText(r.description, CREATOR_LIMITS.maxDescriptionLength);
+  if (description) layout.description = description;
+  if ((COURSE_DIFFICULTIES as readonly string[]).includes(String(r.difficulty))) {
+    layout.difficulty = r.difficulty as CourseDifficulty;
+  }
+
   // Optional prefab library (carried by Export File / Import). Sanitized like any other input;
   // absent/invalid ⇒ simply no prefabs on this layout.
   const prefabs = sanitizePrefabs(r.prefabs);
@@ -925,6 +948,52 @@ export function defaultCreatorLayout(): CreatorLayout {
   return {
     version: CREATOR_SCHEMA_VERSION,
     name: 'Movement Sandbox (default)',
+    updatedAt: new Date().toISOString(),
+    ground: {
+      bounds: { width: SANDBOX_HALF_X * 2, depth: SANDBOX_HALF_Z * 2, y: 0 },
+      material: 'ground'
+    },
+    objects
+  };
+}
+
+/**
+ * A minimal fresh course for "New Course": open ground, one default spawn, and a leave portal —
+ * no walls, no obstacles. Placement mirrors the default sandbox spawn so a brand-new course drops
+ * the player somewhere sensible immediately.
+ */
+export function blankCourseLayout(): CreatorLayout {
+  const objects: CreatorLayoutObject[] = [
+    {
+      id: createObjectId('spawn_point'),
+      type: 'spawn_point',
+      name: 'spawn',
+      position: [SANDBOX_CENTER.x + SANDBOX_SPAWN_LOCAL.x, 0, SANDBOX_CENTER.z + SANDBOX_SPAWN_LOCAL.z],
+      rotation: [0, (SANDBOX_SPAWN_LOCAL.yaw * 180) / Math.PI, 0],
+      scale: [1, 1, 1],
+      material: 'marker_green',
+      collision: false,
+      opacity: 1,
+      wallrunEnabled: true,
+      metadata: { defaultSpawn: true }
+    },
+    {
+      id: createObjectId('leave_portal'),
+      type: 'leave_portal',
+      name: 'leave',
+      position: [SANDBOX_CENTER.x + SANDBOX_LEAVE_LOCAL.x, 0, SANDBOX_CENTER.z + SANDBOX_LEAVE_LOCAL.z],
+      rotation: [0, 0, 0],
+      scale: [1, 1, 1],
+      material: 'marker_blue',
+      collision: false,
+      opacity: 1,
+      wallrunEnabled: true,
+      metadata: { yawDeg: 0, label: 'LEAVE' }
+    }
+  ];
+  return {
+    version: CREATOR_SCHEMA_VERSION,
+    name: 'Untitled Course',
     updatedAt: new Date().toISOString(),
     ground: {
       bounds: { width: SANDBOX_HALF_X * 2, depth: SANDBOX_HALF_Z * 2, y: 0 },

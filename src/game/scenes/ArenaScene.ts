@@ -116,8 +116,8 @@ export class ArenaScene {
   // Local outdoor Movement Sandbox — lazily created on first entry, only ever updated from the
   // offline step path (never stepOnline), and torn down when connected online gameplay begins.
   private movementSandbox: MovementSandbox | null = null;
-  // Developer-only Creator Sandbox editor — created lazily on first sandbox entry, only ever updated
-  // from the offline step path, and force-deactivated before connected online play.
+  // Course Creator editor (open to every player) — created lazily on first sandbox entry, only ever
+  // updated from the offline step path, and force-deactivated before connected online play.
   private creator: CreatorEditor | null = null;
   private creatorEntryHold = 0;
   // Tracks the last-applied "show scoreboard" setting so we only toggle the 3D boards on change.
@@ -380,9 +380,9 @@ export class ArenaScene {
       this.gym.setScoreboardsVisible(scoreboardsVisible);
     }
 
-    // While the Creator Sandbox owns the screen (its password modal or an active editor session) it
-    // is the sole owner of cursor-lock suppression — skip the lobby overlay's per-frame suppression so
-    // it can't fight the editor (which would break free-look / re-grab the pointer every frame).
+    // While the Creator Sandbox owns the screen (an active editor session) it is the sole owner of
+    // cursor-lock suppression — skip the lobby overlay's per-frame suppression so it can't fight the
+    // editor (which would break free-look / re-grab the pointer every frame).
     if (!this.creator?.isBusy()) {
       this.multiplayerOverlay.update();
     }
@@ -866,7 +866,7 @@ export class ArenaScene {
       );
     }
 
-    // The Creator Sandbox editor, when unlocked + active, takes over the offline step entirely
+    // The Course Creator editor, when active, takes over the offline step entirely
     // (Build Mode flies an editor camera with the player frozen; Playtest Mode runs real movement).
     if (this.creator?.isActive()) {
       this.stepCreator(dt);
@@ -2142,7 +2142,7 @@ export class ArenaScene {
     this.hud.showScoreEvent('PRACTICE LOBBY', 'Left the movement sandbox', 'neutral');
   }
 
-  /** Lazily build the developer Creator Sandbox editor (offline-only; gated by password + online check). */
+  /** Lazily build the Course Creator editor (offline-only; open to every player, never online). */
   private ensureCreator(): void {
     if (this.creator) return;
     this.creator = new CreatorEditor(this.scene, this.gym, this.player, this.input, {
@@ -2268,7 +2268,7 @@ export class ArenaScene {
     creator.step(dt);
   }
 
-  /** Drive the Creator Sandbox entry sign prompt + hold-E unlock while in the (non-creator) sandbox. */
+  /** Drive the Course Creator entry sign prompt + hold-E entry while in the (non-creator) sandbox. */
   private updateCreatorEntry(dt: number): void {
     const creator = this.creator;
     if (!creator || creator.isActive()) {
@@ -2286,7 +2286,7 @@ export class ArenaScene {
     creator.showEntryPrompt(near, this.creatorEntryHold / CREATOR_ENTRY_HOLD_SECONDS);
     if (this.creatorEntryHold >= CREATOR_ENTRY_HOLD_SECONDS) {
       this.creatorEntryHold = 0;
-      creator.promptUnlock();
+      creator.requestEntry();
     }
   }
 

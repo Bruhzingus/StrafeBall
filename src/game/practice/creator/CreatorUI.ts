@@ -1,20 +1,23 @@
 /**
  * Creator Sandbox — local editor DOM UI.
  *
- * A single compact right-side toolbar (mode bar, settings dropdown, selected-object inspector), a
- * bottom module hotbar, a build-controls help line, a transient toast, an entry prompt, and the
- * password modal.
+ * A single compact right-side toolbar (mode bar, courses panel, settings dropdown, selected-object
+ * inspector), a bottom module hotbar, a build-controls help line, a transient toast, an entry
+ * prompt, and a one-time first-run help card.
  * All plain DOM appended to #hud-root — it never touches the multiplayer scoreboard / overlay. Marked
  * `data-no-lock` so clicks don't grab pointer lock. Driven through the CreatorBridge implemented by the
  * editor; the UI holds no layout/scene state of its own.
  */
 
 import {
+  COURSE_DIFFICULTIES,
+  COURSE_DIFFICULTY_LABELS,
   CREATOR_LABEL_COLORS,
   CREATOR_LABEL_SIZES,
   CREATOR_MATERIALS,
   CREATOR_MODULES,
   CREATOR_TEXTURES,
+  type CourseDifficulty,
   CreatorLayoutObject,
   CreatorObjectMetadata,
   moduleDef,
@@ -22,6 +25,7 @@ import {
   objectDimensions,
   type CreatorModuleCategory
 } from './CreatorLayout';
+import type { ProjectSummary } from './CreatorStorage';
 
 export interface CreatorSnapSettings {
   gridSnap: boolean;
@@ -59,6 +63,19 @@ export interface CreatorBridge {
   loadFromCourse(): void;
   importToCourseFile(file: File): void;
 
+  // Course projects (multiple named local courses) + the active course's listed metadata.
+  listProjects(): ProjectSummary[];
+  getActiveProjectId(): string;
+  starterCourseName(): string;
+  openProject(id: string): void;
+  createNewProject(): void;
+  createStarterCopyProject(): void;
+  renameProjectById(id: string): void;
+  duplicateProjectById(id: string): void;
+  deleteProjectById(id: string): void;
+  getCourseInfo(): { name: string; description: string; difficulty: CourseDifficulty | null };
+  setCourseInfo(patch: { name?: string; description?: string; difficulty?: CourseDifficulty | null }): void;
+
   // In-editor clipboard (Copy / Paste).
   copySelected(): void;
   paste(): void;
@@ -86,7 +103,6 @@ export interface CreatorBridge {
 
   resetPlayer(): void;
   exitCreator(): void;
-  lockCreator(): void;
 
   armModule(type: string | null): void;
   getArmedModule(): string | null;
@@ -148,9 +164,7 @@ export class CreatorUI {
   private readonly recTimer: HTMLDivElement;
   private readonly entryPrompt: HTMLDivElement;
   private readonly entryFill: HTMLDivElement;
-  private readonly modal: HTMLDivElement;
-  private readonly modalMessage: HTMLDivElement;
-  private readonly modalInput: HTMLInputElement;
+  private readonly onboardEl: HTMLDivElement;
   private readonly fileInput: HTMLInputElement;
   private readonly courseFileInput: HTMLInputElement;
 
@@ -178,6 +192,10 @@ export class CreatorUI {
   private settingsBtn!: HTMLButtonElement;
   private settingsDropdown!: HTMLDivElement;
   private gameSettingsHost!: HTMLDivElement;
+  private coursesBtn!: HTMLButtonElement;
+  private coursesDropdown!: HTMLDivElement;
+  private coursesOpen = false;
+  private coursesSig = '';
 
   private inspectorObjectId: string | null = null;
   // Non-numeric state of the inspected object (material/texture/toggles/metadata…). When it changes
@@ -189,14 +207,7 @@ export class CreatorUI {
   private toastTimer: number | null = null;
   private saveIndicatorEl!: HTMLDivElement;
   private saveIndicatorTimer: number | null = null;
-  private modalSubmit: ((value: string) => void) | null = null;
-  private modalCancel: (() => void) | null = null;
-  // Don't focus the password field while gameplay keys (E / WASD / jump…) are still physically held
-  // from opening the modal — otherwise the held key auto-repeats straight into the field. Mirrors the
-  // matchmaking portal's "wait for interact release before focusing the name input" handling.
-  private awaitingModalFocus = false;
-  private readonly modalHeldKeys = new Set<string>();
-  private modalFocusFallbackTimer: number | null = null;
+  private onboardDismiss: (() => void) | null = null;
 
   constructor(hostRoot: HTMLElement, private readonly bridge: CreatorBridge) {
     this.host = hostRoot;
@@ -244,8 +255,8 @@ export class CreatorUI {
 
     this.entryPrompt = el('div', 'creator-entry-prompt');
     this.entryPrompt.innerHTML =
-      '<div class="creator-entry-title">CREATOR SANDBOX</div>' +
-      '<div class="creator-entry-sub">Developer Layout Editor</div>' +
+      '<div class="creator-entry-title">COURSE CREATOR</div>' +
+      '<div class="creator-entry-sub">Build your own movement courses</div>' +
       '<div class="creator-entry-hint"><span class="key">E</span> hold to open</div>' +
       '<div class="creator-entry-bar"><div></div></div>';
     this.entryFill = this.entryPrompt.querySelector('.creator-entry-bar > div') as HTMLDivElement;
@@ -276,33 +287,60 @@ export class CreatorUI {
     });
     this.host.appendChild(this.courseFileInput);
 
-    // --- Password modal ---
-    this.modal = el('div', 'creator-modal-backdrop');
-    this.modal.setAttribute('data-no-lock', '');
-    const card = el('div', 'creator-modal');
-    const title = el('div', 'creator-modal-title');
-    title.textContent = 'Creator Access';
-    this.modalMessage = el('div', 'creator-modal-message');
-    this.modalInput = document.createElement('input');
-    this.modalInput.type = 'password';
-    this.modalInput.className = 'creator-modal-input';
-    this.modalInput.autocomplete = 'off';
-    this.modalInput.setAttribute('aria-label', 'Developer password');
-    this.modalInput.addEventListener('keydown', (e) => {
-      if (e.key === 'Enter') this.submitModal();
-      if (e.key === 'Escape') this.cancelModal();
-    });
-    const actions = el('div', 'creator-modal-actions');
-    const cancelBtn = button('Cancel', 'creator-btn', () => this.cancelModal());
-    const enterBtn = button('Enter', 'creator-btn creator-btn-primary', () => this.submitModal());
-    actions.append(cancelBtn, enterBtn);
-    card.append(title, this.modalInput, this.modalMessage, actions);
-    this.modal.appendChild(card);
-    this.host.appendChild(this.modal);
+    // --- First-run help card (shown once per browser; see showOnboarding) ---
+    this.onboardEl = el('div', 'creator-modal-backdrop');
+    this.onboardEl.setAttribute('data-no-lock', '');
+    const onboardCard = el('div', 'creator-modal');
+    const onboardTitle = el('div', 'creator-modal-title');
+    onboardTitle.textContent = 'Welcome to the Course Creator';
+    const onboardIntro = el('div', 'creator-onboard-intro');
+    onboardIntro.textContent = 'Build your own movement courses, playtest them instantly, and play them in the yard.';
+    const onboardList = el('div', 'creator-onboard-list');
+    const tips: Array<[string, string]> = [
+      ['Fly', 'WASD + Space/Ctrl to fly, hold Right Mouse to look around'],
+      ['Place', 'pick a module from the bottom bar, then click the ground to stamp it'],
+      ['Edit', 'click an object — G move · R rotate · T scale · Del delete · Ctrl+Z undo'],
+      ['Test', 'F1 jumps into Playtest at your spawn; B returns to Build'],
+      ['Courses', 'your work autosaves — manage, rename, and switch courses in the Courses menu']
+    ];
+    for (const [term, desc] of tips) {
+      const row = el('div', 'creator-onboard-row');
+      const badge = el('span', 'creator-onboard-term');
+      badge.textContent = term;
+      const text = el('span', 'creator-onboard-desc');
+      text.textContent = desc;
+      row.append(badge, text);
+      onboardList.appendChild(row);
+    }
+    const onboardActions = el('div', 'creator-modal-actions');
+    onboardActions.appendChild(
+      button('Got it — start building', 'creator-btn creator-btn-primary', () => this.dismissOnboarding())
+    );
+    onboardCard.append(onboardTitle, onboardIntro, onboardList, onboardActions);
+    this.onboardEl.appendChild(onboardCard);
+    this.host.appendChild(this.onboardEl);
 
     this.setToolbarVisible(false);
     this.setEntryPromptVisible(false, 0);
     this.refresh();
+  }
+
+  /** Show the one-time first-run help card. `onDismiss` fires when the player closes it. */
+  showOnboarding(onDismiss: () => void): void {
+    this.onboardDismiss = onDismiss;
+    this.onboardEl.classList.add('creator-modal-backdrop--visible');
+  }
+
+  /** True while a full-screen card (the first-run help) is up — build keybinds should not fire. */
+  isOverlayOpen(): boolean {
+    return this.onboardEl.classList.contains('creator-modal-backdrop--visible');
+  }
+
+  private dismissOnboarding(): void {
+    this.onboardEl.classList.remove('creator-modal-backdrop--visible');
+    const cb = this.onboardDismiss;
+    this.onboardDismiss = null;
+    cb?.();
   }
 
   // ---------------------------------------------------------------------------------------------
@@ -311,7 +349,9 @@ export class CreatorUI {
 
   private buildModeBar(): void {
     this.buildBtn = button('Build', 'creator-btn creator-mode-btn', () => this.bridge.setMode('build'));
+    this.buildBtn.title = 'Edit the course (B)';
     this.playtestBtn = button('Playtest', 'creator-btn creator-mode-btn', () => this.bridge.setMode('playtest'));
+    this.playtestBtn.title = 'Run the course with real movement (F1)';
     const modeGroup = el('div', 'creator-mode-group');
     modeGroup.append(this.buildBtn, this.playtestBtn);
 
@@ -320,32 +360,42 @@ export class CreatorUI {
     this.settingsBtn = button('Settings +', 'creator-btn creator-settings-toggle', () => this.setSettingsOpen(!this.settingsOpen));
     this.settingsBtn.setAttribute('aria-expanded', 'false');
     this.settingsBtn.setAttribute('aria-haspopup', 'true');
+    this.settingsBtn.title = 'Editor tools, saving, and game settings';
     this.settingsDropdown = el('div', 'creator-settings-dropdown');
+
+    // Courses panel: manage the player's named course projects + the active course's info.
+    this.coursesBtn = button('Courses +', 'creator-btn creator-settings-toggle', () => this.setCoursesOpen(!this.coursesOpen));
+    this.coursesBtn.setAttribute('aria-expanded', 'false');
+    this.coursesBtn.setAttribute('aria-haspopup', 'true');
+    this.coursesBtn.title = 'Your courses — create, open, rename, duplicate, delete';
+    this.coursesDropdown = el('div', 'creator-settings-dropdown creator-courses');
 
     // Autosave trust signal: "Autosaved HH:MM:SS" (or "Autosave unavailable"), driven by the editor.
     this.autosaveStatusEl = document.createElement('span');
     this.autosaveStatusEl.className = 'creator-autosave-status';
 
+    const saveBtn = button('Save', 'creator-btn', () => this.bridge.quickSave());
+    saveBtn.title = 'Save a manual restore point (Ctrl+S). Your work also autosaves.';
     const row1 = el('div', 'creator-modebar-row creator-modebar-row--primary');
-    row1.append(
-      modeGroup,
-      button('Save', 'creator-btn', () => this.bridge.quickSave()),
-      this.autosaveStatusEl,
-      this.settingsBtn
-    );
+    row1.append(modeGroup, saveBtn, this.autosaveStatusEl, this.coursesBtn, this.settingsBtn);
     // Always-visible headline row: download a layout file + publish to the live Movement Course.
+    const exportBtn = button('⤓ Export File', 'creator-btn creator-btn-primary', () => this.bridge.exportJson());
+    exportBtn.title = 'Download this course as a .json file you can share';
+    const publishBtn = button('★ Save to Course', 'creator-btn creator-btn-primary', () => this.bridge.saveToCourse());
+    publishBtn.title = 'Publish this course to the yard (played after a reload)';
     const shareRow = el('div', 'creator-modebar-row');
-    shareRow.append(
-      button('⤓ Export File', 'creator-btn creator-btn-primary', () => this.bridge.exportJson()),
-      button('★ Save to Course', 'creator-btn creator-btn-primary', () => this.bridge.saveToCourse())
-    );
+    shareRow.append(exportBtn, publishBtn);
 
+    const loadBtn = button('Load', 'creator-btn', () => this.bridge.quickLoad());
+    loadBtn.title = 'Restore this course’s last manual save';
     const loadRow = el('div', 'creator-modebar-row');
-    loadRow.append(button('Load', 'creator-btn', () => this.bridge.quickLoad()));
+    loadRow.append(loadBtn);
+    const importBtn = button('Import File', 'creator-btn', () => this.fileInput.click());
+    importBtn.title = 'Load a shared course .json into this course';
     const row2 = el('div', 'creator-modebar-row');
     row2.append(
       button('Copy JSON', 'creator-btn', () => this.bridge.copyJson()),
-      button('Import File', 'creator-btn', () => this.fileInput.click()),
+      importBtn,
       this.undoBtn,
       this.redoBtn
     );
@@ -361,16 +411,170 @@ export class CreatorUI {
       button('Revert to Default Map', 'creator-btn creator-btn-warn', () => this.bridge.resetLayout())
     );
     const row4 = el('div', 'creator-modebar-row');
-    row4.append(
-      button('Exit Creator', 'creator-btn', () => this.bridge.exitCreator()),
-      button('Lock Creator', 'creator-btn creator-btn-warn', () => this.bridge.lockCreator())
-    );
+    row4.append(button('Exit Creator', 'creator-btn', () => this.bridge.exitCreator()));
     // The game's floating SettingsPanel docks in here while the editor is active, so the two
     // top-right settings surfaces never overlap (see CreatorEditorHooks.setGameSettingsDock).
     this.gameSettingsHost = el('div', 'creator-game-settings');
     this.settingsDropdown.append(loadRow, row2, courseRow, row3, row4, this.snapEl, this.gameSettingsHost);
-    this.modeBar.append(row1, shareRow, this.settingsDropdown);
+    this.modeBar.append(row1, shareRow, this.coursesDropdown, this.settingsDropdown);
     this.setSettingsOpen(false);
+    this.setCoursesOpen(false);
+  }
+
+  // ---------------------------------------------------------------------------------------------
+  // Courses panel (course info + the project list)
+  // ---------------------------------------------------------------------------------------------
+
+  private setCoursesOpen(open: boolean): void {
+    this.coursesOpen = open;
+    this.coursesDropdown.classList.toggle('creator-settings-dropdown--open', open);
+    this.coursesBtn.classList.toggle('creator-settings-toggle--open', open);
+    this.coursesBtn.textContent = open ? 'Courses -' : 'Courses +';
+    this.coursesBtn.setAttribute('aria-expanded', String(open));
+    if (open) {
+      // The two dropdowns share the toolbar column; only one open at a time.
+      if (this.settingsOpen) this.setSettingsOpen(false);
+      this.coursesSig = '';
+      this.refreshCoursesPanel();
+    }
+  }
+
+  /** Rebuild the courses panel when its underlying data changes (and focus is not inside it). */
+  private refreshCoursesPanel(): void {
+    if (!this.coursesOpen) return;
+    const info = this.bridge.getCourseInfo();
+    const projects = this.bridge.listProjects();
+    const activeId = this.bridge.getActiveProjectId();
+    const sig =
+      `${activeId}::${info.name}|${info.description}|${info.difficulty ?? ''}::` +
+      projects.map((p) => `${p.id}:${p.name}:${p.difficulty ?? ''}:${p.updatedAt}`).join('|');
+    if (sig === this.coursesSig) return;
+    const active = document.activeElement;
+    if (active && this.coursesDropdown.contains(active)) return; // don't rebuild under the user's caret
+    this.coursesSig = sig;
+    this.rebuildCoursesPanel(info, projects, activeId);
+  }
+
+  private rebuildCoursesPanel(
+    info: { name: string; description: string; difficulty: CourseDifficulty | null },
+    projects: ProjectSummary[],
+    activeId: string
+  ): void {
+    this.coursesDropdown.innerHTML = '';
+
+    // --- Active course info (name / difficulty / description) ---
+    const infoTitle = el('div', 'creator-section-title');
+    infoTitle.textContent = 'This Course';
+    this.coursesDropdown.appendChild(infoTitle);
+
+    const nameRow = el('div', 'creator-field');
+    nameRow.appendChild(label('Name'));
+    const nameInput = document.createElement('input');
+    nameInput.type = 'text';
+    nameInput.className = 'creator-text';
+    nameInput.maxLength = 48;
+    nameInput.value = info.name;
+    nameInput.addEventListener('change', () => this.bridge.setCourseInfo({ name: nameInput.value }));
+    nameRow.appendChild(nameInput);
+    this.coursesDropdown.appendChild(nameRow);
+
+    const diffRow = el('div', 'creator-field');
+    diffRow.appendChild(label('Difficulty'));
+    const diffSel = document.createElement('select');
+    diffSel.className = 'creator-select';
+    const noneOpt = document.createElement('option');
+    noneOpt.value = '';
+    noneOpt.textContent = '— none —';
+    diffSel.appendChild(noneOpt);
+    for (const d of COURSE_DIFFICULTIES) {
+      const opt = document.createElement('option');
+      opt.value = d;
+      opt.textContent = COURSE_DIFFICULTY_LABELS[d];
+      diffSel.appendChild(opt);
+    }
+    diffSel.value = info.difficulty ?? '';
+    diffSel.addEventListener('change', () =>
+      this.bridge.setCourseInfo({ difficulty: (diffSel.value || null) as CourseDifficulty | null })
+    );
+    diffRow.appendChild(diffSel);
+    this.coursesDropdown.appendChild(diffRow);
+
+    const descRow = el('div', 'creator-field creator-field-col');
+    descRow.appendChild(label('Description'));
+    const descInput = document.createElement('textarea');
+    descInput.className = 'creator-text creator-textarea';
+    descInput.rows = 2;
+    descInput.maxLength = 240;
+    descInput.placeholder = 'Optional — shown when you share this course';
+    descInput.value = info.description;
+    descInput.addEventListener('change', () => this.bridge.setCourseInfo({ description: descInput.value }));
+    descRow.appendChild(descInput);
+    this.coursesDropdown.appendChild(descRow);
+
+    // --- Your courses ---
+    const listTitle = el('div', 'creator-section-title');
+    listTitle.textContent = `Your Courses (${projects.length})`;
+    this.coursesDropdown.appendChild(listTitle);
+
+    const list = el('div', 'creator-courses-list');
+    const sorted = [...projects].sort((a, b) => b.updatedAt - a.updatedAt);
+    for (const p of sorted) {
+      const row = el('div', 'creator-course-row');
+      if (p.id === activeId) row.classList.add('creator-course-row--active');
+
+      const main = el('div', 'creator-course-main');
+      const nameEl = el('div', 'creator-course-name');
+      nameEl.textContent = p.name;
+      main.appendChild(nameEl);
+      const metaEl = el('div', 'creator-course-meta');
+      const diffText = p.difficulty ? COURSE_DIFFICULTY_LABELS[p.difficulty] : '';
+      metaEl.textContent = [diffText, formatWhen(p.updatedAt)].filter(Boolean).join(' · ');
+      main.appendChild(metaEl);
+      row.appendChild(main);
+
+      const actions = el('div', 'creator-course-actions');
+      if (p.id === activeId) {
+        const chip = el('span', 'creator-course-current');
+        chip.textContent = 'Open';
+        actions.appendChild(chip);
+      } else {
+        actions.appendChild(button('Open', 'creator-btn creator-btn-mini', () => this.bridge.openProject(p.id)));
+      }
+      const renameBtn = button('✎', 'creator-btn creator-btn-mini', () => this.bridge.renameProjectById(p.id));
+      renameBtn.title = 'Rename';
+      const dupBtn = button('⧉', 'creator-btn creator-btn-mini', () => this.bridge.duplicateProjectById(p.id));
+      dupBtn.title = 'Duplicate';
+      const delBtn = button('✕', 'creator-btn creator-btn-mini creator-btn-warn', () => this.bridge.deleteProjectById(p.id));
+      delBtn.title = 'Delete';
+      actions.append(renameBtn, dupBtn, delBtn);
+      row.appendChild(actions);
+      list.appendChild(row);
+    }
+    this.coursesDropdown.appendChild(list);
+
+    const newRow = el('div', 'creator-modebar-row');
+    const newBtn = button('+ New Course', 'creator-btn creator-btn-primary', () => this.bridge.createNewProject());
+    newBtn.title = 'Start a fresh empty course';
+    newRow.appendChild(newBtn);
+    this.coursesDropdown.appendChild(newRow);
+
+    // --- Featured starter course ---
+    const starterTitle = el('div', 'creator-section-title');
+    starterTitle.textContent = 'Featured';
+    this.coursesDropdown.appendChild(starterTitle);
+    const starterRow = el('div', 'creator-course-row creator-course-row--starter');
+    const starterMain = el('div', 'creator-course-main');
+    const starterName = el('div', 'creator-course-name');
+    starterName.textContent = `★ ${this.bridge.starterCourseName()}`;
+    const starterMeta = el('div', 'creator-course-meta');
+    starterMeta.textContent = 'The built-in starter course';
+    starterMain.append(starterName, starterMeta);
+    const starterActions = el('div', 'creator-course-actions');
+    const starterBtn = button('Open a Copy', 'creator-btn creator-btn-mini', () => this.bridge.createStarterCopyProject());
+    starterBtn.title = 'Create a new course pre-filled with the starter course';
+    starterActions.appendChild(starterBtn);
+    starterRow.append(starterMain, starterActions);
+    this.coursesDropdown.appendChild(starterRow);
   }
 
   // ---------------------------------------------------------------------------------------------
@@ -890,8 +1094,10 @@ export class CreatorUI {
 
     // In playtest, collapse the editing sections to the minimal overlay + hide the build hotbar.
     const editing = mode === 'build';
-    // Don't leave the settings dropdown hanging open over the playtest view.
+    // Don't leave the settings/courses dropdowns hanging open over the playtest view.
     if (!editing && this.settingsOpen) this.setSettingsOpen(false);
+    if (!editing && this.coursesOpen) this.setCoursesOpen(false);
+    if (editing) this.refreshCoursesPanel();
     this.playtestBar.classList.toggle('creator-playtest-bar--visible', this.toolbarVisible && !editing);
     const flying = this.bridge.isPlaytestFlying();
     this.playtestFlyBtn.classList.toggle('creator-mode-btn--active', flying);
@@ -977,7 +1183,10 @@ export class CreatorUI {
 
   setToolbarVisible(visible: boolean): void {
     this.toolbarVisible = visible;
-    if (!visible) this.setSettingsOpen(false);
+    if (!visible) {
+      this.setSettingsOpen(false);
+      this.setCoursesOpen(false);
+    }
     this.toolbar.classList.toggle('creator-ui--visible', visible);
     this.refresh();
   }
@@ -1040,97 +1249,16 @@ export class CreatorUI {
     }
   }
 
-  // --- Password modal ---
-
-  openPasswordModal(onSubmit: (value: string) => void, onCancel: () => void): void {
-    this.modalSubmit = onSubmit;
-    this.modalCancel = onCancel;
-    this.modalMessage.textContent = '';
-    this.modalInput.value = '';
-    this.modal.classList.add('creator-modal-backdrop--visible');
-
-    // Defer focusing until the keys held to open the modal are released (so they don't type into it).
-    this.awaitingModalFocus = true;
-    this.modalHeldKeys.clear();
-    window.addEventListener('keydown', this.onModalFocusKeyDown);
-    window.addEventListener('keyup', this.onModalFocusKeyUp);
-    // Fallback: if nothing is actually held (keys already released), focus shortly after opening.
-    this.modalFocusFallbackTimer = window.setTimeout(() => {
-      if (this.awaitingModalFocus && this.modalHeldKeys.size === 0) this.focusModalInput();
-    }, 400);
-  }
-
-  private readonly onModalFocusKeyDown = (e: KeyboardEvent): void => {
-    // Physically-held keys auto-repeat keydown here; track them so we only focus once all are up.
-    if (this.awaitingModalFocus && GAMEPLAY_HOLD_CODES.has(e.code)) this.modalHeldKeys.add(e.code);
-  };
-
-  private readonly onModalFocusKeyUp = (e: KeyboardEvent): void => {
-    if (!this.awaitingModalFocus) return;
-    this.modalHeldKeys.delete(e.code);
-    if (this.modalHeldKeys.size === 0) this.focusModalInput();
-  };
-
-  private focusModalInput(): void {
-    if (!this.awaitingModalFocus) return;
-    this.stopAwaitingModalFocus();
-    this.modalInput.focus();
-    this.modalInput.select();
-  }
-
-  private stopAwaitingModalFocus(): void {
-    this.awaitingModalFocus = false;
-    this.modalHeldKeys.clear();
-    if (this.modalFocusFallbackTimer !== null) {
-      window.clearTimeout(this.modalFocusFallbackTimer);
-      this.modalFocusFallbackTimer = null;
-    }
-    window.removeEventListener('keydown', this.onModalFocusKeyDown);
-    window.removeEventListener('keyup', this.onModalFocusKeyUp);
-  }
-
-  setModalMessage(message: string): void {
-    this.modalMessage.textContent = message;
-    // After a failed attempt the field was cleared on submit — refocus so the user can retype
-    // immediately instead of having to click back into the input.
-    if (this.isModalOpen() && !this.awaitingModalFocus) this.modalInput.focus();
-  }
-
-  closePasswordModal(): void {
-    this.stopAwaitingModalFocus();
-    this.modal.classList.remove('creator-modal-backdrop--visible');
-    this.modalInput.value = '';
-    this.modalSubmit = null;
-    this.modalCancel = null;
-  }
-
-  isModalOpen(): boolean {
-    return this.modal.classList.contains('creator-modal-backdrop--visible');
-  }
-
-  private submitModal(): void {
-    const value = this.modalInput.value;
-    this.modalInput.value = '';
-    this.modalSubmit?.(value);
-  }
-
-  private cancelModal(): void {
-    const cancel = this.modalCancel;
-    this.closePasswordModal();
-    cancel?.();
-  }
-
   dispose(): void {
     if (this.toastTimer !== null) window.clearTimeout(this.toastTimer);
     if (this.saveIndicatorTimer !== null) window.clearTimeout(this.saveIndicatorTimer);
-    this.stopAwaitingModalFocus();
     this.toolbar.remove();
     this.hotbar.remove();
     this.playtestBar.remove();
     this.toastEl.remove();
     this.saveIndicatorEl.remove();
     this.entryPrompt.remove();
-    this.modal.remove();
+    this.onboardEl.remove();
     this.fileInput.remove();
     this.courseFileInput.remove();
   }
@@ -1293,11 +1421,14 @@ export class CreatorUI {
   }
 }
 
-// Gameplay keys that might be physically held when the password modal opens (interact + movement);
-// the field isn't focused until all of these are released so they can't auto-repeat into it.
-const GAMEPLAY_HOLD_CODES = new Set<string>([
-  'KeyE', 'KeyW', 'KeyA', 'KeyS', 'KeyD', 'Space', 'ShiftLeft', 'ControlLeft', 'ControlRight'
-]);
+/** Compact "when" for the course list: time for today, date otherwise. */
+function formatWhen(msEpoch: number): string {
+  const d = new Date(msEpoch);
+  if (Number.isNaN(d.getTime())) return '';
+  const now = new Date();
+  const sameDay = d.getFullYear() === now.getFullYear() && d.getMonth() === now.getMonth() && d.getDate() === now.getDate();
+  return sameDay ? d.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }) : d.toLocaleDateString();
+}
 
 /**
  * Everything the inspector shows that the in-place number sync does NOT cover. Transform fields are
