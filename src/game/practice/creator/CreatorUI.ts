@@ -177,6 +177,7 @@ export class CreatorUI {
   private playtestBtn!: HTMLButtonElement;
   private settingsBtn!: HTMLButtonElement;
   private settingsDropdown!: HTMLDivElement;
+  private gameSettingsHost!: HTMLDivElement;
 
   private inspectorObjectId: string | null = null;
   // Non-numeric state of the inspected object (material/texture/toggles/metadata…). When it changes
@@ -186,6 +187,8 @@ export class CreatorUI {
   private toolbarVisible = false;
   private settingsOpen = false;
   private toastTimer: number | null = null;
+  private saveIndicatorEl!: HTMLDivElement;
+  private saveIndicatorTimer: number | null = null;
   private modalSubmit: ((value: string) => void) | null = null;
   private modalCancel: (() => void) | null = null;
   // Don't focus the password field while gameplay keys (E / WASD / jump…) are still physically held
@@ -225,6 +228,11 @@ export class CreatorUI {
 
     this.toastEl = el('div', 'creator-toast');
     this.host.appendChild(this.toastEl);
+
+    // Small top-centre "Autosaved"/"Saved" flash — quiet feedback for the constant auto/quick
+    // saves; the loud toast is reserved for failures and real mode/state changes.
+    this.saveIndicatorEl = el('div', 'creator-save-indicator');
+    this.host.appendChild(this.saveIndicatorEl);
 
     this.dragHint = el('div', 'creator-drag-hint');
     this.dragHint.textContent = '🖱️ Scroll — push / pull distance';
@@ -350,14 +358,17 @@ export class CreatorUI {
     const row3 = el('div', 'creator-modebar-row');
     row3.append(
       button('Reset Player', 'creator-btn', () => this.bridge.resetPlayer()),
-      button('Reset Layout', 'creator-btn creator-btn-warn', () => this.bridge.resetLayout())
+      button('Revert to Default Map', 'creator-btn creator-btn-warn', () => this.bridge.resetLayout())
     );
     const row4 = el('div', 'creator-modebar-row');
     row4.append(
       button('Exit Creator', 'creator-btn', () => this.bridge.exitCreator()),
       button('Lock Creator', 'creator-btn creator-btn-warn', () => this.bridge.lockCreator())
     );
-    this.settingsDropdown.append(loadRow, row2, courseRow, row3, row4, this.snapEl);
+    // The game's floating SettingsPanel docks in here while the editor is active, so the two
+    // top-right settings surfaces never overlap (see CreatorEditorHooks.setGameSettingsDock).
+    this.gameSettingsHost = el('div', 'creator-game-settings');
+    this.settingsDropdown.append(loadRow, row2, courseRow, row3, row4, this.snapEl, this.gameSettingsHost);
     this.modeBar.append(row1, shareRow, this.settingsDropdown);
     this.setSettingsOpen(false);
   }
@@ -991,26 +1002,25 @@ export class CreatorUI {
     this.toastTimer = window.setTimeout(() => this.toastEl.classList.remove('creator-toast--visible'), 2600);
   }
 
-  /**
-   * Toast with a one-click action button (e.g. autosave recovery → "Discard recovery"). Sticks
-   * around longer than a plain toast so the choice isn't missed; the action dismisses it, and any
-   * later plain toast() replaces it (textContent wipes the button).
-   */
-  toastAction(message: string, actionLabel: string, onAction: () => void): void {
-    this.toastEl.textContent = `${message} `;
-    const act = button(actionLabel, 'creator-btn creator-toast-action', () => {
-      this.toastEl.classList.remove('creator-toast--visible');
-      onAction();
-    });
-    this.toastEl.appendChild(act);
-    this.toastEl.classList.add('creator-toast--visible');
-    if (this.toastTimer !== null) window.clearTimeout(this.toastTimer);
-    this.toastTimer = window.setTimeout(() => this.toastEl.classList.remove('creator-toast--visible'), 12000);
-  }
-
   /** Autosave status text beside the Save button ("Autosaved 14:03:22" / "Autosave unavailable"). */
   setAutosaveStatus(text: string): void {
     this.autosaveStatusEl.textContent = text;
+  }
+
+  /** Container in the Settings dropdown that hosts the game's docked SettingsPanel while active. */
+  gameSettingsSlot(): HTMLElement {
+    return this.gameSettingsHost;
+  }
+
+  /** Brief small text at the top of the screen ("Autosaved" / "Saved") — easy to ignore mid-build. */
+  flashSaveIndicator(text: string): void {
+    this.saveIndicatorEl.textContent = text;
+    this.saveIndicatorEl.classList.add('creator-save-indicator--visible');
+    if (this.saveIndicatorTimer !== null) window.clearTimeout(this.saveIndicatorTimer);
+    this.saveIndicatorTimer = window.setTimeout(
+      () => this.saveIndicatorEl.classList.remove('creator-save-indicator--visible'),
+      1400
+    );
   }
 
   /** Pill shown while free-dragging an object by its center handle (the wheel adjusts carry distance). */
@@ -1112,11 +1122,13 @@ export class CreatorUI {
 
   dispose(): void {
     if (this.toastTimer !== null) window.clearTimeout(this.toastTimer);
+    if (this.saveIndicatorTimer !== null) window.clearTimeout(this.saveIndicatorTimer);
     this.stopAwaitingModalFocus();
     this.toolbar.remove();
     this.hotbar.remove();
     this.playtestBar.remove();
     this.toastEl.remove();
+    this.saveIndicatorEl.remove();
     this.entryPrompt.remove();
     this.modal.remove();
     this.fileInput.remove();

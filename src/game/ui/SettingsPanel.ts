@@ -25,8 +25,12 @@ export class SettingsPanel {
   private readonly graphicsSelect: HTMLSelectElement;
   private readonly preventKeySteal = (event: KeyboardEvent): void => event.preventDefault();
   private expanded = false;
+  /** Where the panel floats normally; undock() returns it here. */
+  private readonly homeParent: HTMLElement;
+  private disposed = false;
 
   constructor(parent: HTMLElement = document.body) {
+    this.homeParent = parent;
     this.root = document.createElement('div');
     this.root.className = 'settings-panel';
     this.root.setAttribute('data-no-lock', '');
@@ -131,7 +135,26 @@ export class SettingsPanel {
     this.updateReadout();
   }
 
+  /**
+   * Re-home the panel inside another container (the Creator editor's Settings dropdown) so two
+   * settings surfaces never overlap in the top-right corner. Docked, the floating pill toggle is
+   * hidden and the content always shows — the host dropdown is the thing that collapses.
+   */
+  dock(host: HTMLElement): void {
+    if (this.disposed) return;
+    this.root.classList.add('settings-panel--docked');
+    host.appendChild(this.root);
+  }
+
+  /** Return the panel to its normal floating top-right home. Safe to call when already home. */
+  undock(): void {
+    if (this.disposed) return;
+    this.root.classList.remove('settings-panel--docked');
+    this.homeParent.appendChild(this.root);
+  }
+
   dispose(): void {
+    this.disposed = true;
     this.toggleButton.removeEventListener('click', this.toggleExpanded);
     this.sensitivitySlider.removeEventListener('input', this.onSensitivityInput);
     this.sfxSlider.removeEventListener('input', this.onSfxInput);

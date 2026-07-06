@@ -72,17 +72,17 @@ import { CreatorHistory } from './CreatorHistory';
 import { CreatorAccessLatch, isCreatorConfigured, verifyCreatorPassword } from './CreatorAccess';
 import { CreatorBridge, CreatorSnapSettings, CreatorUI } from './CreatorUI';
 import {
+  clearPublishedLayout,
   exportLayoutToFile,
   importLayoutFromFile,
-  loadAutosaveStored,
+  loadCurrentCourseLayout,
   loadLocalStored,
   loadPrefabLibrary,
   loadPublishedLayout,
   saveAutosave,
   saveLocalLayout,
   savePrefabLibrary,
-  savePublishedLayout,
-  shouldOfferAutosaveRecovery
+  savePublishedLayout
 } from './CreatorStorage';
 
 const COLLISION_ID_PREFIX = 'creator_';
@@ -107,6 +107,11 @@ export interface CreatorEditorHooks {
   resumeSandbox(): void;
   /** Hide/show the gameplay HUD (scoreboard, hands, crosshair, music…) while the editor is up. */
   setHudVisible(visible: boolean): void;
+  /**
+   * Dock the game's floating settings panel into the given container (editor active) or return it
+   * to its floating top-right home (null) — the two settings surfaces otherwise overlap there.
+   */
+  setGameSettingsDock(host: HTMLElement | null): void;
   /** Entering Playtest: spawn the layout's functional ball/bot/dummy actors (offline only). */
   onPlaytestStart(markers: CreatorSpawnerMarkers): void;
   /** Leaving Playtest (to Build, exit, or online): despawn those actors. */
@@ -279,9 +284,6 @@ export class CreatorEditor implements CreatorBridge {
   private autosavePending = false;
   private autosaveFirstPendingMs = 0;
   private autosaveFailureNotified = false;
-  /** The explicitly-saved state to restore if the user clicks "Discard recovery"; null = no recovery. */
-  private recoveryBaseline: CreatorLayout | null = null;
-  private recoveryNoticePending = false;
   private readonly onBeforeUnload = () => this.flushAutosave();
   private readonly onVisibilityChange = () => {
     if (document.visibilityState === 'hidden') this.flushAutosave();
@@ -294,19 +296,11 @@ export class CreatorEditor implements CreatorBridge {
     private readonly input: InputManager,
     private readonly hooks: CreatorEditorHooks
   ) {
-    // Open on the quick-save slot, else the user's published course (their saved progress), else the
-    // committed default — THEN prefer a strictly-newer autosave over that baseline (crash/accidental-
-    // close recovery). The recovery is announced, with a one-click discard, on the next unlock.
-    const explicitLocal = loadLocalStored();
-    const baseline = explicitLocal?.layout ?? loadPublishedLayout() ?? committedCourseLayout();
-    const autosave = loadAutosaveStored();
-    if (autosave && shouldOfferAutosaveRecovery(autosave, explicitLocal, baseline)) {
-      this.layout = autosave.layout;
-      this.recoveryBaseline = baseline;
-      this.recoveryNoticePending = true;
-    } else {
-      this.layout = baseline;
-    }
+    // Open on the most recent state — the autosave IS the working copy, so the newest of
+    // (autosave, explicit quick-save) always wins, falling back to the published course, then the
+    // committed default. Going back to an older state is manual-only: Load (last explicit save),
+    // Load Course (published), or Revert to Default Map (committed).
+    this.layout = loadCurrentCourseLayout();
     this.history = new CreatorHistory(this.layout);
     this.geometry = new CreatorGeometry(scene);
     this.geometry.setEnabled(false);
@@ -526,6 +520,9 @@ export class CreatorEditor implements CreatorBridge {
 
   dispose(): void {
     this.flushAutosave();
+    // Rescue the docked settings panel before the creator UI (its host) is torn down. No-op when
+    // not docked or when the panel itself was already disposed.
+    this.hooks.setGameSettingsDock(null);
     window.removeEventListener('beforeunload', this.onBeforeUnload);
     document.removeEventListener('visibilitychange', this.onVisibilityChange);
     this.courseHud?.dispose();
@@ -554,6 +551,7 @@ export class CreatorEditor implements CreatorBridge {
     this.setEntrySignVisible(false);
     this.hooks.suspendSandbox();
     this.hooks.setHudVisible(false);
+    this.hooks.setGameSettingsDock(this.ui.gameSettingsSlot());
 
     this.geometry.setEnabled(true);
     this.geometry.rebuild(this.layout);
@@ -565,13 +563,7 @@ export class CreatorEditor implements CreatorBridge {
     this.positionEditorCameraAtSpawn();
     this.enterBuildMode();
     this.ui.setToolbarVisible(true);
-    if (this.recoveryNoticePending) {
-      // Announce once, on the first unlock after a recovery-on-open, with a one-click revert.
-      this.recoveryNoticePending = false;
-      this.ui.toastAction('Recovered unsaved work from autosave', 'Discard recovery', () => this.discardRecovery());
-    } else {
-      this.ui.toast('Creator Mode unlocked — Build Mode');
-    }
+    this.ui.toast('Creator Mode unlocked — Build Mode');
     this.ui.refresh();
   }
 
@@ -706,6 +698,7 @@ export class CreatorEditor implements CreatorBridge {
     this.scene.activeCamera = this.player.camera;
     this.player.movement.setWorld(null);
     this.hooks.setHudVisible(true);
+    this.hooks.setGameSettingsDock(null); // settings panel floats top-right again outside the editor
     this.active = false;
     this.mode = 'build';
 
@@ -2269,22 +2262,11 @@ export class CreatorEditor implements CreatorBridge {
     if (saveAutosave(this.layout)) {
       this.autosaveFailureNotified = false;
       this.ui.setAutosaveStatus(`Autosaved ${new Date().toLocaleTimeString()}`);
+      this.ui.flashSaveIndicator('Autosaved');
     } else if (!this.autosaveFailureNotified) {
       this.autosaveFailureNotified = true;
       this.ui.setAutosaveStatus('Autosave unavailable');
     }
-  }
-
-  /** One-click "Discard recovery": restore the explicit save the autosave was preferred over. The
-   *  restore is a normal history entry, so Ctrl+Z brings the recovered work back if this was a
-   *  mistake. */
-  private discardRecovery(): void {
-    const baseline = this.recoveryBaseline;
-    if (!baseline) return;
-    this.recoveryBaseline = null;
-    this.selectedId = null;
-    this.applyLayout(baseline, true);
-    this.ui.toast('Recovery discarded — restored last saved layout');
   }
 
   private rebuildAfterChange(): void {
@@ -2306,18 +2288,20 @@ export class CreatorEditor implements CreatorBridge {
 
   quickSave(): void {
     const ok = saveLocalLayout(this.layout);
-    if (ok) {
-      // The explicit save IS the newest state: cancel any pending debounce (a stale write landing
-      // after it would be pointless) and refresh the autosave slot to match.
-      this.cancelPendingAutosave();
-      if (saveAutosave(this.layout)) {
-        this.autosaveFailureNotified = false;
-        this.ui.setAutosaveStatus(`Autosaved ${new Date().toLocaleTimeString()}`);
-      }
-      // An explicit save supersedes any still-offered recovery discard.
-      this.recoveryBaseline = null;
+    if (!ok) {
+      this.ui.toast('Save failed — storage unavailable');
+      return;
     }
-    this.ui.toast(ok ? 'Saved to local storage' : 'Save failed — storage unavailable');
+    // The explicit save IS the newest state: cancel any pending debounce (a stale write landing
+    // after it would be pointless) and refresh the autosave slot to match.
+    this.cancelPendingAutosave();
+    if (saveAutosave(this.layout)) {
+      this.autosaveFailureNotified = false;
+      this.ui.setAutosaveStatus(`Autosaved ${new Date().toLocaleTimeString()}`);
+    }
+    // Quiet on purpose: saving happens constantly (Ctrl+S habit + autosave), so success is a small
+    // top-centre flash — the loud toast is reserved for failures.
+    this.ui.flashSaveIndicator('Saved');
   }
 
   quickLoad(): void {
@@ -2359,11 +2343,17 @@ export class CreatorEditor implements CreatorBridge {
       .catch((err: Error) => this.ui.toast(err.message || 'Invalid layout file'));
   }
 
+  /**
+   * The manual revert: back to the committed default map. Clears the published course too, so the
+   * live sandbox stops resurrecting the old version. The old explicit save stays in its slot ('Load'
+   * can still bring it back), and the revert itself is a history entry (Ctrl+Z undoes it in-session).
+   */
   resetLayout(): void {
-    if (!window.confirm('Reset to the committed Movement Sandbox layout? Unsaved changes will be lost.')) return;
+    if (!window.confirm('Revert to the default Movement Sandbox map? This replaces the current layout and clears your saved course.')) return;
     this.selectedId = null;
+    clearPublishedLayout();
     this.applyLayout(committedCourseLayout(), true);
-    this.ui.toast('Layout reset to committed layout');
+    this.ui.toast('Reverted to the default map');
   }
 
   /**

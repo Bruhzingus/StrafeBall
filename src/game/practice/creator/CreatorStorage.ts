@@ -10,7 +10,14 @@
  * crashes the game. No network access; no plaintext secrets are ever written.
  */
 
-import { CreatorLayout, CreatorPrefab, MAX_PREFABS, sanitizePrefabs, validateLayout } from './CreatorLayout';
+import {
+  committedCourseLayout,
+  CreatorLayout,
+  CreatorPrefab,
+  MAX_PREFABS,
+  sanitizePrefabs,
+  validateLayout
+} from './CreatorLayout';
 
 const KEY_PREFIX = 'strafeball:creator-sandbox:v1';
 export const STORAGE_KEYS = {
@@ -66,10 +73,11 @@ function readKey(key: string): string | null {
 
 // --- Timestamped envelopes (quick-save + autosave slots) -----------------------------------------
 //
-// The quick-save and autosave slots store `{ savedAt, layout }` so recovery-on-open can tell which
-// state is newer. Reads accept BOTH shapes — the envelope AND the legacy bare layout written by
-// older builds (bare ⇒ savedAt 0, i.e. "older than any timestamped explicit save") — so upgrading
-// never loses an existing save.
+// The quick-save and autosave slots store `{ savedAt, layout }` so opening can tell which state is
+// newer. The autosave IS the working copy: whichever slot is newest is what loads — the most recent
+// edits are never silently dropped in favour of an older explicit save. Reads accept BOTH shapes —
+// the envelope AND the legacy bare layout written by older builds (bare ⇒ savedAt 0, i.e. "older
+// than any timestamped explicit save") — so upgrading never loses an existing save.
 
 /** A layout + when it was written (ms epoch). savedAt = 0 marks the legacy bare-layout shape. */
 export interface StoredLayoutEnvelope {
@@ -94,19 +102,33 @@ export function parseStoredEnvelope(parsed: unknown): StoredLayoutEnvelope | nul
 }
 
 /**
- * Recovery decision (pure; unit-tested): offer the autosave over what the editor would normally
- * open ONLY when it is STRICTLY newer than the explicit quick-save (a tie — or a legacy bare
- * autosave vs a timestamped explicit save — goes to the explicit save) AND its content actually
- * differs from the resolved baseline (identical content means there is nothing to recover).
+ * The newest locally stored working state (pure; unit-tested): the autosave vs the explicit
+ * quick-save. A tie — or a legacy bare autosave vs a timestamped explicit save — goes to the
+ * explicit save (their content is identical in practice: an explicit save refreshes the autosave).
+ * Null when neither slot holds anything readable.
  */
-export function shouldOfferAutosaveRecovery(
+export function newestStoredLayout(
   autosave: StoredLayoutEnvelope | null,
-  explicitLocal: StoredLayoutEnvelope | null,
-  baselineLayout: CreatorLayout
-): boolean {
-  if (!autosave) return false;
-  if (explicitLocal && explicitLocal.savedAt >= autosave.savedAt) return false;
-  return JSON.stringify(autosave.layout) !== JSON.stringify(baselineLayout);
+  explicitLocal: StoredLayoutEnvelope | null
+): StoredLayoutEnvelope | null {
+  if (!autosave) return explicitLocal;
+  if (!explicitLocal) return autosave;
+  return autosave.savedAt > explicitLocal.savedAt ? autosave : explicitLocal;
+}
+
+/**
+ * The layout the game treats as "the map" right now: the newest locally stored working state
+ * (autosave or explicit quick-save), else the published course, else the committed default. BOTH
+ * the Creator editor (on open) and the live Movement Sandbox (on build) read this, so the most
+ * recent edits always load. Going back to an older state is manual-only in the editor: Load (last
+ * explicit save), Load Course (published), or Revert to Default Map (committed).
+ */
+export function loadCurrentCourseLayout(): CreatorLayout {
+  return (
+    newestStoredLayout(loadAutosaveStored(), loadLocalStored())?.layout ??
+    loadPublishedLayout() ??
+    committedCourseLayout()
+  );
 }
 
 function writeEnvelope(key: string, layout: CreatorLayout): boolean {
@@ -128,12 +150,7 @@ export function saveLocalLayout(layout: CreatorLayout): boolean {
   return writeEnvelope(STORAGE_KEYS.layout, layout);
 }
 
-/** Load the quick-save slot, validated. Returns null when absent/unreadable. */
-export function loadLocalLayout(): CreatorLayout | null {
-  return readEnvelope(STORAGE_KEYS.layout)?.layout ?? null;
-}
-
-/** Quick-save slot WITH its timestamp (recovery comparisons). */
+/** Quick-save slot WITH its timestamp (newest-wins comparisons). */
 export function loadLocalStored(): StoredLayoutEnvelope | null {
   return readEnvelope(STORAGE_KEYS.layout);
 }
@@ -142,11 +159,7 @@ export function saveAutosave(layout: CreatorLayout): boolean {
   return writeEnvelope(STORAGE_KEYS.autosave, layout);
 }
 
-export function loadAutosave(): CreatorLayout | null {
-  return readEnvelope(STORAGE_KEYS.autosave)?.layout ?? null;
-}
-
-/** Autosave slot WITH its timestamp (recovery comparisons). */
+/** Autosave slot WITH its timestamp (newest-wins comparisons). */
 export function loadAutosaveStored(): StoredLayoutEnvelope | null {
   return readEnvelope(STORAGE_KEYS.autosave);
 }

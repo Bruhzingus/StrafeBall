@@ -1,12 +1,12 @@
 import { describe, it, expect } from 'vitest';
 import { cloneLayout, defaultCreatorLayout } from '../src/game/practice/creator/CreatorLayout';
 import {
+  newestStoredLayout,
   parseStoredEnvelope,
-  shouldOfferAutosaveRecovery,
   type StoredLayoutEnvelope
 } from '../src/game/practice/creator/CreatorStorage';
 
-/** A distinct-but-valid variant of a layout (content differs ⇒ recovery has something to offer). */
+/** A distinct-but-valid variant of a layout (so a test can tell which slot won). */
 function variantOf(layout: ReturnType<typeof defaultCreatorLayout>) {
   const copy = cloneLayout(layout);
   copy.name = `${copy.name} (autosave variant)`;
@@ -45,50 +45,41 @@ describe('CreatorStorage — stored-envelope parsing (dual shape)', () => {
   });
 });
 
-describe('CreatorStorage — autosave recovery decision (newest wins)', () => {
+describe('CreatorStorage — newest stored state wins on open (autosave is the working copy)', () => {
   const baseline = defaultCreatorLayout();
   const env = (layout: ReturnType<typeof defaultCreatorLayout>, savedAt: number): StoredLayoutEnvelope => ({
     layout,
     savedAt
   });
 
-  it('no autosave ⇒ never recovers', () => {
-    expect(shouldOfferAutosaveRecovery(null, env(baseline, 100), baseline)).toBe(false);
-    expect(shouldOfferAutosaveRecovery(null, null, baseline)).toBe(false);
+  it('neither slot readable ⇒ null (caller falls back to published/committed)', () => {
+    expect(newestStoredLayout(null, null)).toBeNull();
   });
 
-  it('autosave strictly newer than the explicit save AND different content ⇒ recovers', () => {
+  it('only one slot present ⇒ that slot, regardless of which', () => {
+    const autosave = env(variantOf(baseline), 0);
+    const explicit = env(baseline, 100);
+    expect(newestStoredLayout(autosave, null)).toBe(autosave);
+    expect(newestStoredLayout(null, explicit)).toBe(explicit);
+  });
+
+  it('autosave strictly newer ⇒ autosave (recent edits are never dropped for an older explicit save)', () => {
     const autosave = env(variantOf(baseline), 200);
-    expect(shouldOfferAutosaveRecovery(autosave, env(baseline, 100), baseline)).toBe(true);
+    expect(newestStoredLayout(autosave, env(baseline, 100))).toBe(autosave);
   });
 
-  it('autosave newer but identical to the baseline ⇒ nothing to recover', () => {
-    const autosave = env(cloneLayout(baseline), 200);
-    expect(shouldOfferAutosaveRecovery(autosave, env(baseline, 100), baseline)).toBe(false);
+  it('explicit save newer ⇒ explicit save', () => {
+    const explicit = env(baseline, 300);
+    expect(newestStoredLayout(env(variantOf(baseline), 200), explicit)).toBe(explicit);
   });
 
-  it('tie on savedAt ⇒ the explicit save wins', () => {
-    const autosave = env(variantOf(baseline), 100);
-    expect(shouldOfferAutosaveRecovery(autosave, env(baseline, 100), baseline)).toBe(false);
-  });
-
-  it('autosave older than the explicit save ⇒ explicit wins', () => {
-    const autosave = env(variantOf(baseline), 50);
-    expect(shouldOfferAutosaveRecovery(autosave, env(baseline, 100), baseline)).toBe(false);
+  it('tie on savedAt ⇒ the explicit save wins (their content matches in practice)', () => {
+    const explicit = env(baseline, 100);
+    expect(newestStoredLayout(env(variantOf(baseline), 100), explicit)).toBe(explicit);
   });
 
   it('legacy bare autosave (savedAt 0) never outranks a timestamped explicit save', () => {
-    const autosave = env(variantOf(baseline), 0);
-    expect(shouldOfferAutosaveRecovery(autosave, env(baseline, 1), baseline)).toBe(false);
-  });
-
-  it('legacy bare autosave with NO explicit save recovers when it differs from the baseline', () => {
-    const autosave = env(variantOf(baseline), 0);
-    expect(shouldOfferAutosaveRecovery(autosave, null, baseline)).toBe(true);
-  });
-
-  it('no explicit save and autosave matches the baseline (e.g. published course) ⇒ no recovery', () => {
-    const autosave = env(cloneLayout(baseline), 500);
-    expect(shouldOfferAutosaveRecovery(autosave, null, baseline)).toBe(false);
+    const explicit = env(baseline, 1);
+    expect(newestStoredLayout(env(variantOf(baseline), 0), explicit)).toBe(explicit);
   });
 });

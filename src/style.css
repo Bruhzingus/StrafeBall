@@ -425,6 +425,17 @@ html, body {
   display: block;
 }
 
+/* Docked inside the Creator editor's Settings dropdown: flows with the dropdown instead of
+   floating over it (the two top-right settings surfaces used to overlap). The pill toggle is
+   hidden and the content always shows — the dropdown itself is the collapsible. */
+.settings-panel--docked {
+  position: static;
+  z-index: auto;
+  align-items: stretch;
+}
+.settings-panel--docked .settings-toggle { display: none; }
+.settings-panel--docked .settings-content { display: block; width: auto; }
+
 .settings-title {
   font-weight: 900;
   letter-spacing: 0.04em;
@@ -5175,14 +5186,23 @@ html, body {
 }
 .creator-toast--visible { opacity: 1; transform: translateX(-50%) translateY(0); }
 
-/* Action button inside a toast (e.g. "Discard recovery"). The toast itself stays click-through
-   (pointer-events: none) so only the button intercepts the pointer. */
-.creator-toast-action {
-  pointer-events: auto;
-  margin-left: 10px;
-  padding: 2px 10px;
-  font-size: 12px;
+/* Small top-centre save flash ("Autosaved" / "Saved") — quiet feedback for the constant
+   auto/quick saves; the loud toast is reserved for failures and real state changes. */
+.creator-save-indicator {
+  position: absolute;
+  top: 4px;
+  left: 50%;
+  transform: translateX(-50%);
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.05em;
+  color: rgba(214, 228, 250, 0.6);
+  text-shadow: 0 1px 3px rgba(0, 0, 0, 0.6);
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity 0.25s ease;
 }
+.creator-save-indicator--visible { opacity: 1; }
 
 /* "Autosaved HH:MM:SS" trust signal beside the Save button. */
 .creator-autosave-status {

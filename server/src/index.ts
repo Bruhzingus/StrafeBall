@@ -36,7 +36,7 @@ function ensureGlobalWebSocket(): void {
 
   // Colyseus checks `client.readyState !== WebSocket.OPEN` during join/reconnect. Some droplet/PM2
   // runtimes have been exposing Node 22 without the expected global WebSocket, so provide the
-  // runtime's existing ws implementation explicitly instead of depending on ambient globals.
+  // runtime's existing ws implementation expli citly instead of depending on ambient globals.
   const wsModule = require('ws') as {
     WebSocket?: unknown;
   } | unknown;

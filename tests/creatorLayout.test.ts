@@ -4,6 +4,7 @@ import {
   CREATOR_LABEL_SIZES,
   CREATOR_LIMITS,
   CREATOR_SCHEMA_VERSION,
+  committedCourseLayout,
   defaultCreatorLayout,
   validateLayout,
   isLayoutValid,
@@ -32,6 +33,7 @@ import {
   CreatorWorld
 } from '../src/game/practice/creator/CreatorWorld';
 import { SANDBOX_CENTER } from '../src/game/practice/MovementSandboxLayout';
+import committedCourseJson from '../src/game/practice/creator/layouts/movementCourseLayout.json';
 
 describe('CreatorLayout — default + validation', () => {
   it('default layout is valid, versioned, and has a default spawn', () => {
@@ -42,6 +44,16 @@ describe('CreatorLayout — default + validation', () => {
     const spawns = layout.objects.filter((o) => o.type === 'spawn_point');
     expect(spawns.length).toBe(1);
     expect(spawns.filter((s) => s.metadata?.defaultSpawn).length).toBe(1);
+  });
+
+  it('the committed default map (shipped JSON) validates cleanly — no dropped objects, no fallback', () => {
+    const { layout, problems } = validateLayout(committedCourseJson);
+    expect(problems).toEqual([]);
+    expect(layout.objects.length).toBe(committedCourseJson.objects.length);
+    // committedCourseLayout() only falls back to the built-in default when the file is empty.
+    expect(committedCourseLayout().objects.length).toBe(layout.objects.length);
+    expect(layout.objects.some((o) => o.type === 'spawn_point')).toBe(true);
+    expect(layout.objects.some((o) => o.type === 'leave_portal')).toBe(true);
   });
 
   it('never throws on garbage and falls back to a usable layout', () => {

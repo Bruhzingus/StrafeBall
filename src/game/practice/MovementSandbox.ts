@@ -29,7 +29,6 @@ import {
 } from './MovementSandboxLayout';
 import {
   collectSpawnerMarkers,
-  committedCourseLayout,
   layoutSpawn,
   type CreatorLayout,
   type CreatorSpawnerMarkers
@@ -40,7 +39,7 @@ import {
   layoutWorldBounds,
   type CreatorWallFace
 } from './creator/CreatorWorld';
-import { loadPublishedLayout } from './creator/CreatorStorage';
+import { loadCurrentCourseLayout } from './creator/CreatorStorage';
 import { CreatorGeometry } from './creator/CreatorGeometry';
 import { CreatorPads } from './creator/CreatorPads';
 import { CreatorMovers } from './creator/CreatorMovers';
@@ -113,9 +112,10 @@ export class MovementSandbox implements MovementWorld {
   private leaveLatched = false;
 
   constructor(private readonly scene: Scene, private readonly gym: GymArena) {
-    // Prefer the user's published course (saved locally from the Creator editor) so their own saved
-    // progress is what they play — falling back to the committed course when none exists. Local only.
-    const layout = loadPublishedLayout() ?? committedCourseLayout();
+    // The map is the most recent state the player had: the Creator's latest working copy
+    // (autosave/quick-save), else their published course, else the committed default. Local only —
+    // reverting to the default is a manual editor action (Revert to Default Map).
+    const layout = loadCurrentCourseLayout();
     this.fullLayout = layout;
     this.courseLayout = { ...layout, objects: layout.objects.filter((o) => o.type !== 'boundary_wall') };
     const yardFurniture = new Set(['spawn_point', 'leave_portal', 'test_spawn']);
