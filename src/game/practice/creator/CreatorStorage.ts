@@ -3,7 +3,7 @@
  *
  * The browser cannot safely write back into the project's source folder, so persistence is split:
  *   - localStorage for fast local iteration (multiple named course PROJECTS, each with an autosave
- *     working copy + an explicit quick-save restore point, plus the published course + prefabs);
+ *     working copy + an explicit quick-save restore point, plus prefabs);
  *   - JSON export/import for preserving or sharing a layout.
  *
  * Projects model (v2): a small index records every course the player has (id + summary metadata),
@@ -12,7 +12,9 @@
  *   - `project:<id>:manual` — the explicit quick-save (the manual "Load" restore point).
  * The newest of the two is the project's working state — the same "autosave IS the working copy"
  * rule the single-layout model used, now per project. Legacy single-layout keys are migrated into a
- * first project once, then ignored.
+ * first project once, then ignored. The ACTIVE project's working state is what the live yard plays —
+ * there is no separate "publish" step (a v1 "published" slot existed pre-projects; it became
+ * unreachable once an active project always exists, so it was removed rather than left dead).
  *
  * Every localStorage and JSON operation is wrapped so a missing/full/private-mode/corrupt store never
  * crashes the game. No network access; no plaintext secrets are ever written.
@@ -38,9 +40,6 @@ export const STORAGE_KEYS = {
   // Multi-project index: `{ activeId, entries: ProjectSummary[] }`. Per-project layouts live under
   // projectAutoKey(id) / projectManualKey(id).
   projects: `${KEY_PREFIX}:projects`,
-  // The user's "published" layout: what the LIVE Movement Sandbox plays (read on its build). Lets a
-  // user save their own course and play it after a reload, even on the web (localStorage only).
-  published: `${KEY_PREFIX}:published`,
   // Saved multi-object assemblies ("Save selection as prefab"), stamped from the hotbar.
   prefabs: `${KEY_PREFIX}:prefabs`,
   // One-time first-run editor help card ('1' once dismissed).
@@ -422,9 +421,9 @@ export function loadProjectWorking(id: string): CreatorLayout | null {
 
 /**
  * The layout the game treats as "the map" right now: the ACTIVE project's working state, else the
- * published course, else the committed default. BOTH the Creator editor (on open) and the live
- * Movement Sandbox (on build) read this, so the most recent edits always load. Never seeds a
- * project (no writes from the yard's build path), but does run the one-time legacy migration so a
+ * committed default. BOTH the Creator editor (on open) and the live Movement Sandbox (on build) read
+ * this, so the most recent edits to whichever course is active always load. Never seeds a project
+ * (no writes from the yard's build path), but does run the one-time legacy migration so a
  * pre-projects save keeps playing. If migration could not persist (quota), the legacy slots are
  * still honoured directly.
  */
@@ -438,30 +437,7 @@ export function loadCurrentCourseLayout(): CreatorLayout {
     const legacy = newestStoredLayout(readEnvelope(STORAGE_KEYS.legacyAutosave), readEnvelope(STORAGE_KEYS.legacyLayout));
     if (legacy) return legacy.layout;
   }
-  return loadPublishedLayout() ?? committedCourseLayout();
-}
-
-// --- Published course (the live Movement Sandbox reads this) ------------------------------------
-
-/** Publish a layout as the live Movement Course (what the sandbox plays after a reload). */
-export function savePublishedLayout(layout: CreatorLayout): boolean {
-  return writeKey(STORAGE_KEYS.published, JSON.stringify(layout));
-}
-
-/** The user's published course, validated. Returns null when none has been saved. */
-export function loadPublishedLayout(): CreatorLayout | null {
-  const raw = readKey(STORAGE_KEYS.published);
-  if (!raw) return null;
-  try {
-    return validateLayout(JSON.parse(raw)).layout;
-  } catch {
-    return null;
-  }
-}
-
-/** Remove any published course (revert the live sandbox to the committed layout on next build). */
-export function clearPublishedLayout(): boolean {
-  return removeKey(STORAGE_KEYS.published);
+  return committedCourseLayout();
 }
 
 // --- First-run onboarding flag --------------------------------------------------------------------

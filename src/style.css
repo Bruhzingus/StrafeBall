@@ -5358,6 +5358,105 @@ html, body {
 }
 .creator-onboard-desc { font-size: 12px; color: #dfe8f6; line-height: 1.4; }
 
+/* --- Import preview card (metadata confirmation before an imported course is added) --- */
+.creator-import-name {
+  font-size: 15px;
+  font-weight: 900;
+  color: #eaf2ff;
+  overflow-wrap: anywhere;
+}
+.creator-import-warn {
+  padding: 6px 9px;
+  border-radius: 7px;
+  background: rgba(255, 190, 70, 0.12);
+  border: 1px solid rgba(255, 210, 110, 0.42);
+  font-size: 11px;
+  font-weight: 700;
+  color: #ffd98f;
+  cursor: help;
+}
+.creator-import-note { font-size: 11px; color: #8ba2c4; }
+
+/* --- Course race (private online ghost races) --- */
+.race-overlay-divider {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  font-size: 10px;
+  font-weight: 800;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: #7d93b8;
+}
+.race-overlay-divider::before,
+.race-overlay-divider::after {
+  content: '';
+  flex: 1;
+  height: 1px;
+  background: rgba(140, 180, 255, 0.22);
+}
+.race-overlay-status { min-height: 16px; font-size: 12px; font-weight: 700; color: #9fc6ff; }
+.race-overlay-status--error { color: #ff9aa0; }
+
+.race-panel {
+  position: absolute;
+  top: 96px;
+  left: 12px;
+  width: 232px;
+  display: none;
+  flex-direction: column;
+  gap: 7px;
+  padding: 10px 12px;
+  border-radius: 10px;
+  background: rgba(10, 16, 32, 0.88);
+  border: 1px solid rgba(120, 180, 255, 0.35);
+  color: #eaf2ff;
+  z-index: 40;
+  pointer-events: auto;
+}
+.race-panel--visible { display: flex; }
+.race-panel-head { display: flex; align-items: center; gap: 8px; }
+.race-panel-title { font-size: 12px; font-weight: 900; letter-spacing: 0.08em; color: #9fc6ff; }
+.race-panel-code {
+  flex: 1;
+  font-size: 12px;
+  font-weight: 800;
+  letter-spacing: 0.05em;
+  color: #ffd98f;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.race-panel-rows { display: flex; flex-direction: column; gap: 3px; }
+.race-panel-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 3px 7px;
+  border-radius: 6px;
+  background: rgba(255, 255, 255, 0.05);
+  font-size: 11px;
+}
+.race-panel-row--self { background: rgba(60, 130, 230, 0.22); border: 1px solid rgba(120, 190, 255, 0.4); }
+.race-panel-name {
+  font-weight: 800;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.race-panel-time { font-weight: 800; color: #9fe8b0; flex: 0 0 auto; }
+.race-panel-event {
+  min-height: 14px;
+  font-size: 11px;
+  font-weight: 700;
+  color: #ffd98f;
+  opacity: 0;
+  transition: opacity 0.25s ease;
+}
+.race-panel-event--visible { opacity: 1; }
+.race-panel-actions { display: flex; gap: 6px; }
+
 /* --- Courses panel (course info + project list; shares the dropdown shell) --- */
 .creator-courses { max-height: 52vh; overflow-y: auto; }
 .creator-textarea { resize: vertical; min-height: 40px; font-family: inherit; }

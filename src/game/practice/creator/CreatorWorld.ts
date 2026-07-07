@@ -2,7 +2,7 @@
  * Creator Sandbox — the offline MovementWorld derived from a layout.
  *
  * In Playtest Mode the real offline MovementController is driven against this world: it provides the
- * expanded XZ bounds + ceiling for the position clamp and the wall-run faces for every solid module.
+ * expanded XZ bounds + ceiling for the position clamp, wall-run faces, and wall-bounce faces.
  * It mirrors the MovementSandbox's MovementWorld implementation exactly (so wall-run/wall-jump feel
  * identical), but the faces + bounds come from the editable layout instead of the static descriptors.
  *
@@ -108,17 +108,8 @@ export function buildCreatorCollisionBoxes(layout: CreatorLayout, idPrefix: stri
   return boxes;
 }
 
-/** All wall-run faces: every solid box's four faces + the four inner boundary faces. */
-export function buildCreatorWallFaces(layout: CreatorLayout): CreatorWallFace[] {
-  const faces: CreatorWallFace[] = [];
-  for (const obj of layout.objects) {
-    if (obj.wallrunEnabled === false) continue;
-    // Moving platforms translate at runtime; wall-run faces are static, so movers provide none
-    // (documented limitation — their COLLIDERS still move and push/carry the player correctly).
-    if (obj.metadata?.mover) continue;
-    for (const box of objectCollisionBoxes(obj)) faces.push(...boxFaces(box));
-  }
-
+/** Add the four inward-facing yard boundary surfaces. */
+function appendBoundaryFaces(faces: CreatorWallFace[], layout: CreatorLayout): void {
   const b = layoutWorldBounds(layout);
   const cx = SANDBOX_CENTER.x;
   const cz = SANDBOX_CENTER.z;
@@ -128,7 +119,30 @@ export function buildCreatorWallFaces(layout: CreatorLayout): CreatorWallFace[] 
   faces.push({ nx: -1, nz: 0, ox: b.maxX, oz: cz, tx: 0, tz: 1, halfLen: halfZ, topY: SANDBOX_CEILING_Y });
   faces.push({ nx: 0, nz: 1, ox: cx, oz: b.minZ, tx: 1, tz: 0, halfLen: halfX, topY: SANDBOX_CEILING_Y });
   faces.push({ nx: 0, nz: -1, ox: cx, oz: b.maxZ, tx: 1, tz: 0, halfLen: halfX, topY: SANDBOX_CEILING_Y });
+}
+
+function buildCreatorSurfaceFaces(layout: CreatorLayout, includeWallrunDisabled: boolean): CreatorWallFace[] {
+  const faces: CreatorWallFace[] = [];
+  for (const obj of layout.objects) {
+    if (!includeWallrunDisabled && obj.wallrunEnabled === false) continue;
+    // Moving platforms translate at runtime; wall surfaces are static, so movers provide none
+    // (documented limitation — their COLLIDERS still move and push/carry the player correctly).
+    if (obj.metadata?.mover) continue;
+    for (const box of objectCollisionBoxes(obj)) faces.push(...boxFaces(box));
+  }
+
+  appendBoundaryFaces(faces, layout);
   return faces;
+}
+
+/** All wall-run faces: wallrun-enabled solid boxes + the four inner boundary faces. */
+export function buildCreatorWallFaces(layout: CreatorLayout): CreatorWallFace[] {
+  return buildCreatorSurfaceFaces(layout, false);
+}
+
+/** All wall-bounce faces: every solid box's four faces + the four inner boundary faces. */
+export function buildCreatorWallBounceFaces(layout: CreatorLayout): CreatorWallFace[] {
+  return buildCreatorSurfaceFaces(layout, true);
 }
 
 export class CreatorWorld implements MovementWorld {
@@ -138,26 +152,36 @@ export class CreatorWorld implements MovementWorld {
   public maxZ = 0;
   public readonly ceilingY = SANDBOX_CEILING_Y;
 
-  private faces: CreatorWallFace[] = [];
+  private wallRunFaces: CreatorWallFace[] = [];
+  private wallBounceFaces: CreatorWallFace[] = [];
 
   constructor(layout: CreatorLayout) {
     this.rebuild(layout);
   }
 
-  /** Recompute bounds + wall-run faces from the (edited) layout. Cheap; call on layout change. */
+  /** Recompute bounds + movement surfaces from the (edited) layout. Cheap; call on layout change. */
   rebuild(layout: CreatorLayout): void {
     const b = layoutWorldBounds(layout);
     this.minX = b.minX;
     this.maxX = b.maxX;
     this.minZ = b.minZ;
     this.maxZ = b.maxZ;
-    this.faces = buildCreatorWallFaces(layout);
+    this.wallRunFaces = buildCreatorWallFaces(layout);
+    this.wallBounceFaces = buildCreatorWallBounceFaces(layout);
   }
 
   wallNormalAt(x: number, z: number, y: number): Vector3 | null {
+    return this.normalAt(this.wallRunFaces, x, z, y);
+  }
+
+  wallBounceNormalAt(x: number, z: number, y: number): Vector3 | null {
+    return this.normalAt(this.wallBounceFaces, x, z, y);
+  }
+
+  private normalAt(faces: CreatorWallFace[], x: number, z: number, y: number): Vector3 | null {
     let best: CreatorWallFace | null = null;
     let bestDist = WALL_RUN_MARGIN;
-    for (const f of this.faces) {
+    for (const f of faces) {
       if (y > f.topY) continue;
       const d = (x - f.ox) * f.nx + (z - f.oz) * f.nz;
       if (d < 0 || d > bestDist) continue;

@@ -52,7 +52,7 @@ export type ConnectionStatus = 'offline' | 'connecting' | 'connected' | 'error';
  * so production builds work through the Nginx `/colyseus` proxy regardless of domain/IP, matching
  * the page's protocol (wss for https, ws for http) to avoid mixed-content/origin failures.
  */
-function resolveServerUrl(): string {
+export function resolveServerUrl(): string {
   const override = import.meta.env.VITE_SERVER_URL;
   if (override) return override;
   if (typeof window === 'undefined') return 'ws://localhost:2567';

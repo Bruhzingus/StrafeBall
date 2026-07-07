@@ -13,9 +13,9 @@ export type FrictionMode = 'air' | 'normal' | 'slide' | 'dashSuppressed';
 /**
  * Optional world override for the OFFLINE controller only (the local Movement Sandbox uses it). When
  * set it replaces the default gym world: the position clamp uses these XZ bounds + ceiling, and
- * wall-run/wall-bounce/wall-jump detection queries `wallNormalAt` instead of the four gym perimeter
- * walls. When null (normal practice + every online path, which uses shared/simulation/MovementSim
- * anyway) behaviour is byte-for-byte unchanged.
+ * wall-run/wall-jump detection queries `wallNormalAt` while wall-bounce can query
+ * `wallBounceNormalAt` instead of the four gym perimeter walls. When null (normal practice + every
+ * online path, which uses shared/simulation/MovementSim anyway) behaviour is byte-for-byte unchanged.
  */
 export interface MovementWorld {
   minX: number;
@@ -25,6 +25,8 @@ export interface MovementWorld {
   ceilingY: number;
   /** Outward (into open space) unit XZ normal of the nearest wall-run surface in range, else null. */
   wallNormalAt(x: number, z: number, y: number): Vector3 | null;
+  /** Optional wall-bounce surface query. Defaults to wallNormalAt when omitted. */
+  wallBounceNormalAt?(x: number, z: number, y: number): Vector3 | null;
 }
 
 export interface MovementSnapshot {
@@ -326,7 +328,7 @@ export class MovementController {
    */
   private tryWallBounce(): boolean {
     if (this.grounded) return false;
-    const normal = this.detectWall();
+    const normal = this.detectWallBounceSurface();
     if (!normal) return false;
 
     const horizSpeed = this.horizontalSpeed();
@@ -472,6 +474,12 @@ export class MovementController {
       return new Vector3(0, 0, -Math.sign(p.z));
     }
     return null;
+  }
+
+  private detectWallBounceSurface(): Vector3 | null {
+    const p = this.root.position;
+    if (this.world) return this.world.wallBounceNormalAt?.(p.x, p.z, p.y) ?? this.world.wallNormalAt(p.x, p.z, p.y);
+    return this.detectWall();
   }
 
   /**

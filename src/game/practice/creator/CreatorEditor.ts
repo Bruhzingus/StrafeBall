@@ -75,7 +75,6 @@ import { CreatorHistory } from './CreatorHistory';
 import { CreatorBridge, CreatorSnapSettings, CreatorUI } from './CreatorUI';
 import {
   type ProjectSummary,
-  clearPublishedLayout,
   createProject,
   deleteProject,
   duplicateProject,
@@ -86,13 +85,11 @@ import {
   loadProjectManual,
   loadProjectWorking,
   loadProjectsIndex,
-  loadPublishedLayout,
   markOnboardingSeen,
   renameProject,
   savePrefabLibrary,
   saveProjectAutosave,
   saveProjectManual,
-  savePublishedLayout,
   setActiveProject
 } from './CreatorStorage';
 
@@ -2292,39 +2289,51 @@ export class CreatorEditor implements CreatorBridge {
   exportJson(): void {
     const check = isLayoutValid(this.layout);
     if (!check.valid) this.ui.toast(`Exported (note: ${check.reason})`);
-    else this.ui.toast('Exported layout JSON');
+    else this.ui.toast('Exported — share the downloaded .json file');
     // Carry the prefab library in the export so saved assemblies survive a browser wipe.
     exportLayoutToFile(this.prefabs.length > 0 ? { ...this.layout, prefabs: this.prefabs } : this.layout);
   }
 
+  /**
+   * Import a shared course file. The file is validated, its metadata (name/difficulty/description +
+   * any auto-fixes) is shown in a preview card, and confirming adds it as a NEW project — it never
+   * overwrites the importer's existing courses.
+   */
   importJsonFile(file: File): void {
-    if (!window.confirm('Importing replaces the current unsaved layout. Continue?')) return;
     importLayoutFromFile(file)
       .then(({ layout, problems }) => {
-        this.selectedId = null;
-        // Merge any prefabs the file carries into the local library (same-name entries replaced).
-        if (layout.prefabs && layout.prefabs.length > 0) {
-          const incoming = layout.prefabs;
-          const kept = this.prefabs.filter((p) => !incoming.some((i) => i.name === p.name));
-          this.prefabs = [...kept, ...incoming].slice(-MAX_PREFABS);
-          savePrefabLibrary(this.prefabs);
-          delete layout.prefabs; // the working layout itself never carries the library
-        }
-        this.applyLayout(layout, true);
-        this.ui.toast(problems.length ? `Imported with ${problems.length} fix(es)` : 'Imported layout JSON');
+        this.ui.showImportPreview(
+          {
+            name: layout.name,
+            description: layout.description ?? '',
+            difficulty: layout.difficulty ?? null,
+            objectCount: layout.objects.length,
+            problems
+          },
+          () => {
+            // Merge any prefabs the file carries into the local library (same-name entries replaced).
+            if (layout.prefabs && layout.prefabs.length > 0) {
+              const incoming = layout.prefabs;
+              const kept = this.prefabs.filter((p) => !incoming.some((i) => i.name === p.name));
+              this.prefabs = [...kept, ...incoming].slice(-MAX_PREFABS);
+              savePrefabLibrary(this.prefabs);
+              delete layout.prefabs; // the working layout itself never carries the library
+            }
+            this.createAndOpen(layout, `Added “${layout.name}” to your courses`);
+          }
+        );
       })
       .catch((err: Error) => this.ui.toast(err.message || 'Invalid layout file'));
   }
 
   /**
-   * The manual revert: back to the committed default map. Clears the published course too, so the
-   * live sandbox stops resurrecting the old version. The old explicit save stays in its slot ('Load'
-   * can still bring it back), and the revert itself is a history entry (Ctrl+Z undoes it in-session).
+   * The manual revert: replace this course's content with the committed starter map. The old
+   * explicit save stays in its slot ('Load' can still bring it back), and the revert itself is a
+   * history entry (Ctrl+Z undoes it in-session).
    */
   resetLayout(): void {
-    if (!window.confirm('Revert to the default Movement Sandbox map? This replaces the current layout and clears your saved course.')) return;
+    if (!window.confirm('Revert this course to the default Movement Sandbox map? This replaces its current content.')) return;
     this.selectedId = null;
-    clearPublishedLayout();
     this.applyLayout(committedCourseLayout(), true);
     this.ui.toast('Reverted to the default map');
   }
@@ -2349,48 +2358,6 @@ export class CreatorEditor implements CreatorBridge {
       exportLayoutToFile(this.layout);
       this.ui.toast('Clipboard unavailable — exported JSON file instead');
     }
-  }
-
-  /**
-   * Publish the current layout as the live Movement Course (localStorage). The normal Movement
-   * Sandbox reads this on its next build, so a user can save their own course and play it after a
-   * reload — fully client-side, works on the web. Never touches the server / committed JSON.
-   */
-  saveToCourse(): void {
-    const ok = savePublishedLayout(this.layout);
-    if (!ok) {
-      this.ui.toast('Save to Course failed — storage unavailable');
-      return;
-    }
-    const check = isLayoutValid(this.layout);
-    this.ui.toast(check.valid ? 'Saved to Movement Course — reload to play it' : `Saved to Course (note: ${check.reason})`);
-  }
-
-  /** Load the user's published Movement Course back into the editor to keep iterating on it. */
-  loadFromCourse(): void {
-    const loaded = loadPublishedLayout();
-    if (!loaded) {
-      this.ui.toast('No saved Movement Course found');
-      return;
-    }
-    if (!window.confirm('Load your saved Movement Course into the editor? Unsaved changes will be lost.')) return;
-    this.selectedId = null;
-    this.applyLayout(loaded, true);
-    this.ui.toast('Loaded saved course');
-  }
-
-  /** Upload a layout file straight into the live Movement Course (and the editor), saved to localStorage. */
-  importToCourseFile(file: File): void {
-    if (!window.confirm('Import this file as your Movement Course? It replaces the current layout and your saved course.')) return;
-    importLayoutFromFile(file)
-      .then(({ layout, problems }) => {
-        this.selectedId = null;
-        this.applyLayout(layout, true);
-        const ok = savePublishedLayout(layout);
-        const note = problems.length ? ` (${problems.length} fix(es))` : '';
-        this.ui.toast(ok ? `Imported to Movement Course${note} — reload to play` : `Imported${note}; course save failed`);
-      })
-      .catch((err: Error) => this.ui.toast(err.message || 'Invalid layout file'));
   }
 
   resetPlayer(): void {

@@ -29,6 +29,7 @@ import {
 } from '../src/game/practice/creator/CreatorLayout';
 import {
   buildCreatorCollisionBoxes,
+  buildCreatorWallBounceFaces,
   buildCreatorWallFaces,
   layoutWorldBounds,
   CreatorWorld
@@ -366,7 +367,7 @@ describe('CreatorWorld — bounds, collision, wall-run faces', () => {
     expect(bounds.maxZ).toBeGreaterThan(bounds.minZ);
   });
 
-  it('wallrun-disabled solids still collide but do not contribute wall-run faces', () => {
+  it('wallrun-disabled solids still collide and wall-bounce but do not contribute wall-run faces', () => {
     const enabled = validateLayout({ objects: [{ type: 'long_wall', position: [0, 0, 0] }] }).layout;
     const disabled = validateLayout({
       objects: [{ type: 'long_wall', position: [0, 0, 0], wallrunEnabled: false }]
@@ -375,6 +376,13 @@ describe('CreatorWorld — bounds, collision, wall-run faces', () => {
     expect(buildCreatorCollisionBoxes(disabled, 'creator_').length).toBe(1);
     expect(buildCreatorWallFaces(enabled).length).toBe(8); // 4 wall faces + 4 arena boundary faces
     expect(buildCreatorWallFaces(disabled).length).toBe(4); // only arena boundary faces
+    expect(buildCreatorWallBounceFaces(disabled).length).toBe(8); // disabled wall still has 4 bounce faces
+
+    const world = new CreatorWorld(disabled);
+    expect(world.wallNormalAt(0, 1.25, 1)).toBeNull();
+    const bounceNormal = world.wallBounceNormalAt(0, 1.25, 1);
+    expect(bounceNormal).not.toBeNull();
+    if (bounceNormal) expect(bounceNormal.z).toBeCloseTo(1, 3);
   });
 
   it('wallNormalAt returns a unit-ish normal near a wall and null in the open', () => {

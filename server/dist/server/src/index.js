@@ -4,6 +4,7 @@ exports.server = void 0;
 const colyseus_1 = require("colyseus");
 const netConfig_1 = require("../../shared/netConfig");
 const DuelRoom_1 = require("./rooms/DuelRoom");
+const CourseRoom_1 = require("./rooms/CourseRoom");
 const DEFAULT_PORT = 2567;
 ensureGlobalWebSocket();
 function readPort() {
@@ -15,7 +16,9 @@ function readPort() {
 }
 exports.server = (0, colyseus_1.defineServer)({
     rooms: {
-        duel: (0, colyseus_1.defineRoom)(DuelRoom_1.DuelRoom)
+        duel: (0, colyseus_1.defineRoom)(DuelRoom_1.DuelRoom),
+        // Private ghost-relay course races (see CourseRoom) — fully separate from the duel netcode.
+        course: (0, colyseus_1.defineRoom)(CourseRoom_1.CourseRoom)
     }
 });
 const port = readPort();

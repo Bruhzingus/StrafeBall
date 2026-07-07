@@ -54,6 +54,8 @@ import { LobbyModePortals } from '../practice/LobbyModePortals';
 import type { LobbyMode, LobbyPortalAction } from '../practice/LobbyModePortals';
 import { GuideWall } from '../practice/GuideWall';
 import { MovementSandbox, type SandboxAction } from '../practice/MovementSandbox';
+import { CourseRaceSession } from '../practice/CourseRaceSession';
+import type { CreatorLayout } from '../practice/creator/CreatorLayout';
 import { CreatorEditor, CREATOR_ENTRY_RADIUS, CREATOR_ENTRY_HOLD_SECONDS, type CreatorSpawnerMarkers } from '../practice/creator/CreatorEditor';
 import { createPracticeState } from '../practice/PracticeState';
 import type { PracticeState } from '../practice/PracticeState';
@@ -116,6 +118,9 @@ export class ArenaScene {
   // Local outdoor Movement Sandbox — lazily created on first entry, only ever updated from the
   // offline step path (never stepOnline), and torn down when connected online gameplay begins.
   private movementSandbox: MovementSandbox | null = null;
+  // Private online course race (ghost relay) — lazily built at the yard's RACE ONLINE sign; strictly
+  // offline-path only and force-closed the moment a duel connects.
+  private courseRace: CourseRaceSession | null = null;
   // Course Creator editor (open to every player) — created lazily on first sandbox entry, only ever
   // updated from the offline step path, and force-deactivated before connected online play.
   private creator: CreatorEditor | null = null;
@@ -459,6 +464,7 @@ export class ArenaScene {
     this.practiceWall.dispose();
     this.lobbyModePortals.dispose();
     this.guideWall.dispose();
+    this.courseRace?.dispose();
     this.movementSandbox?.dispose();
     this.creator?.dispose();
     this.effects.dispose();
@@ -1847,6 +1853,9 @@ export class ArenaScene {
     // sandbox down next) and hide its entry sign, so the editor is fully inert during online play.
     this.creator?.forceDeactivate();
     this.creator?.setEntrySignVisible(false);
+    // A duel takes over: drop any live course race silently. onlineModeActive is already true, so
+    // the session-end hook cannot re-enter the yard; its sandbox teardown below is idempotent.
+    this.courseRace?.forceClose();
     // Tear down the local Movement Sandbox before connected play: clears the player's world override
     // + respawn, disables its meshes, removes its collision boxes, and restores the sky/fog. The
     // standard online setup below (props off, balls cleared, mats reset) is idempotent with this.
@@ -2121,6 +2130,8 @@ export class ArenaScene {
     this.movementSandbox.enter(this.player);
     // Course parity: spawn the published layout's ball/bot/dummy actors, exactly like a playtest run.
     this.spawnCreatorActors(this.movementSandbox.getSpawnerMarkers());
+    // Tee course-run events to the online race relay (a cheap no-op while no race is live).
+    this.movementSandbox.setRunEventListener((event) => this.courseRace?.reportRunEvent(event));
     this.ensureCreator();
     this.creator?.setEntrySignVisible(true);
     this.creatorEntryHold = 0;
@@ -2134,12 +2145,70 @@ export class ArenaScene {
     this.creator?.setEntrySignVisible(false);
     this.creatorEntryHold = 0;
     this.clearCreatorActors();
+    sandbox.setRunEventListener(null);
     sandbox.exit(this.player);
+    // Leaving the yard ends any live race. Exit BEFORE this so the session-end hook sees an
+    // inactive sandbox and only disposes a joined course instead of re-entering the yard.
+    this.courseRace?.leaveSession('left-yard');
     this.setPracticePropsEnabled(true);
     this.ballManager.spawnCenterLineBalls();
     this.player.hands.clearHands();
     this.player.teleportTo(ret.position, ret.yaw, 0);
     this.hud.showScoreEvent('PRACTICE LOBBY', 'Left the movement sandbox', 'neutral');
+  }
+
+  /** Lazily build the course-race session (socket + ghosts + UI) on first RACE ONLINE use. */
+  private ensureCourseRace(): void {
+    if (this.courseRace) return;
+    const hudRoot = document.getElementById('hud-root') ?? document.body;
+    this.courseRace = new CourseRaceSession(this.scene, hudRoot, this.input, {
+      isDuelOnline: () => this.onlineModeActive || this.multiplayer.connected,
+      currentCourseJson: () => {
+        const sandbox = this.movementSandbox;
+        return sandbox ? JSON.stringify(sandbox.getFullLayout()) : '';
+      },
+      onAdoptCourse: (layout) => this.adoptRaceCourse(layout),
+      onSessionEnded: (usedRemoteCourse) => this.onRaceSessionEnded(usedRemoteCourse),
+      onRestartRun: () => {
+        if (this.movementSandbox?.active) this.movementSandbox.restartRun(this.player);
+      },
+      notify: (title, subtitle) => this.hud.showScoreEvent(title, subtitle, 'neutral')
+    });
+  }
+
+  /** Joined someone's race: rebuild the yard around the host's validated course. */
+  private adoptRaceCourse(layout: CreatorLayout): void {
+    const old = this.movementSandbox;
+    if (old) {
+      this.clearCreatorActors();
+      old.setRunEventListener(null);
+      if (old.active) old.exit(this.player);
+      old.dispose();
+    }
+    this.movementSandbox = new MovementSandbox(this.scene, this.gym, layout);
+    this.movementSandbox.enter(this.player);
+    this.spawnCreatorActors(this.movementSandbox.getSpawnerMarkers());
+    this.movementSandbox.setRunEventListener((event) => this.courseRace?.reportRunEvent(event));
+  }
+
+  /**
+   * A race ended (left / host closed / dropped). If we were racing a JOINED host's course, that
+   * override sandbox must not survive the session: dispose it so the next yard entry rebuilds the
+   * player's own course — immediately re-entering when they were still standing in the yard.
+   */
+  private onRaceSessionEnded(usedRemoteCourse: boolean): void {
+    if (!usedRemoteCourse) return;
+    const sandbox = this.movementSandbox;
+    if (!sandbox) return;
+    const wasInYard = sandbox.active;
+    if (wasInYard) {
+      this.clearCreatorActors();
+      sandbox.setRunEventListener(null);
+      sandbox.exit(this.player);
+    }
+    sandbox.dispose();
+    this.movementSandbox = null;
+    if (wasInYard && !this.onlineModeActive && !this.multiplayer.connected) this.enterMovementCourse();
   }
 
   /** Lazily build the Course Creator editor (offline-only; open to every player, never online). */
@@ -2275,6 +2344,13 @@ export class ArenaScene {
       this.creatorEntryHold = 0;
       return;
     }
+    // While a course race owns the yard (live session or its create/join overlay), editing is off
+    // the table — hide the prompt so hold-E can't open the editor mid-race.
+    if (this.courseRace?.isBusy()) {
+      this.creatorEntryHold = 0;
+      creator.showEntryPrompt(false, 0);
+      return;
+    }
     const pt = creator.entryWorldPoint();
     const p = this.player.root.position;
     const dx = p.x - pt.x;
@@ -2291,7 +2367,12 @@ export class ArenaScene {
   }
 
   private handleSandboxAction(action: SandboxAction): void {
-    if (action === 'leave') this.leaveMovementCourse();
+    if (action === 'leave') {
+      this.leaveMovementCourse();
+    } else if (action === 'race') {
+      this.ensureCourseRace();
+      this.courseRace?.toggleOverlay();
+    }
   }
 
   /**
@@ -2312,6 +2393,8 @@ export class ArenaScene {
     // Course actors (balls physics/pickup, bots, dummy scoring) — same updater playtest uses.
     this.updateCreatorActors(dt);
     this.updateCreatorEntry(dt);
+    // Online race relay (pose send + ghost smoothing) — cheap no-op when no session is live.
+    this.courseRace?.update(dt, this.player);
   }
 
   /**

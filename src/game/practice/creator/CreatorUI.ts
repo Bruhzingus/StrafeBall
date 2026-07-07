@@ -39,6 +39,16 @@ export interface CreatorSnapSettings {
   gizmo: 'move' | 'rotate' | 'scale' | 'off';
 }
 
+/** A validated shared-course file's metadata, shown for confirmation before it is added. */
+export interface ImportPreview {
+  name: string;
+  description: string;
+  difficulty: CourseDifficulty | null;
+  objectCount: number;
+  /** Human-readable validation fixes (dropped/clamped objects) found while reading the file. */
+  problems: string[];
+}
+
 /** Everything the UI needs from the editor. The editor (CreatorEditor) implements this. */
 export interface CreatorBridge {
   getMode(): 'build' | 'playtest';
@@ -57,11 +67,6 @@ export interface CreatorBridge {
   copyJson(): void;
   importJsonFile(file: File): void;
   resetLayout(): void;
-
-  // Movement Course persistence (localStorage-backed; the live course reads it).
-  saveToCourse(): void;
-  loadFromCourse(): void;
-  importToCourseFile(file: File): void;
 
   // Course projects (multiple named local courses) + the active course's listed metadata.
   listProjects(): ProjectSummary[];
@@ -165,8 +170,8 @@ export class CreatorUI {
   private readonly entryPrompt: HTMLDivElement;
   private readonly entryFill: HTMLDivElement;
   private readonly onboardEl: HTMLDivElement;
+  private readonly importPreviewEl: HTMLDivElement;
   private readonly fileInput: HTMLInputElement;
-  private readonly courseFileInput: HTMLInputElement;
 
   // Outliner (object list) state.
   private outlinerListEl!: HTMLDivElement;
@@ -274,19 +279,6 @@ export class CreatorUI {
     });
     this.host.appendChild(this.fileInput);
 
-    // Separate hidden file input for "Import to Course" (upload a layout straight into the live course).
-    this.courseFileInput = document.createElement('input');
-    this.courseFileInput.type = 'file';
-    this.courseFileInput.accept = 'application/json,.json';
-    this.courseFileInput.style.display = 'none';
-    this.courseFileInput.setAttribute('data-no-lock', '');
-    this.courseFileInput.addEventListener('change', () => {
-      const file = this.courseFileInput.files?.[0];
-      if (file) this.bridge.importToCourseFile(file);
-      this.courseFileInput.value = '';
-    });
-    this.host.appendChild(this.courseFileInput);
-
     // --- First-run help card (shown once per browser; see showOnboarding) ---
     this.onboardEl = el('div', 'creator-modal-backdrop');
     this.onboardEl.setAttribute('data-no-lock', '');
@@ -320,6 +312,11 @@ export class CreatorUI {
     this.onboardEl.appendChild(onboardCard);
     this.host.appendChild(this.onboardEl);
 
+    // --- Import preview card (metadata shown before an imported course is added; see showImportPreview) ---
+    this.importPreviewEl = el('div', 'creator-modal-backdrop');
+    this.importPreviewEl.setAttribute('data-no-lock', '');
+    this.host.appendChild(this.importPreviewEl);
+
     this.setToolbarVisible(false);
     this.setEntryPromptVisible(false, 0);
     this.refresh();
@@ -331,9 +328,12 @@ export class CreatorUI {
     this.onboardEl.classList.add('creator-modal-backdrop--visible');
   }
 
-  /** True while a full-screen card (the first-run help) is up — build keybinds should not fire. */
+  /** True while a full-screen card (first-run help / import preview) is up — build keybinds off. */
   isOverlayOpen(): boolean {
-    return this.onboardEl.classList.contains('creator-modal-backdrop--visible');
+    return (
+      this.onboardEl.classList.contains('creator-modal-backdrop--visible') ||
+      this.importPreviewEl.classList.contains('creator-modal-backdrop--visible')
+    );
   }
 
   private dismissOnboarding(): void {
@@ -341,6 +341,62 @@ export class CreatorUI {
     const cb = this.onboardDismiss;
     this.onboardDismiss = null;
     cb?.();
+  }
+
+  /**
+   * Show an imported course's metadata for confirmation before it is added. Confirming calls
+   * `onConfirm` (the editor adds it as a NEW project); cancelling just closes the card — the
+   * importer's own courses are never touched either way.
+   */
+  showImportPreview(preview: ImportPreview, onConfirm: () => void): void {
+    this.importPreviewEl.innerHTML = '';
+    const card = el('div', 'creator-modal');
+
+    const title = el('div', 'creator-modal-title');
+    title.textContent = 'Add This Course?';
+    card.appendChild(title);
+
+    const name = el('div', 'creator-import-name');
+    name.textContent = preview.name;
+    card.appendChild(name);
+
+    const meta = el('div', 'creator-course-meta');
+    const diffText = preview.difficulty ? COURSE_DIFFICULTY_LABELS[preview.difficulty] : '';
+    meta.textContent = [diffText, `${preview.objectCount} object${preview.objectCount === 1 ? '' : 's'}`]
+      .filter(Boolean)
+      .join(' · ');
+    card.appendChild(meta);
+
+    if (preview.description) {
+      const desc = el('div', 'creator-onboard-intro');
+      desc.textContent = preview.description;
+      card.appendChild(desc);
+    }
+
+    if (preview.problems.length > 0) {
+      const warn = el('div', 'creator-import-warn');
+      warn.textContent = `${preview.problems.length} issue${preview.problems.length === 1 ? ' was' : 's were'} auto-fixed while reading this file.`;
+      warn.title = preview.problems.slice(0, 6).join('\n');
+      card.appendChild(warn);
+    }
+
+    const note = el('div', 'creator-import-note');
+    note.textContent = 'This is added as a new course — your own courses are not changed.';
+    card.appendChild(note);
+
+    const actions = el('div', 'creator-modal-actions');
+    const close = () => this.importPreviewEl.classList.remove('creator-modal-backdrop--visible');
+    actions.append(
+      button('Cancel', 'creator-btn', close),
+      button('Add Course', 'creator-btn creator-btn-primary', () => {
+        close();
+        onConfirm();
+      })
+    );
+    card.appendChild(actions);
+
+    this.importPreviewEl.appendChild(card);
+    this.importPreviewEl.classList.add('creator-modal-backdrop--visible');
   }
 
   // ---------------------------------------------------------------------------------------------
@@ -378,32 +434,23 @@ export class CreatorUI {
     saveBtn.title = 'Save a manual restore point (Ctrl+S). Your work also autosaves.';
     const row1 = el('div', 'creator-modebar-row creator-modebar-row--primary');
     row1.append(modeGroup, saveBtn, this.autosaveStatusEl, this.coursesBtn, this.settingsBtn);
-    // Always-visible headline row: download a layout file + publish to the live Movement Course.
+    // Always-visible headline row: share this course as a file / add a shared file as a new course.
     const exportBtn = button('⤓ Export File', 'creator-btn creator-btn-primary', () => this.bridge.exportJson());
     exportBtn.title = 'Download this course as a .json file you can share';
-    const publishBtn = button('★ Save to Course', 'creator-btn creator-btn-primary', () => this.bridge.saveToCourse());
-    publishBtn.title = 'Publish this course to the yard (played after a reload)';
+    const importBtn = button('⤒ Import File', 'creator-btn creator-btn-primary', () => this.fileInput.click());
+    importBtn.title = 'Add a shared course .json file to your courses';
     const shareRow = el('div', 'creator-modebar-row');
-    shareRow.append(exportBtn, publishBtn);
+    shareRow.append(exportBtn, importBtn);
 
     const loadBtn = button('Load', 'creator-btn', () => this.bridge.quickLoad());
     loadBtn.title = 'Restore this course’s last manual save';
     const loadRow = el('div', 'creator-modebar-row');
     loadRow.append(loadBtn);
-    const importBtn = button('Import File', 'creator-btn', () => this.fileInput.click());
-    importBtn.title = 'Load a shared course .json into this course';
     const row2 = el('div', 'creator-modebar-row');
     row2.append(
       button('Copy JSON', 'creator-btn', () => this.bridge.copyJson()),
-      importBtn,
       this.undoBtn,
       this.redoBtn
-    );
-    // Movement Course persistence (localStorage; survives reloads, even on the web).
-    const courseRow = el('div', 'creator-modebar-row');
-    courseRow.append(
-      button('Load Course', 'creator-btn', () => this.bridge.loadFromCourse()),
-      button('Import to Course', 'creator-btn', () => this.courseFileInput.click())
     );
     const row3 = el('div', 'creator-modebar-row');
     row3.append(
@@ -415,7 +462,7 @@ export class CreatorUI {
     // The game's floating SettingsPanel docks in here while the editor is active, so the two
     // top-right settings surfaces never overlap (see CreatorEditorHooks.setGameSettingsDock).
     this.gameSettingsHost = el('div', 'creator-game-settings');
-    this.settingsDropdown.append(loadRow, row2, courseRow, row3, row4, this.snapEl, this.gameSettingsHost);
+    this.settingsDropdown.append(loadRow, row2, row3, row4, this.snapEl, this.gameSettingsHost);
     this.modeBar.append(row1, shareRow, this.coursesDropdown, this.settingsDropdown);
     this.setSettingsOpen(false);
     this.setCoursesOpen(false);
@@ -555,7 +602,9 @@ export class CreatorUI {
     const newRow = el('div', 'creator-modebar-row');
     const newBtn = button('+ New Course', 'creator-btn creator-btn-primary', () => this.bridge.createNewProject());
     newBtn.title = 'Start a fresh empty course';
-    newRow.appendChild(newBtn);
+    const importHereBtn = button('⤒ Import', 'creator-btn', () => this.fileInput.click());
+    importHereBtn.title = 'Add a shared course .json file to your courses';
+    newRow.append(newBtn, importHereBtn);
     this.coursesDropdown.appendChild(newRow);
 
     // --- Featured starter course ---
@@ -1259,8 +1308,8 @@ export class CreatorUI {
     this.saveIndicatorEl.remove();
     this.entryPrompt.remove();
     this.onboardEl.remove();
+    this.importPreviewEl.remove();
     this.fileInput.remove();
-    this.courseFileInput.remove();
   }
 
   // ---------------------------------------------------------------------------------------------

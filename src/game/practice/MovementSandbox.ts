@@ -35,6 +35,7 @@ import {
 } from './creator/CreatorLayout';
 import {
   buildCreatorCollisionBoxes,
+  buildCreatorWallBounceFaces,
   buildCreatorWallFaces,
   layoutWorldBounds,
   type CreatorWallFace
@@ -46,8 +47,9 @@ import { CreatorMovers } from './creator/CreatorMovers';
 import { CourseRunTracker } from './creator/CourseRun';
 import { CourseRunHud } from './creator/CourseRunHud';
 import { TUNING } from '../config/tuning';
+import type { RaceRunEvent } from '../../../shared/courseRace';
 
-export type SandboxAction = 'leave';
+export type SandboxAction = 'leave' | 'race';
 
 const COLLISION_ID_PREFIX = 'sandbox_';
 const WALL_RUN_MARGIN = 1.0;
@@ -81,7 +83,8 @@ export class MovementSandbox implements MovementWorld {
   private readonly materials: StandardMaterial[] = [];
   private readonly disposables: Array<{ dispose(): void }> = [];
   private readonly collisionBoxes: AABB[] = [];
-  private faces: CreatorWallFace[] = [];
+  private wallRunFaces: CreatorWallFace[] = [];
+  private wallBounceFaces: CreatorWallFace[] = [];
   private built = false;
 
   // The committed course layout the yard renders. `courseLayout` excludes the outer boundary walls
@@ -110,12 +113,22 @@ export class MovementSandbox implements MovementWorld {
 
   private leaveHold = 0;
   private leaveLatched = false;
+  private racePoint: { x: number; z: number; radius: number; holdSeconds: number };
+  private raceHold = 0;
+  private raceLatched = false;
+  /** Optional tee of course-run events (start/checkpoint/finish/reset) for the online race relay. */
+  private runEventListener: ((event: RaceRunEvent) => void) | null = null;
 
-  constructor(private readonly scene: Scene, private readonly gym: GymArena) {
+  /**
+   * @param layoutOverride A specific course to build instead of the player's own (used when
+   * JOINING an online race — the yard runs the host's course). Omitted = the player's active
+   * Creator project working copy, else the committed default.
+   */
+  constructor(private readonly scene: Scene, private readonly gym: GymArena, layoutOverride?: CreatorLayout) {
     // The map is the most recent state the player had: the Creator's latest working copy
-    // (autosave/quick-save), else their published course, else the committed default. Local only —
-    // reverting to the default is a manual editor action (Revert to Default Map).
-    const layout = loadCurrentCourseLayout();
+    // (autosave/quick-save), else the committed default. Local only — reverting to the default is
+    // a manual editor action (Revert to Default Map).
+    const layout = layoutOverride ?? loadCurrentCourseLayout();
     this.fullLayout = layout;
     this.courseLayout = { ...layout, objects: layout.objects.filter((o) => o.type !== 'boundary_wall') };
     const yardFurniture = new Set(['spawn_point', 'leave_portal', 'test_spawn']);
@@ -135,6 +148,14 @@ export class MovementSandbox implements MovementWorld {
       radius: fallbackLeave.radius,
       holdSeconds: fallbackLeave.holdSeconds
     };
+    // RACE ONLINE sign: fixed offset beside the spawn pad (same hold-E interaction as leaving).
+    const spawnPoint = layoutSpawn(layout);
+    this.racePoint = {
+      x: spawnPoint.x - 4,
+      z: spawnPoint.z,
+      radius: fallbackLeave.radius,
+      holdSeconds: fallbackLeave.holdSeconds
+    };
 
     this.root = new TransformNode('movement_sandbox_root', scene);
     this.root.setEnabled(false);
@@ -146,9 +167,17 @@ export class MovementSandbox implements MovementWorld {
 
   /** Nearest wall-run face within range (below its top, within its span, on its open side), else null. */
   wallNormalAt(x: number, z: number, y: number): Vector3 | null {
+    return this.normalAt(this.wallRunFaces, x, z, y);
+  }
+
+  wallBounceNormalAt(x: number, z: number, y: number): Vector3 | null {
+    return this.normalAt(this.wallBounceFaces, x, z, y);
+  }
+
+  private normalAt(faces: CreatorWallFace[], x: number, z: number, y: number): Vector3 | null {
     let best: CreatorWallFace | null = null;
     let bestDist = WALL_RUN_MARGIN;
-    for (const f of this.faces) {
+    for (const f of faces) {
       if (y > f.topY) continue;
       const d = (x - f.ox) * f.nx + (z - f.oz) * f.nz; // distance along the outward normal
       if (d < 0 || d > bestDist) continue;
@@ -214,6 +243,33 @@ export class MovementSandbox implements MovementWorld {
     return collectSpawnerMarkers(this.fullLayout);
   }
 
+  /** The complete course layout this yard is running (what an online race host shares). */
+  getFullLayout(): CreatorLayout {
+    return this.fullLayout;
+  }
+
+  /** Tee course-run events (start/checkpoint/finish/reset) — used by the online race relay. */
+  setRunEventListener(listener: ((event: RaceRunEvent) => void) | null): void {
+    this.runEventListener = listener;
+  }
+
+  /**
+   * Reset the run and put the player back at the start — used when an online race host restarts
+   * everyone. Mirrors a fresh playtest start: full stamina, pads/movers/timer reset.
+   */
+  restartRun(player: PlayerController): void {
+    if (!this.active || this.suspended) return;
+    this.courseRun?.reset('reset');
+    this.pads.reset();
+    this.movers.resetPhase();
+    player.dash.refill();
+    player.backflip.cooldown = 0;
+    const spawn = layoutSpawn(this.fullLayout);
+    player.setRespawn(new Vector3(spawn.x, spawn.y, spawn.z), spawn.yaw);
+    player.teleportTo(new Vector3(spawn.x, spawn.y, spawn.z), spawn.yaw, 0);
+    if (this.courseRun?.isTimed()) this.courseHud?.showIdle(this.courseRun.bestMs());
+  }
+
   /** Lazily build the timed-course tracker + HUD (only shows anything for layouts with both gates). */
   private ensureCourseRun(): void {
     if (this.courseRun) return;
@@ -224,11 +280,21 @@ export class MovementSandbox implements MovementWorld {
         // Deterministic routes: every attempt sees the platforms at their starting phase.
         this.movers.resetPhase();
         hud.tick(0, 0, this.courseRun?.state.checkpointCount ?? 0);
+        this.runEventListener?.({ kind: 'start' });
       },
-      onCheckpoint: (collected, total, splitMs) => hud.showCheckpoint(collected, total, splitMs),
+      onCheckpoint: (collected, total, splitMs) => {
+        hud.showCheckpoint(collected, total, splitMs);
+        this.runEventListener?.({ kind: 'checkpoint', checkpoint: collected, checkpointTotal: total, timeMs: splitMs });
+      },
       onMissedCheckpoint: (n) => hud.showMissedCheckpoint(n),
-      onFinish: (timeMs, bestMs, isPb) => hud.showFinish(timeMs, bestMs, isPb),
-      onRunReset: (reason) => hud.showRunReset(reason)
+      onFinish: (timeMs, bestMs, isPb) => {
+        hud.showFinish(timeMs, bestMs, isPb);
+        this.runEventListener?.({ kind: 'finish', timeMs });
+      },
+      onRunReset: (reason) => {
+        hud.showRunReset(reason);
+        this.runEventListener?.({ kind: 'reset' });
+      }
     });
   }
 
@@ -315,23 +381,39 @@ export class MovementSandbox implements MovementWorld {
       }
     }
 
-    const leave = this.leavePoint;
     const p = player.root.position;
-    const dx = p.x - leave.x;
-    const dz = p.z - leave.z;
-    const near = dx * dx + dz * dz <= leave.radius * leave.radius;
     const held = input.isKeyDown(CONTROL_KEYS.interact);
 
-    if (!near || !held) {
+    // Leave portal (hold E).
+    const leave = this.leavePoint;
+    const ldx = p.x - leave.x;
+    const ldz = p.z - leave.z;
+    const nearLeave = ldx * ldx + ldz * ldz <= leave.radius * leave.radius;
+    if (!nearLeave || !held) {
       this.leaveHold = 0;
       this.leaveLatched = false;
-      return;
+    } else if (!this.leaveLatched) {
+      this.leaveHold = Math.min(leave.holdSeconds, this.leaveHold + dt);
+      if (this.leaveHold >= leave.holdSeconds) {
+        this.leaveLatched = true;
+        onAction('leave');
+      }
     }
-    if (this.leaveLatched) return;
-    this.leaveHold = Math.min(leave.holdSeconds, this.leaveHold + dt);
-    if (this.leaveHold >= leave.holdSeconds) {
-      this.leaveLatched = true;
-      onAction('leave');
+
+    // RACE ONLINE sign (hold E) — same interaction as the leave portal.
+    const race = this.racePoint;
+    const rdx = p.x - race.x;
+    const rdz = p.z - race.z;
+    const nearRace = rdx * rdx + rdz * rdz <= race.radius * race.radius;
+    if (!nearRace || !held) {
+      this.raceHold = 0;
+      this.raceLatched = false;
+    } else if (!this.raceLatched) {
+      this.raceHold = Math.min(race.holdSeconds, this.raceHold + dt);
+      if (this.raceHold >= race.holdSeconds) {
+        this.raceLatched = true;
+        onAction('race');
+      }
     }
   }
 
@@ -391,7 +473,8 @@ export class MovementSandbox implements MovementWorld {
     this.buildSpawn();
 
     this.collisionBoxes.push(...buildCreatorCollisionBoxes(this.courseLayout, COLLISION_ID_PREFIX));
-    this.faces = buildCreatorWallFaces(this.courseLayout);
+    this.wallRunFaces = buildCreatorWallFaces(this.courseLayout);
+    this.wallBounceFaces = buildCreatorWallBounceFaces(this.courseLayout);
     // Bind moving platforms to the built colliders + visuals (same runtime as creator playtest).
     this.movers.build(this.courseLayout, this.collisionBoxes, this.geometry, COLLISION_ID_PREFIX);
 
@@ -477,6 +560,12 @@ export class MovementSandbox implements MovementWorld {
     }
     this.gridBox('sandbox_leave_beam', leave.x, 2.3, leave.z, 1.7, 0.2, 0.18, this.accentMat);
     this.sign('sandbox_leave_sign', 'LEAVE\nHOLD E', new Vector3(leave.x, 2.95, leave.z), 1.8, 0.85);
+
+    // RACE ONLINE sign (hold E) — private ghost races on this course with friends.
+    const race = this.racePoint;
+    this.gridBox('sandbox_race_pad', race.x, 0.04, race.z, 2.4, 0.08, 2.4, this.padMat);
+    this.gridBox('sandbox_race_post', race.x, 1.1, race.z - 0.6, 0.16, 2.2, 0.16, this.accentMat);
+    this.sign('sandbox_race_sign', 'RACE ONLINE\nHOLD E', new Vector3(race.x, 2.6, race.z - 0.6), 2.2, 0.95);
   }
 
   // --- helpers ---------------------------------------------------------------------------------

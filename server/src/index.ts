@@ -1,6 +1,7 @@
 import { defineRoom, defineServer } from 'colyseus';
 import { describeNetConfig } from '../../shared/netConfig';
 import { DuelRoom } from './rooms/DuelRoom';
+import { CourseRoom } from './rooms/CourseRoom';
 
 const DEFAULT_PORT = 2567;
 
@@ -16,7 +17,9 @@ function readPort(): number {
 
 export const server = defineServer({
   rooms: {
-    duel: defineRoom(DuelRoom)
+    duel: defineRoom(DuelRoom),
+    // Private ghost-relay course races (see CourseRoom) — fully separate from the duel netcode.
+    course: defineRoom(CourseRoom)
   }
 });
 

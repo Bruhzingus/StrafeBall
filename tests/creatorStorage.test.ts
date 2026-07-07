@@ -21,7 +21,6 @@ import {
   renameProject,
   saveProjectAutosave,
   saveProjectManual,
-  savePublishedLayout,
   setActiveProject,
   type StoredLayoutEnvelope
 } from '../src/game/practice/creator/CreatorStorage';
@@ -87,7 +86,7 @@ describe('CreatorStorage — newest stored state wins on open (autosave is the w
     savedAt
   });
 
-  it('neither slot readable ⇒ null (caller falls back to published/committed)', () => {
+  it('neither slot readable ⇒ null (caller falls back to committed default)', () => {
     expect(newestStoredLayout(null, null)).toBeNull();
   });
 
@@ -268,12 +267,8 @@ describe('CreatorStorage — loadCurrentCourseLayout (what the yard plays)', () 
     expect(loadCurrentCourseLayout().name).toBe(edited.name);
   });
 
-  it('never seeds from the yard path: fresh store falls back to published, then committed', () => {
+  it('never seeds from the yard path: fresh store falls back to the committed default', () => {
     expect(loadCurrentCourseLayout().name).toBe(committedCourseLayout().name);
-    expect(globalThis.localStorage.getItem(STORAGE_KEYS.projects)).toBeNull();
-    const published = variantOf(defaultCreatorLayout(), 'published course');
-    savePublishedLayout(published);
-    expect(loadCurrentCourseLayout().name).toBe(published.name);
     expect(globalThis.localStorage.getItem(STORAGE_KEYS.projects)).toBeNull();
   });
 
