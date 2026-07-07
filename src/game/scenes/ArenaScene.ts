@@ -54,6 +54,7 @@ import { LobbyModePortals } from '../practice/LobbyModePortals';
 import type { LobbyMode, LobbyPortalAction } from '../practice/LobbyModePortals';
 import { GuideWall } from '../practice/GuideWall';
 import { MovementSandbox, type SandboxAction } from '../practice/MovementSandbox';
+import { sandboxSpawnWorld } from '../practice/MovementSandboxLayout';
 import { CourseRaceSession } from '../practice/CourseRaceSession';
 import type { CreatorLayout } from '../practice/creator/CreatorLayout';
 import { CreatorEditor, CREATOR_ENTRY_RADIUS, CREATOR_ENTRY_HOLD_SECONDS, type CreatorSpawnerMarkers } from '../practice/creator/CreatorEditor';
@@ -2216,6 +2217,7 @@ export class ArenaScene {
     if (this.creator) return;
     this.creator = new CreatorEditor(this.scene, this.gym, this.player, this.input, {
       isOnline: () => this.onlineModeActive || this.multiplayer.connected,
+      entryPosition: () => this.movementSandbox?.creatorEntryPoint() ?? sandboxSpawnWorld(),
       suspendSandbox: () => {
         // The editor takes over the yard: despawn the LIVE course's actors so a playtest's own
         // spawns (via onPlaytestStart) never double up with them.

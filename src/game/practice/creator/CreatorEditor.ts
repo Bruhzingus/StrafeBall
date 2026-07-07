@@ -28,7 +28,7 @@ import { GymArena } from '../../map/GymArena';
 import { PlayerController } from '../../player/PlayerController';
 import { InputManager } from '../../input/InputManager';
 import { AABB } from '../../map/Collider';
-import { sandboxSpawnWorld } from '../MovementSandboxLayout';
+import { PortalArch, type PortalPalette } from '../PortalArch';
 import {
   COURSE_DIFFICULTIES,
   CREATOR_LIMITS,
@@ -106,9 +106,20 @@ const AUTOSAVE_MAX_INTERVAL_MS = 10000;
 export const CREATOR_ENTRY_RADIUS = 2.7;
 export const CREATOR_ENTRY_HOLD_SECONDS = 0.6;
 
+// Same visual language as the practice-lobby mode portals + the yard's Back to Lobby/Race Online
+// portals (see PortalArch), tinted purple — a deliberate callback to the editor UI's own accent color.
+const COURSE_CREATOR_PALETTE: PortalPalette = {
+  edge: new Color3(0.62, 0.4, 0.98),
+  status: new Color3(0.48, 0.26, 0.85),
+  surfaceBack: new Color3(0.22, 0.06, 0.5),
+  surfaceFront: new Color3(0.5, 0.28, 0.88)
+};
+
 export interface CreatorEditorHooks {
   /** True while connected/playing online — the editor must never activate or stay active then. */
   isOnline(): boolean;
+  /** World position + facing for the entry portal, kept in the yard's leave/race portal row. */
+  entryPosition(): { x: number; z: number; yaw: number };
   /** Hide the sandbox's static walls + remove its collision (creator takes over). */
   suspendSandbox(): void;
   /** Restore the sandbox visuals + collision + movement world + spawn the player back in. */
@@ -224,9 +235,8 @@ export class CreatorEditor implements CreatorBridge {
   // we briefly stop them from also driving the fly camera (down / sprint), so keybinds don't overlap.
   private chordSuppressUntilMs = 0;
 
-  // Entry sign (3D prop near the sandbox spawn while the editor is not active).
-  private entrySign: TransformNode | null = null;
-  private entrySignMaterials: StandardMaterial[] = [];
+  // Entry portal (3D prop near the sandbox spawn while the editor is not active).
+  private entryPortal: PortalArch | null = null;
   private entrySignBuilt = false;
 
   // Bound listeners (added in build mode only).
@@ -343,14 +353,13 @@ export class CreatorEditor implements CreatorBridge {
     return this.mode;
   }
 
-  entryWorldPoint(): { x: number; z: number } {
-    const spawn = sandboxSpawnWorld();
-    return { x: spawn.x + 3, z: spawn.z - 4 };
+  entryWorldPoint(): { x: number; z: number; yaw: number } {
+    return this.hooks.entryPosition();
   }
 
   setEntrySignVisible(visible: boolean): void {
     if (visible && !this.entrySignBuilt) this.buildEntrySign();
-    this.entrySign?.setEnabled(visible && !this.active);
+    this.entryPortal?.setEnabled(visible && !this.active);
   }
 
   /** Drive the on-screen "hold E" entry prompt (ArenaScene supplies proximity + hold progress). */
@@ -360,6 +369,7 @@ export class CreatorEditor implements CreatorBridge {
       return;
     }
     this.ui.setEntryPromptVisible(near, progress);
+    this.entryPortal?.update(performance.now() * 0.001, near ? 1 : 0, progress);
   }
 
   /** Open the editor (called on a completed hold-E at the entry sign). Open to every player. */
@@ -511,8 +521,7 @@ export class CreatorEditor implements CreatorBridge {
     this.replay.dispose();
     this.editorCamera?.dispose();
     this.editorCamera = null;
-    for (const m of this.entrySignMaterials) m.dispose();
-    this.entrySign?.dispose();
+    this.entryPortal?.dispose();
     this.ui.dispose();
   }
 
@@ -2508,39 +2517,23 @@ export class CreatorEditor implements CreatorBridge {
   }
 
   // ---------------------------------------------------------------------------------------------
-  // Entry sign (3D prop)
+  // Entry portal (3D prop) — same visual language as the practice-lobby mode portals + the yard's
+  // Back to Lobby/Race Online portals (see PortalArch), tinted purple.
   // ---------------------------------------------------------------------------------------------
 
   private buildEntrySign(): void {
     if (this.entrySignBuilt) return;
     this.entrySignBuilt = true;
     const pt = this.entryWorldPoint();
-    const root = new TransformNode('creator_entry_sign', this.scene);
-    root.position.set(pt.x, 0, pt.z);
-
-    const postMat = new StandardMaterial('creator_entry_post', this.scene);
-    postMat.diffuseColor = new Color3(0.16, 0.5, 0.7);
-    postMat.emissiveColor = new Color3(0.06, 0.2, 0.3);
-    const panelMat = new StandardMaterial('creator_entry_panel', this.scene);
-    panelMat.diffuseColor = new Color3(0.1, 0.14, 0.22);
-    panelMat.emissiveColor = new Color3(0.12, 0.3, 0.5);
-    this.entrySignMaterials.push(postMat, panelMat);
-
-    const makeBox = (name: string, w: number, h: number, d: number, x: number, y: number, z: number, mat: StandardMaterial): Mesh => {
-      const box = MeshBuilder.CreateBox(name, { width: w, height: h, depth: d }, this.scene);
-      box.position.set(x, y, z);
-      box.material = mat;
-      box.parent = root;
-      box.isPickable = false;
-      return box;
-    };
-    makeBox('creator_entry_postL', 0.16, 2.6, 0.16, -0.9, 1.3, 0, postMat);
-    makeBox('creator_entry_postR', 0.16, 2.6, 0.16, 0.9, 1.3, 0, postMat);
-    makeBox('creator_entry_panel', 2.1, 1.1, 0.12, 0, 2.3, 0, panelMat);
-    makeBox('creator_entry_pad', 2.4, 0.08, 1.4, 0, 0.04, 0, postMat);
-
-    this.entrySign = root;
-    root.setEnabled(false);
+    this.entryPortal = new PortalArch({
+      id: 'creator_entry',
+      scene: this.scene,
+      position: new Vector3(pt.x, 0, pt.z),
+      yaw: pt.yaw,
+      title: 'COURSE CREATOR',
+      palette: COURSE_CREATOR_PALETTE
+    });
+    this.entryPortal.setEnabled(false);
   }
 }
 

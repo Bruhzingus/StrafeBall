@@ -48,6 +48,7 @@ import { CourseRunTracker } from './creator/CourseRun';
 import { CourseRunHud } from './creator/CourseRunHud';
 import { TUNING } from '../config/tuning';
 import type { RaceRunEvent } from '../../../shared/courseRace';
+import { PortalArch, type PortalPalette } from './PortalArch';
 
 export type SandboxAction = 'leave' | 'race';
 
@@ -55,6 +56,20 @@ const COLLISION_ID_PREFIX = 'sandbox_';
 const WALL_RUN_MARGIN = 1.0;
 /** World size (metres) of one grid cell on the ground + walls — large + spaced out, consistent on every face. */
 const GRID_CELL_METRES = 10;
+
+const BACK_TO_LOBBY_PALETTE: PortalPalette = {
+  edge: new Color3(0.22, 0.88, 0.42),
+  status: new Color3(0.14, 0.62, 0.3),
+  surfaceBack: new Color3(0.03, 0.32, 0.12),
+  surfaceFront: new Color3(0.22, 0.72, 0.35)
+};
+
+const RACE_ONLINE_PALETTE: PortalPalette = {
+  edge: new Color3(1.0, 0.56, 0.14),
+  status: new Color3(0.85, 0.42, 0.06),
+  surfaceBack: new Color3(0.5, 0.2, 0.02),
+  surfaceFront: new Color3(0.95, 0.55, 0.14)
+};
 
 /**
  * Local outdoor Movement Sandbox: a large free-movement yard placed far from the gym, running the
@@ -93,7 +108,11 @@ export class MovementSandbox implements MovementWorld {
   private readonly fullLayout: CreatorLayout;
   private readonly courseLayout: CreatorLayout;
   private readonly visualLayout: CreatorLayout;
-  private readonly leavePoint: { x: number; z: number; radius: number; holdSeconds: number };
+  private readonly leavePoint: { x: number; z: number; yaw: number; radius: number; holdSeconds: number };
+  // Portal props for the leave/race hold-E points (built lazily in buildSpawn()); animated per-frame.
+  private leavePortalArch: PortalArch | null = null;
+  private racePortalArch: PortalArch | null = null;
+  private elapsed = 0;
   // Course visuals: the SAME renderer the Creator editor uses (solids incl. real textures, ability
   // pads, kill blocks, gates, signs, arrows, labels) with every editor-only overlay disabled — so a
   // published course looks exactly like its playtest. Built lazily with the rest of the yard.
@@ -113,9 +132,12 @@ export class MovementSandbox implements MovementWorld {
 
   private leaveHold = 0;
   private leaveLatched = false;
-  private racePoint: { x: number; z: number; radius: number; holdSeconds: number };
+  private racePoint: { x: number; z: number; yaw: number; radius: number; holdSeconds: number };
   private raceHold = 0;
   private raceLatched = false;
+  /** Slot for the Course Creator's own entry portal (built separately by CreatorEditor), kept in the
+   *  same row as leave/race so all three read as one connected hub regardless of course layout. */
+  private readonly creatorEntrySlot: { x: number; z: number; yaw: number };
   /** Optional tee of course-run events (start/checkpoint/finish/reset) for the online race relay. */
   private runEventListener: ((event: RaceRunEvent) => void) | null = null;
 
@@ -142,19 +164,46 @@ export class MovementSandbox implements MovementWorld {
 
     const fallbackLeave = sandboxLeaveWorld();
     const leaveMarker = layout.objects.find((o) => o.type === 'leave_portal');
-    this.leavePoint = {
-      x: leaveMarker ? leaveMarker.position[0] : fallbackLeave.x,
-      z: leaveMarker ? leaveMarker.position[2] : fallbackLeave.z,
+    const leaveX = leaveMarker ? leaveMarker.position[0] : fallbackLeave.x;
+    const leaveZ = leaveMarker ? leaveMarker.position[2] : fallbackLeave.z;
+    const spawnPoint = layoutSpawn(layout);
+    // Always face the portal back toward spawn so its front (sign text, status panel) reads
+    // correctly as the player approaches — a course author's leave_portal marker always carries
+    // SOME yawDeg (the module's own default is 0, indistinguishable from an intentional 0°), so that
+    // metadata can't reliably signal "this facing was chosen on purpose" and isn't used here.
+    const leaveYaw = Math.atan2(spawnPoint.x - leaveX, spawnPoint.z - leaveZ);
+    this.leavePoint = { x: leaveX, z: leaveZ, yaw: leaveYaw, radius: fallbackLeave.radius, holdSeconds: fallbackLeave.holdSeconds };
+
+    // RACE ONLINE and the Course Creator entry are placed relative to SPAWN (not the leave portal):
+    // a course author can put leave_portal anywhere (including right next to spawn, as the shipped
+    // default course does), and anchoring these two to it could land them a couple of metres from
+    // spawn — inside their own activation radius. A forward-and-to-the-sides placement from spawn
+    // keeps both a comfortable, predictable distance away regardless of where leave ends up.
+    const fwdX = Math.sin(spawnPoint.yaw);
+    const fwdZ = Math.cos(spawnPoint.yaw);
+    const rightX = Math.cos(spawnPoint.yaw);
+    const rightZ = -Math.sin(spawnPoint.yaw);
+    const PORTAL_FORWARD_OFFSET = 8;
+    const PORTAL_SPACING = 5;
+    const rowX = spawnPoint.x + fwdX * PORTAL_FORWARD_OFFSET;
+    const rowZ = spawnPoint.z + fwdZ * PORTAL_FORWARD_OFFSET;
+
+    const raceX = rowX + rightX * PORTAL_SPACING;
+    const raceZ = rowZ + rightZ * PORTAL_SPACING;
+    this.racePoint = {
+      x: raceX,
+      z: raceZ,
+      yaw: Math.atan2(spawnPoint.x - raceX, spawnPoint.z - raceZ),
       radius: fallbackLeave.radius,
       holdSeconds: fallbackLeave.holdSeconds
     };
-    // RACE ONLINE sign: fixed offset beside the spawn pad (same hold-E interaction as leaving).
-    const spawnPoint = layoutSpawn(layout);
-    this.racePoint = {
-      x: spawnPoint.x - 4,
-      z: spawnPoint.z,
-      radius: fallbackLeave.radius,
-      holdSeconds: fallbackLeave.holdSeconds
+
+    const creatorX = rowX - rightX * PORTAL_SPACING;
+    const creatorZ = rowZ - rightZ * PORTAL_SPACING;
+    this.creatorEntrySlot = {
+      x: creatorX,
+      z: creatorZ,
+      yaw: Math.atan2(spawnPoint.x - creatorX, spawnPoint.z - creatorZ)
     };
 
     this.root = new TransformNode('movement_sandbox_root', scene);
@@ -248,6 +297,12 @@ export class MovementSandbox implements MovementWorld {
     return this.fullLayout;
   }
 
+  /** World position + facing for the Course Creator's own entry portal (built by CreatorEditor),
+   *  kept in the same row as the leave/race portals so all three read as one connected hub. */
+  creatorEntryPoint(): { x: number; z: number; yaw: number } {
+    return this.creatorEntrySlot;
+  }
+
   /** Tee course-run events (start/checkpoint/finish/reset) — used by the online race relay. */
   setRunEventListener(listener: ((event: RaceRunEvent) => void) | null): void {
     this.runEventListener = listener;
@@ -301,6 +356,8 @@ export class MovementSandbox implements MovementWorld {
   dispose(): void {
     this.courseHud?.dispose();
     this.geometry?.dispose();
+    this.leavePortalArch?.dispose();
+    this.racePortalArch?.dispose();
     for (const d of this.disposables) d.dispose();
     for (const m of this.materials) m.dispose();
     this.root.dispose();
@@ -362,6 +419,7 @@ export class MovementSandbox implements MovementWorld {
 
   update(dt: number, player: PlayerController, input: InputManager, onAction: (action: SandboxAction) => void): void {
     if (!this.active) return;
+    this.elapsed += dt;
     // Ability pads / kill blocks / checkpoint respawns — the SAME runtime creator Playtest runs,
     // called (like playtest) AFTER the player's movement update for this frame, so velocity written
     // by a pad carries into the next tick.
@@ -389,6 +447,7 @@ export class MovementSandbox implements MovementWorld {
     const ldx = p.x - leave.x;
     const ldz = p.z - leave.z;
     const nearLeave = ldx * ldx + ldz * ldz <= leave.radius * leave.radius;
+    let leaveFired = false;
     if (!nearLeave || !held) {
       this.leaveHold = 0;
       this.leaveLatched = false;
@@ -396,11 +455,15 @@ export class MovementSandbox implements MovementWorld {
       this.leaveHold = Math.min(leave.holdSeconds, this.leaveHold + dt);
       if (this.leaveHold >= leave.holdSeconds) {
         this.leaveLatched = true;
-        onAction('leave');
-        // Leaving the yard tears the sandbox down; never also fire the RACE hold on the same frame
-        // (a creator can place the leave portal within the RACE sign's radius, overlapping them).
-        return;
+        leaveFired = true;
       }
+    }
+    this.leavePortalArch?.update(this.elapsed, nearLeave ? 1 : 0, this.leaveHold / leave.holdSeconds);
+    if (leaveFired) {
+      onAction('leave');
+      // Leaving the yard tears the sandbox down; never also fire the RACE hold on the same frame
+      // (a creator can place the leave portal within the RACE sign's radius, overlapping them).
+      return;
     }
 
     // RACE ONLINE sign (hold E) — same interaction as the leave portal.
@@ -418,6 +481,7 @@ export class MovementSandbox implements MovementWorld {
         onAction('race');
       }
     }
+    this.racePortalArch?.update(this.elapsed, nearRace ? 1 : 0, this.raceHold / race.holdSeconds);
   }
 
   // ---------------------------------------------------------------------------------------------
@@ -509,13 +573,11 @@ export class MovementSandbox implements MovementWorld {
   }
 
   private deckMat!: StandardMaterial;
-  private padMat!: StandardMaterial;
   private accentMat!: StandardMaterial;
   private boundaryMat!: StandardMaterial;
 
   private createMaterials(): void {
     this.deckMat = this.gridMaterial('sandbox_ground', new Color3(0.40, 0.43, 0.47));
-    this.padMat = this.gridMaterial('sandbox_pad', new Color3(0.14, 0.27, 0.52));
     this.accentMat = this.gridMaterial('sandbox_accent', new Color3(0.10, 0.40, 0.52));
     this.boundaryMat = this.gridMaterial('sandbox_boundary', new Color3(0.30, 0.33, 0.38));
   }
@@ -550,25 +612,36 @@ export class MovementSandbox implements MovementWorld {
 
   private buildSpawn(): void {
     const spawn = layoutSpawn(this.fullLayout);
-    const leave = this.leavePoint;
 
     // Spawn pad + title sign.
     this.gridBox('sandbox_spawn_pad', spawn.x, 0.04, spawn.z, 6, 0.08, 6, this.accentMat);
     this.sign('sandbox_title', 'MOVEMENT SANDBOX', new Vector3(spawn.x + 1.5, 2.4, spawn.z), 4.0, 0.9);
     this.sign('sandbox_sub', 'FREE MOVEMENT PRACTICE', new Vector3(spawn.x + 1.5, 1.5, spawn.z), 3.6, 0.6);
 
-    // Leave portal frame (hold E).
-    for (const dx of [-0.7, 0.7]) {
-      this.gridBox(`sandbox_leave_post_${dx}`, leave.x + dx, 1.2, leave.z, 0.18, 2.4, 0.18, this.padMat);
-    }
-    this.gridBox('sandbox_leave_beam', leave.x, 2.3, leave.z, 1.7, 0.2, 0.18, this.accentMat);
-    this.sign('sandbox_leave_sign', 'LEAVE\nHOLD E', new Vector3(leave.x, 2.95, leave.z), 1.8, 0.85);
+    // Back to Lobby portal (hold E) — same visual language as the practice-lobby mode portals
+    // (see PortalArch), tinted green. Parented to this.root so it enables/disables with the yard.
+    const leave = this.leavePoint;
+    this.leavePortalArch = new PortalArch({
+      id: 'sandbox_leave',
+      scene: this.scene,
+      position: new Vector3(leave.x, 0, leave.z),
+      yaw: leave.yaw,
+      title: 'BACK TO LOBBY',
+      palette: BACK_TO_LOBBY_PALETTE
+    });
+    this.leavePortalArch.root.parent = this.root;
 
-    // RACE ONLINE sign (hold E) — private ghost races on this course with friends.
+    // Race Online portal (hold E) — private ghost races on this course with friends, tinted orange.
     const race = this.racePoint;
-    this.gridBox('sandbox_race_pad', race.x, 0.04, race.z, 2.4, 0.08, 2.4, this.padMat);
-    this.gridBox('sandbox_race_post', race.x, 1.1, race.z - 0.6, 0.16, 2.2, 0.16, this.accentMat);
-    this.sign('sandbox_race_sign', 'RACE ONLINE\nHOLD E', new Vector3(race.x, 2.6, race.z - 0.6), 2.2, 0.95);
+    this.racePortalArch = new PortalArch({
+      id: 'sandbox_race',
+      scene: this.scene,
+      position: new Vector3(race.x, 0, race.z),
+      yaw: race.yaw,
+      title: 'RACE ONLINE',
+      palette: RACE_ONLINE_PALETTE
+    });
+    this.racePortalArch.root.parent = this.root;
   }
 
   // --- helpers ---------------------------------------------------------------------------------

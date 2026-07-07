@@ -1,4 +1,4 @@
-import{S as r}from"./index-CNl3XHRU.js";const e="textureMergerPixelShader",n=`#ifdef USE_TEXTURE0
+import{S as r}from"./index-CyaWjd8q.js";const e="textureMergerPixelShader",n=`#ifdef USE_TEXTURE0
 var inputTexture0Sampler: sampler;var inputTexture0: texture_2d<f32>;
 #endif
 #ifdef USE_TEXTURE1
