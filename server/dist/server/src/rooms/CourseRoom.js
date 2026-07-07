@@ -12,16 +12,20 @@ class CourseRoom extends colyseus_1.Room {
     lastRestartAtMs = 0;
     racers = new Map();
     onCreate(options = {}) {
-        activeCourseRoomCount += 1;
-        this.setPrivate(true);
-        this.maxClients = courseRace_1.COURSE_RACE_LIMITS.maxRacers;
-        // Poses at ~20/s plus events/restart headroom. Colyseus force-closes clients exceeding this.
-        this.maxMessagesPerSecond = 60;
+        // Validate BEFORE counting this room as active: a rejected create throws, and if the framework
+        // then skips onDispose (room never fully created) an increment here would leak the counter until
+        // the capacity guard locks out all course rooms. onDispose clamps at 0, so counting only after a
+        // successful create is correct whether or not onDispose fires for a failed one.
         const check = (0, courseRace_1.sanityCheckCourseJson)(options.courseJson);
         if (!check.ok) {
             // Rejecting creation surfaces as a failed client.create() promise — the creator sees the error.
             throw new Error(`course rejected: ${check.reason}`);
         }
+        activeCourseRoomCount += 1;
+        this.setPrivate(true);
+        this.maxClients = courseRace_1.COURSE_RACE_LIMITS.maxRacers;
+        // Poses at ~20/s plus events/restart headroom. Colyseus force-closes clients exceeding this.
+        this.maxMessagesPerSecond = 60;
         this.courseJson = options.courseJson;
         this.log(`race room created objects=${check.objectCount} courseChars=${this.courseJson.length}`);
         this.onMessage('race-pose', (client, message) => {

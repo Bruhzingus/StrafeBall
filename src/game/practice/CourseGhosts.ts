@@ -38,6 +38,8 @@ const SNAP_DISTANCE = 12;
 
 interface Ghost {
   root: TransformNode;
+  /** Unrotated node the nametag hangs from — a billboard under the yaw-rotated root misbehaves. */
+  nameNode: TransformNode;
   meshes: Mesh[];
   materials: StandardMaterial[];
   nameTexture: DynamicTexture;
@@ -59,6 +61,7 @@ export class CourseGhosts {
       ghost = this.buildGhost(id, name);
       this.ghosts.set(id, ghost);
       ghost.root.position.set(pose.x, pose.y, pose.z);
+      ghost.nameNode.position.set(pose.x, pose.y, pose.z);
       ghost.root.rotation.y = pose.yaw;
     }
     ghost.target = pose;
@@ -90,6 +93,8 @@ export class CourseGhosts {
       } else {
         p.set(p.x + dx * alpha, p.y + dy * alpha, p.z + dz * alpha);
       }
+      // The nametag node tracks position only (never rotates) so its billboard stays upright.
+      ghost.nameNode.position.copyFrom(p);
       // Shortest-arc yaw approach so a turn through ±π doesn't spin the long way round.
       let dyaw = t.yaw - ghost.root.rotation.y;
       dyaw = ((dyaw + Math.PI) % (Math.PI * 2) + Math.PI * 2) % (Math.PI * 2) - Math.PI;
@@ -163,16 +168,21 @@ export class CourseGhosts {
     nameMat.disableLighting = true;
     nameMat.backFaceCulling = false;
 
+    // The nametag hangs from its OWN unrotated node (tracked to the ghost's position each frame in
+    // update()) rather than the yaw-rotated root — a BILLBOARDMODE plane under a rotated parent
+    // renders skewed/backwards as the parent turns.
+    const nameNode = new TransformNode(`race_ghost_name_node_${id}`, this.scene);
     const namePlane = MeshBuilder.CreatePlane(`race_ghost_name_plane_${id}`, { width: 1.7, height: 0.42 }, this.scene);
     namePlane.position.y = 2.35;
     namePlane.material = nameMat;
-    namePlane.parent = root;
+    namePlane.parent = nameNode;
     namePlane.isPickable = false;
     namePlane.billboardMode = Mesh.BILLBOARDMODE_ALL;
     meshes.push(namePlane);
 
     return {
       root,
+      nameNode,
       meshes,
       materials: [bodyMat, nameMat],
       nameTexture,
@@ -186,6 +196,7 @@ export class CourseGhosts {
     for (const mesh of ghost.meshes) mesh.dispose();
     for (const material of ghost.materials) material.dispose();
     ghost.nameTexture.dispose();
+    ghost.nameNode.dispose();
     ghost.root.dispose();
   }
 }

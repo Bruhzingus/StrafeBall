@@ -17,6 +17,9 @@ export interface CourseRaceUICallbacks {
   onJoin(code: string, name: string): void;
   onLeaveRace(): void;
   onRestartAll(): void;
+  /** Dismiss the create/join overlay. Routed through the session so pointer-lock suppression (set
+   *  when the overlay opened) is released — hiding the overlay alone would softlock the player. */
+  onCloseOverlay(): void;
 }
 
 export class CourseRaceUI {
@@ -86,7 +89,16 @@ export class CourseRaceUI {
     this.overlayStatus = el('div', 'race-overlay-status');
 
     const actions = el('div', 'creator-modal-actions');
-    actions.appendChild(button('Close', 'creator-btn', () => this.closeOverlay()));
+    actions.appendChild(button('Close', 'creator-btn', () => this.callbacks.onCloseOverlay()));
+
+    // Escape dismisses the overlay too (keydown bubbles up from the focused inputs), matching the
+    // game's other modals. Routed through the session callback so suppression is released.
+    this.overlay.addEventListener('keydown', (e) => {
+      if (e.key === 'Escape') {
+        e.preventDefault();
+        this.callbacks.onCloseOverlay();
+      }
+    });
 
     card.append(title, intro, nameRow, this.createBtn, divider, joinRow, this.joinBtn, this.overlayStatus, actions);
     this.overlay.appendChild(card);

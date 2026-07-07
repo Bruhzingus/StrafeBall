@@ -397,6 +397,9 @@ export class MovementSandbox implements MovementWorld {
       if (this.leaveHold >= leave.holdSeconds) {
         this.leaveLatched = true;
         onAction('leave');
+        // Leaving the yard tears the sandbox down; never also fire the RACE hold on the same frame
+        // (a creator can place the leave portal within the RACE sign's radius, overlapping them).
+        return;
       }
     }
 

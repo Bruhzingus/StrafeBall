@@ -54,7 +54,8 @@ export class CourseRaceSession {
       onCreate: (name) => void this.create(name),
       onJoin: (code, name) => void this.join(code, name),
       onLeaveRace: () => this.leaveSession('left'),
-      onRestartAll: () => this.client.sendRestart()
+      onRestartAll: () => this.client.sendRestart(),
+      onCloseOverlay: () => this.closeOverlay()
     });
     this.client = new CourseRaceClient({
       onWelcome: (welcome) => {
