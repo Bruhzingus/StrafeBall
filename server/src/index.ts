@@ -2,6 +2,7 @@ import { defineRoom, defineServer } from 'colyseus';
 import { describeNetConfig } from '../../shared/netConfig';
 import { DuelRoom } from './rooms/DuelRoom';
 import { CourseRoom } from './rooms/CourseRoom';
+import { EditRoom } from './rooms/EditRoom';
 
 const DEFAULT_PORT = 2567;
 
@@ -19,7 +20,9 @@ export const server = defineServer({
   rooms: {
     duel: defineRoom(DuelRoom),
     // Private ghost-relay course races (see CourseRoom) — fully separate from the duel netcode.
-    course: defineRoom(CourseRoom)
+    course: defineRoom(CourseRoom),
+    // Private real-time collaborative course editing (see EditRoom) — relay + lock arbiter only.
+    coop: defineRoom(EditRoom)
   }
 });
 

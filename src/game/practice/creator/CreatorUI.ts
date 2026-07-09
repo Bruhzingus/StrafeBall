@@ -108,6 +108,8 @@ export interface CreatorBridge {
 
   resetPlayer(): void;
   exitCreator(): void;
+  /** Open the co-op create/join overlay (real-time collaborative editing). */
+  startCoop(): void;
 
   armModule(type: string | null): void;
   getArmedModule(): string | null;
@@ -432,8 +434,10 @@ export class CreatorUI {
 
     const saveBtn = button('Save', 'creator-btn', () => this.bridge.quickSave());
     saveBtn.title = 'Save a manual restore point (Ctrl+S). Your work also autosaves.';
+    const coopBtn = button('⚇ Co-op', 'creator-btn creator-btn-primary', () => this.bridge.startCoop());
+    coopBtn.title = 'Build this course together with a friend in real time';
     const row1 = el('div', 'creator-modebar-row creator-modebar-row--primary');
-    row1.append(modeGroup, saveBtn, this.autosaveStatusEl, this.coursesBtn, this.settingsBtn);
+    row1.append(modeGroup, saveBtn, this.autosaveStatusEl, coopBtn, this.coursesBtn, this.settingsBtn);
     // Always-visible headline row: share this course as a file / add a shared file as a new course.
     const exportBtn = button('⤓ Export File', 'creator-btn creator-btn-primary', () => this.bridge.exportJson());
     exportBtn.title = 'Download this course as a .json file you can share';

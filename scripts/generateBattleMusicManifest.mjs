@@ -6,6 +6,9 @@ import { parseFile } from 'music-metadata';
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const repoRoot = path.resolve(__dirname, '..');
 const filenamePattern = /^(?<artist>.+) - (?<title>.+)\.mp3$/i;
+const lobbyFilenameOverrides = new Map([
+  ["Claude's Plan.mp3", { artist: 'Jeff Guo', title: "Claude's Plan" }]
+]);
 const catalogs = [
   {
     label: 'battle',
@@ -109,6 +112,9 @@ function parseBattleFilename(filename) {
 }
 
 function parseLobbyFilename(filename) {
+  const override = lobbyFilenameOverrides.get(filename);
+  if (override) return override;
+
   if (!filename.toLowerCase().endsWith('.mp3')) return null;
   const stem = filename.slice(0, -4).replace(/-\d+$/, '');
   const normalized = stem.replaceAll('_', ' ');

@@ -2155,6 +2155,11 @@ export class ArenaScene {
     this.ballManager.spawnCenterLineBalls();
     this.player.hands.clearHands();
     this.player.teleportTo(ret.position, ret.yaw, 0);
+    // Live refresh (#1): dispose the yard so the NEXT entry rebuilds it from the current course —
+    // course edits, project switches, and co-op results all show without a page reload. The sandbox
+    // is only built on a deliberate lobby-portal entry, so rebuilding per entry is cheap.
+    sandbox.dispose();
+    this.movementSandbox = null;
     this.hud.showScoreEvent('PRACTICE LOBBY', 'Left the movement sandbox', 'neutral');
   }
 

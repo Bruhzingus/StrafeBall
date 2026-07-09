@@ -7,7 +7,7 @@
  * reliable for a course-sized layout.
  */
 
-import { CreatorLayout, cloneLayout } from './CreatorLayout';
+import { CreatorLayout, CreatorLayoutObject, cloneLayout } from './CreatorLayout';
 
 const MAX_HISTORY = 80;
 
@@ -61,4 +61,33 @@ export class CreatorHistory {
     this.present = next;
     return cloneLayout(this.present);
   }
+
+  /**
+   * Fold a COLLABORATOR's per-object change into every snapshot (present + both stacks) so a local
+   * undo/redo never reverts a remote object. `object` upserts by id; null deletes by id. In a co-op
+   * session an object a collaborator is editing is locked away from the local user, so this only ever
+   * touches objects the local user isn't manipulating — keeping their own undo timeline intact while
+   * making remote edits "sticky" across it. No-op history-wise (does not push/clear any stack).
+   */
+  rebaseObject(id: string, object: CreatorLayoutObject | null): void {
+    applyObjectChange(this.present, id, object);
+    for (const snap of this.undoStack) applyObjectChange(snap, id, object);
+    for (const snap of this.redoStack) applyObjectChange(snap, id, object);
+  }
+}
+
+function applyObjectChange(layout: CreatorLayout, id: string, object: CreatorLayoutObject | null): void {
+  const idx = layout.objects.findIndex((o) => o.id === id);
+  if (object === null) {
+    if (idx >= 0) layout.objects.splice(idx, 1);
+    return;
+  }
+  const clone = cloneObject(object);
+  if (idx >= 0) layout.objects[idx] = clone;
+  else layout.objects.push(clone);
+}
+
+function cloneObject(object: CreatorLayoutObject): CreatorLayoutObject {
+  if (typeof structuredClone === 'function') return structuredClone(object);
+  return JSON.parse(JSON.stringify(object)) as CreatorLayoutObject;
 }

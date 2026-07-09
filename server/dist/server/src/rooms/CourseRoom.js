@@ -100,6 +100,13 @@ class CourseRoom extends colyseus_1.Room {
             eventTokensRefilledAtMs: Date.now()
         });
         this.log(`racer joined id=${client.sessionId} name="${name}" host=${client.sessionId === this.hostSessionId}`);
+        // Re-flag every existing racer's last-known pose so the next relay tick re-sends it to everyone,
+        // including this joiner. Without this a newcomer sees no ghosts until each other racer moves —
+        // so a lobby of players lined up stationary at the start line would appear as an empty course.
+        for (const racer of this.racers.values()) {
+            if (racer.pose)
+                racer.poseDirty = true;
+        }
         client.send('race-welcome', {
             courseJson: this.courseJson,
             selfId: client.sessionId,

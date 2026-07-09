@@ -85,6 +85,9 @@ export class CreatorGeometry {
   private selectionBox: Mesh | null = null;
   /** Extra pooled highlight boxes for multi-select (selectionBox is index 0). */
   private readonly extraSelectionBoxes: Mesh[] = [];
+  /** Red highlight pool for objects a co-op collaborator has locked (not locally editable). */
+  private lockBox: Mesh | null = null;
+  private readonly extraLockBoxes: Mesh[] = [];
   // Grab sphere at the move-gizmo origin: pick it to free-drag the object along the cursor ray.
   private centerHandle: Mesh | null = null;
   private readonly previewBuild: Array<{ dispose(): void }> = [];
@@ -134,6 +137,7 @@ export class CreatorGeometry {
 
     this.ensureGrid();
     this.ensureSelectionBox();
+    this.ensureLockBox();
     this.positionGrid(layout);
 
     for (const obj of layout.objects) {
@@ -596,6 +600,51 @@ export class CreatorGeometry {
     return box;
   }
 
+  private ensureLockBox(): void {
+    if (!this.lockBox) this.lockBox = this.createLockBoxMesh('creator_lock');
+  }
+
+  private lockMaterial(): StandardMaterial {
+    const cached = this.cachedMaterials.get('__lock');
+    if (cached) return cached;
+    const mat = new StandardMaterial('creator_lock_mat', this.scene);
+    mat.emissiveColor = new Color3(1.0, 0.16, 0.16); // illuminated red: "a collaborator is editing this"
+    mat.diffuseColor = new Color3(0, 0, 0);
+    mat.specularColor = new Color3(0, 0, 0);
+    mat.disableLighting = true;
+    mat.wireframe = true;
+    this.cachedMaterials.set('__lock', mat);
+    return mat;
+  }
+
+  private createLockBoxMesh(name: string): Mesh {
+    const box = MeshBuilder.CreateBox(name, { size: 1 }, this.scene);
+    box.material = this.lockMaterial();
+    box.isPickable = false;
+    box.setEnabled(false);
+    box.parent = this.root;
+    return box;
+  }
+
+  /** Red highlight for objects a co-op collaborator has locked (mirrors setSelectionMany, pooled). */
+  setLockedMany(objs: readonly CreatorLayoutObject[]): void {
+    this.ensureLockBox();
+    if (!this.lockBox) return;
+    while (this.extraLockBoxes.length < Math.max(0, objs.length - 1)) {
+      this.extraLockBoxes.push(this.createLockBoxMesh(`creator_lock_${this.extraLockBoxes.length + 1}`));
+    }
+    const pool: Mesh[] = [this.lockBox, ...this.extraLockBoxes];
+    for (let i = 0; i < pool.length; i += 1) {
+      const box = pool[i];
+      const obj = i < objs.length && this.overlaysEnabled ? objs[i] : null;
+      if (!obj) {
+        box.setEnabled(false);
+        continue;
+      }
+      this.placeSelectionBox(box, obj);
+    }
+  }
+
   setSelection(obj: CreatorLayoutObject | null): void {
     this.setSelectionMany(obj ? [obj] : []);
   }
@@ -889,6 +938,8 @@ export class CreatorGeometry {
     this.applyOverlayVisibility();
     if (!enabled && this.selectionBox) this.selectionBox.setEnabled(false);
     if (!enabled) for (const box of this.extraSelectionBoxes) box.setEnabled(false);
+    if (!enabled && this.lockBox) this.lockBox.setEnabled(false);
+    if (!enabled) for (const box of this.extraLockBoxes) box.setEnabled(false);
     if (!enabled && this.centerHandle) this.centerHandle.setEnabled(false);
   }
 
@@ -1196,6 +1247,9 @@ export class CreatorGeometry {
     this.disposePreview();
     this.disposePerBuild();
     this.selectionBox?.dispose();
+    for (const box of this.extraSelectionBoxes) box.dispose();
+    this.lockBox?.dispose();
+    for (const box of this.extraLockBoxes) box.dispose();
     this.centerHandle?.dispose();
     this.gridMesh?.dispose();
     for (const mat of this.cachedMaterials.values()) mat.dispose();

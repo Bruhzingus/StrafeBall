@@ -72,6 +72,8 @@ import { CONTROL_KEYS } from '../../config/controls';
 import { CreatorReplay } from './CreatorReplay';
 import { CreatorGeometry } from './CreatorGeometry';
 import { CreatorHistory } from './CreatorHistory';
+import { CoopSession, type CoopEditorBridge } from './CoopSession';
+import type { CoopMode } from '../../../../shared/coopEdit';
 import { CreatorBridge, CreatorSnapSettings, CreatorUI } from './CreatorUI';
 import {
   type ProjectSummary,
@@ -143,9 +145,23 @@ export type { CreatorSpawnerMarkers } from './CreatorLayout';
 
 type Mode = 'build' | 'playtest';
 
-export class CreatorEditor implements CreatorBridge {
+export class CreatorEditor implements CreatorBridge, CoopEditorBridge {
   private active = false;
   private mode: Mode = 'build';
+
+  // --- Co-op collaborative editing (see CoopSession). Null / inactive = pure offline editor. ---
+  private coop: CoopSession | null = null;
+  /** id → JSON of each object as last synced, so a local commit relays only what changed. */
+  private readonly coopShadow = new Map<string, string>();
+  /** True while applying a REMOTE object change, so the resulting rebuild doesn't relay it back. */
+  private coopApplyingRemote = false;
+  /** Authoritative lock map (object id → owner session id) + our own session id. */
+  private readonly coopLocks = new Map<string, string>();
+  private coopSelfId = '';
+  /** Objects WE currently hold a lock on (mirrors our selection while in a session). */
+  private readonly coopMyLocks = new Set<string>();
+  /** While a joiner edits the host's course, don't autosave it into the joiner's own project slot. */
+  private coopSuppressAutosave = false;
 
   private layout: CreatorLayout;
   /** The active course project this editor session reads/writes (see CreatorStorage projects). */
@@ -237,7 +253,9 @@ export class CreatorEditor implements CreatorBridge {
 
   // Entry portal (3D prop near the sandbox spawn while the editor is not active).
   private entryPortal: PortalArch | null = null;
-  private entrySignBuilt = false;
+  /** Position/facing signature of the built entry portal, so it can be repositioned when the yard is
+   *  rebuilt around a different course (the entry point tracks the current course's spawn). */
+  private entryPortalKey = '';
 
   // Bound listeners (added in build mode only).
   private readonly onKeyDown = (e: KeyboardEvent) => this.handleKeyDown(e);
@@ -358,7 +376,7 @@ export class CreatorEditor implements CreatorBridge {
   }
 
   setEntrySignVisible(visible: boolean): void {
-    if (visible && !this.entrySignBuilt) this.buildEntrySign();
+    if (visible) this.ensureEntryPortalAtCurrentPoint();
     this.entryPortal?.setEnabled(visible && !this.active);
   }
 
@@ -425,6 +443,29 @@ export class CreatorEditor implements CreatorBridge {
       if (this.replay.isRecording()) this.replay.record(this.player.root.position, this.player.root.rotation.y);
       this.ui.setRecordingTimer(this.replay.recordingSeconds());
     }
+    this.updateCoopPresence(dt);
+  }
+
+  /** Relay our pose (fly camera in Build, player in first-person Playtest) + smooth collaborator avatars. */
+  private updateCoopPresence(dt: number): void {
+    const coop = this.coop;
+    if (!coop || !coop.isActive()) return;
+    let x: number, y: number, z: number, yaw: number;
+    let coopMode: CoopMode;
+    if (this.mode === 'playtest' && !this.playtestFly) {
+      const eye = this.player.camera.globalPosition;
+      x = eye.x; y = eye.y; z = eye.z;
+      yaw = this.player.root.rotation.y;
+      coopMode = 'playtest';
+    } else {
+      const cam = this.editorCamera;
+      x = cam ? cam.position.x : 0;
+      y = cam ? cam.position.y : 0;
+      z = cam ? cam.position.z : 0;
+      yaw = this.camYaw;
+      coopMode = 'build';
+    }
+    coop.updateFrame(dt, x, y, z, yaw, coopMode, this.selectedId ?? '');
   }
 
   // ---------------------------------------------------------------------------------------------
@@ -522,6 +563,7 @@ export class CreatorEditor implements CreatorBridge {
     this.editorCamera?.dispose();
     this.editorCamera = null;
     this.entryPortal?.dispose();
+    this.coop?.dispose();
     this.ui.dispose();
   }
 
@@ -650,7 +692,15 @@ export class CreatorEditor implements CreatorBridge {
     this.ui.toast('Exited Course Creator');
   }
 
+  /** CreatorBridge: open the co-op create/join overlay (real-time collaborative editing). */
+  startCoop(): void {
+    this.toggleCoopOverlay();
+  }
+
   private teardownActive(restoreSandbox: boolean): void {
+    // Exiting the editor (or going online) ends any co-op session first, so its teardown (which may
+    // re-adopt the joiner's own project) runs before we flush + hand the yard back.
+    this.coop?.forceClose();
     this.flushAutosave(); // exit/lock/going-online: never leave a pending write behind
     this.disablePlaytestFly(false);
     this.hooks.onPlaytestEnd(); // despawn any playtest actors before tearing down
@@ -818,7 +868,7 @@ export class CreatorEditor implements CreatorBridge {
   }
 
   private handleKeyDown(e: KeyboardEvent): void {
-    if (this.ui.isOverlayOpen() || isEditableTarget(e.target)) return;
+    if (this.ui.isOverlayOpen() || this.coop?.isOverlayOpen() || isEditableTarget(e.target)) return;
     const code = e.code;
 
     // Escape while carrying an object by the center handle cancels the drag (restores the position).
@@ -1176,6 +1226,11 @@ export class CreatorEditor implements CreatorBridge {
   // ---------------------------------------------------------------------------------------------
 
   private select(id: string | null): void {
+    if (id && this.isLockedByOther(id)) {
+      // A collaborator is editing this object — can't grab it. Clear to nothing rather than select it.
+      this.notify('Locked', 'A collaborator is editing that object');
+      id = null;
+    }
     this.selectedId = id && this.findObject(id) ? id : null;
     this.selectedIds.clear();
     if (this.selectedId) this.selectedIds.add(this.selectedId);
@@ -1190,6 +1245,7 @@ export class CreatorEditor implements CreatorBridge {
       this.selectedIds.delete(id);
       if (this.selectedId === id) this.selectedId = this.selectedIds.values().next().value ?? null;
     } else {
+      if (this.isLockedByOther(id)) return; // can't add an object a collaborator is editing
       this.selectedIds.add(id);
       this.selectedId = id;
     }
@@ -1197,11 +1253,16 @@ export class CreatorEditor implements CreatorBridge {
     this.ui.refresh();
   }
 
-  /** Ctrl+A: select every object in the layout. */
+  /** Ctrl+A: select every object in the layout (skips objects a collaborator has locked). */
   private selectAll(): void {
     this.selectedIds.clear();
-    for (const o of this.layout.objects) this.selectedIds.add(o.id);
-    this.selectedId = this.layout.objects.length > 0 ? this.layout.objects[this.layout.objects.length - 1].id : null;
+    let last: string | null = null;
+    for (const o of this.layout.objects) {
+      if (this.isLockedByOther(o.id)) continue;
+      this.selectedIds.add(o.id);
+      last = o.id;
+    }
+    this.selectedId = last;
     this.refreshSelectionVisual();
     this.ui.refresh();
   }
@@ -1209,7 +1270,7 @@ export class CreatorEditor implements CreatorBridge {
   /** Marquee result: replace (or, additive, extend) the selection with the boxed ids. */
   private selectMany(ids: readonly string[], additive: boolean): void {
     if (!additive) this.selectedIds.clear();
-    for (const id of ids) if (this.findObject(id)) this.selectedIds.add(id);
+    for (const id of ids) if (this.findObject(id) && !this.isLockedByOther(id)) this.selectedIds.add(id);
     if (!this.selectedId || !this.selectedIds.has(this.selectedId)) {
       this.selectedId = this.selectedIds.values().next().value ?? null;
     }
@@ -1256,6 +1317,7 @@ export class CreatorEditor implements CreatorBridge {
     this.geometry.setSelectionMany(objs);
     if (this.mode === 'build') this.reattachGizmo();
     this.syncCenterHandle();
+    this.syncCoopLocks();
   }
 
   private ensureGizmoManager(): GizmoManager {
@@ -1925,14 +1987,14 @@ export class CreatorEditor implements CreatorBridge {
   /** Toggle an object's opacity from the outliner. Transparent objects stay listed and selectable. */
   toggleObjectVisibility(id: string): void {
     const obj = this.findObject(id);
-    if (!obj) return;
+    if (!obj || this.isLockedByOther(id)) return;
     obj.opacity = objectOpacity(obj) <= 0 ? 1 : 0;
     delete obj.visible;
     this.commit(this.selectedId);
   }
 
   deleteObjectById(id: string): void {
-    if (!this.findObject(id)) return;
+    if (!this.findObject(id) || this.isLockedByOther(id)) return;
     this.layout.objects = this.layout.objects.filter((o) => o.id !== id);
     if (this.selectedId === id) this.selectedId = null;
     this.commit(this.selectedId);
@@ -2183,6 +2245,7 @@ export class CreatorEditor implements CreatorBridge {
     }
     this.rebuildAfterChange();
     this.scheduleAutosave();
+    this.coopSyncLocalChanges();
   }
 
   /** Replace the whole layout (undo/redo/load/import/reset). `record` adds a history entry. */
@@ -2194,6 +2257,7 @@ export class CreatorEditor implements CreatorBridge {
     this.pruneSelection();
     this.rebuildAfterChange();
     this.scheduleAutosave();
+    this.coopSyncLocalChanges();
   }
 
   // ---------------------------------------------------------------------------------------------
@@ -2206,6 +2270,8 @@ export class CreatorEditor implements CreatorBridge {
    * at least every AUTOSAVE_MAX_INTERVAL_MS.
    */
   private scheduleAutosave(): void {
+    // A joiner is editing the HOST's course — never write it into the joiner's own project slot.
+    if (this.coopSuppressAutosave) return;
     const now = performance.now();
     if (!this.autosavePending) {
       this.autosavePending = true;
@@ -2236,6 +2302,10 @@ export class CreatorEditor implements CreatorBridge {
       window.clearTimeout(this.autosaveTimer);
       this.autosaveTimer = null;
     }
+    if (this.coopSuppressAutosave) {
+      this.autosavePending = false;
+      return;
+    }
     if (!this.autosavePending) return;
     this.autosavePending = false;
     if (saveProjectAutosave(this.projectId, this.layout)) {
@@ -2258,6 +2328,209 @@ export class CreatorEditor implements CreatorBridge {
       this.installWorldAndCollision();
     }
     this.refreshSelectionVisual();
+    this.refreshLockVisual();
+    this.ui.refresh();
+  }
+
+  // ---------------------------------------------------------------------------------------------
+  // Co-op collaborative editing (see CoopSession) — all no-ops unless a session is active.
+  // ---------------------------------------------------------------------------------------------
+
+  /** Open (or close) the co-op create/join overlay. No-op while online or already in a session. */
+  toggleCoopOverlay(): void {
+    if (!this.active || this.hooks.isOnline()) return;
+    this.ensureCoop();
+    this.coop?.toggleOverlay();
+  }
+
+  private ensureCoop(): void {
+    if (this.coop) return;
+    const hud = document.getElementById('hud-root') ?? document.body;
+    this.coop = new CoopSession(this.scene, hud, this.input, this);
+  }
+
+  isCoopActive(): boolean {
+    return !!this.coop?.isActive();
+  }
+
+  /** Is `id` locked by ANOTHER collaborator (can't be selected/edited locally)? */
+  private isLockedByOther(id: string): boolean {
+    const owner = this.coopLocks.get(id);
+    return !!owner && owner !== this.coopSelfId;
+  }
+
+  /** After a local commit/apply, relay only the objects that changed since the last sync (batched). */
+  private coopSyncLocalChanges(): void {
+    const coop = this.coop;
+    if (!coop || !coop.isActive() || this.coopApplyingRemote) return;
+    const upserts: CreatorLayoutObject[] = [];
+    const deletes: string[] = [];
+    const seen = new Set<string>();
+    for (const obj of this.layout.objects) {
+      seen.add(obj.id);
+      const json = JSON.stringify(obj);
+      if (this.coopShadow.get(obj.id) !== json) {
+        this.coopShadow.set(obj.id, json);
+        upserts.push(obj);
+      }
+    }
+    for (const id of [...this.coopShadow.keys()]) {
+      if (!seen.has(id)) {
+        this.coopShadow.delete(id);
+        deletes.push(id);
+      }
+    }
+    if (upserts.length > 0 || deletes.length > 0) coop.relayEdit(upserts, deletes);
+    coop.noteLatestCourse(this.layout);
+  }
+
+  private coopInitShadow(): void {
+    this.coopShadow.clear();
+    for (const obj of this.layout.objects) this.coopShadow.set(obj.id, JSON.stringify(obj));
+  }
+
+  /** Lock the objects we have selected + release ones we deselected (build mode only). */
+  private syncCoopLocks(): void {
+    const coop = this.coop;
+    if (!coop || !coop.isActive()) return;
+    const want = this.mode === 'build' ? this.selectedIds : new Set<string>();
+    for (const id of want) {
+      if (!this.coopMyLocks.has(id)) {
+        this.coopMyLocks.add(id);
+        coop.relayLock(id);
+      }
+    }
+    for (const id of [...this.coopMyLocks]) {
+      if (!want.has(id)) {
+        this.coopMyLocks.delete(id);
+        coop.relayUnlock(id);
+      }
+    }
+  }
+
+  /** Red highlight for objects a collaborator has locked (objects owned by others). */
+  private refreshLockVisual(): void {
+    if (!this.coop?.isActive()) {
+      this.geometry.setLockedMany([]);
+      return;
+    }
+    const locked: CreatorLayoutObject[] = [];
+    for (const [id, owner] of this.coopLocks) {
+      if (owner === this.coopSelfId) continue;
+      const obj = this.findObject(id);
+      if (obj) locked.push(obj);
+    }
+    this.geometry.setLockedMany(locked);
+  }
+
+  // --- CoopEditorBridge implementation ---
+
+  currentCourseJson(): string {
+    return JSON.stringify(this.layout);
+  }
+
+  storedName(): string {
+    return '';
+  }
+
+  adoptRemoteCourse(layout: CreatorLayout): void {
+    this.flushAutosave(); // persist the joiner's own course before borrowing the host's
+    this.coopSuppressAutosave = true;
+    this.cancelPendingAutosave();
+    this.coopApplyingRemote = true;
+    this.selectedId = null;
+    this.selectedIds.clear();
+    this.coopMyLocks.clear();
+    this.layout = layout;
+    enforceSingleDefaultSpawn(this.layout);
+    this.history.reset(this.layout);
+    this.rebuildAfterChange();
+    this.positionEditorCameraAtSpawn();
+    this.coopApplyingRemote = false;
+    this.coopInitShadow();
+  }
+
+  applyRemoteUpsert(object: CreatorLayoutObject): void {
+    this.coopApplyingRemote = true;
+    const idx = this.layout.objects.findIndex((o) => o.id === object.id);
+    if (idx >= 0) this.layout.objects[idx] = object;
+    else this.layout.objects.push(object);
+    this.coopShadow.set(object.id, JSON.stringify(object));
+    this.history.rebaseObject(object.id, object); // fold into every snapshot so local undo won't drop it
+    this.rebuildAfterChange();
+    if (!this.coopSuppressAutosave) this.scheduleAutosave(); // host persists collaborators' edits
+    this.coopApplyingRemote = false;
+    this.coop?.noteLatestCourse(this.layout);
+  }
+
+  applyRemoteDelete(id: string): void {
+    this.coopApplyingRemote = true;
+    const idx = this.layout.objects.findIndex((o) => o.id === id);
+    if (idx >= 0) this.layout.objects.splice(idx, 1);
+    this.coopShadow.delete(id);
+    this.history.rebaseObject(id, null);
+    if (this.selectedId === id) this.selectedId = null;
+    this.selectedIds.delete(id);
+    this.rebuildAfterChange();
+    if (!this.coopSuppressAutosave) this.scheduleAutosave();
+    this.coopApplyingRemote = false;
+    this.coop?.noteLatestCourse(this.layout);
+  }
+
+  setLocks(locks: Map<string, string>, selfId: string): void {
+    this.coopSelfId = selfId;
+    this.coopLocks.clear();
+    for (const [id, owner] of locks) this.coopLocks.set(id, owner);
+    // Anything we had selected that a collaborator now owns must be released locally.
+    let deselected = false;
+    for (const id of [...this.selectedIds]) {
+      if (this.isLockedByOther(id)) {
+        this.selectedIds.delete(id);
+        this.coopMyLocks.delete(id);
+        if (this.selectedId === id) this.selectedId = this.selectedIds.values().next().value ?? null;
+        deselected = true;
+      }
+    }
+    if (deselected) this.refreshSelectionVisual();
+    this.refreshLockVisual();
+  }
+
+  onSessionActive(): void {
+    // Baseline the sync shadow to the current layout so the first local edit relays only the delta,
+    // not the whole course (which would blow the server's edit token bucket). For a joiner this
+    // re-inits from the just-adopted host course (harmless); for the host it's the only place it runs.
+    this.coopInitShadow();
+  }
+
+  notify(title: string, subtitle: string): void {
+    this.ui.toast(subtitle ? `${title} — ${subtitle}` : title);
+  }
+
+  onSessionEnded(joinedRemote: boolean, finalCourse: CreatorLayout | null): void {
+    this.coopSuppressAutosave = false;
+    this.coopShadow.clear();
+    this.coopLocks.clear();
+    this.coopMyLocks.clear();
+    this.coopSelfId = '';
+    this.geometry.setLockedMany([]);
+    if (joinedRemote) {
+      const copy = finalCourse
+        && window.confirm('Save a copy of the course you built together into your courses?')
+        ? finalCourse
+        : null;
+      if (copy) {
+        const layout = { ...copy, name: `${copy.name} (co-op)`.slice(0, CREATOR_LIMITS.maxNameLength) };
+        const created = createProject(layout);
+        if (created) {
+          this.projectId = created.id;
+          this.adoptProjectLayout(layout);
+          this.ui.toast('Saved a copy to your courses');
+          return;
+        }
+      }
+      // Otherwise return the joiner to their own active project.
+      this.adoptProjectLayout(loadProjectWorking(this.projectId) ?? committedCourseLayout());
+    }
     this.ui.refresh();
   }
 
@@ -2389,9 +2662,18 @@ export class CreatorEditor implements CreatorBridge {
     return committedCourseLayout().name;
   }
 
+  /** Switching projects mid-session would desync the shared course — blocked while co-op is live. */
+  private coopBlocksProjectSwitch(): boolean {
+    if (this.coop?.isActive()) {
+      this.ui.toast('Leave co-op to switch courses');
+      return true;
+    }
+    return false;
+  }
+
   /** Load another project into the editor. Flushes the current project's edits first. */
   openProject(id: string): void {
-    if (id === this.projectId) return;
+    if (id === this.projectId || this.coopBlocksProjectSwitch()) return;
     if (this.mode === 'playtest') this.setMode('build');
     this.flushAutosave();
     if (!setActiveProject(id)) {
@@ -2415,6 +2697,7 @@ export class CreatorEditor implements CreatorBridge {
   }
 
   private createAndOpen(layout: CreatorLayout, toast: string): void {
+    if (this.coopBlocksProjectSwitch()) return;
     if (this.mode === 'playtest') this.setMode('build');
     this.flushAutosave();
     const created = createProject(layout);
@@ -2451,6 +2734,7 @@ export class CreatorEditor implements CreatorBridge {
   }
 
   deleteProjectById(id: string): void {
+    if (id === this.projectId && this.coopBlocksProjectSwitch()) return;
     const target = loadProjectsIndex().entries.find((e) => e.id === id);
     if (!target) return;
     if (!window.confirm(`Delete “${target.name}”? This cannot be undone.`)) return;
@@ -2521,10 +2805,16 @@ export class CreatorEditor implements CreatorBridge {
   // Back to Lobby/Race Online portals (see PortalArch), tinted purple.
   // ---------------------------------------------------------------------------------------------
 
-  private buildEntrySign(): void {
-    if (this.entrySignBuilt) return;
-    this.entrySignBuilt = true;
+  /**
+   * Build the entry portal at the CURRENT entry point, or rebuild it if the point moved (the yard was
+   * rebuilt around a different course whose spawn — and thus the portal row — is elsewhere). A fresh
+   * PortalArch sidesteps the frozen-world-matrix problem of moving an already-built one.
+   */
+  private ensureEntryPortalAtCurrentPoint(): void {
     const pt = this.entryWorldPoint();
+    const key = `${pt.x.toFixed(2)},${pt.z.toFixed(2)},${pt.yaw.toFixed(3)}`;
+    if (this.entryPortal && key === this.entryPortalKey) return;
+    this.entryPortal?.dispose();
     this.entryPortal = new PortalArch({
       id: 'creator_entry',
       scene: this.scene,
@@ -2533,6 +2823,7 @@ export class CreatorEditor implements CreatorBridge {
       title: 'COURSE CREATOR',
       palette: COURSE_CREATOR_PALETTE
     });
+    this.entryPortalKey = key;
     this.entryPortal.setEnabled(false);
   }
 }

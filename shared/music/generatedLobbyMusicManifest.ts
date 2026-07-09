@@ -19,6 +19,14 @@ export const LOBBY_MUSIC_TRACKS: readonly BattleMusicTrack[] = [
     "durationSeconds": 303.96
   },
   {
+    "id": "jeff-guo-claude-s-plan",
+    "artist": "Jeff Guo",
+    "title": "Claude's Plan",
+    "filename": "Claude's Plan.mp3",
+    "src": "/audio/lobby-music/Claude's%20Plan.mp3",
+    "durationSeconds": 197.825
+  },
+  {
     "id": "directtodreams-gravity",
     "artist": "Directtodreams",
     "title": "Gravity",
