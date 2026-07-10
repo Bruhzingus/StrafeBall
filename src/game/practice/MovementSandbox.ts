@@ -25,7 +25,8 @@ import {
   SANDBOX_CENTER,
   SANDBOX_HALF_X,
   SANDBOX_HALF_Z,
-  sandboxLeaveWorld
+  sandboxLeaveWorld,
+  sandboxSpawnWorld
 } from './MovementSandboxLayout';
 import {
   collectSpawnerMarkers,
@@ -176,59 +177,37 @@ export class MovementSandbox implements MovementWorld {
     this.minZ = b.minZ;
     this.maxZ = b.maxZ;
 
+    // Portal hub — a FIXED row anchored to the yard's own canonical entry (west-centre edge), NOT the
+    // course's spawn marker. A course can put spawn anywhere — e.g. on a platform above a kill-block
+    // pit — and anchoring the portals to spawn dropped them at y=0 forward of it, onto those kill
+    // blocks, softlocking the player (walking to any portal meant stepping into a death volume). The
+    // yard's own ground at the canonical entry is always solid, so all four portals stay in one
+    // consistent, always-reachable place regardless of where the course spawns you. (The player still
+    // spawns at the course's own spawn marker — only the portal HUB is fixed.)
     const fallbackLeave = sandboxLeaveWorld();
-    const leaveMarker = layout.objects.find((o) => o.type === 'leave_portal');
-    const leaveX = leaveMarker ? leaveMarker.position[0] : fallbackLeave.x;
-    const leaveZ = leaveMarker ? leaveMarker.position[2] : fallbackLeave.z;
-    const spawnPoint = layoutSpawn(layout);
-    // Always face the portal back toward spawn so its front (sign text, status panel) reads
-    // correctly as the player approaches — a course author's leave_portal marker always carries
-    // SOME yawDeg (the module's own default is 0, indistinguishable from an intentional 0°), so that
-    // metadata can't reliably signal "this facing was chosen on purpose" and isn't used here.
-    const leaveYaw = Math.atan2(spawnPoint.x - leaveX, spawnPoint.z - leaveZ);
-    this.leavePoint = { x: leaveX, z: leaveZ, yaw: leaveYaw, radius: fallbackLeave.radius, holdSeconds: fallbackLeave.holdSeconds };
-
-    // RACE ONLINE and the Course Creator entry are placed relative to SPAWN (not the leave portal):
-    // a course author can put leave_portal anywhere (including right next to spawn, as the shipped
-    // default course does), and anchoring these two to it could land them a couple of metres from
-    // spawn — inside their own activation radius. A forward-and-to-the-sides placement from spawn
-    // keeps both a comfortable, predictable distance away regardless of where leave ends up.
-    const fwdX = Math.sin(spawnPoint.yaw);
-    const fwdZ = Math.cos(spawnPoint.yaw);
-    const rightX = Math.cos(spawnPoint.yaw);
-    const rightZ = -Math.sin(spawnPoint.yaw);
+    const hub = sandboxSpawnWorld();
+    const fwdX = Math.sin(hub.yaw); // +X — into the yard, the side players approach the hub from
+    const fwdZ = Math.cos(hub.yaw);
+    const rightX = Math.cos(hub.yaw);
+    const rightZ = -Math.sin(hub.yaw);
     const PORTAL_FORWARD_OFFSET = 8;
     const PORTAL_SPACING = 5;
-    const rowX = spawnPoint.x + fwdX * PORTAL_FORWARD_OFFSET;
-    const rowZ = spawnPoint.z + fwdZ * PORTAL_FORWARD_OFFSET;
-
-    const raceX = rowX + rightX * PORTAL_SPACING;
-    const raceZ = rowZ + rightZ * PORTAL_SPACING;
-    this.racePoint = {
-      x: raceX,
-      z: raceZ,
-      yaw: Math.atan2(spawnPoint.x - raceX, spawnPoint.z - raceZ),
+    const rowX = hub.x + fwdX * PORTAL_FORWARD_OFFSET;
+    const rowZ = hub.z + fwdZ * PORTAL_FORWARD_OFFSET;
+    // One shared Z-row, every portal facing the same way (+X) so they read as a single hub and hold-E
+    // works as you walk in. `n` is the slot offset along the row (in PORTAL_SPACING units).
+    const portalSlot = (n: number) => ({
+      x: rowX + rightX * PORTAL_SPACING * n,
+      z: rowZ + rightZ * PORTAL_SPACING * n,
+      yaw: hub.yaw,
       radius: fallbackLeave.radius,
       holdSeconds: fallbackLeave.holdSeconds
-    };
-
-    const creatorX = rowX - rightX * PORTAL_SPACING;
-    const creatorZ = rowZ - rightZ * PORTAL_SPACING;
-    this.creatorEntrySlot = {
-      x: creatorX,
-      z: creatorZ,
-      yaw: Math.atan2(spawnPoint.x - creatorX, spawnPoint.z - creatorZ)
-    };
-
-    // CO-OP BUILD sits dead-center of the row (Course Creator to its left, Race Online to its right)
-    // — one hold-E jumps straight into the co-op create/join overlay without opening the editor first.
-    this.coopPoint = {
-      x: rowX,
-      z: rowZ,
-      yaw: Math.atan2(spawnPoint.x - rowX, spawnPoint.z - rowZ),
-      radius: fallbackLeave.radius,
-      holdSeconds: fallbackLeave.holdSeconds
-    };
+    });
+    // Order left→right along the row: Back to Lobby · Course Creator · Co-op Build · Race Online.
+    this.leavePoint = portalSlot(-1.5);
+    this.creatorEntrySlot = portalSlot(-0.5); // Course Creator entry (portal built by CreatorEditor)
+    this.coopPoint = portalSlot(0.5);
+    this.racePoint = portalSlot(1.5);
 
     this.root = new TransformNode('movement_sandbox_root', scene);
     this.root.setEnabled(false);

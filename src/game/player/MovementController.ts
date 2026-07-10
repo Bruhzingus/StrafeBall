@@ -756,8 +756,10 @@ export class MovementController {
       }
     };
 
-    // High vertical back face of the wedge.
-    if (local.x > hw && local.x < hw + radius && bodyMaxY > ramp.baseY && bodyMinY < ramp.baseY + ramp.height) {
+    // High vertical back face of the wedge. Bounded to the wedge's own DEPTH (+radius) in Z — without
+    // this, the back-face push applied at ANY local.z, so it read as an infinite invisible wall
+    // spanning all Z beyond the high end (the "massive invisible hitbox"), not a wall the width of the ramp.
+    if (local.x > hw && local.x < hw + radius && Math.abs(local.z) < hd + radius && bodyMaxY > ramp.baseY && bodyMinY < ramp.baseY + ramp.height) {
       consider(hw + radius - local.x, 0);
     }
 
