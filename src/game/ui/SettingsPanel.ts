@@ -69,12 +69,12 @@ export class SettingsPanel {
     this.battleMusicSlider = this.range(0, 1, 0.05, settings.battleMusicVolume);
     this.battleMusicSlider.addEventListener('input', this.onBattleMusicInput);
 
-    // "Claude Planning mode": loop the lobby track "Claude's Plan" instead of shuffling the playlist.
+    // Planning mode: play a smaller lobby playlist instead of shuffling every lobby track.
     const claudesPlanLabel = document.createElement('label');
     claudesPlanLabel.className = 'settings-row settings-row--toggle';
     const claudesPlanName = document.createElement('span');
-    claudesPlanName.textContent = 'Claude Planning mode';
-    claudesPlanName.title = 'Loop the lobby song "Claude’s Plan" by Jeff Guo';
+    claudesPlanName.textContent = 'Planning mode';
+    claudesPlanName.title = 'Use the Planning-mode lobby playlist';
     this.claudesPlanToggle = document.createElement('input');
     this.claudesPlanToggle.type = 'checkbox';
     this.claudesPlanToggle.checked = settings.loopClaudesPlan;

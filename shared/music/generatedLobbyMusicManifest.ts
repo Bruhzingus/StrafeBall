@@ -83,6 +83,14 @@ export const LOBBY_MUSIC_TRACKS: readonly BattleMusicTrack[] = [
     "durationSeconds": 228.96
   },
   {
+    "id": "jeff-guo-prompting",
+    "artist": "Jeff Guo",
+    "title": "Prompting",
+    "filename": "Prompting.mp3",
+    "src": "/audio/lobby-music/Prompting.mp3",
+    "durationSeconds": 209.528
+  },
+  {
     "id": "tokyorifft-maggie-the-muscle",
     "artist": "Tokyorifft",
     "title": "Maggie The Muscle",

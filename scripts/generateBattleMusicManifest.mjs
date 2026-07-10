@@ -7,7 +7,8 @@ const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const repoRoot = path.resolve(__dirname, '..');
 const filenamePattern = /^(?<artist>.+) - (?<title>.+)\.mp3$/i;
 const lobbyFilenameOverrides = new Map([
-  ["Claude's Plan.mp3", { artist: 'Jeff Guo', title: "Claude's Plan" }]
+  ["Claude's Plan.mp3", { artist: 'Jeff Guo', title: "Claude's Plan" }],
+  ['Prompting.mp3', { artist: 'Jeff Guo', title: 'Prompting' }]
 ]);
 const catalogs = [
   {

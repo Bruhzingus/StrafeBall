@@ -13,8 +13,11 @@ import {
   type BattleMusicTrack
 } from '../../../shared/music/BattleMusic';
 
-// "Claude Planning mode" (settings toggle) loops this single lobby track instead of shuffling.
-const CLAUDES_PLAN_TRACK_ID = 'jeff-guo-claude-s-plan';
+// Planning mode (settings toggle) plays this lobby-only subset instead of the full shuffle.
+const PLANNING_MODE_TRACK_IDS = [
+  'jeff-guo-claude-s-plan',
+  'jeff-guo-prompting'
+] as const;
 
 const FADE_IN_SECONDS = 0.6;
 const FADE_OUT_SECONDS = 0.35;
@@ -177,11 +180,9 @@ export class MusicManager {
     if (this.lobbyMusicActive && LOBBY_MUSIC_TRACKS.length > 0) {
       const lobbyElapsedSeconds =
         this.lobbyStartOffsetSeconds + Math.max(0, (performance.now() - this.lobbyMusicStartedAtMs) / 1000);
-      // "Claude Planning mode": loop just "Claude's Plan"; otherwise shuffle the lobby playlist. The
-      // single-track loop reuses the normal track-boundary machinery (ended → resync → seek to 0), so
-      // it loops exactly like any lobby track transition.
+      // Planning mode uses a smaller lobby playlist; otherwise shuffle the full lobby playlist.
       const timeline = settings.loopClaudesPlan
-        ? singleTrackLoopTimeline(LOBBY_MUSIC_TRACKS, claudesPlanTrackIndex(), lobbyElapsedSeconds)
+        ? planningModeTimeline(LOBBY_MUSIC_TRACKS, PLANNING_MODE_TRACK_IDS, this.lobbyShuffleSeed, lobbyElapsedSeconds)
         : resolveBattleMusicTimeline(LOBBY_MUSIC_TRACKS, this.lobbyShuffleSeed, lobbyElapsedSeconds);
       if (timeline) {
         return { source: 'lobby' as const, tracks: LOBBY_MUSIC_TRACKS, timeline };
@@ -363,33 +364,37 @@ function sameSyncState(a: BattleMusicSyncState | null, b: BattleMusicSyncState |
   );
 }
 
-function claudesPlanTrackIndex(): number {
-  return LOBBY_MUSIC_TRACKS.findIndex((track) => track.id === CLAUDES_PLAN_TRACK_ID);
-}
-
 /**
- * A timeline that plays a single track on repeat: `trackIndex` fixed, position = elapsed mod its
- * duration. Returns null if the track is missing/zero-length so the caller falls back to the shuffle.
+ * A timeline that plays a subset of the lobby playlist while returning indexes into the full manifest,
+ * so load/resync state keeps using the same track index space as normal lobby music.
  */
-function singleTrackLoopTimeline(
+function planningModeTimeline(
   tracks: readonly BattleMusicTrack[],
-  trackIndex: number,
+  trackIds: readonly string[],
+  shuffleSeed: number,
   elapsedSeconds: number
 ): BattleMusicTimeline | null {
-  const track = trackIndex >= 0 ? tracks[trackIndex] : undefined;
-  if (!track || !Number.isFinite(track.durationSeconds) || track.durationSeconds <= 0) return null;
-  const duration = track.durationSeconds;
-  const clamped = Math.max(0, elapsedSeconds);
-  const trackElapsedSeconds = clamped % duration;
+  const planningTracks = trackIds
+    .map((id) => {
+      const trackIndex = tracks.findIndex((track) => track.id === id);
+      const track = trackIndex >= 0 ? tracks[trackIndex] : undefined;
+      return track ? { track, trackIndex } : null;
+    })
+    .filter((entry): entry is { track: BattleMusicTrack; trackIndex: number } => entry !== null);
+  const timeline = resolveBattleMusicTimeline(
+    planningTracks.map((entry) => entry.track),
+    shuffleSeed,
+    elapsedSeconds
+  );
+  if (!timeline) return null;
+
+  const originalTrackIndex = planningTracks[timeline.trackIndex]?.trackIndex;
+  if (originalTrackIndex === undefined) return null;
+
   return {
-    cycleIndex: Math.floor(clamped / duration),
-    cycleElapsedSeconds: trackElapsedSeconds,
-    cycleDurationSeconds: duration,
-    order: [trackIndex],
-    orderIndex: 0,
-    trackIndex,
-    trackElapsedSeconds,
-    trackDurationSeconds: duration
+    ...timeline,
+    order: timeline.order.map((trackIndex) => planningTracks[trackIndex]?.trackIndex ?? trackIndex),
+    trackIndex: originalTrackIndex
   };
 }
 

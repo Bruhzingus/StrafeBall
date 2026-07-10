@@ -21,7 +21,7 @@ class SettingsStore {
   public reducedEffects = false;
   /** Show the 3D end-wall scoreboards. Off = hide them (some players find them distracting). */
   public showScoreboard = true;
-  /** "Claude Planning mode": loop the lobby track "Claude's Plan" instead of shuffling the playlist. */
+  /** Planning mode: play a smaller lobby playlist instead of shuffling every lobby track. */
   public loopClaudesPlan = false;
 
   constructor() {
