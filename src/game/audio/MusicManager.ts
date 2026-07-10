@@ -8,8 +8,13 @@ import {
 import {
   formatBattleMusicTimestamp,
   resolveBattleMusicTimeline,
-  type BattleMusicSyncState
+  type BattleMusicSyncState,
+  type BattleMusicTimeline,
+  type BattleMusicTrack
 } from '../../../shared/music/BattleMusic';
+
+// "Claude Planning mode" (settings toggle) loops this single lobby track instead of shuffling.
+const CLAUDES_PLAN_TRACK_ID = 'jeff-guo-claude-s-plan';
 
 const FADE_IN_SECONDS = 0.6;
 const FADE_OUT_SECONDS = 0.35;
@@ -170,11 +175,14 @@ export class MusicManager {
     }
 
     if (this.lobbyMusicActive && LOBBY_MUSIC_TRACKS.length > 0) {
-      const timeline = resolveBattleMusicTimeline(
-        LOBBY_MUSIC_TRACKS,
-        this.lobbyShuffleSeed,
-        this.lobbyStartOffsetSeconds + Math.max(0, (performance.now() - this.lobbyMusicStartedAtMs) / 1000)
-      );
+      const lobbyElapsedSeconds =
+        this.lobbyStartOffsetSeconds + Math.max(0, (performance.now() - this.lobbyMusicStartedAtMs) / 1000);
+      // "Claude Planning mode": loop just "Claude's Plan"; otherwise shuffle the lobby playlist. The
+      // single-track loop reuses the normal track-boundary machinery (ended → resync → seek to 0), so
+      // it loops exactly like any lobby track transition.
+      const timeline = settings.loopClaudesPlan
+        ? singleTrackLoopTimeline(LOBBY_MUSIC_TRACKS, claudesPlanTrackIndex(), lobbyElapsedSeconds)
+        : resolveBattleMusicTimeline(LOBBY_MUSIC_TRACKS, this.lobbyShuffleSeed, lobbyElapsedSeconds);
       if (timeline) {
         return { source: 'lobby' as const, tracks: LOBBY_MUSIC_TRACKS, timeline };
       }
@@ -353,6 +361,36 @@ function sameSyncState(a: BattleMusicSyncState | null, b: BattleMusicSyncState |
     a.shuffleSeed === b.shuffleSeed &&
     a.playlistStartedAtServerTimeMs === b.playlistStartedAtServerTimeMs
   );
+}
+
+function claudesPlanTrackIndex(): number {
+  return LOBBY_MUSIC_TRACKS.findIndex((track) => track.id === CLAUDES_PLAN_TRACK_ID);
+}
+
+/**
+ * A timeline that plays a single track on repeat: `trackIndex` fixed, position = elapsed mod its
+ * duration. Returns null if the track is missing/zero-length so the caller falls back to the shuffle.
+ */
+function singleTrackLoopTimeline(
+  tracks: readonly BattleMusicTrack[],
+  trackIndex: number,
+  elapsedSeconds: number
+): BattleMusicTimeline | null {
+  const track = trackIndex >= 0 ? tracks[trackIndex] : undefined;
+  if (!track || !Number.isFinite(track.durationSeconds) || track.durationSeconds <= 0) return null;
+  const duration = track.durationSeconds;
+  const clamped = Math.max(0, elapsedSeconds);
+  const trackElapsedSeconds = clamped % duration;
+  return {
+    cycleIndex: Math.floor(clamped / duration),
+    cycleElapsedSeconds: trackElapsedSeconds,
+    cycleDurationSeconds: duration,
+    order: [trackIndex],
+    orderIndex: 0,
+    trackIndex,
+    trackElapsedSeconds,
+    trackDurationSeconds: duration
+  };
 }
 
 function randomUint32(): number {

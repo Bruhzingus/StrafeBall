@@ -2379,6 +2379,11 @@ export class ArenaScene {
     } else if (action === 'race') {
       this.ensureCourseRace();
       this.courseRace?.toggleOverlay();
+    } else if (action === 'coop') {
+      // CO-OP BUILD portal: drop straight into the collaborative editor's create/join overlay,
+      // instead of entering the editor and manually opening the Co-op panel.
+      this.ensureCreator();
+      this.creator?.requestCoopEntry();
     }
   }
 

@@ -21,6 +21,8 @@ class SettingsStore {
   public reducedEffects = false;
   /** Show the 3D end-wall scoreboards. Off = hide them (some players find them distracting). */
   public showScoreboard = true;
+  /** "Claude Planning mode": loop the lobby track "Claude's Plan" instead of shuffling the playlist. */
+  public loopClaudesPlan = false;
 
   constructor() {
     this.load();
@@ -60,6 +62,11 @@ class SettingsStore {
     this.save();
   }
 
+  setLoopClaudesPlan(value: boolean): void {
+    this.loopClaudesPlan = value;
+    this.save();
+  }
+
   private load(): void {
     try {
       const raw = localStorage.getItem(STORAGE_KEY);
@@ -72,6 +79,7 @@ class SettingsStore {
         battleMusicVolume?: unknown;
         reducedEffects?: unknown;
         showScoreboard?: unknown;
+        loopClaudesPlan?: unknown;
       };
       if (typeof parsed.mouseSensitivity === 'number' && Number.isFinite(parsed.mouseSensitivity)) {
         this.mouseSensitivity = clamp(parsed.mouseSensitivity, SENSITIVITY_MIN, SENSITIVITY_MAX);
@@ -97,6 +105,9 @@ class SettingsStore {
       if (typeof parsed.showScoreboard === 'boolean') {
         this.showScoreboard = parsed.showScoreboard;
       }
+      if (typeof parsed.loopClaudesPlan === 'boolean') {
+        this.loopClaudesPlan = parsed.loopClaudesPlan;
+      }
     } catch {
       // Corrupt/unavailable storage — fall back to defaults silently.
     }
@@ -110,7 +121,8 @@ class SettingsStore {
         lobbyMusicVolume: this.lobbyMusicVolume,
         battleMusicVolume: this.battleMusicVolume,
         reducedEffects: this.reducedEffects,
-        showScoreboard: this.showScoreboard
+        showScoreboard: this.showScoreboard,
+        loopClaudesPlan: this.loopClaudesPlan
       }));
     } catch {
       // Storage may be unavailable (private mode); ignore.

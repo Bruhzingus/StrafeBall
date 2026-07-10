@@ -20,6 +20,7 @@ export class SettingsPanel {
   private readonly lobbyMusicReadout: HTMLSpanElement;
   private readonly battleMusicSlider: HTMLInputElement;
   private readonly battleMusicReadout: HTMLSpanElement;
+  private readonly claudesPlanToggle: HTMLInputElement;
   private readonly reducedEffectsToggle: HTMLInputElement;
   private readonly scoreboardToggle: HTMLInputElement;
   private readonly graphicsSelect: HTMLSelectElement;
@@ -67,6 +68,19 @@ export class SettingsPanel {
     this.battleMusicReadout = battleMusicLabel.readout;
     this.battleMusicSlider = this.range(0, 1, 0.05, settings.battleMusicVolume);
     this.battleMusicSlider.addEventListener('input', this.onBattleMusicInput);
+
+    // "Claude Planning mode": loop the lobby track "Claude's Plan" instead of shuffling the playlist.
+    const claudesPlanLabel = document.createElement('label');
+    claudesPlanLabel.className = 'settings-row settings-row--toggle';
+    const claudesPlanName = document.createElement('span');
+    claudesPlanName.textContent = 'Claude Planning mode';
+    claudesPlanName.title = 'Loop the lobby song "Claude’s Plan" by Jeff Guo';
+    this.claudesPlanToggle = document.createElement('input');
+    this.claudesPlanToggle.type = 'checkbox';
+    this.claudesPlanToggle.checked = settings.loopClaudesPlan;
+    this.claudesPlanToggle.addEventListener('input', this.onClaudesPlanInput);
+    this.claudesPlanToggle.addEventListener('keydown', this.preventKeySteal);
+    claudesPlanLabel.append(claudesPlanName, this.claudesPlanToggle);
 
     const effectsLabel = document.createElement('label');
     effectsLabel.className = 'settings-row settings-row--toggle';
@@ -123,6 +137,7 @@ export class SettingsPanel {
       this.lobbyMusicSlider,
       battleMusicLabel.label,
       this.battleMusicSlider,
+      claudesPlanLabel,
       effectsLabel,
       scoreboardLabel,
       graphicsRow,
@@ -161,6 +176,8 @@ export class SettingsPanel {
     this.lobbyMusicSlider.removeEventListener('input', this.onLobbyMusicInput);
     this.battleMusicSlider.removeEventListener('input', this.onBattleMusicInput);
     this.reducedEffectsToggle.removeEventListener('input', this.onReducedEffectsInput);
+    this.claudesPlanToggle.removeEventListener('input', this.onClaudesPlanInput);
+    this.claudesPlanToggle.removeEventListener('keydown', this.preventKeySteal);
     this.scoreboardToggle.removeEventListener('input', this.onScoreboardInput);
     this.scoreboardToggle.removeEventListener('keydown', this.preventKeySteal);
     this.graphicsSelect.removeEventListener('change', this.onGraphicsPresetChange);
@@ -201,6 +218,10 @@ export class SettingsPanel {
   private onScoreboardInput = (): void => {
     settings.setShowScoreboard(this.scoreboardToggle.checked);
     this.updateReadout();
+  };
+
+  private onClaudesPlanInput = (): void => {
+    settings.setLoopClaudesPlan(this.claudesPlanToggle.checked);
   };
 
   private onGraphicsPresetChange = (): void => {

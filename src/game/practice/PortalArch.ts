@@ -17,7 +17,7 @@
  * onActivate all remain the caller's existing hold-E logic.
  */
 
-import { Color3, DynamicTexture, Material, Mesh, MeshBuilder, Scene, StandardMaterial, Texture, TransformNode, Vector3 } from '@babylonjs/core';
+import { Color3, DynamicTexture, Material, Mesh, MeshBuilder, Scene, StandardMaterial, Texture, TransformNode, Vector3, Vector4 } from '@babylonjs/core';
 
 export interface PortalPalette {
   edge: Color3;
@@ -177,11 +177,21 @@ export class PortalArch {
     signMat.opacityTexture = signTexture;
     signMat.disableLighting = true;
     signMat.specularColor = new Color3(0, 0, 0);
-    signMat.backFaceCulling = false;
+    // Double-sided geometry (below) supplies a real back face, so cull each face's back — otherwise
+    // the front face bleeds through and z-fights the (mirror-corrected) back face.
+    signMat.backFaceCulling = true;
     signMat.transparencyMode = Material.MATERIAL_ALPHABLEND;
     this.disposables.push(signTexture, signMat);
 
-    const sign = MeshBuilder.CreatePlane(`${id}_sign`, { width: 1.12, height: 0.27 }, scene);
+    // DOUBLESIDE + horizontally-flipped backUVs: the sign reads correctly from BOTH sides (the plain
+    // back face would otherwise show the title mirrored, e.g. "BACK TO LOBBY" as "YBBOL OT KCAB").
+    const sign = MeshBuilder.CreatePlane(`${id}_sign`, {
+      width: 1.12,
+      height: 0.27,
+      sideOrientation: Mesh.DOUBLESIDE,
+      frontUVs: new Vector4(0, 0, 1, 1),
+      backUVs: new Vector4(1, 0, 0, 1)
+    }, scene);
     sign.position.set(0, openingTopY + 0.2, zSign);
     sign.material = signMat;
     this.addMesh(sign);

@@ -274,6 +274,12 @@ export class CreatorEditor implements CreatorBridge, CoopEditorBridge {
   // Lean listeners used ONLY for the playtest free-fly (movement + RMB look; no tools/placement).
   private readonly onFlyKeyDown = (e: KeyboardEvent) => {
     if (isEditableTarget(e.target)) return;
+    // Ctrl/Cmd+W closes the tab/window — block it here too (W is a fly strafe key). The beforeunload
+    // guard is the browser-tab backstop.
+    if ((e.ctrlKey || e.metaKey) && e.code === 'KeyW') {
+      e.preventDefault();
+      return;
+    }
     // Fly-exit / mode keys MUST be handled here: while flying, input is suppressed (RMB-look needs no
     // pointer lock), and the suppressed InputManager drops every keydown — so ArenaScene.stepCreator
     // never sees `=` / B / F1 / Esc and you'd be stuck in fly (the reported "can't press = to unfly").
@@ -321,7 +327,17 @@ export class CreatorEditor implements CreatorBridge, CoopEditorBridge {
   private autosavePending = false;
   private autosaveFirstPendingMs = 0;
   private autosaveFailureNotified = false;
-  private readonly onBeforeUnload = () => this.flushAutosave();
+  private readonly onBeforeUnload = (e: BeforeUnloadEvent) => {
+    this.flushAutosave();
+    // While the editor owns the screen, guard against an accidental Ctrl+W / tab-close: browsers
+    // reserve Ctrl+W and ignore keydown preventDefault for it, so this confirmation prompt is the
+    // real backstop against losing an in-progress course to a stray shortcut. Idle in the
+    // yard/lobby (editor inactive) → no prompt, so normal navigation is untouched.
+    if (this.active) {
+      e.preventDefault();
+      e.returnValue = '';
+    }
+  };
   private readonly onVisibilityChange = () => {
     if (document.visibilityState === 'hidden') this.flushAutosave();
   };
@@ -394,6 +410,18 @@ export class CreatorEditor implements CreatorBridge, CoopEditorBridge {
   requestEntry(): void {
     if (this.active || this.hooks.isOnline()) return;
     this.enter();
+  }
+
+  /**
+   * Open the editor straight into the co-op create/join overlay — driven by the yard's CO-OP BUILD
+   * portal so a player can host/join a collaborative session without first entering the editor and
+   * hunting for the Co-op button. No-op while online.
+   */
+  requestCoopEntry(): void {
+    if (this.hooks.isOnline()) return;
+    if (!this.active) this.enter();
+    // enter() leaves the overlay closed, so toggling here reliably OPENS the create/join panel.
+    this.toggleCoopOverlay();
   }
 
   /** Per-frame update while active. Build: fly camera. Playtest: handled by ArenaScene (player). */
@@ -870,6 +898,14 @@ export class CreatorEditor implements CreatorBridge, CoopEditorBridge {
   private handleKeyDown(e: KeyboardEvent): void {
     if (this.ui.isOverlayOpen() || this.coop?.isOverlayOpen() || isEditableTarget(e.target)) return;
     const code = e.code;
+
+    // Ctrl/Cmd+W would close the tab/window mid-build — hard-block it (effective in desktop/PWA
+    // shells; the beforeunload guard is the browser-tab backstop). W is also a fly strafe key, so
+    // this must sit ahead of the movement handling below.
+    if ((e.ctrlKey || e.metaKey) && code === 'KeyW') {
+      e.preventDefault();
+      return;
+    }
 
     // Escape while carrying an object by the center handle cancels the drag (restores the position).
     if (this.centerDragging && code === 'Escape') {

@@ -50,7 +50,7 @@ import { TUNING } from '../config/tuning';
 import type { RaceRunEvent } from '../../../shared/courseRace';
 import { PortalArch, type PortalPalette } from './PortalArch';
 
-export type SandboxAction = 'leave' | 'race';
+export type SandboxAction = 'leave' | 'race' | 'coop';
 
 const COLLISION_ID_PREFIX = 'sandbox_';
 const WALL_RUN_MARGIN = 1.0;
@@ -69,6 +69,16 @@ const RACE_ONLINE_PALETTE: PortalPalette = {
   status: new Color3(0.85, 0.42, 0.06),
   surfaceBack: new Color3(0.5, 0.2, 0.02),
   surfaceFront: new Color3(0.95, 0.55, 0.14)
+};
+
+// Co-op build-together portal — magenta, deliberately distinct from the purple Course Creator entry
+// (solo build), the orange Race Online, and the green Back to Lobby. Channels kept non-equal so the
+// scene's ACES tonemap can't clip it toward white.
+const CO_OP_PALETTE: PortalPalette = {
+  edge: new Color3(1.0, 0.32, 0.72),
+  status: new Color3(0.82, 0.2, 0.56),
+  surfaceBack: new Color3(0.52, 0.05, 0.34),
+  surfaceFront: new Color3(0.95, 0.3, 0.68)
 };
 
 /**
@@ -109,9 +119,10 @@ export class MovementSandbox implements MovementWorld {
   private readonly courseLayout: CreatorLayout;
   private readonly visualLayout: CreatorLayout;
   private readonly leavePoint: { x: number; z: number; yaw: number; radius: number; holdSeconds: number };
-  // Portal props for the leave/race hold-E points (built lazily in buildSpawn()); animated per-frame.
+  // Portal props for the leave/race/coop hold-E points (built lazily in buildSpawn()); animated per-frame.
   private leavePortalArch: PortalArch | null = null;
   private racePortalArch: PortalArch | null = null;
+  private coopPortalArch: PortalArch | null = null;
   private elapsed = 0;
   // Course visuals: the SAME renderer the Creator editor uses (solids incl. real textures, ability
   // pads, kill blocks, gates, signs, arrows, labels) with every editor-only overlay disabled — so a
@@ -135,6 +146,9 @@ export class MovementSandbox implements MovementWorld {
   private racePoint: { x: number; z: number; yaw: number; radius: number; holdSeconds: number };
   private raceHold = 0;
   private raceLatched = false;
+  private coopPoint: { x: number; z: number; yaw: number; radius: number; holdSeconds: number };
+  private coopHold = 0;
+  private coopLatched = false;
   /** Slot for the Course Creator's own entry portal (built separately by CreatorEditor), kept in the
    *  same row as leave/race so all three read as one connected hub regardless of course layout. */
   private readonly creatorEntrySlot: { x: number; z: number; yaw: number };
@@ -204,6 +218,16 @@ export class MovementSandbox implements MovementWorld {
       x: creatorX,
       z: creatorZ,
       yaw: Math.atan2(spawnPoint.x - creatorX, spawnPoint.z - creatorZ)
+    };
+
+    // CO-OP BUILD sits dead-center of the row (Course Creator to its left, Race Online to its right)
+    // — one hold-E jumps straight into the co-op create/join overlay without opening the editor first.
+    this.coopPoint = {
+      x: rowX,
+      z: rowZ,
+      yaw: Math.atan2(spawnPoint.x - rowX, spawnPoint.z - rowZ),
+      radius: fallbackLeave.radius,
+      holdSeconds: fallbackLeave.holdSeconds
     };
 
     this.root = new TransformNode('movement_sandbox_root', scene);
@@ -358,6 +382,7 @@ export class MovementSandbox implements MovementWorld {
     this.geometry?.dispose();
     this.leavePortalArch?.dispose();
     this.racePortalArch?.dispose();
+    this.coopPortalArch?.dispose();
     for (const d of this.disposables) d.dispose();
     for (const m of this.materials) m.dispose();
     this.root.dispose();
@@ -482,6 +507,29 @@ export class MovementSandbox implements MovementWorld {
       }
     }
     this.racePortalArch?.update(this.elapsed, nearRace ? 1 : 0, this.raceHold / race.holdSeconds);
+
+    // CO-OP BUILD portal (hold E) — opens the editor straight into the co-op create/join overlay.
+    const coop = this.coopPoint;
+    const cdx = p.x - coop.x;
+    const cdz = p.z - coop.z;
+    const nearCoop = cdx * cdx + cdz * cdz <= coop.radius * coop.radius;
+    let coopFired = false;
+    if (!nearCoop || !held) {
+      this.coopHold = 0;
+      this.coopLatched = false;
+    } else if (!this.coopLatched) {
+      this.coopHold = Math.min(coop.holdSeconds, this.coopHold + dt);
+      if (this.coopHold >= coop.holdSeconds) {
+        this.coopLatched = true;
+        coopFired = true;
+      }
+    }
+    this.coopPortalArch?.update(this.elapsed, nearCoop ? 1 : 0, this.coopHold / coop.holdSeconds);
+    if (coopFired) {
+      // Entering the co-op editor suspends the yard; nothing else should run for this frame.
+      onAction('coop');
+      return;
+    }
   }
 
   // ---------------------------------------------------------------------------------------------
@@ -642,6 +690,18 @@ export class MovementSandbox implements MovementWorld {
       palette: RACE_ONLINE_PALETTE
     });
     this.racePortalArch.root.parent = this.root;
+
+    // Co-op Build portal (hold E) — jumps straight into the collaborative editor's create/join overlay.
+    const coop = this.coopPoint;
+    this.coopPortalArch = new PortalArch({
+      id: 'sandbox_coop',
+      scene: this.scene,
+      position: new Vector3(coop.x, 0, coop.z),
+      yaw: coop.yaw,
+      title: 'CO-OP BUILD',
+      palette: CO_OP_PALETTE
+    });
+    this.coopPortalArch.root.parent = this.root;
   }
 
   // --- helpers ---------------------------------------------------------------------------------
@@ -724,10 +784,20 @@ export class MovementSandbox implements MovementWorld {
     mat.emissiveColor = new Color3(0.9, 0.94, 1.0);
     mat.disableLighting = true;
     mat.specularColor = new Color3(0, 0, 0);
-    mat.backFaceCulling = false;
+    // Double-sided geometry supplies a real back face, so cull each face's back (front would
+    // otherwise bleed through and z-fight the mirror-corrected back).
+    mat.backFaceCulling = true;
     mat.transparencyMode = Material.MATERIAL_ALPHABLEND;
 
-    const mesh = MeshBuilder.CreatePlane(name, { width, height }, this.scene);
+    // DOUBLESIDE + horizontally-flipped backUVs so the sign reads correctly from BOTH sides instead
+    // of showing mirrored text (e.g. "MOVEMENT SANDBOX") when viewed from behind.
+    const mesh = MeshBuilder.CreatePlane(name, {
+      width,
+      height,
+      sideOrientation: Mesh.DOUBLESIDE,
+      frontUVs: new Vector4(0, 0, 1, 1),
+      backUVs: new Vector4(1, 0, 0, 1)
+    }, this.scene);
     mesh.position.copyFrom(position);
     mesh.material = mat;
     mesh.parent = this.root;
