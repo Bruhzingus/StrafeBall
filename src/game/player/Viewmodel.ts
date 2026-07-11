@@ -1,6 +1,7 @@
 import { Color3, FreeCamera, Mesh, MeshBuilder, PBRMaterial, Scene, TransformNode, Vector3 } from '@babylonjs/core';
 import { TUNING } from '../config/tuning';
 import { HandController, HandState } from './HandController';
+import type { MovementSnapshot } from './MovementController';
 import { HandSide } from '../ball/BallState';
 
 interface ArmRig {
@@ -27,6 +28,9 @@ export class Viewmodel {
   private readonly right: ArmRig;
   private readonly target = new Vector3();
   private time = 0;
+  private dashAnim = 0;
+  private slideBlend = 0;
+  private crouchBlend = 0;
 
   constructor(private readonly camera: FreeCamera) {
     const scene = camera.getScene();
@@ -46,8 +50,13 @@ export class Viewmodel {
     this.right = this.buildArm('right', scene);
   }
 
-  update(dt: number, hands: HandController): void {
+  update(dt: number, hands: HandController, movement?: MovementSnapshot): void {
     this.time += dt;
+    if (movement?.dashingThisFrame) this.dashAnim = 1;
+    else this.dashAnim = Math.max(0, this.dashAnim - dt / 0.22);
+    const blend = 1 - Math.exp(-14 * Math.max(0, dt));
+    this.slideBlend += ((movement?.sliding ? 1 : 0) - this.slideBlend) * blend;
+    this.crouchBlend += ((movement?.crouching && !movement.sliding ? 1 : 0) - this.crouchBlend) * blend;
     this.poseArm(dt, this.left, 'left', hands.left);
     this.poseArm(dt, this.right, 'right', hands.right);
   }
@@ -160,6 +169,7 @@ export class Viewmodel {
     const catchSnap = easeOutCubic(hand.catchAnim);
     const pickup = easeOutCubic(hand.pickupAnim);
     const parry = easeOutCubic(hand.parryAnim);
+    const dashPose = Math.sin(this.dashAnim * Math.PI) * (this.dashAnim > 0 ? 1 : 0);
     rig.node.rotation.x =
       -throwSwing * 1.05 +
       windup * 0.72 -
@@ -167,6 +177,8 @@ export class Viewmodel {
       catchSnap * 0.2 +
       pickup * 0.16 -
       parry * 0.32 +
+      dashPose * 0.14 +
+      this.slideBlend * 0.12 +
       (holding ? -0.08 : 0.08);
     rig.node.rotation.y = sign * (catchReach * 0.08 - parry * 0.28);
     rig.node.rotation.z = -sign * windup * 0.18 + sign * throwSwing * 0.12 - sign * parry * 0.18;
@@ -191,14 +203,14 @@ export class Viewmodel {
     const pickup = easeOutCubic(hand.pickupAnim);
     const parry = easeOutCubic(hand.parryAnim);
 
-    if (!holding && throwSwing <= 0 && fakeWindup <= 0 && catchReach <= 0 && catchSnap <= 0 && pickup <= 0 && parry <= 0) {
+    const idle = !holding && throwSwing <= 0 && fakeWindup <= 0 && catchReach <= 0 && catchSnap <= 0 && pickup <= 0 && parry <= 0;
+    if (idle) {
       this.target.set(sign * TUNING.arms.restSide, TUNING.arms.restDrop, TUNING.arms.restForward);
-      return;
-    }
-    const charge = hand.charging ? Math.min(1, hand.chargeSeconds / TUNING.ball.maxChargeSeconds) : 0;
-    const windup = Math.max(charge, fakeWindup);
-    const bob = Math.sin(this.time * TUNING.arms.bobSpeed + (side === 'left' ? 0 : Math.PI)) * TUNING.arms.bobAmplitude;
-    this.target.set(
+    } else {
+      const charge = hand.charging ? Math.min(1, hand.chargeSeconds / TUNING.ball.maxChargeSeconds) : 0;
+      const windup = Math.max(charge, fakeWindup);
+      const bob = Math.sin(this.time * TUNING.arms.bobSpeed + (side === 'left' ? 0 : Math.PI)) * TUNING.arms.bobAmplitude;
+      this.target.set(
       sign * (
         TUNING.hands.holdSide +
         windup * TUNING.arms.windupSide -
@@ -220,7 +232,14 @@ export class Viewmodel {
         catchSnap * 0.16 +
         pickup * 0.1 +
         parry * 0.24
-    );
+      );
+    }
+    // Movement poses stay secondary to hand actions: dash tucks the arms back, slide braces them
+    // low and forward, and crouch draws them slightly inward without obscuring the center reticle.
+    const dashPose = Math.sin(this.dashAnim * Math.PI) * (this.dashAnim > 0 ? 1 : 0);
+    this.target.x *= 1 - this.crouchBlend * 0.08;
+    this.target.y += this.crouchBlend * 0.05 - this.slideBlend * 0.1 - dashPose * 0.05;
+    this.target.z += this.slideBlend * 0.12 - dashPose * 0.16;
   }
 }
 

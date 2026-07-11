@@ -210,16 +210,22 @@ export function materialDef(id: string | undefined): CreatorMaterialDef {
 // texture (tiled) instead of the flat grid material. Local/offline only.
 // ---------------------------------------------------------------------------------------------
 
+/** Simple, code-generated texture patterns (no image asset needed). Drawn by CreatorGeometry. */
+export type CreatorProceduralTexture = 'checker' | 'grid' | 'stripes' | 'dots';
+
 export interface CreatorTextureDef {
   id: string;
   label: string;
-  /** Public asset URL of the colour/albedo map (served from /public). */
-  url: string;
+  /** Public asset URL of the colour/albedo map (served from /public). Omitted for procedural textures. */
+  url?: string;
+  /** A code-generated pattern instead of an image asset (mutually exclusive with `url`). */
+  procedural?: CreatorProceduralTexture;
   /** World metres covered by one texture repeat (drives tiling on terrain). */
   tile: number;
 }
 
 export const CREATOR_TEXTURES: readonly CreatorTextureDef[] = [
+  // --- Gym surface textures (the real materials used across the arena) ---
   { id: 'cinder_block', label: 'Painted Cinder Block', url: '/assets/textures/gym/walls/NewWalls/StrafeBall_PaintedCinderBlock_Imperfect_Color_2K.png', tile: 4 },
   { id: 'brick', label: 'Brick Wall', url: '/assets/textures/gym/walls/Bricks064_2K-JPG_Color.jpg', tile: 3 },
   { id: 'stone', label: 'Stone Wall', url: '/assets/textures/gym/walls/Wall_Stones.png', tile: 4 },
@@ -227,7 +233,21 @@ export const CREATOR_TEXTURES: readonly CreatorTextureDef[] = [
   { id: 'wall_pad', label: 'Wall Pad', url: '/assets/textures/gym/walls/WallMat.png', tile: 4 },
   { id: 'cover_mat', label: 'Blue Cover Mat', url: '/assets/textures/gym/Obstacles/gym_cover_mat_blue_tuned.png', tile: 3 },
   { id: 'laminate_floor', label: 'Laminate Floor', url: '/assets/textures/gym/floor/textures/laminate_floor_03_diff_2k.png', tile: 5 },
-  { id: 'wood_floor', label: 'Wood Floor', url: '/assets/textures/gym/floor/WoodFloor051_1K-JPG_Color.jpg', tile: 4 }
+  { id: 'wood_floor', label: 'Wood Floor', url: '/assets/textures/gym/floor/WoodFloor051_1K-JPG_Color.jpg', tile: 4 },
+  // --- Gym banners (the real signage hung around the arena) — sized large so the art reads once ---
+  { id: 'banner_league', label: 'Banner — StrafeBall League', url: '/assets/textures/gym/banners/StrafeBallLeage.png', tile: 8 },
+  { id: 'banner_champ', label: 'Banner — Championship Court', url: '/assets/textures/gym/banners/ChampionshipCourt.png', tile: 8 },
+  { id: 'banner_home', label: 'Banner — Home of Champions', url: '/assets/textures/gym/banners/HomeOfChamps.png', tile: 8 },
+  { id: 'banner_mvp', label: 'Banner — MVP', url: '/assets/textures/gym/banners/MVP.png', tile: 8 },
+  { id: 'banner_noboundaries', label: 'Banner — No Boundaries', url: '/assets/textures/gym/banners/NoBoundaries.png', tile: 8 },
+  { id: 'banner_duel', label: 'Banner — Private Duel', url: '/assets/textures/gym/banners/PrivateDuel.png', tile: 8 },
+  { id: 'banner_sponsor1', label: 'Banner — Sponsor 1', url: '/assets/textures/gym/banners/SponsorBanner1.png', tile: 8 },
+  { id: 'banner_sponsor2', label: 'Banner — Sponsor 2', url: '/assets/textures/gym/banners/SponsorBanner2.png', tile: 8 },
+  // --- Simple built-in patterns (generated in code — handy for readable movement courses) ---
+  { id: 'checker', label: 'Checkerboard', procedural: 'checker', tile: 2 },
+  { id: 'grid_lines', label: 'Grid Lines', procedural: 'grid', tile: 4 },
+  { id: 'hazard_stripes', label: 'Hazard Stripes', procedural: 'stripes', tile: 2 },
+  { id: 'dots', label: 'Dots', procedural: 'dots', tile: 2 }
 ];
 
 export const CREATOR_TEXTURE_IDS = CREATOR_TEXTURES.map((t) => t.id);

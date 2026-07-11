@@ -1217,7 +1217,7 @@ export class ArenaScene {
     // Apply the shared-sim predicted position to the player root.
     // The camera is parented to root, so it follows automatically; look angles are untouched.
     if (this.predictedMovement && this.predictedInternal) {
-      this.applyPredicted(this.predictedMovement, this.predictedInternal);
+      this.applyPredicted(this.predictedMovement, this.predictedInternal, dt);
       this.updateLocalMovementFoley(
         dt,
         this.predictedMovement.velocity,
@@ -1673,7 +1673,7 @@ export class ArenaScene {
     }
   }
 
-  private applyPredicted(movement: PlayerMovementState, internal: MovementInternalState): void {
+  private applyPredicted(movement: PlayerMovementState, internal: MovementInternalState, frameDt: number): void {
     this.markLocalPositionWriter('applyPredicted');
     const p = movement.position;
     const v = movement.velocity;
@@ -1685,7 +1685,7 @@ export class ArenaScene {
     this.player.camera.rotation.x = this.networkPitch + backflipPitchOffset(internal.backflipActive, internal.backflipTimer);
     this.player.camera.rotation.y = 0;
     this.player.camera.rotation.z = 0;
-    this.player.applyWallRunLean(this.netFixedDt, movement.wallRunning, internal.lastWallNormalX, internal.lastWallNormalZ);
+    this.player.applyWallRunLean(frameDt, movement.wallRunning, internal.lastWallNormalX, internal.lastWallNormalZ);
     // Crouch/slide lowers the eye height so the view follows the (shortened) body. Online mode
     // skips the offline MovementController, so the camera Y must be driven here from the predicted
     // crouch state. Smoothed exponentially toward the target so it dips/rises instead of snapping.

@@ -46,6 +46,12 @@ interface PlayerVisual {
   rightArm: ArmVisual;
   name: string;
   teamId: string;
+  locomotionPhase: number;
+  locomotionBlend: number;
+  crouchBlend: number;
+  slideBlend: number;
+  airBlend: number;
+  dashAnim: number;
 }
 
 export interface PlayerNametagInfo {
@@ -716,19 +722,23 @@ export class NetworkRenderer {
       // Wall-run body lean: tilt the avatar away from the wall (roll about Z), smoothed, so the
       // remote reads the same as the local first-person lean. Backflip (rotation.x) and wall-run
       // are mutually exclusive states, so the two never fight over the rig.
-      visual.root.rotation.z = this.advanceWallLean(player, dt);
+      const wallLean = this.advanceWallLean(player, dt);
       // Backflip body tumble: rotate the whole rig backward about its mid-height so the remote
       // avatar visibly flips. Pivot at body center (not the feet) by lifting the root by the
       // rotated half-height offset, so the body spins in place instead of swinging from the floor.
       const flip = backflipPitchOffset(player.movementInternal.backflipActive, player.movementInternal.backflipTimer);
-      visual.root.rotation.x = flip;
+      this.applyMovementTilt(visual, player, wallLean, flip);
       if (flip !== 0) {
         const half = TUNING.player.height * 0.5;
+        const yaw = player.movement.yawRadians;
+        const forwardX = Math.sin(yaw);
+        const forwardZ = Math.cos(yaw);
         // Lift so the rotation pivots around mid-body: feet stay roughly under the center.
         visual.root.position.y = target.y + half - half * Math.cos(flip);
-        visual.root.position.z = target.z - half * Math.sin(flip);
+        visual.root.position.x = target.x + recoilX - forwardX * half * Math.sin(flip);
+        visual.root.position.z = target.z + recoilZ - forwardZ * half * Math.sin(flip);
       }
-      this.posePlayerVisual(player, visual);
+      this.posePlayerVisual(player, visual, dt);
 
       const dbg = this.playerDebug.get(player.id)!;
       dbg.logTimer += dt;
@@ -784,6 +794,33 @@ export class NetworkRenderer {
     if (Math.abs(next) < 0.0005) next = 0;
     this.wallLeanByPlayerId.set(player.id, next);
     return next;
+  }
+
+  /**
+   * Orient the remote rig in world space. Remote body parts are already positioned from world-space
+   * look vectors, so an Euler Z roll would always lean along world X. Instead, tilt the rig's up
+   * vector toward the wall normal (the direction away from the wall), then compose the backflip
+   * around the player's current right axis.
+   */
+  private applyMovementTilt(visual: PlayerVisual, player: PlayerState, wallLean: number, flip: number): void {
+    const nx = player.movementInternal.lastWallNormalX;
+    const nz = player.movementInternal.lastWallNormalZ;
+    const normalLength = Math.hypot(nx, nz);
+    const leanAmount = normalLength > 0.001 ? Math.sin(Math.abs(wallLean)) : 0;
+    const upY = Math.cos(Math.abs(wallLean));
+    scratchA.set(
+      normalLength > 0.001 ? (nx / normalLength) * leanAmount : 0,
+      upY,
+      normalLength > 0.001 ? (nz / normalLength) * leanAmount : 0
+    ).normalize();
+
+    const wallTilt = Quaternion.FromUnitVectorsToRef(SCRATCH_UP, scratchA, scratchWallTilt);
+    const yaw = player.movement.yawRadians;
+    scratchRight.set(Math.cos(yaw), 0, -Math.sin(yaw));
+    Quaternion.RotationAxisToRef(scratchRight, flip, scratchFlipTilt);
+    wallTilt.multiplyToRef(scratchFlipTilt, scratchMovementTilt);
+    visual.root.rotationQuaternion ??= new Quaternion();
+    visual.root.rotationQuaternion.copyFrom(scratchMovementTilt);
   }
 
   private advanceCatchRecoil(playerId: string, dt: number): CatchRecoilTrack | null {
@@ -1081,7 +1118,13 @@ export class NetworkRenderer {
       leftArm: this.buildArm(player.id, 'left', root),
       rightArm: this.buildArm(player.id, 'right', root),
       name: player.name,
-      teamId: player.teamId
+      teamId: player.teamId,
+      locomotionPhase: 0,
+      locomotionBlend: 0,
+      crouchBlend: 0,
+      slideBlend: 0,
+      airBlend: 0,
+      dashAnim: 0
     };
     this.players.set(player.id, visual);
     this.playerDebug.set(player.id, { logTimer: 0 });
@@ -1152,7 +1195,7 @@ export class NetworkRenderer {
     return { upper, lower, hand };
   }
 
-  private posePlayerVisual(player: PlayerState, visual: PlayerVisual): void {
+  private posePlayerVisual(player: PlayerState, visual: PlayerVisual, dt: number): void {
     const root = visual.root.position;
     // Reusable render-player view: same as `player` but with the position pinned to the (possibly
     // flip-adjusted) visual root. Mutated in place each frame instead of re-spreading the whole
@@ -1181,9 +1224,25 @@ export class NetworkRenderer {
     const rightV = scratchRight.set(look.right.x, look.right.y, look.right.z);
     const flatForward = flatForwardToRef(forwardV, scratchFlatForward);
     const hitbox = playerHitCapsule(renderPlayer);
-    const bodyHeight = eliminated ? Math.min(hitbox.height, TUNING.player.height * 0.56) : hitbox.height;
+    const blendAlpha = 1 - Math.exp(-14 * Math.max(0, dt));
+    visual.crouchBlend += ((pm.crouching && !pm.sliding ? 1 : 0) - visual.crouchBlend) * blendAlpha;
+    visual.slideBlend += ((pm.sliding ? 1 : 0) - visual.slideBlend) * blendAlpha;
+    visual.airBlend += ((!pm.grounded && !pm.wallRunning ? 1 : 0) - visual.airBlend) * blendAlpha;
+    if (pm.dashingThisFrame) visual.dashAnim = 1;
+    else visual.dashAnim = Math.max(0, visual.dashAnim - dt / 0.24);
+    const dashPose = Math.sin(visual.dashAnim * Math.PI) * (visual.dashAnim > 0 ? 1 : 0);
+    const crouchedHeight = TUNING.player.height * TUNING.player.crouchHeightMultiplier;
+    const slideHeight = TUNING.player.height * TUNING.slide.heightScale;
+    const animatedHeight = TUNING.player.height + (crouchedHeight - TUNING.player.height) * visual.crouchBlend + (slideHeight - TUNING.player.height) * visual.slideBlend;
+    const bodyHeight = eliminated ? Math.min(hitbox.height, TUNING.player.height * 0.56) : animatedHeight;
     const bodyScale = bodyHeight / TUNING.player.height;
-    const slideLean = pm.sliding && !eliminated ? 0.24 : 0;
+    const slideLean = !eliminated ? visual.slideBlend * 0.5 + dashPose * 0.2 : 0;
+    const horizontalSpeed = Math.hypot(pm.velocity.x, pm.velocity.z);
+    const gaitTarget = pm.grounded && !pm.sliding && !eliminated ? Math.min(1, horizontalSpeed / 5.5) : 0;
+    visual.locomotionBlend += (gaitTarget - visual.locomotionBlend) * (1 - Math.exp(-12 * Math.max(0, dt)));
+    visual.locomotionPhase += horizontalSpeed * 2.7 * Math.max(0, dt) * visual.locomotionBlend;
+    const stride = Math.sin(visual.locomotionPhase) * 0.12 * visual.locomotionBlend;
+    const gaitBob = Math.abs(Math.sin(visual.locomotionPhase)) * 0.018 * visual.locomotionBlend;
     const eyeHeight = playerAimOriginHeight(player.movement);
     const headY = Math.max(0.62, Math.min(bodyHeight - 0.2, eyeHeight - 0.04));
     const legHeight = Math.max(0.36, Math.min(0.72, bodyHeight * 0.42));
@@ -1191,8 +1250,8 @@ export class NetworkRenderer {
     const shoulderY = Math.max(0.56, Math.min(bodyHeight - 0.32, eyeHeight - 0.34));
     const hipY = Math.max(0.26, legHeight + 0.06);
 
-    visual.body.position.set(flatForward.x * slideLean * 0.28, bodyHeight * 0.5, flatForward.z * slideLean * 0.28);
-    visual.body.scaling.set(1, bodyScale, 1);
+    visual.body.position.set(flatForward.x * slideLean * 0.28, bodyHeight * 0.5 + gaitBob, flatForward.z * slideLean * 0.28);
+    visual.body.scaling.set(1 + dashPose * 0.1 + visual.slideBlend * 0.08, bodyScale * (1 - dashPose * 0.08), 1 + dashPose * 0.1 + visual.slideBlend * 0.08);
     visual.body.rotationQuaternion ??= new Quaternion();
     scratchA.set(flatForward.x * slideLean, 1, flatForward.z * slideLean).normalize();
     Quaternion.FromUnitVectorsToRef(SCRATCH_UP, scratchA, visual.body.rotationQuaternion);
@@ -1201,7 +1260,8 @@ export class NetworkRenderer {
     // The wall-run lean is a VISUAL body tilt only — the authoritative hit capsule (PlayerHitbox)
     // stays an upright vertical capsule. Counter-rotate the debug hitbox by the root's roll so it
     // keeps showing the true (vertical) collision shape rather than the leaned avatar's silhouette.
-    visual.hitbox.rotation.z = -visual.root.rotation.z;
+    visual.hitbox.rotationQuaternion ??= new Quaternion();
+    visual.root.rotationQuaternion?.conjugateToRef(visual.hitbox.rotationQuaternion);
     visual.hitbox.setEnabled(isHitboxDebugEnabled());
 
     // torso = flatForward*0.02 + (0, max(0.58, h*0.53), 0)
@@ -1217,10 +1277,10 @@ export class NetworkRenderer {
 
     this.poseStaticSidePart(visual.leftShoulder, 'left', shoulderY, flatForward, rightV);
     this.poseStaticSidePart(visual.rightShoulder, 'right', shoulderY, flatForward, rightV);
-    this.poseLeg(visual.leftLeg, 'left', legHeight, rightV);
-    this.poseLeg(visual.rightLeg, 'right', legHeight, rightV);
-    this.poseFoot(visual.leftFoot, 'left', flatForward, rightV);
-    this.poseFoot(visual.rightFoot, 'right', flatForward, rightV);
+    this.poseLeg(visual.leftLeg, 'left', legHeight, rightV, flatForward, stride);
+    this.poseLeg(visual.rightLeg, 'right', legHeight, rightV, flatForward, -stride);
+    this.poseFoot(visual.leftFoot, 'left', flatForward, rightV, stride);
+    this.poseFoot(visual.rightFoot, 'right', flatForward, rightV, -stride);
 
     // eye = root + (0, eyeHeight, 0); aimEnd = eye + forward*0.5
     scratchEye.set(root.x, root.y + eyeHeight, root.z);
@@ -1232,8 +1292,8 @@ export class NetworkRenderer {
     Quaternion.FromUnitVectorsToRef(SCRATCH_FWD_Z, forwardV, visual.visor.rotationQuaternion);
     this.poseSegment(visual.facing, scratchEye, scratchAimEnd, root);
     const armAnim = this.remoteArmAnimations.get(player.id);
-    this.poseArm(renderPlayer, visual.leftArm, 'left', root, forwardV, rightV, armAnim?.left);
-    this.poseArm(renderPlayer, visual.rightArm, 'right', root, forwardV, rightV, armAnim?.right);
+    this.poseArm(renderPlayer, visual.leftArm, 'left', root, forwardV, rightV, armAnim?.left, visual);
+    this.poseArm(renderPlayer, visual.rightArm, 'right', root, forwardV, rightV, armAnim?.right, visual);
   }
 
   private poseStaticSidePart(mesh: Mesh, side: HandSide, y: number, forward: Vector3, right: Vector3): void {
@@ -1244,17 +1304,19 @@ export class NetworkRenderer {
     orientYaw(mesh, forward);
   }
 
-  private poseLeg(mesh: Mesh, side: HandSide, height: number, right: Vector3): void {
+  private poseLeg(mesh: Mesh, side: HandSide, height: number, right: Vector3, forward: Vector3, stride: number): void {
     const sign = side === 'left' ? -1 : 1;
     const p = mesh.position;
-    p.set(right.x * sign * 0.16, right.y * sign * 0.16 + Math.max(0.22, height * 0.52), right.z * sign * 0.16 + 0.035);
+    p.set(right.x * sign * 0.16 + forward.x * stride * 0.18, right.y * sign * 0.16 + Math.max(0.22, height * 0.52), right.z * sign * 0.16 + forward.z * stride * 0.18 + 0.035);
     mesh.scaling.y = height / 0.72;
+    mesh.rotationQuaternion ??= new Quaternion();
+    Quaternion.RotationAxisToRef(right, stride, mesh.rotationQuaternion);
   }
 
-  private poseFoot(mesh: Mesh, side: HandSide, forward: Vector3, right: Vector3): void {
+  private poseFoot(mesh: Mesh, side: HandSide, forward: Vector3, right: Vector3, stride: number): void {
     const sign = side === 'left' ? -1 : 1;
     const p = mesh.position;
-    p.set(right.x * sign * 0.16 + forward.x * 0.08, right.y * sign * 0.16 + forward.y * 0.08 + 0.045, right.z * sign * 0.16 + forward.z * 0.08);
+    p.set(right.x * sign * 0.16 + forward.x * (0.08 + stride * 0.32), right.y * sign * 0.16 + forward.y * 0.08 + 0.045 + Math.max(0, -stride) * 0.06, right.z * sign * 0.16 + forward.z * (0.08 + stride * 0.32));
     orientYaw(mesh, forward);
   }
 
@@ -1265,7 +1327,8 @@ export class NetworkRenderer {
     root: Vector3,
     forward: Vector3,
     right: Vector3,
-    anim?: ArmAnimTrack
+    anim: ArmAnimTrack | undefined,
+    visual: PlayerVisual
   ): void {
     const sign = side === 'left' ? -1 : 1;
     const handState = player.hands[side];
@@ -1283,6 +1346,8 @@ export class NetworkRenderer {
     const hand = scratchHand.set(anchor.x, anchor.y, anchor.z);
     const throwSwing = easeOutCubic(anim?.throwAnim ?? 0);
     const fakeWindup = easeOutCubic(anim?.fakeAnim ?? 0) * 0.8;
+    const catching = handState.mode === 'catching' ? 1 : 0;
+    const dashPose = Math.sin(visual.dashAnim * Math.PI) * (visual.dashAnim > 0 ? 1 : 0);
     if (throwSwing > 0) {
       hand.set(
         hand.x + forward.x * TUNING.arms.throwReach * throwSwing - right.x * sign * TUNING.arms.throwCenter * throwSwing,
@@ -1302,13 +1367,23 @@ export class NetworkRenderer {
         hand.y - forward.y * TUNING.arms.windupPull * fakeWindup + TUNING.arms.windupLift * fakeWindup + right.y * sign * TUNING.arms.windupSide * fakeWindup,
         hand.z - forward.z * TUNING.arms.windupPull * fakeWindup + right.z * sign * TUNING.arms.windupSide * fakeWindup
       );
+    } else if (catching > 0) {
+      hand.set(
+        hand.x + forward.x * 0.38 - right.x * sign * 0.08,
+        hand.y + forward.y * 0.38 + 0.1 - right.y * sign * 0.08,
+        hand.z + forward.z * 0.38 - right.z * sign * 0.08
+      );
+    } else if (visual.slideBlend > 0.01) {
+      hand.set(hand.x + forward.x * 0.2, hand.y - 0.24, hand.z + forward.z * 0.2);
+    } else if (dashPose > 0.01) {
+      hand.set(hand.x - forward.x * 0.32, hand.y - 0.1, hand.z - forward.z * 0.32);
     } else if (!handState.heldBallId && handState.mode === 'empty') {
       hand.set(hand.x - forward.x * 0.08, hand.y - 0.12 - forward.y * 0.08, hand.z - forward.z * 0.08);
     }
 
     // elbow = lerp(shoulder, hand, 0.52) + (0, -0.04, 0) + right*sign*0.05
     const elbow = scratchElbow;
-    const elbowLift = (handState.mode === 'charging' ? Math.min(1, handState.chargeSeconds / TUNING.ball.maxChargeSeconds) : fakeWindup) * 0.18;
+    const elbowLift = (handState.mode === 'charging' ? Math.min(1, handState.chargeSeconds / TUNING.ball.maxChargeSeconds) : Math.max(fakeWindup, catching * 0.7)) * 0.18;
     const elbowDrop = throwSwing * 0.1;
     elbow.set(
       shoulder.x + (hand.x - shoulder.x) * 0.52 + right.x * sign * (0.05 + elbowLift),
@@ -1513,6 +1588,9 @@ const scratchHand = new Vector3();
 const scratchElbow = new Vector3();
 const scratchEye = new Vector3();
 const scratchAimEnd = new Vector3();
+const scratchWallTilt = new Quaternion();
+const scratchFlipTilt = new Quaternion();
+const scratchMovementTilt = new Quaternion();
 // Held-ball target is a plain Vec3 (never a Babylon Vector3) so the math stays alloc-free.
 const scratchBallTarget: Vec3 = { x: 0, y: 0, z: 0 };
 

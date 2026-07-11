@@ -39,6 +39,7 @@ import {
   textureDef,
   type CreatorLabelColor,
   type CreatorLabelSize,
+  type CreatorProceduralTexture,
   type Vec3Tuple
 } from './CreatorLayout';
 import { layoutWorldBounds } from './CreatorWorld';
@@ -304,9 +305,21 @@ export class CreatorGeometry {
 
   /** A translucent red hazard VOLUME (kill block) — walk-through, sized to the object, base on the floor. */
   private buildHazardBox(obj: CreatorLayoutObject, node: TransformNode, w: number, h: number, d: number): void {
-    const box = MeshBuilder.CreateBox(`creator_${obj.id}_hazard`, { width: w, height: h, depth: d }, this.scene);
-    box.position.set(0, h / 2, 0);
-    box.material = this.translucentMaterial('creator_hazard_mat', new Color3(0.95, 0.22, 0.22), 0.34);
+    // Inset the bottom a hair off the floor. In the yard PREVIEW the visible ground sits exactly at
+    // y=0 (the editor's own grid floor, which sits at -0.02, is hidden there), so a kill block placed
+    // at floor level had its bottom face coplanar with the ground — the two z-fought and the block
+    // flickered "in and out" as the camera moved. Lifting the base breaks that coplanarity. The kill
+    // TRIGGER still uses the true layout volume, so gameplay is unchanged.
+    const BOTTOM_INSET = 0.02;
+    const visH = Math.max(0.02, h - BOTTOM_INSET);
+    const box = MeshBuilder.CreateBox(`creator_${obj.id}_hazard`, { width: w, height: visH, depth: d }, this.scene);
+    box.position.set(0, BOTTOM_INSET + visH / 2, 0);
+    const mat = this.translucentMaterial('creator_hazard_mat', new Color3(0.95, 0.22, 0.22), 0.34);
+    // A double-sided translucent box otherwise mis-sorts its own front/back faces as the camera moves;
+    // an explicit alpha-blend mode + a separate back-then-front culling pass keeps the red volume stable.
+    mat.transparencyMode = Material.MATERIAL_ALPHABLEND;
+    mat.separateCullingPass = true;
+    box.material = mat;
     box.parent = node;
     this.tagPickable(box, obj.id);
     this.attachLabel(obj, node, this.markerLabel(obj), h + 0.4);
@@ -1020,7 +1033,9 @@ export class CreatorGeometry {
     if (cached) return cached;
     const def = textureDef(id)!;
     const mat = new StandardMaterial(`creator_${key}`, this.scene);
-    const tex = new Texture(def.url, this.scene);
+    const tex: Texture = def.procedural
+      ? this.proceduralPatternTexture(`creator_${key}_tex`, def.procedural)
+      : new Texture(def.url!, this.scene);
     tex.wrapU = Texture.WRAP_ADDRESSMODE;
     tex.wrapV = Texture.WRAP_ADDRESSMODE;
     mat.diffuseTexture = tex;
@@ -1128,6 +1143,63 @@ export class CreatorGeometry {
     const mesh = MeshBuilder.CreateBox(name, { width: w, height: h, depth: d, wrap: true, faceUV }, this.scene);
     mesh.material = material;
     return mesh;
+  }
+
+  /**
+   * A small tileable pattern drawn in code (no image asset) — checker / grid / stripes / dots.
+   * Persistent like gridTexture (backs a cached material), so the caller tracks it for teardown.
+   */
+  private proceduralPatternTexture(name: string, kind: CreatorProceduralTexture): DynamicTexture {
+    const size = 256;
+    const tex = new DynamicTexture(name, { width: size, height: size }, this.scene, true);
+    const ctx = tex.getContext() as CanvasRenderingContext2D;
+    if (kind === 'checker') {
+      const cell = size / 2;
+      for (let y = 0; y < 2; y += 1) {
+        for (let x = 0; x < 2; x += 1) {
+          ctx.fillStyle = (x + y) % 2 === 0 ? '#c8ccd2' : '#868c96';
+          ctx.fillRect(x * cell, y * cell, cell, cell);
+        }
+      }
+    } else if (kind === 'grid') {
+      ctx.fillStyle = '#2b3446';
+      ctx.fillRect(0, 0, size, size);
+      ctx.strokeStyle = '#5bd6ff';
+      ctx.lineWidth = 8;
+      ctx.strokeRect(0, 0, size, size);
+    } else if (kind === 'stripes') {
+      ctx.fillStyle = '#f2c500';
+      ctx.fillRect(0, 0, size, size);
+      ctx.fillStyle = '#1b1b1b';
+      const w = size / 4;
+      ctx.save();
+      ctx.beginPath();
+      ctx.rect(0, 0, size, size);
+      ctx.clip();
+      for (let i = -size; i < size * 2; i += w * 2) {
+        ctx.beginPath();
+        ctx.moveTo(i, 0);
+        ctx.lineTo(i + w, 0);
+        ctx.lineTo(i + w + size, size);
+        ctx.lineTo(i + size, size);
+        ctx.closePath();
+        ctx.fill();
+      }
+      ctx.restore();
+    } else {
+      // dots
+      ctx.fillStyle = '#3a3f4a';
+      ctx.fillRect(0, 0, size, size);
+      ctx.fillStyle = '#e6e9ef';
+      const r = size * 0.12;
+      for (const [cx, cy] of [[0.25, 0.25], [0.75, 0.25], [0.25, 0.75], [0.75, 0.75]]) {
+        ctx.beginPath();
+        ctx.arc(cx * size, cy * size, r, 0, Math.PI * 2);
+        ctx.fill();
+      }
+    }
+    tex.update(true);
+    return tex;
   }
 
   private gridTexture(name: string, base: Color3, line: Color3): DynamicTexture {

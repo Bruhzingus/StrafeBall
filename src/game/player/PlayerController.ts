@@ -69,7 +69,7 @@ export class PlayerController {
     this.hands.update(dt, this.input, this.lastMovementSnapshot, throwsSuppressed);
     this.catching.update(dt, this.input, this.lastMovementSnapshot);
     // Arms follow the hand state and snap the held balls into the animated hands.
-    this.viewmodel.update(dt, this.hands);
+    this.viewmodel.update(dt, this.hands, this.lastMovementSnapshot);
 
     if (this.input.wasKeyPressed(CONTROL_KEYS.reset)) {
       this.resetPosition();
@@ -85,7 +85,7 @@ export class PlayerController {
     this.updateLook();
     this.movement.tickVisualFeedback(dt);
     this.hands.tickVisualAnimations(dt);
-    this.viewmodel.update(dt, this.hands);
+    this.viewmodel.update(dt, this.hands, this.lastMovementSnapshot);
     this.camera.getViewMatrix(true);
   }
 
