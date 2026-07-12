@@ -38,6 +38,7 @@ export class Hud {
   private hasSmoothedSpeed = false;
   private readonly countdown: HTMLDivElement;
   private readonly halfCourtWarning: HTMLDivElement;
+  private practiceHalfCourtHintUntilMs = 0;
   private readonly musicHud: MusicHud;
   private readonly teamScoreboard: TeamScoreboard;
   private lastCountdownLabel = '';
@@ -330,6 +331,19 @@ export class Hud {
 
   updateMusic(state: MusicHudState | null): void {
     this.musicHud.update(state);
+  }
+
+  /** One-time, non-punitive explanation shown when a practice player crosses half court. */
+  showPracticeHalfCourtHint(): void {
+    this.practiceHalfCourtHintUntilMs = performance.now() + 5200;
+    this.halfCourtWarning.classList.remove('half-court-warning--urgent');
+    this.halfCourtWarning.classList.add('half-court-warning--practice', 'half-court-warning--visible');
+    this.halfCourtWarning.innerHTML = `
+      <div class="half-court-warning__stamp">PRACTICE RULE</div>
+      <div class="half-court-warning__title">HALF COURT IS LOCKED IN MATCHES</div>
+      <div class="half-court-warning__body">In a real game, crossing before the timer ends costs a life.</div>
+      <div class="half-court-warning__timer">PRACTICE LOBBY — CROSS FREELY</div>
+    `;
   }
 
   update(player: PlayerController, rules: MatchRules, ballManager: BallManager, fps: number, frameMs: number, showPracticeScoreboard = true): void {
@@ -658,11 +672,18 @@ export class Hud {
   private updateHalfCourtWarning(violation: HalfCourtViolationState | undefined): void {
     const active = !!violation?.wasAcross && !violation.eliminationIssued;
     if (!active) {
-      this.halfCourtWarning.classList.remove('half-court-warning--visible', 'half-court-warning--urgent');
+      if (performance.now() < this.practiceHalfCourtHintUntilMs) return;
+      this.halfCourtWarning.classList.remove(
+        'half-court-warning--visible',
+        'half-court-warning--urgent',
+        'half-court-warning--practice'
+      );
       this.halfCourtWarning.innerHTML = '';
       return;
     }
 
+    this.practiceHalfCourtHintUntilMs = 0;
+    this.halfCourtWarning.classList.remove('half-court-warning--practice');
     const danger = !!violation?.deathCountdownActive && violation.countdownSeconds > 0;
     const seconds = Math.max(1, Math.ceil(violation.countdownSeconds));
     this.halfCourtWarning.classList.toggle('half-court-warning--urgent', danger);

@@ -321,6 +321,8 @@ export class ArenaScene {
   private lastBoundaryClockDisplaySecond: number | null = null;
   private boundaryCountdownWasActive = false;
   private boundaryOpenConfirmPlayed = false;
+  /** Practice teaches the half-court rule once per lobby session, but never enforces it. */
+  private practiceBoundaryHintShown = false;
   private lastGroundMoveDir: Vec3 = { x: 0, y: 0, z: 1 };
   private lastGroundSpeed = 0;
 
@@ -1035,7 +1037,11 @@ export class ArenaScene {
       this.hud.showScoreEvent(`HIT +${hits.length}`, `${this.rules.scoring.playerHits} / ${TUNING.match.scoreLimit}`, 'good');
     }
 
-    this.rules.boundary.update(dt, this.player.root.position);
+    const enteredPracticeRestrictedHalf = this.rules.boundary.updatePractice(dt, this.player.root.position);
+    if (enteredPracticeRestrictedHalf && !this.practiceBoundaryHintShown) {
+      this.practiceBoundaryHintShown = true;
+      this.hud.showPracticeHalfCourtHint();
+    }
     this.updateBoundaryClockSound(
       Math.max(0, TUNING.match.noBoundariesSeconds - this.rules.boundary.elapsed),
       this.rules.boundary.noBoundaries
@@ -3430,7 +3436,7 @@ export class ArenaScene {
   private logPolishedPostGraphicsReport(): void {
     if (!this.polishedPostFx) return;
     const post = this.polishedPostFx.getDebugInfo();
-    console.log(`[graphics] Post: DefaultRenderingPipeline(fxaa=${post.fxaa} bloom=${post.bloom})` +
+    console.log(`[graphics] Post: DefaultRenderingPipeline(fxaa=${post.fxaa} msaa=${post.msaaSamples}x bloom=${post.bloom})` +
       ` SSAO2=${post.ssao ? `half-res(maxZ=${post.ssaoMaxZ})` : 'off'}` +
       ` Glow=${post.glow ? `on(included=${post.glowIncludedCount})` : 'off'}`);
   }

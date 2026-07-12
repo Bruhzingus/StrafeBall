@@ -1,6 +1,11 @@
 import { Vector3 } from '@babylonjs/core';
 import type { MatchState, Vec3 } from '../../../shared/types';
-import { advanceNoBoundariesTimer, applyHalfCourtRule, createMatchState } from '../../../shared/simulation/RuleSim';
+import {
+  advanceNoBoundariesTimer,
+  applyHalfCourtRule,
+  createMatchState,
+  isIllegalHalfCourtPosition
+} from '../../../shared/simulation/RuleSim';
 
 // Player's legal half is negative Z (they spawn at z=-12; center line is z=0). A small
 // grace band past center avoids false positives from brushing the line.
@@ -20,6 +25,7 @@ export class BoundaryRules {
   // Edge-trigger guard: a single sustained excursion past the line counts once, not once
   // per frame. Re-crossing after returning legal counts again.
   private match: MatchState = createBoundaryMatch();
+  private practiceWasAcross = false;
 
   update(dt: number, playerPosition: Vector3): void {
     const hadBoundaries = !this.match.boundary.noBoundaries;
@@ -53,6 +59,23 @@ export class BoundaryRules {
     }
   }
 
+  /**
+   * Practice-lobby clock: teach the restriction without enforcing it. Returns true only when the
+   * player first steps onto the match-illegal half, so Arena can show a lightweight explanation.
+   */
+  updatePractice(dt: number, playerPosition: Vector3): boolean {
+    const hadBoundaries = !this.match.boundary.noBoundaries;
+    this.match = advanceNoBoundariesTimer(this.match, dt);
+    this.syncPublicState();
+
+    const across = !this.noBoundaries && isIllegalHalfCourtPosition('negativeZ', toSharedVec3(playerPosition));
+    const enteredAcross = across && !this.practiceWasAcross;
+    this.practiceWasAcross = across;
+    if (hadBoundaries && this.noBoundaries) this.lastMessage = 'BELL! No boundaries. Full court is open.';
+    else if (enteredAcross) this.lastMessage = 'Practice: crossing is allowed. In a match, wait for half court to drop.';
+    return enteredAcross;
+  }
+
   reset(): void {
     this.match = createBoundaryMatch();
     this.elapsed = 0;
@@ -62,6 +85,7 @@ export class BoundaryRules {
     this.illegalCountdownActive = false;
     this.illegalCountdownSeconds = 0;
     this.lastMessage = 'Half-court active.';
+    this.practiceWasAcross = false;
   }
 
   private syncPublicState(): void {

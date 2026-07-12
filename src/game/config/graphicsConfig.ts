@@ -240,6 +240,13 @@ export interface PolishedConfig {
   /** Post pipeline (Phase 4) + bloom block (present, ships OFF — GlowLayer is the emissive path). */
   post: {
     fxaa: boolean;
+    /**
+     * MSAA sample count on the DefaultRenderingPipeline (1 = off, 2/4/8 = MSAA). FXAA alone can't
+     * resolve thin high-contrast GEOMETRIC edges (bleacher rails, the light strips) — it only smears
+     * them; MSAA multisamples those edges properly. Kept alongside FXAA (FXAA still cleans up
+     * shader/specular aliasing MSAA misses). 4 is the sweet spot on a mid GPU with the FPS headroom.
+     */
+    msaaSamples: number;
     ssao: {
       enabled: boolean;
       base: number;
@@ -323,6 +330,7 @@ export const POLISHED_CONFIG: PolishedConfig = {
   mirror: { enabled: true, ratio: 0.5, blurKernel: 20, floorEnvironmentIntensity: 0.69, floorSpecularIntensity: 0.05, maxRenderListSize: 120 },
   post: {
     fxaa: true,
+    msaaSamples: 4, // MSAA 4× for crisp bleacher rails / light strips (FXAA can't fix geometric edges)
     ssao: {
       enabled: true,
       base: 0.35,

@@ -982,6 +982,37 @@ html, body {
     half-court-warning-urgent 0.42s steps(2, end) infinite;
 }
 
+/* Practice uses the same readable card footprint, but never looks like damage or a countdown. */
+.half-court-warning--practice {
+  border-color: #08213d;
+  background:
+    radial-gradient(circle at 8% 0%, rgba(255, 255, 255, 0.42), transparent 32%),
+    repeating-linear-gradient(-45deg, rgba(255, 255, 255, 0.055) 0 8px, transparent 8px 16px),
+    linear-gradient(180deg, rgba(45, 137, 218, 0.97), rgba(17, 64, 126, 0.97));
+  box-shadow:
+    0 12px 0 rgba(5, 22, 43, 0.28),
+    0 0 0 2px rgba(196, 231, 255, 0.5) inset,
+    0 0 30px rgba(45, 155, 255, 0.24);
+}
+
+.half-court-warning--practice .half-court-warning__stamp {
+  border-color: #e8f6ff;
+  background: #08213d;
+  color: #8fddff;
+}
+
+.half-court-warning--practice .half-court-warning__title {
+  font-size: clamp(19px, 2.5vw, 29px);
+  text-shadow: 3px 3px 0 #08213d;
+}
+
+.half-court-warning--practice .half-court-warning__timer {
+  background: #f1f9ff;
+  color: #0b3764;
+  font-size: 13px;
+  box-shadow: 0 3px 0 rgba(5, 27, 53, 0.38);
+}
+
 .half-court-warning__stamp {
   display: inline-block;
   margin-bottom: 4px;

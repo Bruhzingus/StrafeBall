@@ -9,7 +9,7 @@
  *      the EXISTING scene.imageProcessingConfiguration (ACES + the polished exposure/contrast set in
  *      GymVisualRevamp.tuneSceneImageProcessing); Babylon then switches materials to
  *      applyByPostProcess, so tonemapping happens EXACTLY once — in the post pass, never doubled.
- *      `samples` stays 1: MSAA + SSAO2's geometry buffer conflict on some drivers (gray frame).
+ *      `samples` = MSAA (config post.msaaSamples): multisamples geometric edges FXAA can't fix.
  *      Pipeline bloom exists but ships OFF — the GlowLayer below is the emissive-glow mechanism
  *      (scene-global threshold bloom is what caught HUD text planes in the failed past attempt).
  *   3. GlowLayer with includedOnlyMeshes — ONLY explicitly-registered emissive meshes glow (cove
@@ -133,7 +133,10 @@ export class PolishedPostFX {
     // --- 2. DefaultRenderingPipeline: FXAA + the ONE image-processing (tonemap) pass ---
     const pipeline = new DefaultRenderingPipeline(POLISHED_DEFAULT_PIPELINE, true /* hdr */, scene, [camera]);
     pipeline.fxaaEnabled = cfg.post.fxaa;
-    pipeline.samples = 1; // NEVER MSAA while SSAO2 is active (geometry-buffer conflict)
+    // MSAA multisamples geometric edges (bleacher rails, light strips) that FXAA can only smear.
+    // Babylon 8 resolves MSAA before SSAO2 samples the depth/normal geometry buffer (which is its own
+    // non-MSAA target), so the two coexist — the old "never MSAA with SSAO2" note was over-cautious.
+    pipeline.samples = Math.max(1, cfg.post.msaaSamples);
     pipeline.imageProcessingEnabled = true; // binds scene.imageProcessingConfiguration → single tonemap
     pipeline.bloomEnabled = cfg.post.bloom.enabled;
     if (cfg.post.bloom.enabled) {
@@ -231,6 +234,7 @@ export class PolishedPostFX {
     ssao: boolean;
     ssaoMaxZ: number | null;
     fxaa: boolean;
+    msaaSamples: number;
     bloom: boolean;
     glow: boolean;
     glowIncludedCount: number;
@@ -239,6 +243,7 @@ export class PolishedPostFX {
       ssao: this.ssao !== null,
       ssaoMaxZ: this.ssao?.maxZ ?? null,
       fxaa: this.pipeline.fxaaEnabled,
+      msaaSamples: this.pipeline.samples,
       bloom: this.pipeline.bloomEnabled,
       glow: this.glow !== null,
       // Report our stable facade registry (Babylon moved its private list into ThinGlowLayer in v8).
