@@ -32,9 +32,11 @@ import { AABB } from '../../map/Collider';
 import { PortalArch, type PortalPalette } from '../PortalArch';
 import {
   COURSE_DIFFICULTIES,
+  COURSE_SKY_PRESETS,
   CREATOR_LIMITS,
   CREATOR_MODULES,
   type CourseDifficulty,
+  type CourseSkyPreset,
   CreatorLayout,
   CreatorLayoutObject,
   CreatorObjectMetadata,
@@ -63,6 +65,7 @@ import {
   textureDef,
   type Vec3Tuple
 } from './CreatorLayout';
+import { setSandboxSkyPreset } from '../SandboxAtmosphere';
 import { CreatorWorld, buildCreatorCollisionBoxes } from './CreatorWorld';
 import { CreatorPads } from './CreatorPads';
 import { CreatorMovers } from './CreatorMovers';
@@ -2372,6 +2375,7 @@ export class CreatorEditor implements CreatorBridge, CoopEditorBridge {
   }
 
   private rebuildAfterChange(): void {
+    setSandboxSkyPreset(this.scene, this.layout.sky ?? 'clear');
     this.geometry.rebuild(this.layout);
     this.geometry.setOverlaysEnabled(this.mode === 'build');
     this.world.rebuild(this.layout);
@@ -2808,16 +2812,17 @@ export class CreatorEditor implements CreatorBridge, CoopEditorBridge {
     this.ui.refresh();
   }
 
-  getCourseInfo(): { name: string; description: string; difficulty: CourseDifficulty | null } {
+  getCourseInfo(): { name: string; description: string; difficulty: CourseDifficulty | null; sky: CourseSkyPreset } {
     return {
       name: this.layout.name,
       description: this.layout.description ?? '',
-      difficulty: this.layout.difficulty ?? null
+      difficulty: this.layout.difficulty ?? null,
+      sky: this.layout.sky ?? 'clear'
     };
   }
 
   /** Edit the active course's listed metadata. Committed to history + flushed so the list updates. */
-  setCourseInfo(patch: { name?: string; description?: string; difficulty?: CourseDifficulty | null }): void {
+  setCourseInfo(patch: { name?: string; description?: string; difficulty?: CourseDifficulty | null; sky?: CourseSkyPreset }): void {
     if (patch.name !== undefined) {
       const clean = patch.name.trim().slice(0, CREATOR_LIMITS.maxNameLength);
       if (clean) this.layout.name = clean;
@@ -2833,6 +2838,10 @@ export class CreatorEditor implements CreatorBridge, CoopEditorBridge {
       } else {
         delete this.layout.difficulty;
       }
+    }
+    if (patch.sky !== undefined && (COURSE_SKY_PRESETS as readonly string[]).includes(patch.sky)) {
+      if (patch.sky === 'clear') delete this.layout.sky;
+      else this.layout.sky = patch.sky;
     }
     this.commit(null);
     this.flushAutosave(); // immediate, so the course list + autosave summary reflect it now

@@ -51,9 +51,10 @@ import { getGraphicsQuality } from '../config/graphicsConfig';
 import {
   enterSandboxAtmosphere,
   exitSandboxAtmosphere,
-  registerSandboxShadowGeometry
+  competitiveSandboxSkyStyle,
+  registerSandboxShadowGeometry,
+  setSandboxSkyPreset
 } from './SandboxAtmosphere';
-import { addPolishedGlowOccluder } from '../effects/PolishedPostFX';
 
 export type SandboxAction = 'leave' | 'race' | 'coop';
 
@@ -273,7 +274,10 @@ export class MovementSandbox implements MovementWorld {
       this.courseHud?.showIdle(this.courseRun.bestMs());
     }
     for (const box of this.collisionBoxes) this.gym.collision.add(box);
-    if (this.polishedAtmosphere) enterSandboxAtmosphere(this.scene);
+    if (this.polishedAtmosphere) {
+      setSandboxSkyPreset(this.scene, this.fullLayout.sky ?? 'clear');
+      enterSandboxAtmosphere(this.scene);
+    }
     else this.applyOutdoorSky();
 
     player.hands.clearHands();
@@ -551,14 +555,15 @@ export class MovementSandbox implements MovementWorld {
       end: this.scene.fogEnd,
       density: this.scene.fogDensity
     };
-    const sky = new Color3(0.52, 0.63, 0.79);
+    const style = competitiveSandboxSkyStyle(this.fullLayout.sky ?? 'clear');
+    const sky = new Color3(style.horizon[0], style.horizon[1], style.horizon[2]);
     this.scene.clearColor = new Color4(sky.r, sky.g, sky.b, 1);
     // Light linear distance fog gives the open yard depth and (with the 22 m perimeter walls) keeps
     // the faraway gym out of sight, while leaving the ~330 m playable area clearly readable.
     this.scene.fogMode = Scene.FOGMODE_LINEAR;
     this.scene.fogColor = sky;
-    this.scene.fogStart = 240;
-    this.scene.fogEnd = 700;
+    this.scene.fogStart = style.fogStart;
+    this.scene.fogEnd = style.fogEnd;
   }
 
   private restoreSky(): void {
@@ -761,7 +766,6 @@ export class MovementSandbox implements MovementWorld {
     mesh.parent = this.root;
     // The enormous ground only receives; every raised yard block/wall both casts and receives.
     registerSandboxShadowGeometry(mesh, name !== 'sandbox_ground');
-    addPolishedGlowOccluder(mesh);
     return mesh;
   }
 

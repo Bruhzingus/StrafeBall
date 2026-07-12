@@ -12,12 +12,15 @@
 import {
   COURSE_DIFFICULTIES,
   COURSE_DIFFICULTY_LABELS,
+  COURSE_SKY_LABELS,
+  COURSE_SKY_PRESETS,
   CREATOR_LABEL_COLORS,
   CREATOR_LABEL_SIZES,
   CREATOR_MATERIALS,
   CREATOR_MODULES,
   CREATOR_TEXTURES,
   type CourseDifficulty,
+  type CourseSkyPreset,
   CreatorLayoutObject,
   CreatorObjectMetadata,
   moduleDef,
@@ -78,8 +81,8 @@ export interface CreatorBridge {
   renameProjectById(id: string): void;
   duplicateProjectById(id: string): void;
   deleteProjectById(id: string): void;
-  getCourseInfo(): { name: string; description: string; difficulty: CourseDifficulty | null };
-  setCourseInfo(patch: { name?: string; description?: string; difficulty?: CourseDifficulty | null }): void;
+  getCourseInfo(): { name: string; description: string; difficulty: CourseDifficulty | null; sky: CourseSkyPreset };
+  setCourseInfo(patch: { name?: string; description?: string; difficulty?: CourseDifficulty | null; sky?: CourseSkyPreset }): void;
 
   // In-editor clipboard (Copy / Paste).
   copySelected(): void;
@@ -499,7 +502,7 @@ export class CreatorUI {
     const projects = this.bridge.listProjects();
     const activeId = this.bridge.getActiveProjectId();
     const sig =
-      `${activeId}::${info.name}|${info.description}|${info.difficulty ?? ''}::` +
+      `${activeId}::${info.name}|${info.description}|${info.difficulty ?? ''}|${info.sky}::` +
       projects.map((p) => `${p.id}:${p.name}:${p.difficulty ?? ''}:${p.updatedAt}`).join('|');
     if (sig === this.coursesSig) return;
     const active = document.activeElement;
@@ -509,7 +512,7 @@ export class CreatorUI {
   }
 
   private rebuildCoursesPanel(
-    info: { name: string; description: string; difficulty: CourseDifficulty | null },
+    info: { name: string; description: string; difficulty: CourseDifficulty | null; sky: CourseSkyPreset },
     projects: ProjectSummary[],
     activeId: string
   ): void {
@@ -551,6 +554,22 @@ export class CreatorUI {
     );
     diffRow.appendChild(diffSel);
     this.coursesDropdown.appendChild(diffRow);
+
+    const skyRow = el('div', 'creator-field');
+    skyRow.appendChild(label('Sky'));
+    const skySel = document.createElement('select');
+    skySel.className = 'creator-select';
+    for (const sky of COURSE_SKY_PRESETS) {
+      const opt = document.createElement('option');
+      opt.value = sky;
+      opt.textContent = COURSE_SKY_LABELS[sky];
+      skySel.appendChild(opt);
+    }
+    skySel.value = info.sky;
+    skySel.title = 'Changes the course sky, fog, and existing outdoor lighting';
+    skySel.addEventListener('change', () => this.bridge.setCourseInfo({ sky: skySel.value as CourseSkyPreset }));
+    skyRow.appendChild(skySel);
+    this.coursesDropdown.appendChild(skyRow);
 
     const descRow = el('div', 'creator-field creator-field-col');
     descRow.appendChild(label('Description'));

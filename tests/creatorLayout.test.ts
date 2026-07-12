@@ -67,14 +67,16 @@ describe('CreatorLayout — default + validation', () => {
     }
   });
 
-  it('sanitizes course metadata: valid difficulty kept, junk dropped, description clamped', () => {
-    const good = validateLayout({ name: 'x', objects: [], description: 'A fun sprint.', difficulty: 'advanced' }).layout;
+  it('sanitizes course metadata: valid difficulty/sky kept, junk dropped, description clamped', () => {
+    const good = validateLayout({ name: 'x', objects: [], description: 'A fun sprint.', difficulty: 'advanced', sky: 'sunset' }).layout;
     expect(good.description).toBe('A fun sprint.');
     expect(good.difficulty).toBe('advanced');
+    expect(good.sky).toBe('sunset');
 
-    const junk = validateLayout({ name: 'x', objects: [], description: 42, difficulty: 'impossible' }).layout;
+    const junk = validateLayout({ name: 'x', objects: [], description: 42, difficulty: 'impossible', sky: 'laser-storm' }).layout;
     expect(junk.description).toBeUndefined();
     expect(junk.difficulty).toBeUndefined();
+    expect(junk.sky).toBeUndefined();
 
     const long = validateLayout({ name: 'x', objects: [], description: 'y'.repeat(1000) }).layout;
     expect(long.description!.length).toBe(CREATOR_LIMITS.maxDescriptionLength);
@@ -84,9 +86,11 @@ describe('CreatorLayout — default + validation', () => {
     const layout = blankCourseLayout();
     layout.description = 'Round trip';
     layout.difficulty = 'beginner';
+    layout.sky = 'night';
     const revalidated = validateLayout(JSON.parse(JSON.stringify(layout))).layout;
     expect(revalidated.description).toBe('Round trip');
     expect(revalidated.difficulty).toBe('beginner');
+    expect(revalidated.sky).toBe('night');
   });
 
   it('blankCourseLayout is a valid course with exactly a default spawn and a leave portal', () => {

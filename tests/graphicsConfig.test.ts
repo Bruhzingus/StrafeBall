@@ -92,6 +92,7 @@ describe('graphics mode resolution + migration', () => {
     installWindowStorage();
     const { getGraphicsPresets } = await import('../src/game/config/graphicsConfig');
     expect(getGraphicsPresets().map((p) => p.value)).toEqual(['polished', 'performance']);
+    expect(getGraphicsPresets().find((p) => p.value === 'performance')?.label).toBe('Competitive (max FPS)');
 
     vi.resetModules();
     installWindowStorage({ 'strafeball.debug.graphics': '1' });

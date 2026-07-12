@@ -45,6 +45,16 @@ export const COURSE_DIFFICULTY_LABELS: Record<CourseDifficulty, string> = {
   expert: 'Expert'
 };
 
+/** Lightweight course sky looks. They reuse the existing sky/sun/fog renderer—no extra passes. */
+export const COURSE_SKY_PRESETS = ['clear', 'sunset', 'overcast', 'night'] as const;
+export type CourseSkyPreset = typeof COURSE_SKY_PRESETS[number];
+export const COURSE_SKY_LABELS: Record<CourseSkyPreset, string> = {
+  clear: 'Clear Day',
+  sunset: 'Sunset',
+  overcast: 'Overcast',
+  night: 'Night'
+};
+
 export interface CreatorLayout {
   version: number;
   name: string;
@@ -52,6 +62,8 @@ export interface CreatorLayout {
   description?: string;
   /** Optional creator-picked difficulty preset. */
   difficulty?: CourseDifficulty;
+  /** Optional visual sky preset. Missing means Clear Day for backward compatibility. */
+  sky?: CourseSkyPreset;
   updatedAt: string;
   ground: {
     bounds: { width: number; depth: number; y: number };
@@ -832,6 +844,9 @@ export function validateLayout(raw: unknown): { layout: CreatorLayout; problems:
   if (description) layout.description = description;
   if ((COURSE_DIFFICULTIES as readonly string[]).includes(String(r.difficulty))) {
     layout.difficulty = r.difficulty as CourseDifficulty;
+  }
+  if ((COURSE_SKY_PRESETS as readonly string[]).includes(String(r.sky))) {
+    layout.sky = r.sky as CourseSkyPreset;
   }
 
   // Optional prefab library (carried by Export File / Import). Sanitized like any other input;

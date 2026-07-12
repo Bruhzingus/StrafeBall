@@ -25,8 +25,59 @@ import { resolvePolishedConfig } from '../config/graphicsTuning';
 import {
   enterGymWorld,
   enterSandboxWorld,
+  getPolishedHandles,
   registerPolishedHandles
 } from '../effects/PolishedGraphics';
+import type { CourseSkyPreset } from './creator/CreatorLayout';
+
+export interface SandboxSkyStyle {
+  zenith: readonly [number, number, number];
+  horizon: readonly [number, number, number];
+  ground: readonly [number, number, number];
+  sunIntensity: number;
+  sunDiffuse: readonly [number, number, number];
+  hemiIntensity: number;
+  hemiDiffuse: readonly [number, number, number];
+  hemiGround: readonly [number, number, number];
+  fogStart: number;
+  fogEnd: number;
+}
+
+/** Resolve a cheap authored look using only the sandbox's existing sky, sun, hemi and fog. */
+export function sandboxSkyStyle(preset: CourseSkyPreset = 'clear'): SandboxSkyStyle {
+  const cfg = resolvePolishedConfig().sandbox;
+  if (preset === 'sunset') return {
+    zenith: [0.13, 0.25, 0.5], horizon: [0.96, 0.48, 0.24], ground: [0.25, 0.17, 0.2],
+    sunIntensity: 0.95, sunDiffuse: [1, 0.67, 0.4],
+    hemiIntensity: 0.48, hemiDiffuse: [0.78, 0.58, 0.66], hemiGround: [0.3, 0.22, 0.27],
+    fogStart: 160, fogEnd: 540
+  };
+  if (preset === 'overcast') return {
+    zenith: [0.38, 0.47, 0.58], horizon: [0.68, 0.73, 0.78], ground: [0.43, 0.45, 0.48],
+    sunIntensity: 0.72, sunDiffuse: [0.82, 0.88, 0.96],
+    hemiIntensity: 0.68, hemiDiffuse: [0.75, 0.82, 0.9], hemiGround: [0.42, 0.45, 0.49],
+    fogStart: 135, fogEnd: 470
+  };
+  if (preset === 'night') return {
+    zenith: [0.015, 0.025, 0.075], horizon: [0.07, 0.12, 0.23], ground: [0.018, 0.024, 0.05],
+    sunIntensity: 0.38, sunDiffuse: [0.46, 0.58, 0.9],
+    hemiIntensity: 0.3, hemiDiffuse: [0.3, 0.42, 0.68], hemiGround: [0.08, 0.1, 0.18],
+    fogStart: 120, fogEnd: 430
+  };
+  return {
+    zenith: cfg.sky.zenith, horizon: cfg.sky.horizon, ground: cfg.sky.ground,
+    sunIntensity: cfg.sun.intensity, sunDiffuse: cfg.sun.diffuse,
+    hemiIntensity: cfg.hemi.intensity, hemiDiffuse: cfg.hemi.diffuse, hemiGround: cfg.hemi.ground,
+    fogStart: cfg.fog.start, fogEnd: cfg.fog.end
+  };
+}
+
+/** Competitive keeps its established Clear Day exactly; alternate choices only change sky/fog. */
+export function competitiveSandboxSkyStyle(preset: CourseSkyPreset = 'clear'): SandboxSkyStyle {
+  const style = sandboxSkyStyle(preset);
+  if (preset !== 'clear') return style;
+  return { ...style, horizon: [0.52, 0.63, 0.79], fogStart: 240, fogEnd: 700 };
+}
 
 interface SavedSceneAtmosphere {
   clearColor: Color4;
@@ -46,9 +97,11 @@ interface SandboxAtmosphereState {
   csm: CascadedShadowGenerator | null;
   active: boolean;
   saved: SavedSceneAtmosphere | null;
+  preset: CourseSkyPreset;
 }
 
 let state: SandboxAtmosphereState | null = null;
+let requestedPreset: CourseSkyPreset = 'clear';
 /** Mesh -> whether it should cast. Every registered mesh receives, including the yard ground. */
 const shadowGeometry = new Map<Mesh, boolean>();
 
@@ -94,8 +147,19 @@ export function unregisterSandboxShadowGeometry(mesh: Mesh | null | undefined): 
   if (state?.csm && state.scene === mesh.getScene()) state.csm.removeShadowCaster(mesh, false);
 }
 
-function createSky(scene: Scene): Pick<SandboxAtmosphereState, 'sky' | 'skyMaterial' | 'skyTexture'> {
-  const cfg = resolvePolishedConfig().sandbox.sky;
+function paintSkyTexture(texture: DynamicTexture, style: SandboxSkyStyle): void {
+  const ctx = texture.getContext() as CanvasRenderingContext2D;
+  const gradient = ctx.createLinearGradient(0, 0, 0, 512);
+  gradient.addColorStop(0, css(style.zenith));
+  gradient.addColorStop(0.46, css(style.horizon));
+  gradient.addColorStop(0.58, css(style.horizon));
+  gradient.addColorStop(1, css(style.ground));
+  ctx.fillStyle = gradient;
+  ctx.fillRect(0, 0, 32, 512);
+  texture.update(false);
+}
+
+function createSky(scene: Scene, preset: CourseSkyPreset): Pick<SandboxAtmosphereState, 'sky' | 'skyMaterial' | 'skyTexture'> {
   const texture = new DynamicTexture(
     'sandbox_sky_gradient_texture',
     { width: 32, height: 512 },
@@ -103,15 +167,7 @@ function createSky(scene: Scene): Pick<SandboxAtmosphereState, 'sky' | 'skyMater
     false,
     Texture.BILINEAR_SAMPLINGMODE
   );
-  const ctx = texture.getContext() as CanvasRenderingContext2D;
-  const gradient = ctx.createLinearGradient(0, 0, 0, 512);
-  gradient.addColorStop(0, css(cfg.zenith));
-  gradient.addColorStop(0.46, css(cfg.horizon));
-  gradient.addColorStop(0.58, css(cfg.horizon));
-  gradient.addColorStop(1, css(cfg.ground));
-  ctx.fillStyle = gradient;
-  ctx.fillRect(0, 0, 32, 512);
-  texture.update(false);
+  paintSkyTexture(texture, sandboxSkyStyle(preset));
   texture.wrapU = Texture.WRAP_ADDRESSMODE;
   texture.wrapV = Texture.CLAMP_ADDRESSMODE;
 
@@ -145,12 +201,13 @@ function createSky(scene: Scene): Pick<SandboxAtmosphereState, 'sky' | 'skyMater
 
 function createState(scene: Scene): SandboxAtmosphereState {
   const cfg = resolvePolishedConfig().sandbox;
-  const sky = createSky(scene);
+  const style = sandboxSkyStyle(requestedPreset);
+  const sky = createSky(scene, requestedPreset);
   const direction = new Vector3(cfg.sun.direction[0], cfg.sun.direction[1], cfg.sun.direction[2]);
   if (direction.lengthSquared() > 1e-6) direction.normalize();
   const sun = new DirectionalLight('sandbox_sun', direction, scene);
-  sun.intensity = cfg.sun.intensity;
-  sun.diffuse = color(cfg.sun.diffuse);
+  sun.intensity = style.sunIntensity;
+  sun.diffuse = color(style.sunDiffuse);
   sun.specular = color(cfg.sun.specular);
   sun.setEnabled(false);
 
@@ -179,7 +236,8 @@ function createState(scene: Scene): SandboxAtmosphereState {
     sun,
     csm,
     active: false,
-    saved: null
+    saved: null,
+    preset: requestedPreset
   };
   state = next;
   for (const [mesh, casts] of shadowGeometry) {
@@ -195,6 +253,47 @@ function ensureState(scene: Scene): SandboxAtmosphereState {
   return createState(scene);
 }
 
+function applySkyStyle(current: SandboxAtmosphereState, preset: CourseSkyPreset): void {
+  const style = sandboxSkyStyle(preset);
+  current.preset = preset;
+  paintSkyTexture(current.skyTexture, style);
+  current.sun.intensity = style.sunIntensity;
+  current.sun.diffuse = color(style.sunDiffuse);
+  if (!current.active) return;
+
+  const horizon = color(style.horizon);
+  current.scene.clearColor = new Color4(horizon.r, horizon.g, horizon.b, 1);
+  current.scene.fogColor = horizon;
+  current.scene.fogStart = style.fogStart;
+  current.scene.fogEnd = style.fogEnd;
+
+  const hemi = getPolishedHandles().hemi;
+  if (hemi) {
+    hemi.intensity = style.hemiIntensity;
+    hemi.diffuse.set(style.hemiDiffuse[0], style.hemiDiffuse[1], style.hemiDiffuse[2]);
+    hemi.groundColor.set(style.hemiGround[0], style.hemiGround[1], style.hemiGround[2]);
+  }
+}
+
+/** Select the current course sky. Safe before atmosphere construction and cheap to call repeatedly. */
+export function setSandboxSkyPreset(scene: Scene, preset: CourseSkyPreset = 'clear'): void {
+  requestedPreset = preset;
+  if (state?.scene === scene) {
+    if (state.preset !== preset) applySkyStyle(state, preset);
+    return;
+  }
+  // Competitive has no dome/state; while the editor owns the already-active yard, still preview
+  // the selected horizon and fog. MovementSandbox performs the initial save/apply on entry.
+  if (getGraphicsQuality() !== 'polished') {
+    const style = competitiveSandboxSkyStyle(preset);
+    const horizon = color(style.horizon);
+    scene.clearColor = new Color4(horizon.r, horizon.g, horizon.b, 1);
+    scene.fogColor = horizon;
+    scene.fogStart = style.fogStart;
+    scene.fogEnd = style.fogEnd;
+  }
+}
+
 /** Enable outdoor sky/fog/sun and switch off gym-only reflection/shadow work. Idempotent. */
 export function enterSandboxAtmosphere(scene: Scene): void {
   if (getGraphicsQuality() !== 'polished') return;
@@ -208,21 +307,22 @@ export function enterSandboxAtmosphere(scene: Scene): void {
     fogEnd: scene.fogEnd,
     fogDensity: scene.fogDensity
   };
-  const cfg = resolvePolishedConfig().sandbox;
-  const horizon = color(cfg.sky.horizon);
+  const style = sandboxSkyStyle(requestedPreset);
+  const horizon = color(style.horizon);
   scene.clearColor = new Color4(horizon.r, horizon.g, horizon.b, 1);
   scene.fogMode = Scene.FOGMODE_LINEAR;
   scene.fogColor = horizon;
-  scene.fogStart = cfg.fog.start;
-  scene.fogEnd = cfg.fog.end;
+  scene.fogStart = style.fogStart;
+  scene.fogEnd = style.fogEnd;
   current.sky.setEnabled(true);
   current.active = true;
   enterSandboxWorld();
+  applySkyStyle(current, requestedPreset);
   if (isGraphicsDebugFlagEnabled()) {
     const info = getSandboxAtmosphereDebugInfo();
     console.log(`[graphics] SandboxAtmosphere: sky=gradient sun=active` +
-      ` CSM=${info.csm ? `${info.cascades}x${cfg.csm.mapSize}` : 'unsupported'}` +
-      ` casters=${info.casters} fog=${cfg.fog.start}-${cfg.fog.end}`);
+      ` CSM=${info.csm ? `${info.cascades}x${resolvePolishedConfig().sandbox.csm.mapSize}` : 'unsupported'}` +
+      ` casters=${info.casters} fog=${style.fogStart}-${style.fogEnd}`);
   }
 }
 

@@ -154,7 +154,9 @@ export type GraphicsPreset = GraphicsMode;
 export function getGraphicsPresets(): { value: GraphicsPreset; label: string }[] {
   const presets: { value: GraphicsPreset; label: string }[] = [
     { value: GRAPHICS_MODE_POLISHED, label: 'Polished (default)' },
-    { value: GRAPHICS_MODE_PERFORMANCE, label: 'Performance (max FPS)' }
+    // Keep the internal `performance` value for stored-setting compatibility. Competitive is the
+    // player-facing name for the flat legacy renderer: maximum clarity/FPS, no polished Creator FX.
+    { value: GRAPHICS_MODE_PERFORMANCE, label: 'Competitive (max FPS)' }
   ];
   if (isGraphicsDebugFlagEnabled()) {
     presets.push({ value: GRAPHICS_MODE_NEUTRAL, label: 'Neutral (diagnostic)' });

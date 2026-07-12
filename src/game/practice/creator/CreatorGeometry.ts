@@ -44,7 +44,8 @@ import {
 } from './CreatorLayout';
 import { layoutWorldBounds } from './CreatorWorld';
 import { SANDBOX_CENTER } from '../MovementSandboxLayout';
-import { addPolishedGlowMesh, addPolishedGlowOccluder } from '../../effects/PolishedPostFX';
+import { addPolishedGlowMesh } from '../../effects/PolishedPostFX';
+import { getGraphicsQuality } from '../../config/graphicsConfig';
 import { registerSandboxShadowGeometry } from '../SandboxAtmosphere';
 import { padKind } from './CreatorPads';
 
@@ -76,6 +77,8 @@ interface ResolvedLabelText {
 }
 
 export class CreatorGeometry {
+  /** Polished adds lighting response and outdoor shadows; Performance keeps the legacy flat editor. */
+  private readonly polishedVisuals = getGraphicsQuality() === 'polished';
   private readonly root: TransformNode;
   private readonly previewRoot: TransformNode;
   private readonly cachedMaterials = new Map<string, StandardMaterial>();
@@ -165,13 +168,14 @@ export class CreatorGeometry {
       if (!node) continue;
       for (const child of node.getChildMeshes(false)) {
         if (!(child instanceof Mesh)) continue;
-        registerSandboxShadowGeometry(child);
+        // The huge translucent floor killbox should receive nearby object shadows, but must never
+        // cast one itself; casting from it can blanket the whole course and erase the sun modelling.
+        registerSandboxShadowGeometry(child, obj.type !== 'kill_block');
         if (this.isPolishedCourseGlowEmitter(obj, child)) addPolishedGlowMesh(child);
-        // Kill blocks can cover most (or all) of the course. Putting that translucent preview shell
-        // into GlowLayer's render list makes some WebGL paths composite the blurred hazard colour
-        // over the entire editor camera, leaving a red wash with dark object silhouettes. It neither
-        // emits useful glow nor needs to occlude the tiny pad chevrons, so keep it out of the glow RTT.
-        else if (obj.type !== 'kill_block') addPolishedGlowOccluder(child);
+        // Do not add sandbox geometry as GlowLayer occluders. Babylon's black override material is
+        // reliable for the compact gym, but on several WebGL paths a course mesh filling the camera
+        // is composited as a black fullscreen glow layer. The yard has no long-range cove lights to
+        // occlude, so emitter-only registration is both cheaper and visually safer here.
       }
     }
   }
@@ -346,7 +350,21 @@ export class CreatorGeometry {
     const visH = Math.max(0.01, h - localBottomInset);
     const box = MeshBuilder.CreateBox(`creator_${obj.id}_hazard`, { width: w, height: visH, depth: d }, this.scene);
     box.position.set(0, localBottomInset + visH / 2, 0);
-    const mat = this.translucentMaterial('creator_hazard_mat', new Color3(0.95, 0.22, 0.22), 0.34);
+    const hazardColor = new Color3(0.95, 0.22, 0.22);
+    const mat = this.translucentMaterial(
+      'creator_hazard_mat',
+      hazardColor,
+      this.polishedVisuals ? 0.18 : 0.34
+    );
+    if (this.polishedVisuals) {
+      // Keep the hazard readable without replacing the sun/shadow result beneath it with a flat,
+      // emissive red sheet. This material is unique to kill blocks, so the editor debug overlays
+      // retain their intentionally unlit colours.
+      mat.disableLighting = false;
+      mat.emissiveColor = hazardColor.scale(0.08);
+      mat.specularColor = new Color3(0.025, 0.025, 0.025);
+      mat.specularPower = 24;
+    }
     // Render only one alpha pass. The old separate back/front culling passes alternated at shallow
     // view angles on very wide, thin boxes. A depth prepass selects the nearest shell surface first,
     // keeping the translucent fill stable both outside and inside the walk-through volume.
@@ -1055,8 +1073,11 @@ export class CreatorGeometry {
     const mat = new StandardMaterial(`creator_mat_${key}`, this.scene);
     mat.diffuseTexture = this.gridTexture(`creator_grid_${id}`, base, lighten(base, 0.26));
     mat.diffuseColor = new Color3(1, 1, 1);
-    mat.emissiveColor = base.scale(0.06);
-    mat.specularColor = new Color3(0.04, 0.04, 0.045);
+    mat.emissiveColor = base.scale(this.polishedVisuals ? 0.025 : 0.06);
+    mat.specularColor = this.polishedVisuals
+      ? new Color3(0.1, 0.1, 0.105)
+      : new Color3(0.04, 0.04, 0.045);
+    mat.specularPower = this.polishedVisuals ? 48 : 32;
     this.cachedMaterials.set(key, mat);
     return mat;
   }
@@ -1076,8 +1097,13 @@ export class CreatorGeometry {
     mat.diffuseTexture = tex;
     mat.diffuseColor = new Color3(1, 1, 1);
     // Lift the shadowed side a touch so the texture reads clearly in the editor's flat lighting.
-    mat.emissiveColor = new Color3(0.12, 0.12, 0.13);
-    mat.specularColor = new Color3(0.05, 0.05, 0.06);
+    mat.emissiveColor = this.polishedVisuals
+      ? new Color3(0.04, 0.04, 0.045)
+      : new Color3(0.12, 0.12, 0.13);
+    mat.specularColor = this.polishedVisuals
+      ? new Color3(0.1, 0.1, 0.11)
+      : new Color3(0.05, 0.05, 0.06);
+    mat.specularPower = this.polishedVisuals ? 48 : 32;
     this.cachedMaterials.set(key, mat);
     this.cachedTextures.push(tex);
     return mat;
@@ -1091,8 +1117,11 @@ export class CreatorGeometry {
     const base = new Color3(def.rgb[0], def.rgb[1], def.rgb[2]);
     const mat = new StandardMaterial(`creator_solid_${key}`, this.scene);
     mat.diffuseColor = base;
-    mat.emissiveColor = base.scale(0.3);
-    mat.specularColor = new Color3(0.05, 0.05, 0.06);
+    mat.emissiveColor = base.scale(this.polishedVisuals ? 0.08 : 0.3);
+    mat.specularColor = this.polishedVisuals
+      ? new Color3(0.12, 0.12, 0.13)
+      : new Color3(0.05, 0.05, 0.06);
+    mat.specularPower = this.polishedVisuals ? 48 : 32;
     this.cachedMaterials.set(key, mat);
     return mat;
   }
