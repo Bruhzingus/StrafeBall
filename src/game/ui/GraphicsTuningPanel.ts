@@ -1,5 +1,5 @@
 /**
- * Dev-only LIVE graphics tuning panel for the Polished mode (plan: dreamy-chasing-quokka, Phase 0).
+ * Opt-in LIVE graphics tuning panel for the Polished mode (plan: dreamy-chasing-quokka, Phase 0).
  *
  * The historical graphics-overhaul failure was tune-by-reload; this panel is the countermeasure:
  * every slider drives the live rendering handles (scene image processing, lights, shadow generator —
@@ -7,9 +7,10 @@
  * as POLISHED_CONFIG overrides (see graphicsTuning.ts). When a look is final, "Log baked JSON" prints
  * the fully-resolved config to the console for baking back into POLISHED_CONFIG.
  *
- * Gated: constructed by ArenaScene ONLY when the graphics debug flag is set
- * (localStorage 'strafeball.debug.graphics' = '1') AND the quality is 'polished'. Never part of the
- * shipping UI. Marked data-no-lock so interacting with it doesn't grab pointer lock (InputManager).
+ * Gated: constructed by ArenaScene only in Polished mode, when either the persisted
+ * "Dev graphics tuning" setting is enabled (including live/public builds) or the legacy graphics
+ * debug flag is set for automation. Marked data-no-lock so interacting with it doesn't grab pointer
+ * lock (InputManager).
  */
 
 import type { Scene } from '@babylonjs/core';

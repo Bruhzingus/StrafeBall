@@ -1,4 +1,5 @@
 import { Color3, Mesh, MeshBuilder, PBRMaterial, Scene, TransformNode, Vector3 } from '@babylonjs/core';
+import { addPolishedGlowOccluder } from '../effects/PolishedPostFX';
 import { BallManager } from '../ball/BallManager';
 import { Ball } from '../ball/Ball';
 import { BallState } from '../ball/BallState';
@@ -74,6 +75,16 @@ export class PracticeBot {
 
     this.throwTimer = this.getConfig().intervalSeconds;
     this.setEnabled(false);
+
+    // Polished glow: the bot body OCCLUDES the light-strip glow so it doesn't bleed THROUGH the
+    // figure. Every part (details + arm forearms/gloves via their pivots) is parented under
+    // this.mesh, so the recursive child walk catches them all. Built after ArenaScene's initial glow
+    // scan, so it self-registers here (like PortalArch). No-op without the polished glow layer; a
+    // disabled bot simply doesn't render into the glow map, so it occludes only while visible.
+    addPolishedGlowOccluder(this.mesh);
+    for (const child of this.mesh.getChildMeshes(false)) {
+      if (child instanceof Mesh) addPolishedGlowOccluder(child);
+    }
   }
 
   private getConfig() {

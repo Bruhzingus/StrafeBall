@@ -171,7 +171,8 @@ export class ArenaScene {
   // 'polished' = the overhaul default; 'performance' = the pre-overhaul bright baseline, bit-identical;
   // 'neutral' = the dev-only diagnostic truth baseline.
   private readonly quality: GraphicsMode = getGraphicsQuality();
-  // Dev-only live tuning panel (polished + graphics debug flag). Null in every shipping config.
+  // Live polished tuning panel. Hidden by default; enabled by the persisted Settings toggle or the
+  // legacy graphics-debug flag used by the screenshot harness.
   private graphicsTuningPanel: GraphicsTuningPanel | null = null;
   // Legacy Showcase flags — isShowcaseLightingEnabled() is now constant-false (mode migrated away);
   // these fields and their branches are dead code kept until the Phase 7 cleanup deletes the modules.
@@ -409,16 +410,16 @@ export class ArenaScene {
     this.hud = new Hud(hudRoot);
     this.nametags = new Nametags(hudRoot);
     this.backflipQteHud = new BackflipQteHud(hudRoot);
-    this.settingsPanel = new SettingsPanel();
+    this.settingsPanel = new SettingsPanel(document.body, {
+      onDevGraphicsTuningChanged: (enabled) => this.setGraphicsTuningPanelEnabled(enabled)
+    });
     this.multiplayerOverlay = new MultiplayerOverlay(this.multiplayer, this.input);
     this.networkRenderer = new NetworkRenderer(this.scene, this.ballVisualEffects);
     this.onlineTeamSelector = new OnlineTeamSelectorPads(this.scene);
 
-    // Dev-only live graphics tuning panel (polished mode + graphics debug flag only) — drives the
-    // registered polished handles + scene image processing without reloads. Never in shipping UI.
-    if (this.quality === 'polished' && isGraphicsDebugEnabled()) {
-      this.graphicsTuningPanel = new GraphicsTuningPanel(this.scene);
-    }
+    // The normal Settings preference makes this available on live builds. The old debug flag still
+    // opens it for the screenshot/tuning harness without changing a player's saved preference.
+    this.setGraphicsTuningPanelEnabled(settings.devGraphicsTuning || isGraphicsDebugEnabled());
 
     // Dev-only verification hook (graphics screenshot harness): auto-enter the movement sandbox
     // once shortly after construction, so scripts/graphics-shot.mjs can capture the yard without
@@ -427,6 +428,21 @@ export class ArenaScene {
       window.setTimeout(() => {
         if (!this.onlineModeActive && !this.multiplayer.connected) this.enterMovementCourse();
       }, 800);
+    }
+  }
+
+  /** Toggle the live panel without rebuilding the renderer or reloading the page. */
+  private setGraphicsTuningPanelEnabled(enabled: boolean): void {
+    if (this.quality !== 'polished') {
+      this.graphicsTuningPanel?.dispose();
+      this.graphicsTuningPanel = null;
+      return;
+    }
+    if (enabled) {
+      this.graphicsTuningPanel ??= new GraphicsTuningPanel(this.scene);
+    } else {
+      this.graphicsTuningPanel?.dispose();
+      this.graphicsTuningPanel = null;
     }
   }
 
@@ -3205,6 +3221,15 @@ export class ArenaScene {
    * and text planes are emissive too but deliberately NEVER registered (the past bloom failure).
    */
   private registerPolishedGlowMeshes(): void {
+    // Calm the ceiling fixture light SOURCES (their bloom read hot in the reference). The cove
+    // strips are damped at build in GymCoveLighting; the fixtures live in gym build, so scale their
+    // shared emissive materials here (polished-only — Performance/Neutral keep the original values).
+    const ceilingScale = resolvePolishedConfig().glow.ceilingSourceScale;
+    for (const matName of ['ceil_fixture_mat', 'decor_overhead_light_lens_mat']) {
+      const mat = this.scene.getMaterialByName(matName);
+      if (mat instanceof StandardMaterial) mat.emissiveColor.scaleInPlace(ceilingScale);
+    }
+
     for (const board of this.gym.scoreboards) {
       for (const mesh of board.getGlowMeshes()) addPolishedGlowMesh(mesh);
     }
@@ -3219,8 +3244,11 @@ export class ArenaScene {
       }
       // OCCLUDERS: in includedOnly mode the glow map sees ONLY listed meshes, so glow sources bleed
       // through everything else as blurry smudges (the reported artifact: the wall band / scoreboard
-      // glow smearing across the court mats). Big opaque statics render black into the glow map and
-      // block it. The facade renders them with a pure-black glow-pass override material.
+      // glow smearing across the court mats, and light passing THROUGH balls/dummies/bots). Registered
+      // meshes render black into the glow map and punch holes. Actor bodies are composite (root +
+      // parented head/torso/limbs), so match every PART by name prefix — occluding only the root
+      // capsule would still let glow bleed through the head/limbs. Balls (dynamic) self-register in
+      // BallVisualFactory; practice bots (built after this scan) self-register in their constructor.
       const isGlowOccluder =
         name.endsWith('_wall') ||
         name.startsWith('gym_ceiling') || name.startsWith('gym_roof_') ||
@@ -3228,7 +3256,8 @@ export class ArenaScene {
         name.startsWith('decor_wall_pad_module_') ||
         name.startsWith('decor_scoreboard_back_panel_') ||
         name === 'mat' || name === 'gym_floor' ||
-        !!mesh.metadata?.targetDummy;
+        name.startsWith('dummy_') || // target/moving dummy body parts (head/torso/limbs/…)
+        !!mesh.metadata?.targetDummy; // the dummy root capsule
       if (isGlowOccluder) addPolishedGlowOccluder(mesh);
     }
   }

@@ -1,4 +1,4 @@
-import { Color3, Mesh, MeshBuilder, PBRMaterial, Scene, StandardMaterial, Vector3 } from '@babylonjs/core';
+import { Color3, Material, Mesh, MeshBuilder, PBRMaterial, Scene, StandardMaterial, Vector3 } from '@babylonjs/core';
 import { applyGymProbeToBallMaterial } from '../map/GymReflectionProbe';
 import { registerGymMirrorMesh } from '../map/GymFloorMirror';
 import { TUNING } from '../config/tuning';
@@ -66,6 +66,14 @@ export function updateBallBlobShadow(mesh: Mesh): void {
 }
 
 function applyBallMaterial(material: PBRMaterial, variant: BallVisualVariant): void {
+  // Balls — especially the large first-person held ball — are always solid rubber. Keep them out
+  // of every alpha/refraction path explicitly; relying on PBR defaults made graphics-pass overrides
+  // able to make the foreground ball appear translucent even while `alpha` still reported 1.
+  material.alpha = 1;
+  material.transparencyMode = Material.MATERIAL_OPAQUE;
+  material.useAlphaFromAlbedoTexture = false;
+  material.subSurface.isRefractionEnabled = false;
+  material.forceDepthWrite = true;
   material.metallic = 0;
   // Keep the hidden HDR environment's response on balls subtle — a soft sheen, never a bright
   // mirror smear. (Default PBR environmentIntensity is 1.0, which over-responds to the bright gym

@@ -254,7 +254,19 @@ export interface PolishedConfig {
     vignette: { enabled: boolean; weight: number };
   };
   /** GlowLayer emissives (Phase 5) — includedOnlyMeshes, per-mesh allow-list. */
-  glow: { enabled: boolean; intensity: number; blurKernelSize: number; mainTextureRatio: number };
+  glow: {
+    enabled: boolean;
+    intensity: number;
+    blurKernelSize: number;
+    mainTextureRatio: number;
+    /**
+     * Emissive multipliers on the light SOURCES per group (applied to the source materials, not the
+     * GlowLayer, so a group's bloom AND main-render brightness scale together — used to calm lights
+     * the reference showed as over-bright). 1 = unchanged.
+     */
+    ceilingSourceScale: number; // ceiling fixtures (lens + housing) + ceiling perimeter cove
+    wallSourceScale: number; // wall accent band cove
+  };
   /** Outdoor sandbox atmosphere (Phase 6): sun + CSM + gradient sky dome + fog. */
   sandbox: {
     sun: { direction: Tuple3; intensity: number; diffuse: Rgb3; specular: Rgb3 };
@@ -306,10 +318,7 @@ export const POLISHED_CONFIG: PolishedConfig = {
   // Phase 7 calibration: floorEnvironmentIntensity/blurKernel tuned against the reference image;
   // floorSpecularIntensity stays low so the mirror (not the analytic key/hemi highlights) owns the
   // floor's shine (see the interface comment above — this is the camera-following-blob fix).
-  // blurKernel 0: there's no dedicated motion-blur post-process in this pipeline — the mirror's
-  // gaussian blur on the reflection RTT was the closest thing to it (moving reflections smearing
-  // frame-to-frame read as "motion blur"). Disabled per user request; reflections are now crisp.
-  mirror: { enabled: true, ratio: 0.5, blurKernel: 0, floorEnvironmentIntensity: 0.69, floorSpecularIntensity: 0.05, maxRenderListSize: 120 },
+  mirror: { enabled: true, ratio: 0.5, blurKernel: 20, floorEnvironmentIntensity: 0.69, floorSpecularIntensity: 0.05, maxRenderListSize: 120 },
   post: {
     fxaa: true,
     ssao: {
@@ -327,7 +336,9 @@ export const POLISHED_CONFIG: PolishedConfig = {
     bloom: { enabled: false, threshold: 0.9, weight: 0.15, kernel: 48, scale: 0.5 },
     vignette: { enabled: false, weight: 0.3 }
   },
-  glow: { enabled: true, intensity: 0.5, blurKernelSize: 32, mainTextureRatio: 0.5 },
+  // ceilingSourceScale 0.72 (−28%) / wallSourceScale 0.85 (−15%): the reference-image cove +
+  // fixtures read a touch hot, so their emissive is calmed per group (also softens the bloom halo).
+  glow: { enabled: true, intensity: 0.5, blurKernelSize: 32, mainTextureRatio: 0.5, ceilingSourceScale: 0.72, wallSourceScale: 0.85 },
   sandbox: {
     sun: { direction: [-0.45, -0.78, -0.32], intensity: 1.15, diffuse: [1.0, 0.96, 0.88], specular: [0.25, 0.24, 0.22] },
     hemi: { intensity: 0.55, diffuse: [0.72, 0.8, 0.92], ground: [0.4, 0.42, 0.4] },

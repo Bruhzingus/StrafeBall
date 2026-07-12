@@ -18,6 +18,7 @@
 
 import { Color3, Mesh, MeshBuilder, Scene, StandardMaterial } from '@babylonjs/core';
 import { createBleacherTierSpecs } from '../../../shared/simulation/MapGeometry';
+import { resolvePolishedConfig } from '../config/graphicsTuning';
 import { TUNING } from '../config/tuning';
 
 const COVE_PREFIX = 'decor_cove_';
@@ -67,7 +68,11 @@ export function createGymCoveLighting(scene: Scene): Mesh[] {
   disposeGymCoveLighting();
 
   const { halfWidth, halfLength, wallHeight } = TUNING.map;
-  const warm = emissiveMat(scene, 'decor_cove_warm_mat', COVE_WARM_WHITE);
+  // Ceiling perimeter and wall band use SEPARATE materials so their emissive (and thus bloom) can be
+  // calmed independently — the reference showed the ceiling hotter than the wall band.
+  const glow = resolvePolishedConfig().glow;
+  const warmCeil = emissiveMat(scene, 'decor_cove_ceil_mat', COVE_WARM_WHITE.scale(glow.ceilingSourceScale));
+  const warmBand = emissiveMat(scene, 'decor_cove_band_mat', COVE_WARM_WHITE.scale(glow.wallSourceScale));
   const amber = emissiveMat(scene, 'decor_cove_amber_mat', COVE_STEP_AMBER);
 
   // --- Ceiling perimeter cove: a continuous warm line just below the roof, inset from each wall ---
@@ -76,18 +81,18 @@ export function createGymCoveLighting(scene: Scene): Mesh[] {
   const t = 0.09; // strip cross-section
   const xLen = (halfWidth - inset) * 2;
   const zLen = (halfLength - inset) * 2;
-  strip(scene, `${COVE_PREFIX}ceil_north`, 0, coveY, halfLength - inset, xLen, t, t, warm);
-  strip(scene, `${COVE_PREFIX}ceil_south`, 0, coveY, -(halfLength - inset), xLen, t, t, warm);
-  strip(scene, `${COVE_PREFIX}ceil_east`, halfWidth - inset, coveY, 0, t, t, zLen, warm);
-  strip(scene, `${COVE_PREFIX}ceil_west`, -(halfWidth - inset), coveY, 0, t, t, zLen, warm);
+  strip(scene, `${COVE_PREFIX}ceil_north`, 0, coveY, halfLength - inset, xLen, t, t, warmCeil);
+  strip(scene, `${COVE_PREFIX}ceil_south`, 0, coveY, -(halfLength - inset), xLen, t, t, warmCeil);
+  strip(scene, `${COVE_PREFIX}ceil_east`, halfWidth - inset, coveY, 0, t, t, zLen, warmCeil);
+  strip(scene, `${COVE_PREFIX}ceil_west`, -(halfWidth - inset), coveY, 0, t, t, zLen, warmCeil);
 
   // --- Wall accent band: a thin glowing line above the wall pads, around all four walls ---
   const bandY = 2.62;
   const bandT = 0.05;
-  strip(scene, `${COVE_PREFIX}band_north`, 0, bandY, halfLength - 0.06, xLen, bandT, 0.03, warm);
-  strip(scene, `${COVE_PREFIX}band_south`, 0, bandY, -(halfLength - 0.06), xLen, bandT, 0.03, warm);
-  strip(scene, `${COVE_PREFIX}band_east`, halfWidth - 0.06, bandY, 0, 0.03, bandT, zLen, warm);
-  strip(scene, `${COVE_PREFIX}band_west`, -(halfWidth - 0.06), bandY, 0, 0.03, bandT, zLen, warm);
+  strip(scene, `${COVE_PREFIX}band_north`, 0, bandY, halfLength - 0.06, xLen, bandT, 0.03, warmBand);
+  strip(scene, `${COVE_PREFIX}band_south`, 0, bandY, -(halfLength - 0.06), xLen, bandT, 0.03, warmBand);
+  strip(scene, `${COVE_PREFIX}band_east`, halfWidth - 0.06, bandY, 0, 0.03, bandT, zLen, warmBand);
+  strip(scene, `${COVE_PREFIX}band_west`, -(halfWidth - 0.06), bandY, 0, 0.03, bandT, zLen, warmBand);
 
   // --- Bleacher step-nose strips: one amber line along the inner-top edge of every tier ---
   for (const tier of createBleacherTierSpecs()) {

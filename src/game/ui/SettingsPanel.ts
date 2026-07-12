@@ -1,6 +1,11 @@
 import { settings, SENSITIVITY_MIN, SENSITIVITY_MAX } from '../config/Settings';
 import { getGraphicsPresets, getGraphicsPreset, persistGraphicsPreset, type GraphicsPreset } from '../config/graphicsConfig';
 
+export interface SettingsPanelOptions {
+  /** Called immediately when the production-accessible tuning-panel preference changes. */
+  onDevGraphicsTuningChanged?: (enabled: boolean) => void;
+}
+
 /**
  * A tiny always-visible settings panel (top-right) with a mouse-sensitivity slider. Marked
  * [data-no-lock] so clicking/dragging it doesn't grab pointer lock (see InputManager). Usable
@@ -23,6 +28,7 @@ export class SettingsPanel {
   private readonly claudesPlanToggle: HTMLInputElement;
   private readonly reducedEffectsToggle: HTMLInputElement;
   private readonly scoreboardToggle: HTMLInputElement;
+  private readonly devGraphicsTuningToggle: HTMLInputElement;
   private readonly graphicsSelect: HTMLSelectElement;
   private readonly preventKeySteal = (event: KeyboardEvent): void => event.preventDefault();
   private expanded = false;
@@ -30,7 +36,7 @@ export class SettingsPanel {
   private readonly homeParent: HTMLElement;
   private disposed = false;
 
-  constructor(parent: HTMLElement = document.body) {
+  constructor(parent: HTMLElement = document.body, private readonly options: SettingsPanelOptions = {}) {
     this.homeParent = parent;
     this.root = document.createElement('div');
     this.root.className = 'settings-panel';
@@ -123,6 +129,18 @@ export class SettingsPanel {
     this.graphicsSelect.addEventListener('keydown', this.preventKeySteal);
     graphicsRow.append(graphicsName, this.graphicsSelect);
 
+    const devGraphicsLabel = document.createElement('label');
+    devGraphicsLabel.className = 'settings-row settings-row--toggle';
+    const devGraphicsName = document.createElement('span');
+    devGraphicsName.textContent = 'Dev graphics tuning';
+    devGraphicsName.title = 'Show the live polished graphics tuning menu';
+    this.devGraphicsTuningToggle = document.createElement('input');
+    this.devGraphicsTuningToggle.type = 'checkbox';
+    this.devGraphicsTuningToggle.checked = settings.devGraphicsTuning;
+    this.devGraphicsTuningToggle.addEventListener('input', this.onDevGraphicsTuningInput);
+    this.devGraphicsTuningToggle.addEventListener('keydown', this.preventKeySteal);
+    devGraphicsLabel.append(devGraphicsName, this.devGraphicsTuningToggle);
+
     const graphicsHint = document.createElement('div');
     graphicsHint.className = 'settings-hint';
     graphicsHint.textContent = 'Changing graphics reloads the page.';
@@ -141,6 +159,7 @@ export class SettingsPanel {
       effectsLabel,
       scoreboardLabel,
       graphicsRow,
+      devGraphicsLabel,
       graphicsHint
     );
     this.root.append(this.toggleButton, this.content);
@@ -180,6 +199,8 @@ export class SettingsPanel {
     this.claudesPlanToggle.removeEventListener('keydown', this.preventKeySteal);
     this.scoreboardToggle.removeEventListener('input', this.onScoreboardInput);
     this.scoreboardToggle.removeEventListener('keydown', this.preventKeySteal);
+    this.devGraphicsTuningToggle.removeEventListener('input', this.onDevGraphicsTuningInput);
+    this.devGraphicsTuningToggle.removeEventListener('keydown', this.preventKeySteal);
     this.graphicsSelect.removeEventListener('change', this.onGraphicsPresetChange);
     this.graphicsSelect.removeEventListener('keydown', this.preventKeySteal);
     this.sensitivitySlider.removeEventListener('keydown', this.preventKeySteal);
@@ -222,6 +243,12 @@ export class SettingsPanel {
 
   private onClaudesPlanInput = (): void => {
     settings.setLoopClaudesPlan(this.claudesPlanToggle.checked);
+  };
+
+  private onDevGraphicsTuningInput = (): void => {
+    const enabled = this.devGraphicsTuningToggle.checked;
+    settings.setDevGraphicsTuning(enabled);
+    this.options.onDevGraphicsTuningChanged?.(enabled);
   };
 
   private onGraphicsPresetChange = (): void => {

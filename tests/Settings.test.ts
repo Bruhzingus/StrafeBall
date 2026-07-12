@@ -95,4 +95,22 @@ describe('settings music volume', () => {
     };
     expect(stored.mouseSensitivity).toBe(0.004);
   });
+
+  it('keeps live graphics tuning off by default and persists the public toggle', async () => {
+    const storage = createStorage();
+    Object.defineProperty(globalThis, 'localStorage', {
+      configurable: true,
+      value: storage
+    });
+
+    const { settings } = await import('../src/game/config/Settings');
+    expect(settings.devGraphicsTuning).toBe(false);
+    settings.setDevGraphicsTuning(true);
+    expect(settings.devGraphicsTuning).toBe(true);
+
+    const stored = JSON.parse(storage.getItem('strafeball.settings.v1') ?? '{}') as {
+      devGraphicsTuning?: boolean;
+    };
+    expect(stored.devGraphicsTuning).toBe(true);
+  });
 });

@@ -23,6 +23,8 @@ class SettingsStore {
   public showScoreboard = true;
   /** Planning mode: play a smaller lobby playlist instead of shuffling every lobby track. */
   public loopClaudesPlan = false;
+  /** Expose the live polished-renderer tuning panel. Off by default, available in production. */
+  public devGraphicsTuning = false;
 
   constructor() {
     this.load();
@@ -67,6 +69,11 @@ class SettingsStore {
     this.save();
   }
 
+  setDevGraphicsTuning(value: boolean): void {
+    this.devGraphicsTuning = value;
+    this.save();
+  }
+
   private load(): void {
     try {
       const raw = localStorage.getItem(STORAGE_KEY);
@@ -80,6 +87,7 @@ class SettingsStore {
         reducedEffects?: unknown;
         showScoreboard?: unknown;
         loopClaudesPlan?: unknown;
+        devGraphicsTuning?: unknown;
       };
       if (typeof parsed.mouseSensitivity === 'number' && Number.isFinite(parsed.mouseSensitivity)) {
         this.mouseSensitivity = clamp(parsed.mouseSensitivity, SENSITIVITY_MIN, SENSITIVITY_MAX);
@@ -108,6 +116,9 @@ class SettingsStore {
       if (typeof parsed.loopClaudesPlan === 'boolean') {
         this.loopClaudesPlan = parsed.loopClaudesPlan;
       }
+      if (typeof parsed.devGraphicsTuning === 'boolean') {
+        this.devGraphicsTuning = parsed.devGraphicsTuning;
+      }
     } catch {
       // Corrupt/unavailable storage — fall back to defaults silently.
     }
@@ -122,7 +133,8 @@ class SettingsStore {
         battleMusicVolume: this.battleMusicVolume,
         reducedEffects: this.reducedEffects,
         showScoreboard: this.showScoreboard,
-        loopClaudesPlan: this.loopClaudesPlan
+        loopClaudesPlan: this.loopClaudesPlan,
+        devGraphicsTuning: this.devGraphicsTuning
       }));
     } catch {
       // Storage may be unavailable (private mode); ignore.
