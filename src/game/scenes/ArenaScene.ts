@@ -2336,6 +2336,7 @@ export class ArenaScene {
         if (this.movementSandbox?.active) this.spawnCreatorActors(this.movementSandbox.getSpawnerMarkers());
       },
       setHudVisible: (visible: boolean) => this.hud.setVisible(visible),
+      setRenderCamera: (camera) => this.polishedPostFx?.setActiveCamera(camera),
       setGameSettingsDock: (host) => (host ? this.settingsPanel.dock(host) : this.settingsPanel.undock()),
       onPlaytestStart: (markers) => this.spawnCreatorActors(markers),
       onPlaytestEnd: () => this.clearCreatorActors()

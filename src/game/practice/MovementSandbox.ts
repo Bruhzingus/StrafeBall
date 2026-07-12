@@ -196,7 +196,7 @@ export class MovementSandbox implements MovementWorld {
     const fwdZ = Math.cos(spawnPoint.yaw);
     const rightX = Math.cos(spawnPoint.yaw);
     const rightZ = -Math.sin(spawnPoint.yaw);
-    const PORTAL_FORWARD_OFFSET = 8;
+    const PORTAL_FORWARD_OFFSET = 5;
     const PORTAL_SPACING = 5;
     const rowX = spawnPoint.x + fwdX * PORTAL_FORWARD_OFFSET;
     const rowZ = spawnPoint.z + fwdZ * PORTAL_FORWARD_OFFSET;

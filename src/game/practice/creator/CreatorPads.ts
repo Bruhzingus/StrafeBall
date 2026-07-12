@@ -46,9 +46,9 @@ export const PAD_TUNING = {
   /** Seconds an impulse pad (bounce/speed) stays disarmed after firing while the player stays on it. */
   retriggerSeconds: 0.35,
   /** How far above the pad top the player's feet can be and still count as touching it (m). */
-  activationHeight: 0.22,
+  activationHeight: 1.7,
   /** How far below the pad base the feet can be and still count (small slack for uneven ground). */
-  activationDepth: 0.22,
+  activationDepth: 0.6,
   /** Long moves are teleports/free-fly landings, not a physical step across a pad. */
   maxSweepDistance: 24,
   /** Lift applied when launching a GROUNDED player so the ground snap can't re-glue them (m). */

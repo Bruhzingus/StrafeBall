@@ -13,6 +13,7 @@
  */
 
 import {
+  Camera,
   Color3,
   FreeCamera,
   GizmoManager,
@@ -128,6 +129,8 @@ export interface CreatorEditorHooks {
   resumeSandbox(): void;
   /** Hide/show the gameplay HUD (scoreboard, hands, crosshair, music…) while the editor is up. */
   setHudVisible(visible: boolean): void;
+  /** Active render camera changed; Arena owns renderer/post-process handoff. */
+  setRenderCamera(camera: Camera): void;
   /**
    * Dock the game's floating settings panel into the given container (editor active) or return it
    * to its floating top-right home (null) — the two settings surfaces otherwise overlap there.
@@ -524,6 +527,7 @@ export class CreatorEditor implements CreatorBridge, CoopEditorBridge {
     this.camPitch = 0.1;
     this.applyCameraRotation();
     this.scene.activeCamera = this.editorCamera;
+    this.hooks.setRenderCamera(this.editorCamera!);
     this.input.setLockSuppressed(true); // RMB-look is manual; keep the game from grabbing pointer lock
     this.addFlyListeners();
     this.ui.refresh();
@@ -542,6 +546,7 @@ export class CreatorEditor implements CreatorBridge, CoopEditorBridge {
       const groundY = this.layout.ground.bounds.y ?? 0;
       this.player.teleportTo(new Vector3(c.x, Math.max(groundY, c.y - 1.6), c.z), this.camYaw, 0);
       this.scene.activeCamera = this.player.camera;
+      this.hooks.setRenderCamera(this.player.camera);
       this.input.setLockSuppressed(false);
     }
     this.ui.refresh();
@@ -658,6 +663,7 @@ export class CreatorEditor implements CreatorBridge, CoopEditorBridge {
     this.addListeners();
     this.ensureEditorCamera();
     this.scene.activeCamera = this.editorCamera;
+    this.hooks.setRenderCamera(this.editorCamera!);
     this.geometry.setOverlaysEnabled(true);
     this.applyGizmoMode();
     this.refreshSelectionVisual();
@@ -683,6 +689,7 @@ export class CreatorEditor implements CreatorBridge, CoopEditorBridge {
     // Install the editable layout's collision + movement world for real movement.
     this.installWorldAndCollision();
     this.scene.activeCamera = this.player.camera;
+    this.hooks.setRenderCamera(this.player.camera);
     this.input.setLockSuppressed(false);
     const spawn = layoutSpawn(this.layout);
     this.player.hands.clearHands();
@@ -762,6 +769,7 @@ export class CreatorEditor implements CreatorBridge, CoopEditorBridge {
     if (document.pointerLockElement === this.canvas()) document.exitPointerLock?.();
 
     this.scene.activeCamera = this.player.camera;
+    this.hooks.setRenderCamera(this.player.camera);
     this.player.movement.setWorld(null);
     this.hooks.setHudVisible(true);
     this.hooks.setGameSettingsDock(null); // settings panel floats top-right again outside the editor

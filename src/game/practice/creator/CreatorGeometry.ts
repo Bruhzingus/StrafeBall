@@ -163,14 +163,22 @@ export class CreatorGeometry {
     for (const obj of layout.objects) {
       const node = this.objectRoots.get(obj.id);
       if (!node) continue;
-      const glows = obj.type === 'kill_block' || padKind(obj.type) !== null;
       for (const child of node.getChildMeshes(false)) {
         if (!(child instanceof Mesh)) continue;
         registerSandboxShadowGeometry(child);
-        if (glows) addPolishedGlowMesh(child);
-        else addPolishedGlowOccluder(child);
+        if (this.isPolishedCourseGlowEmitter(obj, child)) addPolishedGlowMesh(child);
+        // Kill blocks can cover most (or all) of the course. Putting that translucent preview shell
+        // into GlowLayer's render list makes some WebGL paths composite the blurred hazard colour
+        // over the entire editor camera, leaving a red wash with dark object silhouettes. It neither
+        // emits useful glow nor needs to occlude the tiny pad chevrons, so keep it out of the glow RTT.
+        else if (obj.type !== 'kill_block') addPolishedGlowOccluder(child);
       }
     }
+  }
+
+  private isPolishedCourseGlowEmitter(obj: CreatorLayoutObject, mesh: Mesh): boolean {
+    if (padKind(obj.type) !== null) return mesh.name.endsWith('_dir');
+    return false;
   }
 
   private buildObject(obj: CreatorLayoutObject): void {
@@ -329,20 +337,23 @@ export class CreatorGeometry {
 
   /** A translucent red hazard VOLUME (kill block) — walk-through, sized to the object, base on the floor. */
   private buildHazardBox(obj: CreatorLayoutObject, node: TransformNode, w: number, h: number, d: number): void {
-    // Inset the bottom a hair off the floor. In the yard PREVIEW the visible ground sits exactly at
-    // y=0 (the editor's own grid floor, which sits at -0.02, is hidden there), so a kill block placed
-    // at floor level had its bottom face coplanar with the ground — the two z-fought and the block
-    // flickered "in and out" as the camera moved. Lifting the base breaks that coplanarity. The kill
-    // TRIGGER still uses the true layout volume, so gameplay is unchanged.
-    const BOTTOM_INSET = 0.02;
-    const visH = Math.max(0.02, h - BOTTOM_INSET);
+    // Keep the preview shell a fixed distance above the visible floor in WORLD space. This object is
+    // scaled by its parent node; the previous fixed local 0.02 inset became only 0.005 m on the large
+    // floor killbox (scaleY=.25), leaving its bottom face close enough to the grid to z-fight at
+    // grazing angles. The trigger still uses the untouched layout volume, so gameplay is unchanged.
+    const scaleY = Math.max(0.0001, Math.abs(obj.scale[1] ?? 1));
+    const localBottomInset = Math.min(h * 0.45, 0.025 / scaleY);
+    const visH = Math.max(0.01, h - localBottomInset);
     const box = MeshBuilder.CreateBox(`creator_${obj.id}_hazard`, { width: w, height: visH, depth: d }, this.scene);
-    box.position.set(0, BOTTOM_INSET + visH / 2, 0);
+    box.position.set(0, localBottomInset + visH / 2, 0);
     const mat = this.translucentMaterial('creator_hazard_mat', new Color3(0.95, 0.22, 0.22), 0.34);
-    // A double-sided translucent box otherwise mis-sorts its own front/back faces as the camera moves;
-    // an explicit alpha-blend mode + a separate back-then-front culling pass keeps the red volume stable.
+    // Render only one alpha pass. The old separate back/front culling passes alternated at shallow
+    // view angles on very wide, thin boxes. A depth prepass selects the nearest shell surface first,
+    // keeping the translucent fill stable both outside and inside the walk-through volume.
     mat.transparencyMode = Material.MATERIAL_ALPHABLEND;
-    mat.separateCullingPass = true;
+    mat.backFaceCulling = false;
+    mat.separateCullingPass = false;
+    mat.needDepthPrePass = true;
     box.material = mat;
     box.parent = node;
     this.tagPickable(box, obj.id);

@@ -80,12 +80,23 @@ describe('CreatorPads', () => {
 
   it('does not trigger while the player is airborne well above the pad surface', () => {
     const pads = new CreatorPads();
-    const player = fakePlayer(new Vector3(0, 1, 0));
+    const player = fakePlayer(new Vector3(0, 2.1, 0));
     player.movement.grounded = false;
 
     pads.update(1 / 60, bouncePadLayout(), player);
 
     expect(player.movement.velocity.y).toBe(0);
+  });
+
+  it('still triggers raised course pads while the player approaches slightly above the surface', () => {
+    const pads = new CreatorPads();
+    const layout = bouncePadLayout([0, 15, 0]);
+    const player = fakePlayer(new Vector3(0, 16.45, 0));
+    player.movement.grounded = false;
+
+    pads.update(1 / 60, layout, player);
+
+    expect(player.movement.velocity.y).toBe(PAD_TUNING.bounceLaunchSpeed);
   });
 
   it('applies stamina/backflip refills and a rotated strength-scaled speed boost', () => {
@@ -105,6 +116,23 @@ describe('CreatorPads', () => {
     expect(player.backflip.cooldown).toBe(0);
     expect(player.movement.velocity.x).toBeCloseTo(PAD_TUNING.speedBoostSpeed * 2, 5);
     expect(player.movement.velocity.z).toBeCloseTo(0, 5);
+  });
+
+  it('allows close paired ability pads at slightly different heights to both activate', () => {
+    const pads = new CreatorPads();
+    const player = fakePlayer(new Vector3(0, 12.35, 0));
+    const layout = validateLayout({
+      objects: [
+        { id: 'stamina', type: 'stamina_pad', position: [0, 11.2256, 0] },
+        { id: 'backflip', type: 'backflip_pad', position: [0, 11.017, 0.25] }
+      ]
+    }).layout;
+    player.movement.grounded = false;
+
+    pads.update(1 / 60, layout, player);
+
+    expect(player.dash.refill).toHaveBeenCalled();
+    expect(player.backflip.cooldown).toBe(0);
   });
 
   it('launches when a fast frame crosses the bounce pad footprint', () => {

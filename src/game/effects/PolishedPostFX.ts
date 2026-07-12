@@ -40,6 +40,8 @@ let activeOccluderMaterial: StandardMaterial | null = null;
 const includedMeshes = new Set<Mesh>();
 const emissiveMeshes = new Set<Mesh>();
 const occluderMeshes = new Set<Mesh>();
+const POLISHED_SSAO_PIPELINE = 'polished_ssao';
+const POLISHED_DEFAULT_PIPELINE = 'polished_pipeline';
 
 function unregisterIncludedMesh(mesh: Mesh): void {
   if (!includedMeshes.delete(mesh)) return;
@@ -102,6 +104,7 @@ export class PolishedPostFX {
   private readonly glow: GlowLayer | null;
   private readonly glowAnchor: Mesh | null;
   private readonly glowOccluderMaterial: StandardMaterial | null;
+  private readonly attachedCameras = new Set<Camera>();
 
   constructor(scene: Scene, camera: Camera) {
     this.scene = scene;
@@ -111,7 +114,7 @@ export class PolishedPostFX {
     if (cfg.post.ssao.enabled && SSAO2RenderingPipeline.IsSupported) {
       const s = cfg.post.ssao;
       const ssao = new SSAO2RenderingPipeline(
-        'polished_ssao',
+        POLISHED_SSAO_PIPELINE,
         scene,
         { ssaoRatio: s.ssaoRatio, blurRatio: s.blurRatio },
         [camera]
@@ -128,7 +131,7 @@ export class PolishedPostFX {
     }
 
     // --- 2. DefaultRenderingPipeline: FXAA + the ONE image-processing (tonemap) pass ---
-    const pipeline = new DefaultRenderingPipeline('polished_pipeline', true /* hdr */, scene, [camera]);
+    const pipeline = new DefaultRenderingPipeline(POLISHED_DEFAULT_PIPELINE, true /* hdr */, scene, [camera]);
     pipeline.fxaaEnabled = cfg.post.fxaa;
     pipeline.samples = 1; // NEVER MSAA while SSAO2 is active (geometry-buffer conflict)
     pipeline.imageProcessingEnabled = true; // binds scene.imageProcessingConfiguration → single tonemap
@@ -144,6 +147,7 @@ export class PolishedPostFX {
       pipeline.imageProcessing.vignetteWeight = cfg.post.vignette.weight;
     }
     this.pipeline = pipeline;
+    this.attachedCameras.add(camera);
 
     // --- 3. GlowLayer (includedOnly — the restrained emissive-glow mechanism) ---
     if (cfg.glow.enabled) {
@@ -197,6 +201,31 @@ export class PolishedPostFX {
     return this.glow;
   }
 
+  /** Attach the polished post stack to the active render camera (player camera or Creator Build camera). */
+  attachCamera(camera: Camera): void {
+    if (this.attachedCameras.has(camera)) return;
+    const manager = this.scene.postProcessRenderPipelineManager;
+    if (this.ssao) manager.attachCamerasToRenderPipeline(POLISHED_SSAO_PIPELINE, camera, true);
+    manager.attachCamerasToRenderPipeline(POLISHED_DEFAULT_PIPELINE, camera, true);
+    this.attachedCameras.add(camera);
+  }
+
+  /** Detach when a camera stops rendering so editor/playtest swaps don't double-run the stack. */
+  detachCamera(camera: Camera): void {
+    if (!this.attachedCameras.delete(camera)) return;
+    const manager = this.scene.postProcessRenderPipelineManager;
+    if (this.ssao) manager.detachCamerasFromRenderPipeline(POLISHED_SSAO_PIPELINE, camera);
+    manager.detachCamerasFromRenderPipeline(POLISHED_DEFAULT_PIPELINE, camera);
+  }
+
+  /** Make exactly this camera receive the polished post stack. */
+  setActiveCamera(camera: Camera): void {
+    for (const attached of [...this.attachedCameras]) {
+      if (attached !== camera) this.detachCamera(attached);
+    }
+    this.attachCamera(camera);
+  }
+
   /** Debug-only snapshot for the [graphics] audit. */
   getDebugInfo(): {
     ssao: boolean;
@@ -234,6 +263,7 @@ export class PolishedPostFX {
     for (const mesh of [...occluderMeshes]) {
       if (mesh.getScene() === this.scene) occluderMeshes.delete(mesh);
     }
+    for (const camera of [...this.attachedCameras]) this.detachCamera(camera);
     this.glow?.dispose();
     this.glowAnchor?.dispose();
     this.glowOccluderMaterial?.dispose();
