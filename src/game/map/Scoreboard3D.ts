@@ -42,6 +42,7 @@ export class Scoreboard3D {
   private readonly root: TransformNode;
   private readonly faceTexture: DynamicTexture;
   private readonly faceMaterial: StandardMaterial;
+  private readonly face: Mesh;
   private readonly rim: Mesh;
   private readonly rimMaterial: StandardMaterial;
   /** The board's meshes — exposed so the arena can exclude them from static-mesh freezing. */
@@ -118,14 +119,19 @@ export class Scoreboard3D {
     this.faceMaterial.disableLighting = true;
     this.faceMaterial.backFaceCulling = false;
 
-    const face = MeshBuilder.CreatePlane(`${name}_face`, { width, height }, scene);
-    face.parent = this.root;
-    face.position.z = 0.09; // sit just in front of the backing, facing into the court
-    face.material = this.faceMaterial;
-    face.isPickable = false;
+    this.face = MeshBuilder.CreatePlane(`${name}_face`, { width, height }, scene);
+    this.face.parent = this.root;
+    this.face.position.z = 0.09; // sit just in front of the backing, facing into the court
+    this.face.material = this.faceMaterial;
+    this.face.isPickable = false;
 
-    this.meshes.push(backing, this.rim, face);
+    this.meshes.push(backing, this.rim, this.face);
     this.draw(0, 0, '');
+  }
+
+  /** The LED face only; casing/rim and all other scoreboard meshes stay outside the glow list. */
+  getGlowMeshes(): readonly Mesh[] {
+    return [this.face];
   }
 
   /**

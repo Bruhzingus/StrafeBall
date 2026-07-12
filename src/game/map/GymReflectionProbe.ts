@@ -1,17 +1,24 @@
 import { AbstractMesh, PBRMaterial, ReflectionProbe, RenderTargetTexture, Scene, Vector3 } from '@babylonjs/core';
-import { SHOWCASE_CONFIG } from '../config/graphicsConfig';
+import { resolvePolishedConfig } from '../config/graphicsTuning';
 import { TUNING } from '../config/tuning';
 
 /**
- * Client-only SHOWCASE reflection probe (Phase 7). ONE static Babylon ReflectionProbe centred near
- * mid-court between floor and ceiling, rendered ONCE after the static gym is built, capturing only an
- * EXPLICIT allow-list of static structural meshes (walls, ceiling panels, real fixture housings,
- * bleachers, wall pads, scoreboard casing, trim). It gives the floor a subtle, broad, blurred reflection
- * of the ACTUAL gym fixtures — not a generic HDR wash and not a fake reflection plane.
+ * Client-only POLISHED-mode reflection probe (graphics overhaul Phase 1 — originally written for the
+ * retired Showcase pass, now the polished IBL source). ONE static Babylon ReflectionProbe centred
+ * near mid-court between floor and ceiling, rendered ONCE after the static gym is built, capturing
+ * only an EXPLICIT allow-list of static structural meshes (walls, ceiling panels, real fixture
+ * housings, bleachers, wall pads, scoreboard casing, trim). Receivers get a subtle, broad, blurred
+ * reflection of the ACTUAL gym — this is why it cannot reproduce the old HDR-environment failure
+ * (a gray wash of alien cafeteria content at grazing angles): the reflected content IS the room.
  *
- * The floor is excluded from its own capture (no recursion); HUD/UI, player arms, remote players, balls,
- * bots, dynamic/movable mats, cones, dummies, and the fake-light decals are all absent by construction
- * (they are simply not on the allow-list). Render-once means zero per-frame cost. Nothing here is
+ * Receivers (per POLISHED_CONFIG.probe.intensities): the four walls, cover mats, bleachers, and —
+ * wired lazily via applyGymProbeToBallMaterial, since ball materials are created on first ball
+ * spawn — the ball PBR materials. The FLOOR is deliberately NOT a receiver: the Phase 3 planar
+ * mirror owns the floor's reflection slot; until then the floor keeps the gradient environment.
+ *
+ * The floor is also excluded from the capture list (no recursion); HUD/UI, player arms, remote
+ * players, balls, bots, dynamic/movable mats, cones, dummies are all absent by construction (they
+ * are simply not on the allow-list). Render-once means zero per-frame cost. Nothing here is
  * imported by server or shared code, and no gameplay state is derived from it.
  */
 
@@ -37,17 +44,20 @@ const STATIC_INCLUDE_PREFIXES: readonly string[] = [
 ];
 
 /**
- * PBR receiver materials that sample the probe, with their reflection strength. The floor is the only
- * moderate one; cover mats get a tiny satin response, bleachers less. Walls, ceiling, and the
- * StandardMaterial wall pads receive NONE (absent here) — "nearly none" per spec. Strengths come from
- * SHOWCASE_CONFIG.materials so they sit beside the other Showcase material tunables.
+ * PBR receiver materials that sample the probe, with their reflection strength from
+ * POLISHED_CONFIG.probe.intensities. The FLOOR is intentionally ABSENT (the Phase 3 planar mirror
+ * owns the floor); ball materials are wired lazily by applyGymProbeToBallMaterial because they are
+ * created on first ball spawn, after this probe exists.
  */
 function probeReceivers(): { materialName: string; intensity: number }[] {
-  const m = SHOWCASE_CONFIG.materials;
+  const p = resolvePolishedConfig().probe.intensities;
   return [
-    { materialName: 'floor_material', intensity: m.floor.environmentIntensity }, // moderate
-    { materialName: 'mat_material', intensity: m.coverMat.environmentIntensity }, // tiny
-    { materialName: 'bleacher_material', intensity: m.bleacher.environmentIntensity } // less
+    { materialName: 'north_wall_brick_mat', intensity: p.wall },
+    { materialName: 'south_wall_brick_mat', intensity: p.wall },
+    { materialName: 'east_wall_brick_mat', intensity: p.wall },
+    { materialName: 'west_wall_brick_mat', intensity: p.wall },
+    { materialName: 'mat_material', intensity: p.coverMat }, // tiny satin response
+    { materialName: 'bleacher_material', intensity: p.bleacher } // less
   ];
 }
 
@@ -69,7 +79,7 @@ export function createGymReflectionProbe(scene: Scene, resolution: number): Refl
   // reflections (no mirror), which is exactly the "fuzzy fixture response" we want on the waxed floor.
   const probe = new ReflectionProbe(PROBE_NAME, resolution, scene);
   // Centred at mid-court, roughly between floor and ceiling.
-  probe.position = new Vector3(0, TUNING.map.wallHeight * SHOWCASE_CONFIG.reflectionProbe.centerHeightFraction, 0);
+  probe.position = new Vector3(0, TUNING.map.wallHeight * resolvePolishedConfig().probe.centerHeightFraction, 0);
 
   // Explicit static render list — only the allow-listed structural meshes. The floor is not on the
   // list, so it is excluded from its own capture (no reflection recursion).
@@ -96,12 +106,26 @@ export function createGymReflectionProbe(scene: Scene, resolution: number): Refl
   return probe;
 }
 
-/** Dispose the probe and detach it from any receiver material. Safe to call when no probe exists. */
+/**
+ * Wire the probe onto a lazily-created ball PBR material (balls spawn after the probe is built, so
+ * name-based wiring at probe creation can't reach them). No-op when no probe is active — i.e. in
+ * Performance/Neutral mode, or before the gym finishes building — so BallVisualFactory can call this
+ * unconditionally.
+ */
+export function applyGymProbeToBallMaterial(material: PBRMaterial): void {
+  if (!activeProbe) return;
+  material.reflectionTexture = activeProbe.cubeTexture;
+  material.environmentIntensity = resolvePolishedConfig().probe.intensities.ball;
+}
+
+/**
+ * Dispose the probe and detach it from EVERY material that samples it — the named receivers AND the
+ * lazily-wired ball materials — by scanning for the cube reference. Safe when no probe exists.
+ */
 export function disposeGymReflectionProbe(): void {
   if (!activeProbe) return;
   const cube = activeProbe.cubeTexture;
-  for (const receiver of probeReceivers()) {
-    const material = activeProbe.getScene().getMaterialByName(receiver.materialName);
+  for (const material of activeProbe.getScene().materials) {
     if (material instanceof PBRMaterial && material.reflectionTexture === cube) {
       material.reflectionTexture = null;
     }

@@ -151,6 +151,7 @@ export class CreatorWorld implements MovementWorld {
   public minZ = 0;
   public maxZ = 0;
   public readonly ceilingY = SANDBOX_CEILING_Y;
+  public floorY = 0;
 
   private wallRunFaces: CreatorWallFace[] = [];
   private wallBounceFaces: CreatorWallFace[] = [];
@@ -166,6 +167,7 @@ export class CreatorWorld implements MovementWorld {
     this.maxX = b.maxX;
     this.minZ = b.minZ;
     this.maxZ = b.maxZ;
+    this.floorY = layout.ground.bounds.y ?? 0;
     this.wallRunFaces = buildCreatorWallFaces(layout);
     this.wallBounceFaces = buildCreatorWallBounceFaces(layout);
   }

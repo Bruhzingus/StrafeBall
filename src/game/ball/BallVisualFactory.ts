@@ -1,4 +1,6 @@
 import { Color3, Mesh, MeshBuilder, PBRMaterial, Scene, StandardMaterial, Vector3 } from '@babylonjs/core';
+import { applyGymProbeToBallMaterial } from '../map/GymReflectionProbe';
+import { registerGymMirrorMesh } from '../map/GymFloorMirror';
 import { TUNING } from '../config/tuning';
 
 export type BallVisualVariant = 'normal' | 'live' | 'dead' | 'highlight';
@@ -15,6 +17,9 @@ export function createBallMesh(scene: Scene, name: string, position: Vector3, va
   mesh.position.copyFrom(position);
   mesh.material = getBallMaterial(scene, variant);
   mesh.isPickable = false;
+  // Polished Phase 3: balls reflect in the floor mirror (the mesh only — the blob shadow below is
+  // excluded by the mirror facade). Safe no-op when no mirror exists (Performance/Neutral).
+  registerGymMirrorMesh(mesh);
   const shadow = createBallBlobShadow(scene, `${name}_blobShadow`, position);
   mesh.metadata = { ...(mesh.metadata ?? {}), ballBlobShadow: shadow };
   mesh.onDisposeObservable.add(() => {
@@ -35,6 +40,9 @@ export function getBallMaterial(scene: Scene, variant: BallVisualVariant = 'norm
 
   const material = new PBRMaterial(`ball_${variant}_material`, scene);
   applyBallMaterial(material, variant);
+  // Polished mode: balls reflect the gym's own reflection probe (no-op when no probe is active —
+  // Performance/Neutral keep the gradient-environment sheen applyBallMaterial already set up).
+  applyGymProbeToBallMaterial(material);
   materials.set(variant, material);
   return material;
 }

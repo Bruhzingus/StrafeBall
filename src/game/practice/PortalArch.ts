@@ -18,6 +18,7 @@
  */
 
 import { Color3, DynamicTexture, Material, Mesh, MeshBuilder, Scene, StandardMaterial, Texture, TransformNode, Vector3, Vector4 } from '@babylonjs/core';
+import { addPolishedGlowMesh, addPolishedGlowOccluder } from '../effects/PolishedPostFX';
 
 export interface PortalPalette {
   edge: Color3;
@@ -59,6 +60,7 @@ export class PortalArch {
   readonly root: TransformNode;
   private readonly disposables: Array<{ dispose(): void }> = [];
   private readonly surfaceLayers: SurfaceLayer[] = [];
+  private readonly energyMeshes: Mesh[] = [];
   private readonly edgeMaterial: StandardMaterial;
   private readonly edgeBaseEmissive: Color3;
   private readonly statusMaterial: StandardMaterial;
@@ -101,17 +103,20 @@ export class PortalArch {
     plinth.position.set(0, baseY / 2, 0);
     plinth.material = plinthMat;
     this.addMesh(plinth);
+    addPolishedGlowOccluder(plinth);
 
     const cap = MeshBuilder.CreateBox(`${id}_plinth_cap`, { width: 1.58, height: 0.05, depth: 0.62 }, scene);
     cap.position.set(0, baseY + 0.01, 0);
     cap.material = trimMat;
     this.addMesh(cap);
+    addPolishedGlowOccluder(cap);
 
     // One subtle status panel on the plinth front face.
     const statusPanel = MeshBuilder.CreatePlane(`${id}_status`, { width: 0.66, height: 0.08 }, scene);
     statusPanel.position.set(0, baseY * 0.5, 0.29);
     statusPanel.material = this.statusMaterial;
     this.addMesh(statusPanel);
+    this.addEnergyMesh(statusPanel);
 
     // --- Portal surface: two scrolling energy layers (rect body + arched top), behind the frame ---
     for (const [name, z, alpha, base, vSpeed, uSpeed, uAmp] of [
@@ -134,6 +139,7 @@ export class PortalArch {
       const surface = buildArchedSurface(scene, `${id}_surface_${name}`, 0, z, baseY, openingWidth, straightHeight);
       surface.material = mat;
       this.addMesh(surface);
+      this.addEnergyMesh(surface);
 
       this.surfaceLayers.push({ mat, tex, baseEmissive: base.clone(), vSpeed, uSpeed, uAmplitude: uAmp });
     }
@@ -147,6 +153,7 @@ export class PortalArch {
     }, scene);
     edgeTube.material = this.edgeMaterial;
     this.addMesh(edgeTube);
+    this.addEnergyMesh(edgeTube);
 
     // --- Inner trim (brushed cool gray) ---
     const trimTube = MeshBuilder.CreateTube(`${id}_trim`, {
@@ -157,6 +164,7 @@ export class PortalArch {
     }, scene);
     trimTube.material = trimMat;
     this.addMesh(trimTube);
+    addPolishedGlowOccluder(trimTube);
 
     // --- Main arched frame (navy-charcoal metal) ---
     const frameTube = MeshBuilder.CreateTube(`${id}_frame`, {
@@ -167,6 +175,7 @@ export class PortalArch {
     }, scene);
     frameTube.material = frameMat;
     this.addMesh(frameTube);
+    addPolishedGlowOccluder(frameTube);
 
     // --- Title sign above the arch (painted once, never per-frame) ---
     const signTexture = createSignTexture(scene, `${id}_sign_tex`, title);
@@ -226,6 +235,11 @@ export class PortalArch {
     this.root.setEnabled(enabled);
   }
 
+  /** Explicit emissive-only accessor; title/sign planes are intentionally absent. */
+  getGlowMeshes(): readonly Mesh[] {
+    return this.energyMeshes;
+  }
+
   dispose(): void {
     for (const d of this.disposables) d.dispose();
     this.root.dispose();
@@ -236,6 +250,11 @@ export class PortalArch {
     mesh.parent = this.root;
     this.disposables.push(mesh);
     mesh.freezeWorldMatrix();
+  }
+
+  private addEnergyMesh(mesh: Mesh): void {
+    this.energyMeshes.push(mesh);
+    addPolishedGlowMesh(mesh);
   }
 }
 

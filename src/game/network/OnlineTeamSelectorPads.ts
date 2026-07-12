@@ -9,6 +9,7 @@ import {
   Vector3
 } from '@babylonjs/core';
 import type { RoomState } from '../../../shared/types';
+import { addPolishedGlowMesh } from '../effects/PolishedPostFX';
 
 type TeamPadId = 'blue' | 'red' | 'start';
 
@@ -363,6 +364,14 @@ export class OnlineTeamSelectorPads {
     promptFill.scaling.x = 0;
     promptFill.material = fillMaterial;
     add(promptFill, false);
+
+    // Register the physical emissive accents, never the label/prompt text planes. This happens in
+    // the constructor because these stations are built after ArenaScene's initial gym glow scan.
+    for (const mesh of meshes) {
+      if (mesh.material === padMaterial || mesh.material === trimMaterial || mesh.material === fillMaterial) {
+        addPolishedGlowMesh(mesh);
+      }
+    }
 
     this.pads.push({
       ...def,

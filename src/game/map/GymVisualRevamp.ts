@@ -14,11 +14,13 @@ import {
 import { TUNING } from '../config/tuning';
 import { createBleacherTierSpecs } from '../../../shared/simulation/MapGeometry';
 import {
+  getGraphicsQuality,
   isNeutralModeEnabled,
   isShowcaseLightingEnabled,
   SHOWCASE_CONFIG,
   SHOWCASE_ENV_TEXTURE_NAME
 } from '../config/graphicsConfig';
+import { resolvePolishedConfig } from '../config/graphicsTuning';
 
 type WallSide = 'north' | 'south' | 'east' | 'west';
 type BannerShape = 'rectangle' | 'vertical' | 'pennant';
@@ -748,12 +750,20 @@ function tuneSceneImageProcessing(scene: Scene): void {
     ip.contrast = 1.0;
     return;
   }
-  // Competitive / Showcase keep the existing mild ACES tone map + gentle exposure/contrast lift so flat
-  // direct lighting reads as more "rendered" without extra draw calls. Deliberately mild.
+  // Performance / Polished keep the existing mild ACES tone map + gentle exposure/contrast lift so
+  // flat direct lighting reads as more "rendered" without extra draw calls. Deliberately mild.
+  // Polished reads the (identical-by-default) values through resolvePolishedConfig so the dev tuning
+  // panel can drive + persist them; Performance keeps the compiled constants, bit-identical.
   ip.toneMappingEnabled = true;
   ip.toneMappingType = ImageProcessingConfiguration.TONEMAPPING_ACES;
-  ip.exposure = 1.13;
-  ip.contrast = 1.03;
+  if (getGraphicsQuality() === 'polished') {
+    const ipCfg = resolvePolishedConfig().imageProcessing;
+    ip.exposure = ipCfg.exposure;
+    ip.contrast = ipCfg.contrast;
+  } else {
+    ip.exposure = 1.13;
+    ip.contrast = 1.03;
+  }
 }
 
 function tuneCeilingMaterials(scene: Scene): void {

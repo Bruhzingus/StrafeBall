@@ -148,6 +148,30 @@ describe('CreatorStorage — projects index (seed, migrate, CRUD)', () => {
     expect(index.entries[0].name).toBe(newer.name);
   });
 
+  it('migrates a published-only legacy course instead of losing it', () => {
+    const published = variantOf(defaultCreatorLayout(), 'published only');
+    installStorage({ [STORAGE_KEYS.legacyPublished]: JSON.stringify(published) });
+
+    const index = loadProjectsIndex();
+
+    expect(index.entries).toHaveLength(1);
+    expect(index.entries[0].name).toBe(published.name);
+    expect(loadProjectWorking(index.activeId)!.name).toBe(published.name);
+  });
+
+  it('prefers legacy working edits over an older published course during migration', () => {
+    const published = variantOf(defaultCreatorLayout(), 'published');
+    const working = variantOf(defaultCreatorLayout(), 'working edits');
+    installStorage({
+      [STORAGE_KEYS.legacyPublished]: JSON.stringify(published),
+      [STORAGE_KEYS.legacyAutosave]: JSON.stringify({ savedAt: 50, layout: working })
+    });
+
+    const index = loadProjectsIndex();
+
+    expect(loadProjectWorking(index.activeId)!.name).toBe(working.name);
+  });
+
   it('migration is one-time: the legacy slots are ignored once the index exists', () => {
     const legacy = variantOf(defaultCreatorLayout(), 'legacy');
     installStorage({ [STORAGE_KEYS.legacyAutosave]: JSON.stringify({ savedAt: 50, layout: legacy }) });

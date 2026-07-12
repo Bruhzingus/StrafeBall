@@ -7,6 +7,7 @@ import { airStrafeWishDirection, movementWishDirection, yawForward } from '../ut
 import { DashController } from './DashController';
 import { BackflipController } from './BackflipController';
 import { CollisionWorld, type RampCollider } from '../map/Collider';
+import { catchRecoilForVelocity } from '../../../shared/simulation/CatchFeedback';
 
 export type FrictionMode = 'air' | 'normal' | 'slide' | 'dashSuppressed';
 
@@ -23,6 +24,8 @@ export interface MovementWorld {
   minZ: number;
   maxZ: number;
   ceilingY: number;
+  /** Baseline walkable floor height. Omitted by legacy worlds to retain the gym's y=0 floor. */
+  floorY?: number;
   /** Outward (into open space) unit XZ normal of the nearest wall-run surface in range, else null. */
   wallNormalAt(x: number, z: number, y: number): Vector3 | null;
   /** Optional wall-bounce surface query. Defaults to wallNormalAt when omitted. */
@@ -74,7 +77,8 @@ export class MovementController {
   private groundIsSlope = false;
   // Normal (pointing into the court) of the wall currently being run on; drives wall-jump.
   private lastWallNormal = Vector3.Zero();
-  private catchRecoilOffset = 0;
+  private catchRecoilOffsetX = 0;
+  private catchRecoilOffsetZ = 0;
   private slideHoldActive = false;
   // Offline-only world override (Movement Sandbox). Null = default gym world (unchanged behaviour).
   private world: MovementWorld | null = null;
@@ -90,6 +94,7 @@ export class MovementController {
   /** Offline only: install (or clear with null) a world override for the Movement Sandbox. */
   setWorld(world: MovementWorld | null): void {
     this.world = world;
+    this.groundHeight = world?.floorY ?? 0;
     this.endWallRun();
   }
 
@@ -110,12 +115,14 @@ export class MovementController {
     this.doubleJumpAvailable = true;
     this.catchBoostTimer = 0;
     this.dashActiveTimer = 0;
-    this.groundHeight = 0;
+    this.groundHeight = this.world?.floorY ?? 0;
     this.groundNormal.set(0, 1, 0);
     this.groundIsSlope = false;
     this.lastWallNormal.setAll(0);
-    this.catchRecoilOffset = 0;
+    this.catchRecoilOffsetX = 0;
+    this.catchRecoilOffsetZ = 0;
     this.slideHoldActive = false;
+    this.camera.position.x = 0;
     this.camera.position.z = 0;
     this.applyCameraHeight();
   }
@@ -194,23 +201,33 @@ export class MovementController {
   }
 
   addCatchRecoil(incomingVelocity: Vector3): void {
-    const horizontalSpeed = Math.hypot(incomingVelocity.x, incomingVelocity.z);
-    if (horizontalSpeed < TUNING.catch.momentumRecoilMinSpeed) return;
-    const range = Math.max(0.001, TUNING.catch.momentumRecoilMaxSpeed - TUNING.catch.momentumRecoilMinSpeed);
-    const strength = Math.max(0, Math.min(1, (horizontalSpeed - TUNING.catch.momentumRecoilMinSpeed) / range));
-    const distance =
-      TUNING.catch.momentumRecoilMinDistance +
-      (TUNING.catch.momentumRecoilMaxDistance - TUNING.catch.momentumRecoilMinDistance) * strength;
-    this.catchRecoilOffset = Math.max(this.catchRecoilOffset, distance);
+    const recoil = catchRecoilForVelocity(incomingVelocity);
+    if (!recoil) return;
+    const currentDistance = Math.hypot(this.catchRecoilOffsetX, this.catchRecoilOffsetZ);
+    if (recoil.distance < currentDistance) return;
+    const yaw = this.root.rotation.y;
+    const rightX = Math.cos(yaw);
+    const rightZ = -Math.sin(yaw);
+    const forwardX = Math.sin(yaw);
+    const forwardZ = Math.cos(yaw);
+    // Convert the world-space incoming direction into camera-local XZ. For a head-on catch this is
+    // negative local Z (backward); side catches now recoil sideways instead of using a fixed roll.
+    this.catchRecoilOffsetX = (recoil.directionX * rightX + recoil.directionZ * rightZ) * recoil.distance;
+    this.catchRecoilOffsetZ = (recoil.directionX * forwardX + recoil.directionZ * forwardZ) * recoil.distance;
   }
 
   tickVisualFeedback(dt: number): void {
-    if (this.catchRecoilOffset > 0) {
+    if (this.catchRecoilOffsetX !== 0 || this.catchRecoilOffsetZ !== 0) {
       const decay = Math.exp(-dt / TUNING.catch.momentumRecoilDuration);
-      this.catchRecoilOffset *= decay;
-      if (this.catchRecoilOffset < 0.002) this.catchRecoilOffset = 0;
+      this.catchRecoilOffsetX *= decay;
+      this.catchRecoilOffsetZ *= decay;
+      if (Math.hypot(this.catchRecoilOffsetX, this.catchRecoilOffsetZ) < 0.002) {
+        this.catchRecoilOffsetX = 0;
+        this.catchRecoilOffsetZ = 0;
+      }
     }
-    this.camera.position.z = -this.catchRecoilOffset;
+    this.camera.position.x = this.catchRecoilOffsetX;
+    this.camera.position.z = this.catchRecoilOffsetZ;
   }
 
   private updateTimers(dt: number): void {
@@ -616,7 +633,7 @@ export class MovementController {
   private resolveCollisions(): void {
     const boxes = this.collision.boxes;
     if (boxes.length === 0) {
-      this.groundHeight = 0;
+      this.groundHeight = this.world?.floorY ?? 0;
       this.groundNormal.set(0, 1, 0);
       this.groundIsSlope = false;
       return;
@@ -628,7 +645,7 @@ export class MovementController {
     const p = this.root.position;
 
     // Pass 1: ground support (skip boxes whose top is too high to stand on from here).
-    let support = 0;
+    let support = this.world?.floorY ?? 0;
     let supportNormalX = 0;
     let supportNormalY = 1;
     let supportNormalZ = 0;

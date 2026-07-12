@@ -10,6 +10,8 @@ import { playerAimOriginHeight, playerHitCapsule } from '../../../shared/simulat
 import { isBallPickupStateEligible } from '../../../shared/simulation/BallSim';
 import { ballVariantForState, createBallMesh, getBallMaterial, updateBallBlobShadow } from '../ball/BallVisualFactory';
 import { registerGymShadowCaster } from '../map/GymShadowCasters';
+import { registerGymMirrorMesh } from '../map/GymFloorMirror';
+import { addPolishedGlowOccluder } from '../effects/PolishedPostFX';
 import type { BallVisualEffects } from '../ball/BallVisualEffects';
 import { BALL_QTE_TRAIL_SPEED_THRESHOLD, BALL_TRAIL_INTERVAL_SECONDS } from '../ball/BallVisualEffects';
 import {
@@ -25,6 +27,7 @@ import {
   type NetModeConfig
 } from '../../../shared/netConfig';
 import { AdaptiveInterpDelay } from './AdaptiveInterpDelay';
+import { catchRecoilForVelocity } from '../../../shared/simulation/CatchFeedback';
 
 interface PlayerVisual {
   root: TransformNode;
@@ -318,25 +321,12 @@ export class NetworkRenderer {
 
   applyCatchEvents(events: readonly CatchEvent[]): void {
     for (const event of events) {
-      const speed = event.absorbedSpeed;
-      if (speed < TUNING.catch.momentumRecoilMinSpeed) continue;
-      const horizontal = Math.hypot(event.incomingVelocity.x, event.incomingVelocity.z);
-      if (horizontal <= 0.001) continue;
-      const strength = Math.max(
-        0,
-        Math.min(
-          1,
-          (speed - TUNING.catch.momentumRecoilMinSpeed) /
-            Math.max(0.001, TUNING.catch.momentumRecoilMaxSpeed - TUNING.catch.momentumRecoilMinSpeed)
-        )
-      );
-      const distance =
-        TUNING.catch.momentumRecoilMinDistance +
-        (TUNING.catch.momentumRecoilMaxDistance - TUNING.catch.momentumRecoilMinDistance) * strength;
+      const recoil = catchRecoilForVelocity(event.incomingVelocity);
+      if (!recoil) continue;
       this.catchRecoilByPlayerId.set(event.catcherId, {
-        dirX: -event.incomingVelocity.x / horizontal,
-        dirZ: -event.incomingVelocity.z / horizontal,
-        baseDistance: distance,
+        dirX: recoil.directionX,
+        dirZ: recoil.directionZ,
+        baseDistance: recoil.distance,
         remaining: TUNING.catch.momentumRecoilDuration,
         duration: TUNING.catch.momentumRecoilDuration
       });
@@ -1128,6 +1118,18 @@ export class NetworkRenderer {
     };
     this.players.set(player.id, visual);
     this.playerDebug.set(player.id, { logTimer: 0 });
+    // Polished Phase 3: the whole avatar (all sibling body parts under the root, including the
+    // arms built into `visual` above) reflects in the floor mirror. The disabled hitbox capsule is
+    // skipped automatically at render (disabled meshes don't draw into RTTs). No-op without a mirror.
+    // Phase 5: the avatar also OCCLUDES glow — a player in front of a light strip must block its
+    // halo, not have it smear across their body. Avatar emissive is near-zero (≤0.035), so as
+    // included glow meshes they render black. Both are no-ops without the polished stack.
+    for (const child of root.getChildMeshes(false)) {
+      if (child instanceof Mesh) {
+        registerGymMirrorMesh(child);
+        addPolishedGlowOccluder(child);
+      }
+    }
     return visual;
   }
 

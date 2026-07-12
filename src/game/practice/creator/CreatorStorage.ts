@@ -37,6 +37,9 @@ export const STORAGE_KEYS = {
   // Legacy single-layout slots (read once for migration; never written again).
   legacyLayout: `${KEY_PREFIX}:layout`,
   legacyAutosave: `${KEY_PREFIX}:autosave`,
+  // Older builds could have only a published live-course copy (for example after clearing the
+  // editor's working slots). It is a migration fallback so that course is not lost on upgrade.
+  legacyPublished: `${KEY_PREFIX}:published`,
   // Multi-project index: `{ activeId, entries: ProjectSummary[] }`. Per-project layouts live under
   // projectAutoKey(id) / projectManualKey(id).
   projects: `${KEY_PREFIX}:projects`,
@@ -251,10 +254,14 @@ function migrateLegacyIfNeeded(): void {
   if (readIndexRaw()) return;
   const legacyAuto = readEnvelope(STORAGE_KEYS.legacyAutosave);
   const legacyManual = readEnvelope(STORAGE_KEYS.legacyLayout);
-  const newest = newestStoredLayout(legacyAuto, legacyManual);
+  const legacyPublished = readEnvelope(STORAGE_KEYS.legacyPublished);
+  const newest = newestStoredLayout(legacyAuto, legacyManual) ?? legacyPublished;
   if (!newest) return; // nothing to migrate; seeding happens lazily in loadProjectsIndex
   const id = createProjectId();
+  // A published-only course becomes the working copy. When normal working slots exist, they retain
+  // precedence exactly as the old loader did and both auto/manual restore points survive unchanged.
   if (legacyAuto) writeKey(projectAutoKey(id), JSON.stringify(legacyAuto));
+  else if (!legacyManual && legacyPublished) writeKey(projectAutoKey(id), JSON.stringify(legacyPublished));
   if (legacyManual) writeKey(projectManualKey(id), JSON.stringify(legacyManual));
   writeIndex({ activeId: id, entries: [summaryFromLayout(id, newest.layout)] });
 }

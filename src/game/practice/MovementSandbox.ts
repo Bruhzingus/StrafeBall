@@ -23,13 +23,11 @@ import {
   BOUNDARY_THICKNESS,
   SANDBOX_CEILING_Y,
   SANDBOX_CENTER,
-  SANDBOX_HALF_X,
-  SANDBOX_HALF_Z,
   sandboxLeaveWorld
 } from './MovementSandboxLayout';
 import {
   collectSpawnerMarkers,
-  layoutSpawn,
+  layoutCourseSpawn,
   type CreatorLayout,
   type CreatorSpawnerMarkers
 } from './creator/CreatorLayout';
@@ -49,6 +47,13 @@ import { CourseRunHud } from './creator/CourseRunHud';
 import { TUNING } from '../config/tuning';
 import type { RaceRunEvent } from '../../../shared/courseRace';
 import { PortalArch, type PortalPalette } from './PortalArch';
+import { getGraphicsQuality } from '../config/graphicsConfig';
+import {
+  enterSandboxAtmosphere,
+  exitSandboxAtmosphere,
+  registerSandboxShadowGeometry
+} from './SandboxAtmosphere';
+import { addPolishedGlowOccluder } from '../effects/PolishedPostFX';
 
 export type SandboxAction = 'leave' | 'race' | 'coop';
 
@@ -96,6 +101,7 @@ const CO_OP_PALETTE: PortalPalette = {
  */
 export class MovementSandbox implements MovementWorld {
   public active = false;
+  private readonly polishedAtmosphere = getGraphicsQuality() === 'polished';
 
   // MovementWorld bounds (world space).
   public readonly minX: number;
@@ -103,6 +109,7 @@ export class MovementSandbox implements MovementWorld {
   public readonly minZ: number;
   public readonly maxZ: number;
   public readonly ceilingY = SANDBOX_CEILING_Y;
+  public readonly floorY: number;
 
   private readonly root: TransformNode;
   private readonly materials: StandardMaterial[] = [];
@@ -151,7 +158,7 @@ export class MovementSandbox implements MovementWorld {
   private coopLatched = false;
   /** Slot for the Course Creator's own entry portal (built separately by CreatorEditor), kept in the
    *  same row as leave/race so all three read as one connected hub regardless of course layout. */
-  private readonly creatorEntrySlot: { x: number; z: number; yaw: number };
+  private readonly creatorEntrySlot: { x: number; y: number; z: number; yaw: number };
   /** Optional tee of course-run events (start/checkpoint/finish/reset) for the online race relay. */
   private runEventListener: ((event: RaceRunEvent) => void) | null = null;
 
@@ -166,6 +173,7 @@ export class MovementSandbox implements MovementWorld {
     // a manual editor action (Revert to Default Map).
     const layout = layoutOverride ?? loadCurrentCourseLayout();
     this.fullLayout = layout;
+    this.floorY = layout.ground.bounds.y ?? 0;
     this.courseLayout = { ...layout, objects: layout.objects.filter((o) => o.type !== 'boundary_wall') };
     const yardFurniture = new Set(['spawn_point', 'leave_portal', 'test_spawn']);
     this.visualLayout = { ...layout, objects: this.courseLayout.objects.filter((o) => !yardFurniture.has(o.type)) };
@@ -183,7 +191,7 @@ export class MovementSandbox implements MovementWorld {
     // (only whichever slot happens to land in the clear still works). The player spawns at the same
     // marker, so the row is always a few steps in front of you.
     const fallbackLeave = sandboxLeaveWorld();
-    const spawnPoint = layoutSpawn(layout);
+    const spawnPoint = layoutCourseSpawn(layout);
     const fwdX = Math.sin(spawnPoint.yaw);
     const fwdZ = Math.cos(spawnPoint.yaw);
     const rightX = Math.cos(spawnPoint.yaw);
@@ -199,6 +207,7 @@ export class MovementSandbox implements MovementWorld {
       const z = rowZ + rightZ * PORTAL_SPACING * n;
       return {
         x,
+        y: this.floorY,
         z,
         yaw: Math.atan2(spawnPoint.x - x, spawnPoint.z - z),
         radius: fallbackLeave.radius,
@@ -259,15 +268,17 @@ export class MovementSandbox implements MovementWorld {
     this.ensureCourseRun();
     this.courseRun?.reset('leave');
     if (this.courseRun?.isTimed()) {
+      this.courseHud?.renderLeaderboard(this.courseRun.localRecords());
       this.courseHud?.setVisible(true);
       this.courseHud?.showIdle(this.courseRun.bestMs());
     }
     for (const box of this.collisionBoxes) this.gym.collision.add(box);
-    this.applyOutdoorSky();
+    if (this.polishedAtmosphere) enterSandboxAtmosphere(this.scene);
+    else this.applyOutdoorSky();
 
     player.hands.clearHands();
     player.movement.setWorld(this);
-    const spawn = layoutSpawn(this.fullLayout);
+    const spawn = layoutCourseSpawn(this.fullLayout);
     player.setRespawn(new Vector3(spawn.x, spawn.y, spawn.z), spawn.yaw);
     player.teleportTo(new Vector3(spawn.x, spawn.y, spawn.z), spawn.yaw, 0);
 
@@ -284,7 +295,8 @@ export class MovementSandbox implements MovementWorld {
     this.courseHud?.setVisible(false);
     this.movers.resetPhase();
     this.removeCollisionFromGym();
-    this.restoreSky();
+    if (this.polishedAtmosphere) exitSandboxAtmosphere(this.scene);
+    else this.restoreSky();
     if (player) {
       player.movement.setWorld(null);
       player.setRespawn();
@@ -303,7 +315,7 @@ export class MovementSandbox implements MovementWorld {
 
   /** World position + facing for the Course Creator's own entry portal (built by CreatorEditor),
    *  kept in the same row as the leave/race portals so all three read as one connected hub. */
-  creatorEntryPoint(): { x: number; z: number; yaw: number } {
+  creatorEntryPoint(): { x: number; y: number; z: number; yaw: number } {
     return this.creatorEntrySlot;
   }
 
@@ -323,7 +335,7 @@ export class MovementSandbox implements MovementWorld {
     this.movers.resetPhase();
     player.dash.refill();
     player.backflip.cooldown = 0;
-    const spawn = layoutSpawn(this.fullLayout);
+    const spawn = layoutCourseSpawn(this.fullLayout);
     player.setRespawn(new Vector3(spawn.x, spawn.y, spawn.z), spawn.yaw);
     player.teleportTo(new Vector3(spawn.x, spawn.y, spawn.z), spawn.yaw, 0);
     if (this.courseRun?.isTimed()) this.courseHud?.showIdle(this.courseRun.bestMs());
@@ -332,7 +344,7 @@ export class MovementSandbox implements MovementWorld {
   /** Lazily build the timed-course tracker + HUD (only shows anything for layouts with both gates). */
   private ensureCourseRun(): void {
     if (this.courseRun) return;
-    const hud = new CourseRunHud(document.getElementById('hud-root') ?? document.body, 'COURSE RUN');
+    const hud = new CourseRunHud(document.getElementById('hud-root') ?? document.body, this.fullLayout.name);
     this.courseHud = hud;
     this.courseRun = new CourseRunTracker(this.fullLayout, {
       onRunStart: () => {
@@ -346,7 +358,8 @@ export class MovementSandbox implements MovementWorld {
         this.runEventListener?.({ kind: 'checkpoint', checkpoint: collected, checkpointTotal: total, timeMs: splitMs });
       },
       onMissedCheckpoint: (n) => hud.showMissedCheckpoint(n),
-      onFinish: (timeMs, bestMs, isPb) => {
+      onFinish: (timeMs, bestMs, isPb, placement, records) => {
+        hud.renderLeaderboard(records, placement);
         hud.showFinish(timeMs, bestMs, isPb);
         this.runEventListener?.({ kind: 'finish', timeMs });
       },
@@ -355,9 +368,17 @@ export class MovementSandbox implements MovementWorld {
         this.runEventListener?.({ kind: 'reset' });
       }
     });
+    hud.renderLeaderboard(this.courseRun.localRecords());
   }
 
   dispose(): void {
+    // ArenaScene normally exits first. Keep direct disposal safe as well (scene teardown / future
+    // callers) so a live yard can never leave the gym renderer paused.
+    if (this.active) {
+      if (this.polishedAtmosphere) exitSandboxAtmosphere(this.scene);
+      else this.restoreSky();
+      this.active = false;
+    }
     this.courseHud?.dispose();
     this.geometry?.dispose();
     this.leavePortalArch?.dispose();
@@ -393,13 +414,14 @@ export class MovementSandbox implements MovementWorld {
     this.pads.reset();
     this.movers.resetPhase();
     if (this.courseRun?.isTimed()) {
+      this.courseHud?.renderLeaderboard(this.courseRun.localRecords());
       this.courseHud?.setVisible(true);
       this.courseHud?.showIdle(this.courseRun.bestMs());
     }
     for (const box of this.collisionBoxes) this.gym.collision.add(box);
     player.hands.clearHands();
     player.movement.setWorld(this);
-    const spawn = layoutSpawn(this.fullLayout);
+    const spawn = layoutCourseSpawn(this.fullLayout);
     player.setRespawn(new Vector3(spawn.x, spawn.y, spawn.z), spawn.yaw);
     player.teleportTo(new Vector3(spawn.x, spawn.y, spawn.z), spawn.yaw, 0);
   }
@@ -428,17 +450,21 @@ export class MovementSandbox implements MovementWorld {
     // Ability pads / kill blocks / checkpoint respawns — the SAME runtime creator Playtest runs,
     // called (like playtest) AFTER the player's movement update for this frame, so velocity written
     // by a pad carries into the next tick.
+    const resetPressed = input.wasKeyPressed(CONTROL_KEYS.reset);
+    if (resetPressed) this.pads.reset(); // K teleports; never sweep that discontinuity through pads.
     const killed = this.pads.update(dt, this.fullLayout, player);
 
     // Timed course run: start/checkpoint/finish gate crossings + live clock. A kill-block death or
     // the K reset cancels a live attempt (the checkpoint respawn itself is unchanged).
     const run = this.courseRun;
     if (run?.isTimed()) {
-      if (input.wasKeyPressed(CONTROL_KEYS.reset)) run.reset('reset');
+      if (resetPressed) run.reset('reset');
       const p = player.root.position;
       run.update(performance.now(), p.x, p.y, p.z, TUNING.player.radius, killed);
       if (run.state.phase === 'running') {
         this.courseHud?.tick(run.state.elapsedMs(performance.now()), run.state.nextCheckpoint, run.state.checkpointCount);
+      } else if (run.state.phase === 'finished') {
+        this.courseHud?.showFinished(run.state.finishedTimeMs ?? 0, run.bestMs());
       } else {
         this.courseHud?.showIdle(run.bestMs());
       }
@@ -611,10 +637,12 @@ export class MovementSandbox implements MovementWorld {
   }
 
   private buildGround(): void {
+    const width = this.maxX - this.minX;
+    const depth = this.maxZ - this.minZ;
     this.gridBox(
       'sandbox_ground',
-      SANDBOX_CENTER.x, -0.5, SANDBOX_CENTER.z,
-      SANDBOX_HALF_X * 2 + BOUNDARY_THICKNESS * 2, 1, SANDBOX_HALF_Z * 2 + BOUNDARY_THICKNESS * 2,
+      SANDBOX_CENTER.x, this.floorY - 0.5, SANDBOX_CENTER.z,
+      width + BOUNDARY_THICKNESS * 2, 1, depth + BOUNDARY_THICKNESS * 2,
       this.deckMat
     );
   }
@@ -623,8 +651,8 @@ export class MovementSandbox implements MovementWorld {
     const b = { minX: this.minX, maxX: this.maxX, minZ: this.minZ, maxZ: this.maxZ };
     const h = BOUNDARY_HEIGHT;
     const t = BOUNDARY_THICKNESS;
-    const fullX = SANDBOX_HALF_X * 2 + t * 2;
-    const fullZ = SANDBOX_HALF_Z * 2;
+    const fullX = b.maxX - b.minX + t * 2;
+    const fullZ = b.maxZ - b.minZ;
     // Visual-only perimeter (the controller's bounds clamp is the real barrier). Inner faces are
     // wall-run surfaces (see buildWallRunFaces).
     const walls: Array<[string, number, number, number, number]> = [
@@ -634,17 +662,17 @@ export class MovementSandbox implements MovementWorld {
       ['bnd_n', SANDBOX_CENTER.x, b.maxZ + t / 2, fullX, t]
     ];
     for (const [name, cx, cz, w, d] of walls) {
-      this.gridBox(name, cx, h / 2, cz, w, h, d, this.boundaryMat);
+      this.gridBox(name, cx, this.floorY + h / 2, cz, w, h, d, this.boundaryMat);
     }
   }
 
   private buildSpawn(): void {
-    const spawn = layoutSpawn(this.fullLayout);
+    const spawn = layoutCourseSpawn(this.fullLayout);
 
     // Spawn pad + title sign.
-    this.gridBox('sandbox_spawn_pad', spawn.x, 0.04, spawn.z, 6, 0.08, 6, this.accentMat);
-    this.sign('sandbox_title', 'MOVEMENT SANDBOX', new Vector3(spawn.x + 1.5, 2.4, spawn.z), 4.0, 0.9);
-    this.sign('sandbox_sub', 'FREE MOVEMENT PRACTICE', new Vector3(spawn.x + 1.5, 1.5, spawn.z), 3.6, 0.6);
+    this.gridBox('sandbox_spawn_pad', spawn.x, spawn.y + 0.04, spawn.z, 6, 0.08, 6, this.accentMat);
+    this.sign('sandbox_title', 'MOVEMENT SANDBOX', new Vector3(spawn.x + 1.5, spawn.y + 2.4, spawn.z), 4.0, 0.9);
+    this.sign('sandbox_sub', 'FREE MOVEMENT PRACTICE', new Vector3(spawn.x + 1.5, spawn.y + 1.5, spawn.z), 3.6, 0.6);
 
     // Back to Lobby portal (hold E) — same visual language as the practice-lobby mode portals
     // (see PortalArch), tinted green. Parented to this.root so it enables/disables with the yard.
@@ -652,7 +680,7 @@ export class MovementSandbox implements MovementWorld {
     this.leavePortalArch = new PortalArch({
       id: 'sandbox_leave',
       scene: this.scene,
-      position: new Vector3(leave.x, 0, leave.z),
+      position: new Vector3(leave.x, this.floorY, leave.z),
       yaw: leave.yaw,
       title: 'BACK TO LOBBY',
       palette: BACK_TO_LOBBY_PALETTE
@@ -664,7 +692,7 @@ export class MovementSandbox implements MovementWorld {
     this.racePortalArch = new PortalArch({
       id: 'sandbox_race',
       scene: this.scene,
-      position: new Vector3(race.x, 0, race.z),
+      position: new Vector3(race.x, this.floorY, race.z),
       yaw: race.yaw,
       title: 'RACE ONLINE',
       palette: RACE_ONLINE_PALETTE
@@ -676,7 +704,7 @@ export class MovementSandbox implements MovementWorld {
     this.coopPortalArch = new PortalArch({
       id: 'sandbox_coop',
       scene: this.scene,
-      position: new Vector3(coop.x, 0, coop.z),
+      position: new Vector3(coop.x, this.floorY, coop.z),
       yaw: coop.yaw,
       title: 'CO-OP BUILD',
       palette: CO_OP_PALETTE
@@ -731,6 +759,9 @@ export class MovementSandbox implements MovementWorld {
     mesh.position.set(cx, cy, cz);
     mesh.material = material;
     mesh.parent = this.root;
+    // The enormous ground only receives; every raised yard block/wall both casts and receives.
+    registerSandboxShadowGeometry(mesh, name !== 'sandbox_ground');
+    addPolishedGlowOccluder(mesh);
     return mesh;
   }
 

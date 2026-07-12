@@ -462,7 +462,9 @@ export class CreatorUI {
       button('Revert to Default Map', 'creator-btn creator-btn-warn', () => this.bridge.resetLayout())
     );
     const row4 = el('div', 'creator-modebar-row');
-    row4.append(button('Exit Creator', 'creator-btn', () => this.bridge.exitCreator()));
+    const helpBtn = button('Help / Controls', 'creator-btn', () => this.showOnboarding(() => {}));
+    helpBtn.title = 'Show the Course Creator quick-start guide again';
+    row4.append(helpBtn, button('Exit Creator', 'creator-btn', () => this.bridge.exitCreator()));
     // The game's floating SettingsPanel docks in here while the editor is active, so the two
     // top-right settings surfaces never overlap (see CreatorEditorHooks.setGameSettingsDock).
     this.gameSettingsHost = el('div', 'creator-game-settings');

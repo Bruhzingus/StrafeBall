@@ -240,8 +240,10 @@ exports.GAME_CONSTANTS = {
         cooldownSeconds: 0.47,
         catchBoostSpeed: 3,
         catchBoostDuration: 0.25,
-        momentumRecoilMinSpeed: 14,
-        momentumRecoilMaxSpeed: 32,
+        // Cosmetic catch knockback is reserved for hard throws. A normal quick throw is 24 m/s, so the
+        // old 14 m/s cutoff incorrectly recoiled on every catch. Full charge is 35 m/s.
+        momentumRecoilMinSpeed: 30,
+        momentumRecoilMaxSpeed: 35,
         momentumRecoilMinDistance: 0.035,
         momentumRecoilMaxDistance: 0.14,
         momentumRecoilDuration: 0.2,

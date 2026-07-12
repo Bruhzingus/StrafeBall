@@ -24,10 +24,30 @@ import {
   setActiveGymShadowRegistrar
 } from '../map/GymShadowCasters';
 import { ShowcasePostFX } from '../effects/ShowcasePostFX';
-import { isNeutralModeEnabled, isShowcaseLightingEnabled, resolveGraphicsMode, resolveShowcaseTier, SHOWCASE_CONFIG, type ShowcaseTier } from '../config/graphicsConfig';
-// RECOVERY: createGymReflectionProbe is intentionally NOT imported/instantiated this phase (code
-// preserved in GymReflectionProbe). dispose + debug stay so any prior probe is torn down and reported.
-import { disposeGymReflectionProbe, getGymReflectionProbeDebugInfo } from '../map/GymReflectionProbe';
+import {
+  getGraphicsQuality,
+  isNeutralModeEnabled,
+  isShowcaseLightingEnabled,
+  resolveGraphicsMode,
+  resolveShowcaseTier,
+  SHOWCASE_CONFIG,
+  type GraphicsMode,
+  type ShowcaseTier
+} from '../config/graphicsConfig';
+import { resolvePolishedConfig } from '../config/graphicsTuning';
+import { clearPolishedHandles, registerPolishedHandles } from '../effects/PolishedGraphics';
+import { GraphicsTuningPanel } from '../ui/GraphicsTuningPanel';
+// Polished (graphics overhaul Phase 1) instantiates the once-dormant reflection probe as its IBL
+// source; Performance/Neutral never construct it. Kill switch: POLISHED_CONFIG.probe.enabled.
+import { createGymReflectionProbe, disposeGymReflectionProbe, getGymReflectionProbeDebugInfo } from '../map/GymReflectionProbe';
+import {
+  createGymFloorMirror,
+  disposeGymFloorMirror,
+  getGymFloorMirrorDebugInfo,
+  registerGymMirrorMesh
+} from '../map/GymFloorMirror';
+import { createGymCoveLighting, disposeGymCoveLighting } from '../map/GymCoveLighting';
+import { addPolishedGlowMesh, addPolishedGlowOccluder, PolishedPostFX } from '../effects/PolishedPostFX';
 import { MatObstacle } from '../map/MatObstacle';
 import { ModelLoader } from '../assets/ModelLoader';
 import { BallManager } from '../ball/BallManager';
@@ -55,6 +75,7 @@ import type { LobbyMode, LobbyPortalAction } from '../practice/LobbyModePortals'
 import { GuideWall } from '../practice/GuideWall';
 import { MovementSandbox, type SandboxAction } from '../practice/MovementSandbox';
 import { sandboxSpawnWorld } from '../practice/MovementSandboxLayout';
+import { disposeSandboxAtmosphere } from '../practice/SandboxAtmosphere';
 import { CourseRaceSession } from '../practice/CourseRaceSession';
 import type { CreatorLayout } from '../practice/creator/CreatorLayout';
 import { CreatorEditor, CREATOR_ENTRY_RADIUS, CREATOR_ENTRY_HOLD_SECONDS, type CreatorSpawnerMarkers } from '../practice/creator/CreatorEditor';
@@ -144,12 +165,20 @@ export class ArenaScene {
   // exactly one of these is ever non-null.
   private readonly fxaaPostProcess: FxaaPostProcess | null;
   private readonly showcasePostFx: ShowcasePostFX | null;
-  // Resolved once at construction. Showcase is opt-in (see graphicsConfig); Competitive is the default
-  // bright baseline. The tier only matters in Showcase mode.
+  // Polished consolidated post stack (SSAO2 + DefaultRenderingPipeline + GlowLayer). Null outside polished.
+  private readonly polishedPostFx: PolishedPostFX | null;
+  // Resolved once at construction (graphics systems are built once; preset changes reload the page).
+  // 'polished' = the overhaul default; 'performance' = the pre-overhaul bright baseline, bit-identical;
+  // 'neutral' = the dev-only diagnostic truth baseline.
+  private readonly quality: GraphicsMode = getGraphicsQuality();
+  // Dev-only live tuning panel (polished + graphics debug flag). Null in every shipping config.
+  private graphicsTuningPanel: GraphicsTuningPanel | null = null;
+  // Legacy Showcase flags — isShowcaseLightingEnabled() is now constant-false (mode migrated away);
+  // these fields and their branches are dead code kept until the Phase 7 cleanup deletes the modules.
   private readonly showcaseEnabled: boolean = isShowcaseLightingEnabled();
   private readonly showcaseTier: ShowcaseTier = resolveShowcaseTier();
   // Neutral: the diagnostic truth baseline (one hemi + one directional + one ShadowGenerator + FXAA
-  // only, no environment/reflection source, no fake-lighting decal overlays). Opt-in, same as Showcase.
+  // only, no environment/reflection source, no fake-lighting decal overlays). Dev-only opt-in.
   private readonly neutralEnabled: boolean = isNeutralModeEnabled();
   // Backflip landing quick-time event: armed when the local player lands from a backflip holding a
   // ball; resolving it throws (tiered speed). Owned here so it works in both offline and online.
@@ -321,6 +350,10 @@ export class ArenaScene {
     const loader = new ModelLoader(this.scene);
     this.gym = new GymArena(this.scene, loader);
     this.gym.build();
+    // Polished reference pass: warm cove/strip lighting (ceiling perimeter, wall band, bleacher step
+    // noses). Built BEFORE setupGymEnvironmentResponse so the floor mirror's static scan catches the
+    // 'decor_cove_' meshes; registered with the GlowLayer further below once the post FX exist.
+    if (this.quality === 'polished') createGymCoveLighting(this.scene);
     this.setupGymShadows();
     this.setupGymEnvironmentResponse();
     // All meshes with targetDummy metadata — includes both static and the moving dummy.
@@ -339,11 +372,19 @@ export class ArenaScene {
     this.effects = new Effects(this.scene, this.sound);
 
     this.player = new PlayerController(this.scene, this.input, this.ballManager, this.gym.collision, this.effects);
-    // Post-processing: FXAA is the standalone post in EVERY mode (no bloom anywhere). Phase 8 adds an
-    // OPTIONAL subtle SSAO-only pass in Showcase, gated by the single SHOWCASE_CONFIG.ssao.enabled kill
-    // switch — disabled in Competitive and Neutral. SSAO coexists with the FXAA post; no bloom, no tone
-    // mapping, no duplicate pipeline.
-    this.fxaaPostProcess = new FxaaPostProcess('scene_fxaa', 1.0, this.player.camera);
+    // Post-processing. Polished (Phases 4+5): the consolidated PolishedPostFX (SSAO2 + Default-
+    // RenderingPipeline FXAA/tonemap + GlowLayer) replaces the standalone FXAA — constructing both
+    // would double-AA. Performance/Neutral: the lightweight standalone FXAA post, exactly as before.
+    if (this.quality === 'polished') {
+      this.polishedPostFx = new PolishedPostFX(this.scene, this.player.camera);
+      registerPolishedHandles({ postFx: this.polishedPostFx });
+      this.fxaaPostProcess = null;
+      this.registerPolishedGlowMeshes();
+      if (isGraphicsDebugEnabled()) this.logPolishedPostGraphicsReport();
+    } else {
+      this.polishedPostFx = null;
+      this.fxaaPostProcess = new FxaaPostProcess('scene_fxaa', 1.0, this.player.camera);
+    }
     this.showcasePostFx =
       this.showcaseEnabled && SHOWCASE_CONFIG.ssao.enabled
         ? new ShowcasePostFX(this.scene, this.player.camera, this.showcaseTier)
@@ -352,6 +393,15 @@ export class ArenaScene {
     this.chargeBot = new PracticeBot(this.scene, this.ballManager, 'charge');
     this.practiceWall = new PracticeControlWall(this.scene, this.practiceState, this.ballManager, (id) => this.handleButtonPress(id));
     this.lobbyModePortals = new LobbyModePortals(this.scene);
+    // Polished Phase 3: the lobby portal arches stand ON the court, so their reflection in the
+    // floor mirror matters. Their meshes hang under 'portal_arch_*' roots created just above;
+    // registerGymMirrorMesh is a safe no-op in Performance/Neutral (no mirror exists).
+    for (const node of this.scene.transformNodes) {
+      if (!node.name.startsWith('portal_arch_')) continue;
+      for (const child of node.getChildMeshes(false)) {
+        if (child instanceof Mesh) registerGymMirrorMesh(child);
+      }
+    }
     this.guideWall = new GuideWall(this.scene);
 
     const hudRoot = document.getElementById('hud-root');
@@ -363,6 +413,21 @@ export class ArenaScene {
     this.multiplayerOverlay = new MultiplayerOverlay(this.multiplayer, this.input);
     this.networkRenderer = new NetworkRenderer(this.scene, this.ballVisualEffects);
     this.onlineTeamSelector = new OnlineTeamSelectorPads(this.scene);
+
+    // Dev-only live graphics tuning panel (polished mode + graphics debug flag only) — drives the
+    // registered polished handles + scene image processing without reloads. Never in shipping UI.
+    if (this.quality === 'polished' && isGraphicsDebugEnabled()) {
+      this.graphicsTuningPanel = new GraphicsTuningPanel(this.scene);
+    }
+
+    // Dev-only verification hook (graphics screenshot harness): auto-enter the movement sandbox
+    // once shortly after construction, so scripts/graphics-shot.mjs can capture the yard without
+    // simulating the walk-to-portal hold-E flow. Both debug flags must be set.
+    if (isGraphicsDebugEnabled() && isAutoSandboxDebugEnabled()) {
+      window.setTimeout(() => {
+        if (!this.onlineModeActive && !this.multiplayer.connected) this.enterMovementCourse();
+      }, 800);
+    }
   }
 
   update(): void {
@@ -460,6 +525,9 @@ export class ArenaScene {
     this.ballVisualEffects.dispose();
     this.fxaaPostProcess?.dispose();
     this.showcasePostFx?.dispose();
+    disposeSandboxAtmosphere(this.scene);
+    this.polishedPostFx?.dispose();
+    disposeGymCoveLighting();
     this.quickBot.dispose();
     this.chargeBot.dispose();
     this.practiceWall.dispose();
@@ -474,7 +542,11 @@ export class ArenaScene {
     disposeCompetitiveShadowSystem();
     disposeShowcaseLighting(this.scene);
     disposeGymReflectionProbe();
+    disposeGymFloorMirror();
     clearActiveGymShadowRegistrar();
+    this.graphicsTuningPanel?.dispose();
+    this.graphicsTuningPanel = null;
+    clearPolishedHandles(); // registry only — owners above disposed the actual systems
     this.gym.dispose();
     this.music.dispose();
     this.sound.dispose();
@@ -2230,8 +2302,21 @@ export class ArenaScene {
         this.movementSandbox?.suspend();
       },
       resumeSandbox: () => {
-        this.movementSandbox?.resume(this.player);
-        // Back in the live yard: restore the published course's actors.
+        const old = this.movementSandbox;
+        const wasInYard = old?.active ?? false;
+        if (old && wasInYard) {
+          // The editor may have switched projects or changed geometry/pads/gates. MovementSandbox
+          // snapshots its layout at construction, so rebuild it here instead of resuming stale data.
+          old.setRunEventListener(null);
+          old.exit(this.player);
+          old.dispose();
+          this.movementSandbox = new MovementSandbox(this.scene, this.gym);
+          this.movementSandbox.enter(this.player);
+          this.movementSandbox.setRunEventListener((event) => this.courseRace?.reportRunEvent(event));
+        } else {
+          old?.resume(this.player);
+        }
+        // Back in the live yard: restore actors from the newly active course.
         if (this.movementSandbox?.active) this.spawnCreatorActors(this.movementSandbox.getSpawnerMarkers());
       },
       setHudVisible: (visible: boolean) => this.hud.setVisible(visible),
@@ -3047,9 +3132,21 @@ export class ArenaScene {
       this.createShowcaseLighting();
       return;
     }
-    // Competitive lighting: one hemispheric fill + one directional key, and the single shadow
-    // generator bound to the key light. Casters (mats / moving dummy / remote players) are
-    // registered after they exist; static geometry is never a caster.
+    if (this.quality === 'polished') {
+      // Polished: the SAME proven Competitive rig, with values from POLISHED_CONFIG (⊕ live dev
+      // tuning overrides). Phase 0 ships values identical to the baseline; the tuning panel and
+      // later phases diverge them. Handles registered so the panel can drive them live.
+      const cfg = resolvePolishedConfig();
+      const { hemi, key } = applyCompetitiveLighting(this.scene, cfg.lights);
+      const shadowGenerator = createCompetitiveShadowSystem(this.scene, key, cfg.shadows);
+      setActiveGymShadowRegistrar(registerCompetitiveShadowCaster);
+      registerPolishedHandles({ hemi, key, shadowGenerator });
+      return;
+    }
+    // Performance/Neutral: the pre-overhaul Competitive baseline, bit-identical — one hemispheric
+    // fill + one directional key, and the single shadow generator bound to the key light. Casters
+    // (mats / moving dummy / remote players) are registered after they exist; static geometry is
+    // never a caster.
     const { key } = applyCompetitiveLighting(this.scene);
     // Competitive shadow tier: 1024 map (High tier would be 2048 via the same option). Darkness at
     // the most-visible end of the spec band (0.18) so player/mat/dummy shadows read clearly on the
@@ -3098,6 +3195,71 @@ export class ArenaScene {
     }
 
     if (this.showcaseEnabled) this.setupShowcaseStaticShadows();
+    if (this.quality === 'polished') this.setupPolishedStaticShadows();
+  }
+
+  /**
+   * Polished (Phase 5): the explicit GlowLayer allow-list. ONLY these meshes glow — cove light
+   * strips, ceiling fixture lenses, and scoreboard faces. Portals/team pads/creator ability pads
+   * self-register at construction because they are created or rebuilt after this initial scan. Sign
+   * and text planes are emissive too but deliberately NEVER registered (the past bloom failure).
+   */
+  private registerPolishedGlowMeshes(): void {
+    for (const board of this.gym.scoreboards) {
+      for (const mesh of board.getGlowMeshes()) addPolishedGlowMesh(mesh);
+    }
+    for (const mesh of this.scene.meshes) {
+      if (!(mesh instanceof Mesh)) continue;
+      const name = mesh.name;
+      const isCoveStrip = name.startsWith('decor_cove_');
+      const isFixtureLens = name.startsWith('ceil_light_') || name.startsWith('decor_overhead_light_lens_');
+      if (isCoveStrip || isFixtureLens) {
+        addPolishedGlowMesh(mesh);
+        continue;
+      }
+      // OCCLUDERS: in includedOnly mode the glow map sees ONLY listed meshes, so glow sources bleed
+      // through everything else as blurry smudges (the reported artifact: the wall band / scoreboard
+      // glow smearing across the court mats). Big opaque statics render black into the glow map and
+      // block it. The facade renders them with a pure-black glow-pass override material.
+      const isGlowOccluder =
+        name.endsWith('_wall') ||
+        name.startsWith('gym_ceiling') || name.startsWith('gym_roof_') ||
+        name.startsWith('bleacher_') || name.startsWith('decor_bleacher_') ||
+        name.startsWith('decor_wall_pad_module_') ||
+        name.startsWith('decor_scoreboard_back_panel_') ||
+        name === 'mat' || name === 'gym_floor' ||
+        !!mesh.metadata?.targetDummy;
+      if (isGlowOccluder) addPolishedGlowOccluder(mesh);
+    }
+  }
+
+  /**
+   * Polished (graphics overhaul Phase 2): the full static+dynamic shadow system. Large static
+   * occluders cast (bleachers, wall-pad modules, scoreboard casing) plus the half-court cones (small
+   * but they sit ON the lit floor, so their missing shadows read as floating — and they animate when
+   * released, which plain registration handles since the shadow map re-renders per frame). Receivers:
+   * the four lower walls, bleacher structures, and cover mats — the floor already receives from
+   * setupGymShadows. Ceiling/roof are excluded (nothing casts from above them); tiny trim, decals,
+   * signage planes, HUD/viewmodel meshes are deliberately NOT casters (shadow-map budget).
+   */
+  private setupPolishedStaticShadows(): void {
+    for (const mesh of this.scene.meshes) {
+      if (!(mesh instanceof Mesh)) continue;
+      const name = mesh.name;
+      const isBleacherStructure = name.startsWith('bleacher_');
+      const isWallPadStrip = name.startsWith('decor_wall_pad_module_');
+      const isScoreboardCasing = name.startsWith('decor_scoreboard_back_panel_');
+      const isHalfCourtCone = name.startsWith('half_court_cone_');
+      if (isBleacherStructure || isWallPadStrip || isScoreboardCasing || isHalfCourtCone) {
+        registerGymShadowCaster(mesh);
+      }
+      // Receivers: the four lower walls, bleacher platforms/seats, wall pads, and cover mats.
+      const isWall = name.endsWith('_wall');
+      const isCoverMat = name === 'mat';
+      if (isBleacherStructure || isWallPadStrip || isWall || isCoverMat) {
+        mesh.receiveShadows = true;
+      }
+    }
   }
 
   /**
@@ -3157,9 +3319,23 @@ export class ArenaScene {
     // react to all four roof spots. Applied last so Showcase always wins. No-op in Competitive mode.
     if (this.showcaseEnabled) {
       applyShowcaseGymMaterials(this.scene);
-      // RECOVERY: the static reflection probe is NOT instantiated this phase — the scene must pass a
-      // direct-light/material baseline first. createGymReflectionProbe is preserved (see GymReflectionProbe)
-      // and intentionally not called here; no reflection source is active in any mode.
+    }
+    // Polished Phase 1: the static render-once reflection probe becomes the IBL source for walls /
+    // mats / bleachers (+ balls, wired lazily in BallVisualFactory). Kill switch: probe.enabled=false
+    // reverts to exactly the gradient-only baseline.
+    if (this.quality === 'polished') {
+      const cfg = resolvePolishedConfig();
+      if (cfg.probe.enabled) createGymReflectionProbe(this.scene, cfg.probe.resolution);
+      // Polished Phase 3: the planar floor mirror takes the floor's reflection slot (true moving
+      // reflections). Static room content is seeded inside; dynamics register here + in
+      // NetworkRenderer (remote players) + BallVisualFactory (balls). Kill switch: mirror.enabled.
+      if (cfg.mirror.enabled) {
+        createGymFloorMirror(this.scene);
+        for (const mat of this.gym.mats) registerGymMirrorMesh(mat.mesh);
+        for (const mesh of this.scene.meshes) {
+          if (mesh instanceof Mesh && mesh.metadata?.targetDummy) registerGymMirrorMesh(mesh, true);
+        }
+      }
     }
     if (isGraphicsDebugEnabled()) this.logGraphicsDebugReport();
   }
@@ -3210,7 +3386,23 @@ export class ArenaScene {
     console.log(`[graphics] Registered player mesh children: ${byMesh.remotePlayer}`);
     console.log(`[graphics] Registered mat mesh children: ${byMesh.mat}`);
     console.log(`[graphics] Registered dummy mesh children: ${byMesh.dummy}`);
-    console.log(`[graphics] SSAO: disabled (Competitive)`);
+    console.log(`[graphics] SSAO: ${this.quality === 'polished' ? 'reported after post-stack construction' : 'disabled (Competitive)'}`);
+    // Polished Phase 1: the render-once reflection probe (walls/mats/bleachers/balls receivers).
+    const probe = getGymReflectionProbeDebugInfo();
+    console.log(`[graphics] ReflectionProbe: ${probe.active ? 'active' : 'none'}` +
+      (probe.active ? ` (resolution=${probe.resolution} renderListMeshes=${probe.renderListCount})` : ''));
+    // Polished Phase 3: the planar floor mirror (true moving reflections in the court floor).
+    const mirror = getGymFloorMirrorDebugInfo();
+    console.log(`[graphics] Mirror: ${mirror.active ? (mirror.paused ? 'paused' : 'active') : 'none'}` +
+      (mirror.active ? ` (renderList=${mirror.renderListSize} static=${mirror.staticCount} dynamic=${mirror.dynamicCount})` : ''));
+  }
+
+  private logPolishedPostGraphicsReport(): void {
+    if (!this.polishedPostFx) return;
+    const post = this.polishedPostFx.getDebugInfo();
+    console.log(`[graphics] Post: DefaultRenderingPipeline(fxaa=${post.fxaa} bloom=${post.bloom})` +
+      ` SSAO2=${post.ssao ? `half-res(maxZ=${post.ssaoMaxZ})` : 'off'}` +
+      ` Glow=${post.glow ? `on(included=${post.glowIncludedCount})` : 'off'}`);
   }
 
   private logShowcaseGraphicsReport(): void {
@@ -3322,6 +3514,19 @@ function isPerfDebugEnabled(): boolean {
 function isGraphicsDebugEnabled(): boolean {
   try {
     return window.localStorage.getItem('strafeball.debug.graphics') === '1';
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * Verification-harness flag: with the graphics debug flag ALSO set, the scene auto-enters the
+ * movement sandbox shortly after load so the screenshot script can capture the yard headlessly.
+ * Enable with `localStorage.setItem('strafeball.debug.autosandbox', '1')`.
+ */
+function isAutoSandboxDebugEnabled(): boolean {
+  try {
+    return window.localStorage.getItem('strafeball.debug.autosandbox') === '1';
   } catch {
     return false;
   }

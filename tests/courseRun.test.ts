@@ -1,13 +1,39 @@
-import { describe, it, expect } from 'vitest';
-import { validateLayout } from '../src/game/practice/creator/CreatorLayout';
+import { beforeEach, describe, it, expect, vi } from 'vitest';
+import { committedCourseLayout, validateLayout } from '../src/game/practice/creator/CreatorLayout';
 import {
+  CourseRunTracker,
   CourseRunState,
   courseContentHash,
   extractCourseGates,
-  isTimedCourse
+  isTimedCourse,
+  loadCourseTimes,
+  saveCourseTimes
 } from '../src/game/practice/creator/CourseRun';
 
+function installStorage(): Map<string, string> {
+  const values = new Map<string, string>();
+  const localStorage = {
+    getItem: (key: string) => values.get(key) ?? null,
+    setItem: (key: string, value: string) => void values.set(key, value),
+    removeItem: (key: string) => void values.delete(key)
+  };
+  Object.defineProperty(globalThis, 'window', { configurable: true, value: { localStorage } });
+  Object.defineProperty(globalThis, 'localStorage', { configurable: true, value: localStorage });
+  return values;
+}
+
 describe('CourseRun — gate extraction', () => {
+  it('the shipped featured starter is a complete timed route with ordered checkpoints and all pad types', () => {
+    const layout = committedCourseLayout();
+    const gates = extractCourseGates(layout);
+    expect(isTimedCourse(gates)).toBe(true);
+    expect(gates.checkpoints.map((gate) => gate.metadata?.checkpointOrder)).toEqual([1, 2]);
+    const types = new Set(layout.objects.map((object) => object.type));
+    for (const pad of ['stamina_pad', 'backflip_pad', 'speed_pad', 'bounce_pad']) {
+      expect([...types]).toContain(pad);
+    }
+  });
+
   it('finds start/finish and orders checkpoints by checkpointOrder then layout order', () => {
     const layout = validateLayout({
       objects: [
@@ -122,5 +148,75 @@ describe('CourseRun — content hash (per-layout bests)', () => {
       ]
     }).layout;
     expect(courseContentHash(edited)).not.toBe(h1);
+  });
+});
+
+describe('CourseRun tracker and local leaderboard', () => {
+  beforeEach(() => installStorage());
+
+  function timedLayout() {
+    return validateLayout({
+      name: 'Sprint',
+      objects: [
+        { type: 'start_pad', position: [0, 0, 0] },
+        { type: 'checkpoint_gate', position: [0, 0, 10], metadata: { checkpointOrder: 1 } },
+        { type: 'finish_gate', position: [0, 0, 20] }
+      ]
+    }).layout;
+  }
+
+  it('detects thin gates crossed between frames and persists a sorted per-course Top 10', () => {
+    const layout = timedLayout();
+    const finish = vi.fn();
+    const tracker = new CourseRunTracker(layout, {
+      onRunStart: vi.fn(),
+      onCheckpoint: vi.fn(),
+      onMissedCheckpoint: vi.fn(),
+      onFinish: finish,
+      onRunReset: vi.fn()
+    });
+    const cross = (time: number, z: number) => tracker.update(time, 0, 0, z, 0.35, false);
+
+    cross(0, -4);
+    cross(100, 4);
+    cross(500, 14);
+    cross(1100, 24);
+    expect(finish).toHaveBeenLastCalledWith(1000, 1000, true, 1, [1000]);
+
+    cross(1200, -30);
+    cross(1300, -4);
+    cross(1400, 4);
+    cross(2000, 14);
+    cross(2900, 24);
+    expect(tracker.localRecords()).toEqual([1000, 1500]);
+    expect(loadCourseTimes(courseContentHash(layout)).records).toEqual([1000, 1500]);
+  });
+
+  it('upgrades an old best/last-only payload into the leaderboard', () => {
+    const layout = timedLayout();
+    const hash = courseContentHash(layout);
+    globalThis.localStorage.setItem(
+      `strafeball:creator-course-times:v1:${hash}`,
+      JSON.stringify({ bestMs: 4321, lastMs: 5000 })
+    );
+    expect(loadCourseTimes(hash)).toEqual({ bestMs: 4321, lastMs: 5000, records: [4321] });
+  });
+
+  it('sorts, validates, caps, and isolates local boards by course content', () => {
+    const first = timedLayout();
+    const second = validateLayout({
+      ...first,
+      objects: first.objects.map((object, index) => index === 2 ? { ...object, position: [0, 0, 30] } : object)
+    }).layout;
+    const firstHash = courseContentHash(first);
+    const secondHash = courseContentHash(second);
+    saveCourseTimes(firstHash, {
+      bestMs: 999,
+      lastMs: 1200,
+      records: [5000, Number.NaN, -1, 4000, 3000, 2000, 1000, 6000, 7000, 8000, 9000, 10000, 11000]
+    });
+
+    expect(loadCourseTimes(firstHash).records).toEqual([1000, 2000, 3000, 4000, 5000, 6000, 7000, 8000, 9000, 10000]);
+    expect(loadCourseTimes(secondHash).records).toEqual([]);
   });
 });

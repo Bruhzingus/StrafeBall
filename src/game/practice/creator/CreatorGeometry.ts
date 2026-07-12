@@ -44,6 +44,9 @@ import {
 } from './CreatorLayout';
 import { layoutWorldBounds } from './CreatorWorld';
 import { SANDBOX_CENTER } from '../MovementSandboxLayout';
+import { addPolishedGlowMesh, addPolishedGlowOccluder } from '../../effects/PolishedPostFX';
+import { registerSandboxShadowGeometry } from '../SandboxAtmosphere';
+import { padKind } from './CreatorPads';
 
 const OBJECT_ID_KEY = 'creatorObjectId';
 const GRID_CELL_METRES = 5;
@@ -147,6 +150,27 @@ export class CreatorGeometry {
 
     this.buildOverlays(layout);
     this.applyOverlayVisibility();
+    this.registerPolishedCourseGeometry(layout);
+  }
+
+  /**
+   * Rebuild is the only durable registration point: every edit disposes and recreates object meshes.
+   * Object-root children are the real course visuals. Labels, pick proxies, collision/trigger debug
+   * boxes, the editor grid and mover previews are parented elsewhere and are therefore excluded by
+   * construction (especially important because text planes must never enter the glow allow-list).
+   */
+  private registerPolishedCourseGeometry(layout: CreatorLayout): void {
+    for (const obj of layout.objects) {
+      const node = this.objectRoots.get(obj.id);
+      if (!node) continue;
+      const glows = obj.type === 'kill_block' || padKind(obj.type) !== null;
+      for (const child of node.getChildMeshes(false)) {
+        if (!(child instanceof Mesh)) continue;
+        registerSandboxShadowGeometry(child);
+        if (glows) addPolishedGlowMesh(child);
+        else addPolishedGlowOccluder(child);
+      }
+    }
   }
 
   private buildObject(obj: CreatorLayoutObject): void {

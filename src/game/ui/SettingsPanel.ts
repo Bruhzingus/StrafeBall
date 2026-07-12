@@ -1,5 +1,5 @@
 import { settings, SENSITIVITY_MIN, SENSITIVITY_MAX } from '../config/Settings';
-import { GRAPHICS_PRESETS, getGraphicsPreset, persistGraphicsPreset, type GraphicsPreset } from '../config/graphicsConfig';
+import { getGraphicsPresets, getGraphicsPreset, persistGraphicsPreset, type GraphicsPreset } from '../config/graphicsConfig';
 
 /**
  * A tiny always-visible settings panel (top-right) with a mouse-sensitivity slider. Marked
@@ -112,7 +112,7 @@ export class SettingsPanel {
     graphicsName.textContent = 'Graphics';
     this.graphicsSelect = document.createElement('select');
     this.graphicsSelect.className = 'settings-select';
-    for (const preset of GRAPHICS_PRESETS) {
+    for (const preset of getGraphicsPresets()) {
       const option = document.createElement('option');
       option.value = preset.value;
       option.textContent = preset.label;

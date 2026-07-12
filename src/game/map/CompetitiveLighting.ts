@@ -27,11 +27,31 @@ export interface CompetitiveLights {
   key: DirectionalLight;
 }
 
+type Tuple3 = [number, number, number];
+
+/**
+ * Optional light-value overrides (Polished mode passes POLISHED_CONFIG values through here; the
+ * Performance/Neutral baseline omits them entirely). Every default equals the compiled Competitive
+ * value, so a bare applyCompetitiveLighting(scene) is bit-identical to the pre-overhaul rig — ONE
+ * lighting implementation, two value sets, instead of the parallel-module drift the old Showcase
+ * rig suffered from.
+ */
+export interface CompetitiveLightingSpec {
+  hemi?: { intensity?: number; diffuse?: Tuple3; ground?: Tuple3; specular?: Tuple3 };
+  key?: { intensity?: number; direction?: Tuple3; diffuse?: Tuple3; specular?: Tuple3 };
+}
+
 export interface CompetitiveShadowOptions {
   /** Shadow map resolution. Competitive default is 1024. */
   mapSize?: number;
   /** Shadow darkness (Babylon: 0 = black, 1 = invisible). Competitive default ~0.2. */
   darkness?: number;
+  /** Depth bias. Default 0.0015 (the long-standing Competitive value). */
+  bias?: number;
+  /** Normal-scaled bias. Default 0.02. First lever against static-geometry self-shadow acne. */
+  normalBias?: number;
+  /** Render only back faces into the shadow map — the standard acne fix for closed static meshes. */
+  forceBackFacesOnly?: boolean;
 }
 
 /** Mesh category recorded per shadow caster, surfaced only through the debug stats below. */
@@ -137,13 +157,17 @@ export function getCompetitiveGraphicsDebugStats(): CompetitiveGraphicsDebugStat
  * and disposes any stray extra hemis. Returns the key light so the caller can hand it to the
  * shadow system.
  */
-export function applyCompetitiveLighting(scene: Scene): CompetitiveLights {
-  const hemi = configureHemisphericLight(scene);
-  const key = configureKeyLight(scene);
+export function applyCompetitiveLighting(scene: Scene, spec: CompetitiveLightingSpec = {}): CompetitiveLights {
+  const hemi = configureHemisphericLight(scene, spec.hemi ?? {});
+  const key = configureKeyLight(scene, spec.key ?? {});
   return { hemi, key };
 }
 
-function configureHemisphericLight(scene: Scene): HemisphericLight {
+function color3(rgb: Tuple3): Color3 {
+  return new Color3(rgb[0], rgb[1], rgb[2]);
+}
+
+function configureHemisphericLight(scene: Scene, spec: NonNullable<CompetitiveLightingSpec['hemi']>): HemisphericLight {
   const existing = scene.lights.find((light): light is HemisphericLight => light instanceof HemisphericLight);
   const hemi = existing ?? new HemisphericLight('gym_hemi_light', new Vector3(0, 1, 0), scene);
 
@@ -152,10 +176,10 @@ function configureHemisphericLight(scene: Scene): HemisphericLight {
   // Intensity nudged up (0.75 → 0.79) to replace the brightness the removed fake floor-wash decals
   // used to fake — the room stays the bright baseline, now lit only by real lights.
   hemi.direction = new Vector3(0, 1, 0);
-  hemi.intensity = 0.79;
-  hemi.diffuse = new Color3(1.0, 0.98, 0.93); // near-neutral, faint warm
-  hemi.groundColor = new Color3(0.46, 0.48, 0.52); // subdued neutral-gray, lifted so it doesn't drag
-  hemi.specular = new Color3(0.12, 0.12, 0.13);
+  hemi.intensity = spec.intensity ?? 0.79;
+  hemi.diffuse = color3(spec.diffuse ?? [1.0, 0.98, 0.93]); // near-neutral, faint warm
+  hemi.groundColor = color3(spec.ground ?? [0.46, 0.48, 0.52]); // subdued neutral-gray, lifted so it doesn't drag
+  hemi.specular = color3(spec.specular ?? [0.12, 0.12, 0.13]);
 
   // Defensive: collapse any duplicate hemispheric lights down to the single one we keep.
   for (const light of scene.lights.slice()) {
@@ -164,7 +188,7 @@ function configureHemisphericLight(scene: Scene): HemisphericLight {
   return hemi;
 }
 
-function configureKeyLight(scene: Scene): DirectionalLight {
+function configureKeyLight(scene: Scene, spec: NonNullable<CompetitiveLightingSpec['key']>): DirectionalLight {
   // Never leave a stale key light behind if this runs again.
   const stale = scene.getLightByName('gym_key_light');
   if (stale) stale.dispose();
@@ -175,13 +199,14 @@ function configureKeyLight(scene: Scene): DirectionalLight {
 
   // Gentle diagonal, strongly overhead so indoor shadows stay short and readable (no long
   // cinematic rake). Direction is a unit vector, not a world coordinate.
-  const direction = new Vector3(-0.35, -1, -0.25);
+  const dir = spec.direction ?? [-0.35, -1, -0.25];
+  const direction = new Vector3(dir[0], dir[1], dir[2]);
   direction.normalize();
 
   const key = new DirectionalLight('gym_key_light', direction, scene);
-  key.intensity = 0.92;
-  key.diffuse = new Color3(1.0, 0.99, 0.96); // neutral white, tiny warm bias — not outdoor sun
-  key.specular = new Color3(0.2, 0.2, 0.2); // restrained — soft floor highlights, not a mirror
+  key.intensity = spec.intensity ?? 0.92;
+  key.diffuse = color3(spec.diffuse ?? [1.0, 0.99, 0.96]); // neutral white, tiny warm bias — not outdoor sun
+  key.specular = color3(spec.specular ?? [0.2, 0.2, 0.2]); // restrained — soft floor highlights, not a mirror
 
   // Frustum derived from map dimensions. Place the light above court center, offset opposite its
   // direction, then pin a fixed orthographic frustum that covers the full court + margin. Fixed
@@ -215,8 +240,9 @@ export function createCompetitiveShadowSystem(
   const generator = new ShadowGenerator(mapSize, light);
   generator.setDarkness(options.darkness ?? 0.2);
   // Conservative starting bias/normalBias — adjust after observing real acne / detached shadows.
-  generator.bias = 0.0015;
-  generator.normalBias = 0.02;
+  generator.bias = options.bias ?? 0.0015;
+  generator.normalBias = options.normalBias ?? 0.02;
+  generator.forceBackFacesOnly = options.forceBackFacesOnly ?? false;
   generator.transparencyShadow = false;
 
   // Prefer cheap PCF soft shadows where supported (WebGL2 / WebGPU). Fall back to Poisson sampling,

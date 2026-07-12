@@ -1057,6 +1057,22 @@ export function layoutSpawn(layout: CreatorLayout): { x: number; y: number; z: n
   return { x: SANDBOX_CENTER.x, y: Math.max(floorY, 0), z: SANDBOX_CENTER.z, yaw: 0 };
 }
 
+/** Real played-course spawn. Unlike editor Playtest, temporary test_spawn markers never override it. */
+export function layoutCourseSpawn(layout: CreatorLayout): { x: number; y: number; z: number; yaw: number } {
+  const spawn = layout.objects.find((o) => o.type === 'spawn_point' && o.metadata?.defaultSpawn)
+    ?? layout.objects.find((o) => o.type === 'spawn_point');
+  const floorY = layout.ground.bounds.y ?? 0;
+  if (spawn) {
+    return {
+      x: spawn.position[0],
+      y: Math.max(floorY, spawn.position[1]),
+      z: spawn.position[2],
+      yaw: (spawn.rotation[1] ?? 0) * DEG2RAD
+    };
+  }
+  return { x: SANDBOX_CENTER.x, y: Math.max(floorY, 0), z: SANDBOX_CENTER.z, yaw: 0 };
+}
+
 /** World-space positions of a layout's functional spawner markers (balls / bots / target dummies).
  *  Pure + Babylon-free — shared by the Creator editor's Playtest AND the live Movement Sandbox so a
  *  published course spawns exactly the same actors as a playtest run. */

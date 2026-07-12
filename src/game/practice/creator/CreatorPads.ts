@@ -1,8 +1,8 @@
 /**
  * Creator Sandbox — ability pad runtime (Playtest only).
  *
- * Ability pads are flat, walk-over marker modules that apply a movement effect when the player stands
- * on them during Playtest. Detection is a per-frame oriented-footprint test (the pad's scaled size IS
+ * Ability pads are flat, walk-over marker modules used by Creator Playtest and the live yard. They
+ * apply a movement effect when the player stands on them. Detection is a per-frame oriented-footprint test (the pad's scaled size IS
  * its trigger area, so resizing a pad resizes its effect zone), run AFTER the movement step so the
  * effect it writes into the player's velocity carries into the next tick.
  *
@@ -20,7 +20,7 @@
 import { Vector3 } from '@babylonjs/core';
 import { PlayerController } from '../../player/PlayerController';
 import { TUNING } from '../../config/tuning';
-import { CreatorLayout, CreatorLayoutObject, objectDimensions, layoutSpawn } from './CreatorLayout';
+import { CreatorLayout, CreatorLayoutObject, objectDimensions } from './CreatorLayout';
 
 export type PadKind = 'stamina' | 'backflip' | 'speed' | 'bounce';
 
@@ -46,9 +46,9 @@ export const PAD_TUNING = {
   /** Seconds an impulse pad (bounce/speed) stays disarmed after firing while the player stays on it. */
   retriggerSeconds: 0.35,
   /** How far above the pad top the player's feet can be and still count as touching it (m). */
-  activationHeight: 1.7,
+  activationHeight: 0.22,
   /** How far below the pad base the feet can be and still count (small slack for uneven ground). */
-  activationDepth: 0.6,
+  activationDepth: 0.22,
   /** Long moves are teleports/free-fly landings, not a physical step across a pad. */
   maxSweepDistance: 24,
   /** Lift applied when launching a GROUNDED player so the ground snap can't re-glue them (m). */
@@ -93,6 +93,60 @@ export function insideObjectTrigger(obj: CreatorLayoutObject, px: number, py: nu
   const height = trig ? trig.height : dims[1];
   const halfD = (trig ? trig.depth : dims[2]) / 2;
   return insideOrientedVolume(obj, px, py, pz, halfW, height, halfD, radius);
+}
+
+/**
+ * Swept companion to insideObjectTrigger. It catches a player crossing a thin gate entirely between
+ * render frames (high-strength speed pads and low frame rates can otherwise tunnel through it).
+ * Very long segments are treated as teleports and deliberately ignored.
+ */
+export function segmentCrossesObjectTrigger(
+  obj: CreatorLayoutObject,
+  from: PadProbePoint,
+  to: PadProbePoint,
+  radius: number,
+  maxDistance = PAD_TUNING.maxSweepDistance
+): boolean {
+  const dx = to.x - from.x;
+  const dy = to.y - from.y;
+  const dz = to.z - from.z;
+  if (dx * dx + dy * dy + dz * dz > maxDistance * maxDistance) return false;
+
+  const trigger = obj.metadata?.trigger;
+  const dims = objectDimensions(obj);
+  const halfW = (trigger ? trigger.width : dims[0]) / 2 + radius;
+  const halfD = (trigger ? trigger.depth : dims[2]) / 2 + radius;
+  const minY = obj.position[1] - 0.2;
+  const maxY = obj.position[1] + (trigger ? trigger.height : dims[1]) + 0.2;
+  if (Math.max(from.y, to.y) < minY || Math.min(from.y, to.y) > maxY) return false;
+
+  const ry = (obj.rotation[1] ?? 0) * DEG2RAD;
+  const cos = Math.cos(ry);
+  const sin = Math.sin(ry);
+  const local = (point: PadProbePoint) => {
+    const px = point.x - obj.position[0];
+    const pz = point.z - obj.position[2];
+    return { x: cos * px - sin * pz, z: sin * px + cos * pz };
+  };
+  const a = local(from);
+  const b = local(to);
+  return segmentIntersectsRect(a.x, a.z, b.x, b.z, halfW, halfD);
+}
+
+function segmentIntersectsRect(x0: number, z0: number, x1: number, z1: number, halfW: number, halfD: number): boolean {
+  let tMin = 0;
+  let tMax = 1;
+  const clipAxis = (start: number, end: number, min: number, max: number): boolean => {
+    const delta = end - start;
+    if (Math.abs(delta) < 1e-6) return start >= min && start <= max;
+    let a = (min - start) / delta;
+    let b = (max - start) / delta;
+    if (a > b) [a, b] = [b, a];
+    tMin = Math.max(tMin, a);
+    tMax = Math.min(tMax, b);
+    return tMin <= tMax;
+  };
+  return clipAxis(x0, x1, -halfW, halfW) && clipAxis(z0, z1, -halfD, halfD);
 }
 
 export class CreatorPads {
@@ -149,8 +203,14 @@ export class CreatorPads {
       if (obj.type !== 'kill_block') continue;
       const [w, h, d] = objectDimensions(obj);
       if (insideOrientedVolume(obj, p.x, p.y, p.z, w / 2, h, d / 2, r)) {
-        const target = this.lastCheckpoint ?? layoutSpawn(layout);
-        player.teleportTo(new Vector3(target.x, target.y, target.z), target.yaw, 0);
+        if (this.lastCheckpoint) {
+          const target = this.lastCheckpoint;
+          player.teleportTo(new Vector3(target.x, target.y, target.z), target.yaw, 0);
+        } else {
+          // The host owns the correct reset point: editor Playtest may intentionally use a temporary
+          // test spawn, while the live yard always configures the real course spawn.
+          player.resetPosition();
+        }
         // Death is a fresh start: refill stamina + clear the backflip cooldown, same as a K reset —
         // the attempt that killed you shouldn't also drain the retry.
         player.dash.refill();
@@ -235,23 +295,7 @@ export class CreatorPads {
   }
 
   private localSegmentIntersectsPad(x0: number, z0: number, x1: number, z1: number, halfW: number, halfD: number): boolean {
-    let tMin = 0;
-    let tMax = 1;
-    const clipAxis = (start: number, end: number, min: number, max: number): boolean => {
-      const delta = end - start;
-      if (Math.abs(delta) < 1e-6) return start >= min && start <= max;
-      let a = (min - start) / delta;
-      let b = (max - start) / delta;
-      if (a > b) {
-        const swap = a;
-        a = b;
-        b = swap;
-      }
-      tMin = Math.max(tMin, a);
-      tMax = Math.min(tMax, b);
-      return tMin <= tMax;
-    };
-    return clipAxis(x0, x1, -halfW, halfW) && clipAxis(z0, z1, -halfD, halfD);
+    return segmentIntersectsRect(x0, z0, x1, z1, halfW, halfD);
   }
 
   private rememberPlayerPosition(position: Vector3): void {

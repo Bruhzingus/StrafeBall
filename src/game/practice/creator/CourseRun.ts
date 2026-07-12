@@ -13,15 +13,15 @@
  *     using the shared oriented trigger test from CreatorPads.
  *   - Layouts with no start OR no finish gate produce an INERT tracker: zero behavior change for
  *     pure free-practice layouts.
- *   - Best/last times persist per LAYOUT CONTENT (an FNV-1a hash of the objects + ground): editing
- *     the course invalidates old bests, while renames/timestamps don't.
+ *   - A local Top-10 + last time persist per LAYOUT CONTENT (an FNV-1a hash of objects + ground):
+ *     editing the route starts a fresh board, while renames/timestamps don't.
  *   - Dying to a kill block mid-run resets the run (the checkpoint respawn itself stays, unchanged).
  *
  * Never read by the server, shared simulation, prediction, or networking.
  */
 
 import { CreatorLayout, CreatorLayoutObject } from './CreatorLayout';
-import { insideObjectTrigger } from './CreatorPads';
+import { insideObjectTrigger, segmentCrossesObjectTrigger } from './CreatorPads';
 
 export type CourseRunPhase = 'idle' | 'running' | 'finished';
 
@@ -119,7 +119,7 @@ export class CourseRunState {
   }
 }
 
-// --- Per-layout best/last time persistence -------------------------------------------------------
+// --- Per-layout local leaderboard persistence ----------------------------------------------------
 
 const TIMES_KEY_PREFIX = 'strafeball:creator-course-times:v1';
 
@@ -138,17 +138,33 @@ export function courseContentHash(layout: CreatorLayout): string {
 export interface CourseTimes {
   bestMs: number | null;
   lastMs: number | null;
+  /** Fastest local finishes for this exact course content, ascending (browser-local only). */
+  records: number[];
+}
+
+export const COURSE_LOCAL_LEADERBOARD_SIZE = 10;
+
+function validCourseTime(value: unknown): value is number {
+  return typeof value === 'number' && Number.isFinite(value) && value > 0 && value <= 24 * 60 * 60 * 1000;
+}
+
+function sortCourseRecords(values: readonly unknown[]): number[] {
+  return values.filter(validCourseTime).sort((a, b) => a - b).slice(0, COURSE_LOCAL_LEADERBOARD_SIZE);
 }
 
 export function loadCourseTimes(hash: string): CourseTimes {
   try {
     const raw = window.localStorage.getItem(`${TIMES_KEY_PREFIX}:${hash}`);
-    if (!raw) return { bestMs: null, lastMs: null };
+    if (!raw) return { bestMs: null, lastMs: null, records: [] };
     const parsed = JSON.parse(raw) as Partial<CourseTimes> | null;
-    const valid = (v: unknown): v is number => typeof v === 'number' && Number.isFinite(v) && v > 0;
-    return { bestMs: valid(parsed?.bestMs) ? parsed.bestMs : null, lastMs: valid(parsed?.lastMs) ? parsed.lastMs : null };
+    const bestMs = validCourseTime(parsed?.bestMs) ? parsed.bestMs : null;
+    const lastMs = validCourseTime(parsed?.lastMs) ? parsed.lastMs : null;
+    // v1 initially stored only best/last. Seed its best into the new board so upgrading never drops
+    // the player's record; subsequent finishes naturally build out the Top 10.
+    const records = sortCourseRecords(Array.isArray(parsed?.records) ? parsed.records : bestMs !== null ? [bestMs] : []);
+    return { bestMs: records[0] ?? bestMs, lastMs, records };
   } catch {
-    return { bestMs: null, lastMs: null };
+    return { bestMs: null, lastMs: null, records: [] };
   }
 }
 
@@ -166,7 +182,13 @@ export interface CourseRunListener {
   onRunStart(): void;
   onCheckpoint(collected: number, total: number, splitMs: number): void;
   onMissedCheckpoint(checkpointNumber: number): void;
-  onFinish(timeMs: number, bestMs: number | null, isPersonalBest: boolean): void;
+  onFinish(
+    timeMs: number,
+    bestMs: number | null,
+    isPersonalBest: boolean,
+    placement: number | null,
+    records: readonly number[]
+  ): void;
   onRunReset(reason: 'death' | 'reset' | 'leave'): void;
 }
 
@@ -184,6 +206,7 @@ export class CourseRunTracker {
   private insideFinish = false;
   private readonly insideCheckpoint: boolean[];
   private readonly missAnnounced = new Set<number>();
+  private previousPosition: { x: number; y: number; z: number } | null = null;
 
   constructor(private readonly layout: CreatorLayout, private readonly listener: CourseRunListener) {
     this.gates = extractCourseGates(layout);
@@ -201,6 +224,10 @@ export class CourseRunTracker {
     return this.times.bestMs;
   }
 
+  localRecords(): readonly number[] {
+    return this.times.records;
+  }
+
   /** Per-frame. `radius` = the player's collision radius (matches the pad runtime's slack). */
   update(nowMs: number, px: number, py: number, pz: number, radius: number, killedThisFrame: boolean): void {
     if (!this.isTimed()) return;
@@ -211,8 +238,15 @@ export class CourseRunTracker {
     }
 
     // Start gate: entering it starts (or restarts) an attempt.
+    const position = { x: px, y: py, z: pz };
+    const crossed = (gate: CreatorLayoutObject, inside: boolean) =>
+      !inside && (
+        insideObjectTrigger(gate, px, py, pz, radius) ||
+        (this.previousPosition !== null && segmentCrossesObjectTrigger(gate, this.previousPosition, position, radius))
+      );
+
     const inStart = insideObjectTrigger(this.gates.start!, px, py, pz, radius);
-    if (inStart && !this.insideStart) {
+    if (crossed(this.gates.start!, this.insideStart)) {
       this.state.start(nowMs);
       this.missAnnounced.clear();
       this.listener.onRunStart();
@@ -222,7 +256,7 @@ export class CourseRunTracker {
     // Checkpoints (edge-triggered, in order).
     for (let i = 0; i < this.gates.checkpoints.length; i += 1) {
       const inside = insideObjectTrigger(this.gates.checkpoints[i], px, py, pz, radius);
-      if (inside && !this.insideCheckpoint[i]) {
+      if (crossed(this.gates.checkpoints[i], this.insideCheckpoint[i])) {
         const result = this.state.hitCheckpoint(i, nowMs);
         if (result === 'progress') {
           this.listener.onCheckpoint(this.state.nextCheckpoint, this.state.checkpointCount, this.state.splits[this.state.splits.length - 1]);
@@ -236,14 +270,30 @@ export class CourseRunTracker {
 
     // Finish gate.
     const inFinish = insideObjectTrigger(this.gates.finish!, px, py, pz, radius);
-    if (inFinish && !this.insideFinish) {
+    if (crossed(this.gates.finish!, this.insideFinish)) {
       const result = this.state.finish(nowMs);
       if (result) {
         if (result.ok) {
+          if (!validCourseTime(result.timeMs)) {
+            // Overlapping start/finish volumes can complete on the same timestamp. Let the visual
+            // run finish, but never poison this session's board (reload validation uses same rule).
+            this.listener.onFinish(result.timeMs, this.times.bestMs, false, null, this.times.records);
+            this.previousPosition = position;
+            return;
+          }
           const isPb = this.times.bestMs === null || result.timeMs < this.times.bestMs;
-          this.times = { bestMs: isPb ? result.timeMs : this.times.bestMs, lastMs: result.timeMs };
+          // Wrap the submitted time so equal values still identify the newly-added entry reliably.
+          const submitted = { timeMs: result.timeMs, submitted: true };
+          const ranked = [
+            ...this.times.records.map((timeMs) => ({ timeMs, submitted: false })),
+            submitted
+          ].sort((a, b) => a.timeMs - b.timeMs || Number(a.submitted) - Number(b.submitted));
+          const placementIndex = ranked.indexOf(submitted);
+          const records = ranked.slice(0, COURSE_LOCAL_LEADERBOARD_SIZE).map((entry) => entry.timeMs);
+          const placement = placementIndex < COURSE_LOCAL_LEADERBOARD_SIZE ? placementIndex + 1 : null;
+          this.times = { bestMs: records[0] ?? result.timeMs, lastMs: result.timeMs, records };
           saveCourseTimes(this.hash, this.times);
-          this.listener.onFinish(result.timeMs, this.times.bestMs, isPb);
+          this.listener.onFinish(result.timeMs, this.times.bestMs, isPb, placement, records);
         } else if (!this.missAnnounced.has(result.missedCheckpoint)) {
           this.missAnnounced.add(result.missedCheckpoint);
           this.listener.onMissedCheckpoint(result.missedCheckpoint);
@@ -251,6 +301,7 @@ export class CourseRunTracker {
       }
     }
     this.insideFinish = inFinish;
+    this.previousPosition = position;
   }
 
   /** Cancel a live attempt (K reset / kill death / leaving the yard / exiting playtest). */
@@ -261,6 +312,7 @@ export class CourseRunTracker {
     this.insideFinish = false;
     this.insideCheckpoint.fill(false);
     this.missAnnounced.clear();
+    this.previousPosition = null;
     if (wasRunning) this.listener.onRunReset(reason);
   }
 }

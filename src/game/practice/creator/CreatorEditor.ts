@@ -121,7 +121,7 @@ export interface CreatorEditorHooks {
   /** True while connected/playing online — the editor must never activate or stay active then. */
   isOnline(): boolean;
   /** World position + facing for the entry portal, kept in the yard's leave/race portal row. */
-  entryPosition(): { x: number; z: number; yaw: number };
+  entryPosition(): { x: number; y?: number; z: number; yaw: number };
   /** Hide the sandbox's static walls + remove its collision (creator takes over). */
   suspendSandbox(): void;
   /** Restore the sandbox visuals + collision + movement world + spawn the player back in. */
@@ -387,7 +387,7 @@ export class CreatorEditor implements CreatorBridge, CoopEditorBridge {
     return this.mode;
   }
 
-  entryWorldPoint(): { x: number; z: number; yaw: number } {
+  entryWorldPoint(): { x: number; y?: number; z: number; yaw: number } {
     return this.hooks.entryPosition();
   }
 
@@ -450,16 +450,20 @@ export class CreatorEditor implements CreatorBridge, CoopEditorBridge {
       this.updateFlyCamera(dt);
     } else {
       // Playtest, first-person: apply ability-pad effects after the movement step ran this frame.
+      const resetPressed = this.input.wasKeyPressed(CONTROL_KEYS.reset);
+      if (resetPressed) this.pads.reset(); // K teleports; never sweep that discontinuity through pads.
       const killed = this.pads.update(dt, this.layout, this.player);
       // Timed course run (same controller the live yard uses): gate crossings + live clock; a
       // kill-block death or the K reset cancels a live attempt.
       const run = this.courseRun;
       if (run?.isTimed()) {
-        if (this.input.wasKeyPressed(CONTROL_KEYS.reset)) run.reset('reset');
+        if (resetPressed) run.reset('reset');
         const p = this.player.root.position;
         run.update(performance.now(), p.x, p.y, p.z, TUNING.player.radius, killed);
         if (run.state.phase === 'running') {
           this.courseHud?.tick(run.state.elapsedMs(performance.now()), run.state.nextCheckpoint, run.state.checkpointCount);
+        } else if (run.state.phase === 'finished') {
+          this.courseHud?.showFinished(run.state.finishedTimeMs ?? 0, run.bestMs());
         } else {
           this.courseHud?.showIdle(run.bestMs());
         }
@@ -688,7 +692,8 @@ export class CreatorEditor implements CreatorBridge, CoopEditorBridge {
     this.player.backflip.cooldown = 0;
     this.pads.reset();
     // Rebuild the timed-course tracker against the CURRENT layout (gates/edits since last playtest).
-    this.courseHud ??= new CourseRunHud(document.getElementById('hud-root') ?? document.body, 'COURSE RUN');
+    this.courseHud?.dispose();
+    this.courseHud = new CourseRunHud(document.getElementById('hud-root') ?? document.body, this.layout.name);
     const hud = this.courseHud;
     this.courseRun = new CourseRunTracker(this.layout, {
       onRunStart: () => {
@@ -698,10 +703,14 @@ export class CreatorEditor implements CreatorBridge, CoopEditorBridge {
       },
       onCheckpoint: (collected, total, splitMs) => hud.showCheckpoint(collected, total, splitMs),
       onMissedCheckpoint: (n) => hud.showMissedCheckpoint(n),
-      onFinish: (timeMs, bestMs, isPb) => hud.showFinish(timeMs, bestMs, isPb),
+      onFinish: (timeMs, bestMs, isPb, placement, records) => {
+        hud.renderLeaderboard(records, placement);
+        hud.showFinish(timeMs, bestMs, isPb);
+      },
       onRunReset: (reason) => hud.showRunReset(reason)
     });
     if (this.courseRun.isTimed()) {
+      hud.renderLeaderboard(this.courseRun.localRecords());
       hud.setVisible(true);
       hud.showIdle(this.courseRun.bestMs());
     } else {
@@ -2854,7 +2863,7 @@ export class CreatorEditor implements CreatorBridge, CoopEditorBridge {
     this.entryPortal = new PortalArch({
       id: 'creator_entry',
       scene: this.scene,
-      position: new Vector3(pt.x, 0, pt.z),
+      position: new Vector3(pt.x, pt.y ?? 0, pt.z),
       yaw: pt.yaw,
       title: 'COURSE CREATOR',
       palette: COURSE_CREATOR_PALETTE

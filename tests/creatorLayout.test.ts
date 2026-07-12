@@ -9,6 +9,7 @@ import {
   defaultCreatorLayout,
   validateLayout,
   isLayoutValid,
+  layoutCourseSpawn,
   layoutSpawn,
   setExclusiveDefaultSpawn,
   objectDimensions,
@@ -177,6 +178,9 @@ describe('CreatorLayout — default + validation', () => {
     expect(spawn.y).toBeCloseTo(3, 4);
     expect(spawn.z).toBeCloseTo(-5, 4);
     expect(spawn.yaw).toBeCloseTo(Math.PI, 4);
+    const playedSpawn = layoutCourseSpawn(layout);
+    expect(playedSpawn.x).toBeCloseTo(0, 4);
+    expect(playedSpawn.z).toBeCloseTo(0, 4);
   });
 
   it('falls back to the default spawn when no Test Spawn exists', () => {

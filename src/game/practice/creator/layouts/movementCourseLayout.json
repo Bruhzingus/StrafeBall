@@ -40,6 +40,39 @@
       }
     },
     {
+      "id": "starter_start_phase2",
+      "type": "start_pad",
+      "position": [
+        664,
+        0,
+        -5
+      ],
+      "rotation": [
+        0,
+        90,
+        0
+      ],
+      "scale": [
+        1,
+        1,
+        1
+      ],
+      "material": "marker_gold",
+      "collision": false,
+      "opacity": 1,
+      "wallrunEnabled": true,
+      "name": "START",
+      "metadata": {
+        "triggerType": "start",
+        "trigger": {
+          "width": 6,
+          "height": 4,
+          "depth": 6
+        },
+        "label": "START"
+      }
+    },
+    {
       "id": "obj_leave_portal_mr018ntg_36_g2hir",
       "type": "leave_portal",
       "position": [
@@ -1385,7 +1418,7 @@
       "wallrunEnabled": true,
       "metadata": {
         "triggerType": "checkpoint",
-        "checkpointOrder": 1,
+        "checkpointOrder": 2,
         "trigger": {
           "width": 6,
           "height": 5,
@@ -2071,6 +2104,39 @@
       "collision": true,
       "opacity": 1,
       "wallrunEnabled": true
+    },
+    {
+      "id": "starter_finish_phase2",
+      "type": "finish_gate",
+      "position": [
+        805,
+        14,
+        128
+      ],
+      "rotation": [
+        0,
+        90,
+        0
+      ],
+      "scale": [
+        1,
+        1,
+        1
+      ],
+      "material": "marker_gold",
+      "collision": false,
+      "opacity": 1,
+      "wallrunEnabled": true,
+      "name": "FINISH",
+      "metadata": {
+        "triggerType": "finish",
+        "trigger": {
+          "width": 6,
+          "height": 5,
+          "depth": 2
+        },
+        "label": "FINISH"
+      }
     }
   ]
 }
