@@ -220,6 +220,14 @@ interface CatchAttempt {
  * legitimately claims that ball within `catchHitGraceMs`, the hit's score is reverted (the
  * high-ping defender's well-timed catch arrived after the server had already scored the hit).
  */
+/** Report-card hit classification captured at impact (direct/bounce are mutually exclusive). */
+interface HitStatBreakdown {
+  direct: boolean;
+  bounce: boolean;
+  curve: boolean;
+  backflip: boolean;
+}
+
 interface RecentHit {
   ballId: string;
   defenderId: string;
@@ -228,6 +236,8 @@ interface RecentHit {
   value: number;
   /** Amount added to the 1v1 hit-tally scoreByTeamId stat (0 for 2v2); reverted with the hit. */
   scoreDelta?: number;
+  /** Hit-type breakdown stats recorded for the thrower; reverted with the hit. */
+  statBreakdown?: HitStatBreakdown;
   atMs: number;
   kind: 'score' | 'life';
   defenderLivesBefore?: number;
@@ -815,6 +825,7 @@ export class ServerGameLoop {
     if (!result.ok) return result;
 
     this.lastThrowByPlayerId.set(playerId, { atMs: now, ballId: ball.id });
+    this.adjustPlayerMatchStat(playerId, 'throws', 1); // report card: accuracy = hits / throws
 
     const dash = isBackflipThrow && backflipTier === GAME_CONSTANTS.backflip.qte.tierCount
       ? grantDashCharge(player.dash)
@@ -1873,9 +1884,18 @@ export class ServerGameLoop {
       // Capture the thrower's pre-hit dash so a lag-comp catch that supersedes this hit can restore
       // it (registerPlayerHit grants the scorer a dash charge).
       const throwerDashBefore = scorer ? { ...scorer.dash } : null;
+      // Report-card hit breakdown, classified from the ball AT impact: a mat bounce is the only way
+      // a live ball has bounceCount > 0 here, curve rides the throw's curveAccel, and isSuper is set
+      // exclusively by backflip-QTE throws (ThrowMath). Reverted with the hit on a lag-comp catch.
+      const statBreakdown = {
+        direct: ball.bounceCount === 0,
+        bounce: ball.bounceCount > 0,
+        curve: isCurveThrow(ball.curveAccel),
+        backflip: ball.isSuper
+      };
       const dead = markBallDead(ball);
       const recentHit = scorer && throwerDashBefore
-        ? this.applyPlayerHit(ownerId, target, throwerDashBefore)
+        ? this.applyPlayerHit(ownerId, target, throwerDashBefore, statBreakdown)
         : null;
       this.combatMetrics.hits += 1;
       const nextScore = scorer ? this.state.match.scoreByTeamId[scorer.teamId] ?? 0 : previousScore;
@@ -1934,7 +1954,8 @@ export class ServerGameLoop {
   private applyPlayerHit(
     throwerId: string,
     target: PlayerState,
-    throwerDashBefore: DashState
+    throwerDashBefore: DashState,
+    statBreakdown: HitStatBreakdown
   ): Omit<RecentHit, 'ballId' | 'defenderId' | 'throwerId' | 'atMs'> | null {
     const scorer = this.state.players[throwerId];
     if (!scorer) return null;
@@ -1961,6 +1982,7 @@ export class ServerGameLoop {
     if (scoreDelta > 0) this.bumpTeamHitScore(scorer.teamId, scoreDelta);
     this.adjustPlayerMatchStat(throwerId, 'hits', 1);
     this.adjustPlayerMatchStat(target.id, 'hitsTaken', 1);
+    this.adjustHitBreakdownStats(throwerId, statBreakdown, 1);
     targetLive.lives = Math.max(0, targetLive.lives - 1);
     if (targetLive.lives <= 0) this.eliminatePlayer(targetLive.id);
     this.refreshLastPlayerBuffs(this.stepNowMs);
@@ -1971,6 +1993,7 @@ export class ServerGameLoop {
       throwerTeamId: scorer.teamId,
       value: 1,
       scoreDelta,
+      statBreakdown,
       defenderLivesBefore,
       defenderCombatStateBefore,
       defenderEliminatedAtMsBefore,
@@ -2065,8 +2088,12 @@ export class ServerGameLoop {
       winnerTeamId: null,
       boundary: { ...this.state.match.boundary, elapsedSeconds: 0, noBoundaries: false, lastEvent: { type: 'none' } }
     };
-    // The world (full lives, fresh balls/mats) is rebuilt when this countdown flips to 'playing'.
-    this.roundRebuildPending = true;
+    // Rebuild the world (full lives, racked balls, upright mats) the moment the countdown BEGINS —
+    // scattered balls teleport to their start rack immediately instead of at timer-zero. Safe here:
+    // the lag-comp hit-revert window (the reason resolveRoundOutcome defers) closed long before a
+    // vote/timeout could start the next round. advanceCountdown keeps a pending-flag fallback.
+    this.startRoundWorld();
+    this.roundRebuildPending = false;
     this.syncIntermissionVoteState();
     this.refreshLastPlayerBuffs(this.now());
     if (this.debug.NET_DEBUG) this.logger(`next round=${this.state.match.currentRound} via=${kind}`);
@@ -2789,6 +2816,7 @@ export class ServerGameLoop {
   private revertHit(hit: RecentHit): void {
     this.adjustPlayerMatchStat(hit.throwerId, 'hits', -hit.value);
     this.adjustPlayerMatchStat(hit.defenderId, 'hitsTaken', -hit.value);
+    this.adjustHitBreakdownStats(hit.throwerId, hit.statBreakdown, -1);
     // Restore the defender's life/elimination, the 1v1 hit-tally stat, and any round/match transition
     // this hit caused (round award + inter-round countdown), so a lag-comp catch cleanly supersedes it.
     const defender = this.state.players[hit.defenderId];
@@ -3011,6 +3039,15 @@ export class ServerGameLoop {
       ...player.matchStats,
       [key]: Math.max(0, current + delta)
     };
+  }
+
+  /** Apply (+1) or revert (-1) a hit's report-card breakdown stats on the thrower. */
+  private adjustHitBreakdownStats(throwerId: string, breakdown: HitStatBreakdown | undefined, sign: 1 | -1): void {
+    if (!breakdown) return;
+    if (breakdown.direct) this.adjustPlayerMatchStat(throwerId, 'directHits', sign);
+    if (breakdown.bounce) this.adjustPlayerMatchStat(throwerId, 'bounceHits', sign);
+    if (breakdown.curve) this.adjustPlayerMatchStat(throwerId, 'curveHits', sign);
+    if (breakdown.backflip) this.adjustPlayerMatchStat(throwerId, 'backflipHits', sign);
   }
 
   private syncBattleMusicForMatchTransition(previousStatus: MatchStatus, nowMs: number): void {
@@ -3274,7 +3311,10 @@ export class ServerGameLoop {
       winnerTeamId: null,
       boundary: { ...this.state.match.boundary, elapsedSeconds: 0, noBoundaries: false, lastEvent: { type: 'none' } }
     };
-    this.roundRebuildPending = true;
+    // Rack the balls (and reset players/mats) immediately on match start — the countdown plays out
+    // over the ready-to-go court instead of the warmup scatter snapping only at timer-zero.
+    this.startRoundWorld();
+    this.roundRebuildPending = false;
     if (this.debug.NET_DEBUG) this.logger(`match start ${kind} players=${this.connectedCount()}/${this.maxPlayers}`);
   }
 

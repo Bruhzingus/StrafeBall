@@ -1531,7 +1531,7 @@ function createScratchPlayer(movement: PlayerState['movement']): PlayerState {
     },
     dash: { charges: 0, rechargeTimerSeconds: 0, cooldownSeconds: 0 },
     score: 0,
-    matchStats: { hits: 0, hitsTaken: 0, catches: 0, parries: 0, saves: 0 },
+    matchStats: { hits: 0, hitsTaken: 0, catches: 0, parries: 0, saves: 0, throws: 0, directHits: 0, bounceHits: 0, curveHits: 0, backflipHits: 0 },
     lives: TUNING.match.playerLives,
     combatState: 'alive',
     eliminatedAtMs: null,

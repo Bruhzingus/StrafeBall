@@ -196,6 +196,16 @@ export interface PlayerMatchStats {
   catches: number;
   parries: number;
   saves: number;
+  /** Live throws released (accuracy = hits / throws, computed client-side). */
+  throws: number;
+  /** Hits that connected without any bounce (bounceCount === 0 at impact). */
+  directHits: number;
+  /** Hits scored after a mat bounce kept the ball live (bounceCount > 0 at impact). */
+  bounceHits: number;
+  /** Hits from throws with an active crouch-curve (isCurveThrow(curveAccel)). */
+  curveHits: number;
+  /** Hits from backflip-QTE throws (ball.isSuper). */
+  backflipHits: number;
 }
 
 /**

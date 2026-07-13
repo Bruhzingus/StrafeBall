@@ -83,6 +83,11 @@ export function createPlayerMatchStats(overrides: Partial<PlayerMatchStats> = {}
     catches: 0,
     parries: 0,
     saves: 0,
+    throws: 0,
+    directHits: 0,
+    bounceHits: 0,
+    curveHits: 0,
+    backflipHits: 0,
     ...overrides
   };
 }

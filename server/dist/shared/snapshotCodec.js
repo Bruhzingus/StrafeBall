@@ -218,7 +218,12 @@ function packPlayer(player) {
             player.matchStats.hitsTaken,
             player.matchStats.catches,
             player.matchStats.parries,
-            player.matchStats.saves
+            player.matchStats.saves,
+            player.matchStats.throws,
+            player.matchStats.directHits,
+            player.matchStats.bounceHits,
+            player.matchStats.curveHits,
+            player.matchStats.backflipHits
         ],
         player.lives,
         player.combatState,
@@ -296,7 +301,13 @@ function unpackPlayer(packed) {
             hitsTaken: matchStats[1],
             catches: matchStats[2],
             parries: matchStats[3],
-            saves: matchStats[4]
+            saves: matchStats[4],
+            // Report-card breakdown stats (appended later): tolerate short arrays from an older server.
+            throws: matchStats[5] ?? 0,
+            directHits: matchStats[6] ?? 0,
+            bounceHits: matchStats[7] ?? 0,
+            curveHits: matchStats[8] ?? 0,
+            backflipHits: matchStats[9] ?? 0
         },
         lives: packed[21],
         combatState: packed[22],

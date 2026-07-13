@@ -1,7 +1,7 @@
 {
   "version": 1,
   "name": "Movement Sandbox (default)",
-  "updatedAt": "2026-07-05T01:44:03.036Z",
+  "updatedAt": "2026-07-13T04:29:51.116Z",
   "ground": {
     "bounds": {
       "width": 330,
@@ -37,39 +37,6 @@
       "metadata": {
         "yawDeg": 90,
         "defaultSpawn": true
-      }
-    },
-    {
-      "id": "starter_start_phase2",
-      "type": "start_pad",
-      "position": [
-        664,
-        0,
-        -5
-      ],
-      "rotation": [
-        0,
-        90,
-        0
-      ],
-      "scale": [
-        1,
-        1,
-        1
-      ],
-      "material": "marker_gold",
-      "collision": false,
-      "opacity": 1,
-      "wallrunEnabled": true,
-      "name": "START",
-      "metadata": {
-        "triggerType": "start",
-        "trigger": {
-          "width": 6,
-          "height": 4,
-          "depth": 6
-        },
-        "label": "START"
       }
     },
     {
@@ -236,7 +203,7 @@
       "material": "boundary",
       "collision": true,
       "opacity": 1,
-      "wallrunEnabled": true
+      "wallrunEnabled": false
     },
     {
       "id": "obj_boundary_wall_mr2l1m68_7_dwtg8",
@@ -282,7 +249,7 @@
       "material": "boundary",
       "collision": true,
       "opacity": 1,
-      "wallrunEnabled": true
+      "wallrunEnabled": false
     },
     {
       "id": "obj_boundary_wall_mr2l5n6x_9_rqr7z",
@@ -299,36 +266,13 @@
       ],
       "scale": [
         5.416666507720947,
-        1,
+        1.5,
         1
       ],
       "material": "boundary",
       "collision": true,
       "opacity": 1,
       "wallrunEnabled": false
-    },
-    {
-      "id": "obj_tall_wall_mr2lg49d_11_40rje",
-      "type": "tall_wall",
-      "position": [
-        647,
-        0,
-        44
-      ],
-      "rotation": [
-        0,
-        89.99999999999999,
-        0
-      ],
-      "scale": [
-        1,
-        1,
-        1
-      ],
-      "material": "pad",
-      "collision": true,
-      "opacity": 1,
-      "wallrunEnabled": true
     },
     {
       "id": "obj_stamina_pad_mr2lnfze_14_kxfuj",
@@ -407,7 +351,7 @@
       "type": "backflip_pad",
       "position": [
         819,
-        11.225639343261719,
+        11.242189407348633,
         -46.75
       ],
       "rotation": [
@@ -456,7 +400,7 @@
       "type": "stamina_pad",
       "position": [
         819,
-        11.016989707946777,
+        11.39594554901123,
         -47
       ],
       "rotation": [
@@ -474,34 +418,8 @@
       "opacity": 1,
       "wallrunEnabled": true,
       "metadata": {
-        "label": "STAMINA"
-      }
-    },
-    {
-      "id": "obj_speed_pad_mr2mzy37_31_m1vg3",
-      "type": "speed_pad",
-      "position": [
-        715,
-        0,
-        14
-      ],
-      "rotation": [
-        0,
-        0,
-        0
-      ],
-      "scale": [
-        1,
-        1,
-        1
-      ],
-      "material": "pad_speed",
-      "collision": false,
-      "opacity": 1,
-      "wallrunEnabled": true,
-      "metadata": {
-        "label": "SPEED",
-        "padStrength": 1
+        "label": "STAMINA",
+        "labelVisible": false
       }
     },
     {
@@ -628,32 +546,6 @@
       "wallrunEnabled": true,
       "metadata": {
         "label": "BACKFLIP"
-      }
-    },
-    {
-      "id": "obj_stamina_pad_mr2neoou_40_wuftu",
-      "type": "stamina_pad",
-      "position": [
-        688.7784068596283,
-        9,
-        12.45893642446507
-      ],
-      "rotation": [
-        0,
-        0,
-        0
-      ],
-      "scale": [
-        1,
-        1,
-        1
-      ],
-      "material": "pad_stamina",
-      "collision": false,
-      "opacity": 1,
-      "wallrunEnabled": true,
-      "metadata": {
-        "label": "STAMINA"
       }
     },
     {
@@ -786,38 +678,11 @@
       }
     },
     {
-      "id": "obj_bounce_pad_mr2nuo1a_46_9iqja",
-      "type": "bounce_pad",
-      "position": [
-        870.0001220703125,
-        0,
-        -157.45938110351562
-      ],
-      "rotation": [
-        0,
-        -179.99999656656632,
-        0
-      ],
-      "scale": [
-        0.999999940395357,
-        1,
-        0.999999940395357
-      ],
-      "material": "pad_bounce",
-      "collision": false,
-      "opacity": 1,
-      "wallrunEnabled": true,
-      "metadata": {
-        "label": "BOUNCE",
-        "padStrength": 1
-      }
-    },
-    {
       "id": "obj_kill_block_mr42oop0_1_binh3",
       "type": "kill_block",
       "position": [
-        830,
-        0,
+        828.9517822265625,
+        -1,
         -9
       ],
       "rotation": [
@@ -834,32 +699,7 @@
       "collision": false,
       "opacity": 1,
       "wallrunEnabled": true,
-      "metadata": {
-        "label": ""
-      }
-    },
-    {
-      "id": "obj_kill_block_mr43blux_2_nt4rz",
-      "type": "kill_block",
-      "position": [
-        719,
-        -1,
-        1
-      ],
-      "rotation": [
-        0,
-        0,
-        0
-      ],
-      "scale": [
-        27.75,
-        0.25,
-        75
-      ],
-      "material": "marker_red",
-      "collision": false,
-      "opacity": 1,
-      "wallrunEnabled": true,
+      "name": "Floor Kill",
       "metadata": {
         "label": ""
       }
@@ -889,33 +729,6 @@
       "metadata": {
         "label": "SPEED",
         "padStrength": 4
-      }
-    },
-    {
-      "id": "obj_bounce_pad_mr46yq9n_4_swqq5",
-      "type": "bounce_pad",
-      "position": [
-        644,
-        0,
-        10
-      ],
-      "rotation": [
-        0,
-        0,
-        0
-      ],
-      "scale": [
-        1,
-        1,
-        1
-      ],
-      "material": "pad_bounce",
-      "collision": false,
-      "opacity": 0,
-      "wallrunEnabled": true,
-      "metadata": {
-        "label": "BOUNCE",
-        "padStrength": 1
       }
     },
     {
@@ -1249,32 +1062,6 @@
       }
     },
     {
-      "id": "obj_backflip_pad_mr4cujtt_14_b40s5",
-      "type": "backflip_pad",
-      "position": [
-        644.3138527112362,
-        0,
-        -113.36726130603375
-      ],
-      "rotation": [
-        0,
-        0,
-        0
-      ],
-      "scale": [
-        1,
-        1,
-        1
-      ],
-      "material": "pad_backflip",
-      "collision": false,
-      "opacity": 1,
-      "wallrunEnabled": true,
-      "metadata": {
-        "label": "BACKFLIP"
-      }
-    },
-    {
       "id": "obj_flat_ground_mr4d1gze_17_ujvin",
       "type": "flat_ground",
       "position": [
@@ -1392,38 +1179,6 @@
         "label": "SPEED",
         "padStrength": 5.5,
         "labelVisible": false
-      }
-    },
-    {
-      "id": "obj_checkpoint_gate_mr4ncd74_7_pg4yx",
-      "type": "checkpoint_gate",
-      "position": [
-        685,
-        15,
-        -108
-      ],
-      "rotation": [
-        0,
-        0,
-        0
-      ],
-      "scale": [
-        1,
-        1,
-        1
-      ],
-      "material": "marker_blue",
-      "collision": false,
-      "opacity": 1,
-      "wallrunEnabled": true,
-      "metadata": {
-        "triggerType": "checkpoint",
-        "checkpointOrder": 2,
-        "trigger": {
-          "width": 6,
-          "height": 5,
-          "depth": 2
-        }
       }
     },
     {
@@ -1628,238 +1383,6 @@
       "wallrunEnabled": true
     },
     {
-      "id": "obj_kill_block_mr4ooqv7_5_r4rvg",
-      "type": "kill_block",
-      "position": [
-        693.0475463867188,
-        6.5,
-        -146.95608520507812
-      ],
-      "rotation": [
-        0,
-        0,
-        0
-      ],
-      "scale": [
-        2.75,
-        0.0024999999441206455,
-        0.25
-      ],
-      "material": "marker_red",
-      "collision": false,
-      "opacity": 1,
-      "wallrunEnabled": true,
-      "metadata": {
-        "label": "KILL",
-        "labelVisible": false,
-        "labelColor": "white",
-        "labelOffsetY": 0
-      }
-    },
-    {
-      "id": "obj_kill_block_mr4ootmt_6_kws9l",
-      "type": "kill_block",
-      "position": [
-        687.69,
-        6.5,
-        -146.35044860839844
-      ],
-      "rotation": [
-        0,
-        269.9999999999999,
-        0
-      ],
-      "scale": [
-        1,
-        0.0024999999441206455,
-        0.25
-      ],
-      "material": "marker_red",
-      "collision": false,
-      "opacity": 1,
-      "wallrunEnabled": true,
-      "metadata": {
-        "label": "KILL",
-        "labelVisible": false,
-        "labelColor": "white",
-        "labelOffsetY": 0
-      }
-    },
-    {
-      "id": "obj_kill_block_mr4opfgt_7_p73hf",
-      "type": "kill_block",
-      "position": [
-        687.6908569335938,
-        6.5,
-        -151.83831787109375
-      ],
-      "rotation": [
-        0,
-        269.9999999999999,
-        0
-      ],
-      "scale": [
-        0.75,
-        0.0024999999441206455,
-        0.25
-      ],
-      "material": "marker_red",
-      "collision": false,
-      "opacity": 1,
-      "wallrunEnabled": true,
-      "metadata": {
-        "label": "KILL",
-        "labelVisible": false,
-        "labelColor": "white",
-        "labelOffsetY": 0
-      }
-    },
-    {
-      "id": "obj_kill_block_mr4orbxa_8_khrsc",
-      "type": "kill_block",
-      "position": [
-        692.4090576171875,
-        6.5,
-        -149.25039672851562
-      ],
-      "rotation": [
-        0,
-        0,
-        0
-      ],
-      "scale": [
-        1.25,
-        0.0024999999441206455,
-        0.25
-      ],
-      "material": "marker_red",
-      "collision": false,
-      "opacity": 1,
-      "wallrunEnabled": true,
-      "metadata": {
-        "label": "KILL",
-        "labelVisible": false,
-        "labelColor": "white",
-        "labelOffsetY": 0
-      }
-    },
-    {
-      "id": "obj_kill_block_mr4orgy7_9_xvoxu",
-      "type": "kill_block",
-      "position": [
-        689.1854248046875,
-        6.5,
-        -150.1915740966797
-      ],
-      "rotation": [
-        0,
-        315.00000040616766,
-        0
-      ],
-      "scale": [
-        0.7499999660908725,
-        0.0024999999441206455,
-        0.24999999572143225
-      ],
-      "material": "marker_red",
-      "collision": false,
-      "opacity": 1,
-      "wallrunEnabled": true,
-      "metadata": {
-        "label": "KILL",
-        "labelVisible": false,
-        "labelColor": "white",
-        "labelOffsetY": 0
-      }
-    },
-    {
-      "id": "obj_kill_block_mr4os3tq_10_4195w",
-      "type": "kill_block",
-      "position": [
-        685.5950317382812,
-        6.5,
-        -150.84695434570312
-      ],
-      "rotation": [
-        0,
-        180,
-        0
-      ],
-      "scale": [
-        1.024999976158142,
-        0.0024999999441206455,
-        0.25
-      ],
-      "material": "marker_red",
-      "collision": false,
-      "opacity": 1,
-      "wallrunEnabled": true,
-      "metadata": {
-        "label": "KILL",
-        "labelVisible": false,
-        "labelColor": "white",
-        "labelOffsetY": 0
-      }
-    },
-    {
-      "id": "obj_kill_block_mr4osl6y_11_lyno0",
-      "type": "kill_block",
-      "position": [
-        685.5352783203125,
-        6.5,
-        -147.84255981445312
-      ],
-      "rotation": [
-        0,
-        180,
-        0
-      ],
-      "scale": [
-        1,
-        0.0024999999441206455,
-        0.25
-      ],
-      "material": "marker_red",
-      "collision": false,
-      "opacity": 1,
-      "wallrunEnabled": true,
-      "metadata": {
-        "label": "KILL",
-        "labelVisible": false,
-        "labelColor": "white",
-        "labelOffsetY": 0
-      }
-    },
-    {
-      "id": "obj_kill_block_mr4ot4b4_12_gynpp",
-      "type": "kill_block",
-      "position": [
-        692.4090576171875,
-        6.5,
-        -155.49903869628906
-      ],
-      "rotation": [
-        0,
-        0,
-        0
-      ],
-      "scale": [
-        1.25,
-        0.0024999999441206455,
-        3
-      ],
-      "material": "marker_red",
-      "collision": false,
-      "opacity": 1,
-      "wallrunEnabled": true,
-      "metadata": {
-        "label": "KILL",
-        "labelVisible": false,
-        "labelColor": "white",
-        "labelOffsetY": 0
-      }
-    },
-    {
       "id": "obj_boundary_wall_mr4p2al9_13_utnpf",
       "type": "boundary_wall",
       "position": [
@@ -1888,7 +1411,7 @@
       "position": [
         690.8570556640625,
         0,
-        104.62850952148438
+        103.62850952148438
       ],
       "rotation": [
         0,
@@ -1898,44 +1421,12 @@
       "scale": [
         0.125,
         1,
-        0.25
+        0.5
       ],
       "material": "marker_gold",
       "collision": true,
       "opacity": 1,
       "wallrunEnabled": false
-    },
-    {
-      "id": "obj_checkpoint_gate_mr4ph3pq_15_lk8zb",
-      "type": "checkpoint_gate",
-      "position": [
-        691,
-        3,
-        71
-      ],
-      "rotation": [
-        0,
-        0,
-        0
-      ],
-      "scale": [
-        1,
-        1,
-        1
-      ],
-      "material": "marker_blue",
-      "collision": false,
-      "opacity": 1,
-      "wallrunEnabled": true,
-      "metadata": {
-        "triggerType": "checkpoint",
-        "checkpointOrder": 1,
-        "trigger": {
-          "width": 6,
-          "height": 5,
-          "depth": 2
-        }
-      }
     },
     {
       "id": "obj_backflip_pad_mr4phvkb_16_0mjv7",
@@ -1990,9 +1481,9 @@
       "id": "obj_kill_block_mr73s7iq_2_3mwpl",
       "type": "kill_block",
       "position": [
-        699.8444213867188,
+        700.9793701171875,
         13.978747367858887,
-        116.2696762084961
+        116.92504119873047
       ],
       "rotation": [
         0,
@@ -2002,12 +1493,12 @@
       "scale": [
         0.7499999769993357,
         1,
-        0.9999999865388264
+        1.7499999635381622
       ],
       "material": "marker_red",
       "collision": false,
       "opacity": 1,
-      "wallrunEnabled": true,
+      "wallrunEnabled": false,
       "metadata": {
         "label": "KILL",
         "labelVisible": false
@@ -2086,7 +1577,116 @@
       "id": "obj_raised_platform_mr73xs53_8_s2vcx",
       "type": "raised_platform",
       "position": [
-        809,
+        850.7520141601562,
+        11,
+        128
+      ],
+      "rotation": [
+        0,
+        0,
+        0
+      ],
+      "scale": [
+        0.5,
+        1,
+        0.5
+      ],
+      "material": "orange_box_prototype",
+      "collision": true,
+      "opacity": 1,
+      "wallrunEnabled": true
+    },
+    {
+      "id": "obj_moving_platform_mr8fw74b_3_qmv7s",
+      "type": "moving_platform",
+      "position": [
+        816.4213256835938,
+        12.92711353302002,
+        128
+      ],
+      "rotation": [
+        0,
+        0,
+        0
+      ],
+      "scale": [
+        1,
+        1,
+        1
+      ],
+      "material": "accent",
+      "collision": true,
+      "opacity": 1,
+      "wallrunEnabled": true,
+      "metadata": {
+        "mover": {
+          "dx": 30,
+          "dy": 0,
+          "dz": 0,
+          "speed": 25,
+          "pauseSeconds": 0
+        }
+      }
+    },
+    {
+      "id": "obj_kill_block_mre9pohq_1_ddhtm",
+      "type": "kill_block",
+      "position": [
+        717.9647216796875,
+        -1,
+        1
+      ],
+      "rotation": [
+        0,
+        0,
+        0
+      ],
+      "scale": [
+        27.75,
+        0.25,
+        75
+      ],
+      "material": "marker_red",
+      "collision": false,
+      "opacity": 1,
+      "wallrunEnabled": true,
+      "name": "Floor Kill",
+      "metadata": {
+        "label": ""
+      }
+    },
+    {
+      "id": "obj_stamina_pad_mreab8dm_1_6axfy",
+      "type": "stamina_pad",
+      "position": [
+        712.6359252929688,
+        13.978747367858887,
+        123.64109802246094
+      ],
+      "rotation": [
+        0,
+        59.99999910941593,
+        0
+      ],
+      "scale": [
+        0.4999999932694132,
+        1,
+        0.4999999932694132
+      ],
+      "material": "pad_stamina",
+      "collision": false,
+      "opacity": 1,
+      "wallrunEnabled": true,
+      "metadata": {
+        "label": "STAMINA",
+        "labelVisible": false
+      }
+    },
+    {
+      "id": "obj_raised_platform_mreahum7_3_axvwf",
+      "type": "raised_platform",
+      "position": [
+        810,
         11,
         128
       ],
@@ -2106,16 +1706,282 @@
       "wallrunEnabled": true
     },
     {
-      "id": "starter_finish_phase2",
-      "type": "finish_gate",
+      "id": "obj_tall_wall_mrealnab_5_k44gl",
+      "type": "tall_wall",
       "position": [
-        805,
-        14,
-        128
+        852.8335571289062,
+        13.80240249633789,
+        118.50984191894531
       ],
       "rotation": [
         0,
-        90,
+        270,
+        0
+      ],
+      "scale": [
+        0.30000001192092896,
+        0.1666666716337204,
+        0.006666666828095913
+      ],
+      "material": "marker_green",
+      "collision": true,
+      "opacity": 1,
+      "wallrunEnabled": true
+    },
+    {
+      "id": "obj_tall_wall_mreapszm_7_m4ml6",
+      "type": "tall_wall",
+      "position": [
+        848.1710815429688,
+        15.80240249633789,
+        98.06317138671875
+      ],
+      "rotation": [
+        0,
+        270,
+        0
+      ],
+      "scale": [
+        0.30000001192092896,
+        0.1666666716337204,
+        0.006666666828095913
+      ],
+      "material": "marker_green",
+      "collision": true,
+      "opacity": 1,
+      "wallrunEnabled": true
+    },
+    {
+      "id": "obj_tall_wall_mreavkas_1_vtds6",
+      "type": "tall_wall",
+      "position": [
+        848.1710815429688,
+        13.80240249633789,
+        111.06317138671875
+      ],
+      "rotation": [
+        0,
+        270,
+        0
+      ],
+      "scale": [
+        0.30000001192092896,
+        0.1666666716337204,
+        0.006666666828095913
+      ],
+      "material": "marker_green",
+      "collision": true,
+      "opacity": 1,
+      "wallrunEnabled": true
+    },
+    {
+      "id": "obj_tall_wall_mreaw3mz_2_y5gc6",
+      "type": "tall_wall",
+      "position": [
+        836.1710815429688,
+        13.548493385314941,
+        81.06317138671875
+      ],
+      "rotation": [
+        0,
+        0,
+        0
+      ],
+      "scale": [
+        0.4000000059604645,
+        0.16666666666666666,
+        0.006666666828095913
+      ],
+      "material": "marker_green",
+      "collision": true,
+      "opacity": 1,
+      "wallrunEnabled": true
+    },
+    {
+      "id": "obj_raised_platform_mreaz1ay_3_vc9as",
+      "type": "raised_platform",
+      "position": [
+        821.7405395507812,
+        11,
+        81.9600601196289
+      ],
+      "rotation": [
+        0,
+        0,
+        0
+      ],
+      "scale": [
+        0.375,
+        1,
+        0.375
+      ],
+      "material": "orange_box_prototype",
+      "collision": true,
+      "opacity": 1,
+      "wallrunEnabled": false,
+      "metadata": {}
+    },
+    {
+      "id": "obj_bounce_pad_mreb1gtp_4_9spvm",
+      "type": "bounce_pad",
+      "position": [
+        821.7361164641209,
+        14,
+        81.96416050383485
+      ],
+      "rotation": [
+        0,
+        270,
+        0
+      ],
+      "scale": [
+        0.5,
+        1,
+        0.5
+      ],
+      "material": "pad_bounce",
+      "collision": false,
+      "opacity": 1,
+      "wallrunEnabled": true,
+      "metadata": {
+        "label": "BOUNCE",
+        "padStrength": 1
+      }
+    },
+    {
+      "id": "obj_tall_wall_mreb2k69_5_qys3x",
+      "type": "tall_wall",
+      "position": [
+        809.9694213867188,
+        18.683399200439453,
+        80.63667297363281
+      ],
+      "rotation": [
+        0,
+        0,
+        0
+      ],
+      "scale": [
+        0.4000000059604645,
+        0.1111111119389534,
+        0.006666666828095913
+      ],
+      "material": "marker_green",
+      "collision": true,
+      "opacity": 1,
+      "wallrunEnabled": true
+    },
+    {
+      "id": "obj_tall_wall_mreb3l1b_6_ez7pa",
+      "type": "tall_wall",
+      "position": [
+        769.2686767578125,
+        24.011198043823242,
+        92.33000183105469
+      ],
+      "rotation": [
+        0,
+        0,
+        0
+      ],
+      "scale": [
+        0.699999988079071,
+        0.1666666716337204,
+        0.006666666828095913
+      ],
+      "material": "marker_green",
+      "collision": true,
+      "opacity": 1,
+      "wallrunEnabled": true
+    },
+    {
+      "id": "obj_stamina_pad_mreb55vo_7_8u8pp",
+      "type": "stamina_pad",
+      "position": [
+        790.4448852539062,
+        22.48971939086914,
+        84.27423858642578
+      ],
+      "rotation": [
+        0,
+        0,
+        0
+      ],
+      "scale": [
+        1.75,
+        10,
+        5.25
+      ],
+      "material": "pad_stamina",
+      "collision": false,
+      "opacity": 0.13,
+      "wallrunEnabled": true,
+      "metadata": {
+        "label": "STAMINA",
+        "labelVisible": false
+      }
+    },
+    {
+      "id": "obj_tall_wall_mrebamjt_9_k5ggw",
+      "type": "tall_wall",
+      "position": [
+        746.8257446289062,
+        24.71957015991211,
+        100.67066192626953
+      ],
+      "rotation": [
+        0,
+        0,
+        0
+      ],
+      "scale": [
+        1,
+        0.2222222238779068,
+        0.006666666828095913
+      ],
+      "material": "marker_green",
+      "collision": true,
+      "opacity": 1,
+      "wallrunEnabled": true
+    },
+    {
+      "id": "obj_kill_block_mrebhepx_10_pa0pz",
+      "type": "kill_block",
+      "position": [
+        773.091552734375,
+        12.46949291229248,
+        90.41077423095703
+      ],
+      "rotation": [
+        0,
+        0,
+        0
+      ],
+      "scale": [
+        0.5,
+        4.25,
+        0.5
+      ],
+      "material": "marker_red",
+      "collision": false,
+      "opacity": 1,
+      "wallrunEnabled": true,
+      "metadata": {
+        "label": "KILL",
+        "labelVisible": false
+      }
+    },
+    {
+      "id": "obj_flat_ground_mrebms3u_11_lwxo0",
+      "type": "flat_ground",
+      "position": [
+        -9.71075226949586,
+        0,
+        3.3948833595959016
+      ],
+      "rotation": [
+        0,
+        0,
         0
       ],
       "scale": [
@@ -2123,19 +1989,710 @@
         1,
         1
       ],
-      "material": "marker_gold",
+      "material": "ground",
+      "collision": true,
+      "opacity": 1,
+      "wallrunEnabled": true
+    },
+    {
+      "id": "obj_flat_ground_mrebms84_12_9h945",
+      "type": "flat_ground",
+      "position": [
+        -3.6976944679511723,
+        0.3000000059604657,
+        5.852594910741388
+      ],
+      "rotation": [
+        0,
+        0,
+        0
+      ],
+      "scale": [
+        1,
+        1,
+        1
+      ],
+      "material": "ground",
+      "collision": true,
+      "opacity": 1,
+      "wallrunEnabled": true
+    },
+    {
+      "id": "obj_flat_ground_mrebmsc6_13_exrlf",
+      "type": "flat_ground",
+      "position": [
+        1.7744220705585718,
+        0.6000000178813947,
+        10.706788119835338
+      ],
+      "rotation": [
+        0,
+        0,
+        0
+      ],
+      "scale": [
+        1,
+        1,
+        1
+      ],
+      "material": "ground",
+      "collision": true,
+      "opacity": 1,
+      "wallrunEnabled": true
+    },
+    {
+      "id": "obj_flat_ground_mrebmshe_14_kj16b",
+      "type": "flat_ground",
+      "position": [
+        1.1307728747077395,
+        0.9000000000000004,
+        15.985511470283821
+      ],
+      "rotation": [
+        0,
+        0,
+        0
+      ],
+      "scale": [
+        1,
+        1,
+        1
+      ],
+      "material": "ground",
+      "collision": true,
+      "opacity": 1,
+      "wallrunEnabled": true
+    },
+    {
+      "id": "obj_flat_ground_mrebmslm_15_45ky3",
+      "type": "flat_ground",
+      "position": [
+        0.1528265038027472,
+        0.9000000000000012,
+        5.293553588845764
+      ],
+      "rotation": [
+        0,
+        0,
+        0
+      ],
+      "scale": [
+        1,
+        1,
+        1
+      ],
+      "material": "ground",
+      "collision": true,
+      "opacity": 1,
+      "wallrunEnabled": true
+    },
+    {
+      "id": "obj_flat_ground_mrebmspc_16_l6qyb",
+      "type": "flat_ground",
+      "position": [
+        4.517859820826267,
+        1.1999999523162845,
+        6.568218570538178
+      ],
+      "rotation": [
+        0,
+        0,
+        0
+      ],
+      "scale": [
+        1,
+        1,
+        1
+      ],
+      "material": "ground",
+      "collision": true,
+      "opacity": 1,
+      "wallrunEnabled": true
+    },
+    {
+      "id": "obj_flat_ground_mrebmstj_17_881y8",
+      "type": "flat_ground",
+      "position": [
+        5.751187801361084,
+        1.4999998807907104,
+        2.801422119140625
+      ],
+      "rotation": [
+        0,
+        0,
+        0
+      ],
+      "scale": [
+        1,
+        1,
+        1
+      ],
+      "material": "ground",
+      "collision": true,
+      "opacity": 1,
+      "wallrunEnabled": true
+    },
+    {
+      "id": "obj_flat_ground_mrebmsye_18_5x2u3",
+      "type": "flat_ground",
+      "position": [
+        -0.8478045361529665,
+        1.799999856948853,
+        7.937614051293153
+      ],
+      "rotation": [
+        0,
+        0,
+        0
+      ],
+      "scale": [
+        1,
+        1,
+        1
+      ],
+      "material": "ground",
+      "collision": true,
+      "opacity": 1,
+      "wallrunEnabled": true
+    },
+    {
+      "id": "obj_flat_ground_mrebmt2f_19_w7rkr",
+      "type": "flat_ground",
+      "position": [
+        -3.6027123883826007,
+        1.824471388884433,
+        -2.0623860359191877
+      ],
+      "rotation": [
+        0,
+        0,
+        0
+      ],
+      "scale": [
+        1,
+        1,
+        1
+      ],
+      "material": "ground",
+      "collision": true,
+      "opacity": 1,
+      "wallrunEnabled": true
+    },
+    {
+      "id": "obj_flat_ground_mrebmt7g_20_liw82",
+      "type": "flat_ground",
+      "position": [
+        -2.0368401795714517,
+        2.1244713306427006,
+        -4.205470790862295
+      ],
+      "rotation": [
+        0,
+        0,
+        0
+      ],
+      "scale": [
+        1,
+        1,
+        1
+      ],
+      "material": "ground",
+      "collision": true,
+      "opacity": 1,
+      "wallrunEnabled": true
+    },
+    {
+      "id": "obj_flat_ground_mrebmtbi_21_21ifh",
+      "type": "flat_ground",
+      "position": [
+        -2.905040644429291,
+        2.424471521377564,
+        -2.039223534903627
+      ],
+      "rotation": [
+        0,
+        0,
+        0
+      ],
+      "scale": [
+        1,
+        1,
+        1
+      ],
+      "material": "ground",
+      "collision": true,
+      "opacity": 1,
+      "wallrunEnabled": true
+    },
+    {
+      "id": "obj_flat_ground_mrebmtgc_22_mwxgo",
+      "type": "flat_ground",
+      "position": [
+        -2.9733257913505193,
+        2.724471712112427,
+        -2.2331362953845577
+      ],
+      "rotation": [
+        0,
+        0,
+        0
+      ],
+      "scale": [
+        1,
+        1,
+        1
+      ],
+      "material": "ground",
+      "collision": true,
+      "opacity": 1,
+      "wallrunEnabled": true
+    },
+    {
+      "id": "obj_flat_ground_mrebmud4_23_85uue",
+      "type": "flat_ground",
+      "position": [
+        -2.7605722854181534,
+        0,
+        -14.859802300613334
+      ],
+      "rotation": [
+        0,
+        0,
+        0
+      ],
+      "scale": [
+        1,
+        1,
+        1
+      ],
+      "material": "ground",
+      "collision": true,
+      "opacity": 1,
+      "wallrunEnabled": true
+    },
+    {
+      "id": "obj_flat_ground_mrebmuh2_24_yxcfe",
+      "type": "flat_ground",
+      "position": [
+        -2.3192130338832326,
+        0.3000000059604657,
+        -14.603974745516096
+      ],
+      "rotation": [
+        0,
+        0,
+        0
+      ],
+      "scale": [
+        1,
+        1,
+        1
+      ],
+      "material": "ground",
+      "collision": true,
+      "opacity": 1,
+      "wallrunEnabled": true
+    },
+    {
+      "id": "obj_flat_ground_mrebmulb_25_8bfx2",
+      "type": "flat_ground",
+      "position": [
+        0.2244324860340079,
+        2.4244715213775634,
+        -12.679777926853316
+      ],
+      "rotation": [
+        0,
+        0,
+        0
+      ],
+      "scale": [
+        1,
+        1,
+        1
+      ],
+      "material": "ground",
+      "collision": true,
+      "opacity": 1,
+      "wallrunEnabled": true
+    },
+    {
+      "id": "obj_flat_ground_mrebmupo_26_dh00n",
+      "type": "flat_ground",
+      "position": [
+        0.6907428533338997,
+        3.02447190284729,
+        -12.20738595054597
+      ],
+      "rotation": [
+        0,
+        0,
+        0
+      ],
+      "scale": [
+        1,
+        1,
+        1
+      ],
+      "material": "ground",
+      "collision": true,
+      "opacity": 1,
+      "wallrunEnabled": true
+    },
+    {
+      "id": "obj_flat_ground_mrebmvwl_27_nbhvv",
+      "type": "flat_ground",
+      "position": [
+        6.923283537038541,
+        3.019978564609675,
+        7.766863822937012
+      ],
+      "rotation": [
+        0,
+        0,
+        0
+      ],
+      "scale": [
+        1,
+        1,
+        1
+      ],
+      "material": "ground",
+      "collision": true,
+      "opacity": 1,
+      "wallrunEnabled": true
+    },
+    {
+      "id": "obj_flat_ground_mrebmw17_28_inwfw",
+      "type": "flat_ground",
+      "position": [
+        6.917076918578788,
+        3.0199786186218263,
+        7.772107395297574
+      ],
+      "rotation": [
+        0,
+        0,
+        0
+      ],
+      "scale": [
+        1,
+        1,
+        1
+      ],
+      "material": "ground",
+      "collision": true,
+      "opacity": 1,
+      "wallrunEnabled": true
+    },
+    {
+      "id": "obj_flat_ground_mrebmw53_29_rpd7b",
+      "type": "flat_ground",
+      "position": [
+        7.0306507754372936,
+        3.0199786186218263,
+        8.196646721483432
+      ],
+      "rotation": [
+        0,
+        0,
+        0
+      ],
+      "scale": [
+        1,
+        1,
+        1
+      ],
+      "material": "ground",
+      "collision": true,
+      "opacity": 1,
+      "wallrunEnabled": true
+    },
+    {
+      "id": "obj_flat_ground_mrebmx91_30_n1evv",
+      "type": "flat_ground",
+      "position": [
+        4.642759447913921,
+        3.3199786186218256,
+        5.927073160635617
+      ],
+      "rotation": [
+        0,
+        0,
+        0
+      ],
+      "scale": [
+        1,
+        1,
+        1
+      ],
+      "material": "ground",
+      "collision": true,
+      "opacity": 1,
+      "wallrunEnabled": true
+    },
+    {
+      "id": "obj_flat_ground_mrebmxd3_31_vd9om",
+      "type": "flat_ground",
+      "position": [
+        3.7007139592998612,
+        3.6199788093566894,
+        5.392828355138452
+      ],
+      "rotation": [
+        0,
+        0,
+        0
+      ],
+      "scale": [
+        1,
+        1,
+        1
+      ],
+      "material": "ground",
+      "collision": true,
+      "opacity": 1,
+      "wallrunEnabled": true
+    },
+    {
+      "id": "obj_ramp_mrhdgba1_1_3lhuh",
+      "type": "ramp",
+      "position": [
+        713,
+        17,
+        98
+      ],
+      "rotation": [
+        0,
+        0,
+        0
+      ],
+      "scale": [
+        1,
+        1,
+        1
+      ],
+      "material": "concrete",
+      "collision": true,
+      "opacity": 1,
+      "wallrunEnabled": true
+    },
+    {
+      "id": "obj_wallrun_wall_mrhdqdet_3_1u2zf",
+      "type": "wallrun_wall",
+      "position": [
+        676.035888671875,
+        13,
+        59.79421615600586
+      ],
+      "rotation": [
+        0,
+        30.000000238631284,
+        0
+      ],
+      "scale": [
+        0.9999999865388264,
+        0.5,
+        0.1666666656649012
+      ],
+      "material": "marker_red",
+      "collision": true,
+      "opacity": 1,
+      "wallrunEnabled": true
+    },
+    {
+      "id": "obj_boundary_wall_mrhdt6g1_4_tbemj",
+      "type": "boundary_wall",
+      "position": [
+        678.4432373046875,
+        11.785324096679688,
+        47.023292541503906
+      ],
+      "rotation": [
+        0,
+        0,
+        0
+      ],
+      "scale": [
+        0.25,
+        1,
+        1
+      ],
+      "material": "boundary",
+      "collision": true,
+      "opacity": 0,
+      "wallrunEnabled": false
+    },
+    {
+      "id": "obj_boundary_wall_mrhdtzy5_5_cf5u0",
+      "type": "boundary_wall",
+      "position": [
+        683.4432373046875,
+        11.785324096679688,
+        65.0232925415039
+      ],
+      "rotation": [
+        0,
+        0,
+        0
+      ],
+      "scale": [
+        0.0833333358168602,
+        1,
+        1
+      ],
+      "material": "boundary",
+      "collision": true,
+      "opacity": 0,
+      "wallrunEnabled": false
+    },
+    {
+      "id": "obj_kill_block_mrhdxv0y_6_gsqgl",
+      "type": "kill_block",
+      "position": [
+        700.091552734375,
+        16.469493865966797,
+        98.41077423095703
+      ],
+      "rotation": [
+        0,
+        0,
+        0
+      ],
+      "scale": [
+        0.5,
+        3.5,
+        0.5
+      ],
+      "material": "marker_red",
       "collision": false,
       "opacity": 1,
       "wallrunEnabled": true,
-      "name": "FINISH",
       "metadata": {
-        "triggerType": "finish",
-        "trigger": {
-          "width": 6,
-          "height": 5,
-          "depth": 2
-        },
-        "label": "FINISH"
+        "label": "KILL",
+        "labelVisible": false
+      }
+    },
+    {
+      "id": "obj_wallrun_wall_mrhe3lfk_7_0regw",
+      "type": "wallrun_wall",
+      "position": [
+        651.535888671875,
+        13,
+        27.626930236816406
+      ],
+      "rotation": [
+        0,
+        0,
+        0
+      ],
+      "scale": [
+        0.0033333333333333335,
+        0.5,
+        0.1666666716337204
+      ],
+      "material": "orange_box_prototype",
+      "collision": true,
+      "opacity": 1,
+      "wallrunEnabled": true
+    },
+    {
+      "id": "obj_wallrun_wall_mrhe41kp_8_07x10",
+      "type": "wallrun_wall",
+      "position": [
+        657.535888671875,
+        14,
+        14.626930236816406
+      ],
+      "rotation": [
+        0,
+        0,
+        0
+      ],
+      "scale": [
+        0.0033333334140479565,
+        0.5,
+        0.1666666716337204
+      ],
+      "material": "orange_box_prototype",
+      "collision": true,
+      "opacity": 1,
+      "wallrunEnabled": true
+    },
+    {
+      "id": "obj_raised_platform_mrhe5js0_9_0o5yk",
+      "type": "raised_platform",
+      "position": [
+        651,
+        9,
+        -63
+      ],
+      "rotation": [
+        0,
+        0,
+        0
+      ],
+      "scale": [
+        1,
+        1,
+        1
+      ],
+      "material": "yellow_box_prototype",
+      "collision": true,
+      "opacity": 1,
+      "wallrunEnabled": false
+    },
+    {
+      "id": "obj_kill_block_mrhecjlo_10_qgacy",
+      "type": "kill_block",
+      "position": [
+        649.9656372070312,
+        -1,
+        -96.77487182617188
+      ],
+      "rotation": [
+        0,
+        0,
+        0
+      ],
+      "scale": [
+        6.25,
+        0.25,
+        31.25
+      ],
+      "material": "marker_red",
+      "collision": false,
+      "opacity": 1,
+      "wallrunEnabled": true,
+      "name": "Floor Kill",
+      "metadata": {
+        "label": ""
+      }
+    },
+    {
+      "id": "obj_test_spawn_mriq2lv2_1_4ytwu",
+      "type": "test_spawn",
+      "position": [
+        851,
+        14,
+        128
+      ],
+      "rotation": [
+        0,
+        180,
+        0
+      ],
+      "scale": [
+        1,
+        1,
+        1
+      ],
+      "material": "marker_cyan",
+      "collision": false,
+      "opacity": 1,
+      "wallrunEnabled": true,
+      "metadata": {
+        "label": "TEST SPAWN"
       }
     }
   ]

@@ -47,6 +47,8 @@ export class Hud {
   // so the HUD doesn't thrash innerHTML 60+ times a second while values are static.
   private readonly lastHtml = new Map<HTMLDivElement, string>();
   private scoreEventTimer: number | null = null;
+  private roundSplash!: HTMLDivElement;
+  private roundSplashTimer: number | null = null;
   private clutchEventTimer: number | null = null;
   private clutchBuffWasActive = false;
   private qteEventTimer: number | null = null;
@@ -82,6 +84,11 @@ export class Hud {
     this.scoreEvent = document.createElement('div');
     this.scoreEvent.className = 'score-event';
     this.root.appendChild(this.scoreEvent);
+
+    // Fullscreen "ROUND N" wipe between rounds of a multi-round match (see showRoundSplash).
+    this.roundSplash = document.createElement('div');
+    this.roundSplash.className = 'round-splash';
+    this.root.appendChild(this.roundSplash);
 
     this.clutchEvent = document.createElement('div');
     this.clutchEvent.className = 'clutch-event';
@@ -218,6 +225,32 @@ export class Hud {
 
   showScoreEvent(title: string, subtitle: string, variant: 'good' | 'bad' | 'neutral' = 'neutral'): void {
     this.showTimedScoreEvent(title, subtitle, variant, 1150);
+  }
+
+  /**
+   * Fullscreen "ROUND N" transition wipe, shown the moment the next round's countdown begins
+   * (intermission → countdown) in a multi-round match. Non-interactive; clears itself.
+   */
+  showRoundSplash(round: number, roundCount: number): void {
+    if (this.roundSplashTimer !== null) {
+      window.clearTimeout(this.roundSplashTimer);
+      this.roundSplashTimer = null;
+    }
+    this.roundSplash.innerHTML = `
+      <div class="round-splash__band"></div>
+      <div class="round-splash__panel">
+        <div class="round-splash__eyebrow">Next Up</div>
+        <div class="round-splash__title">ROUND ${Math.max(1, Math.round(round))}</div>
+        <div class="round-splash__subtitle">of ${Math.max(1, Math.round(roundCount))}</div>
+      </div>
+    `;
+    this.roundSplash.classList.remove('round-splash--visible');
+    void this.roundSplash.offsetWidth; // restart the CSS entrance animations
+    this.roundSplash.classList.add('round-splash--visible');
+    this.roundSplashTimer = window.setTimeout(() => {
+      this.roundSplash.classList.remove('round-splash--visible');
+      this.roundSplashTimer = null;
+    }, 2300);
   }
 
   /** Bottom-middle "Hold/Press E to ..." prompt. Pass null to hide it. */

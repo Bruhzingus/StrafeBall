@@ -1,6 +1,7 @@
 import { Color3, Material, Mesh, MeshBuilder, PBRMaterial, Scene, StandardMaterial, Vector3 } from '@babylonjs/core';
 import { applyGymProbeToBallMaterial } from '../map/GymReflectionProbe';
 import { registerGymMirrorMesh } from '../map/GymFloorMirror';
+import { addPolishedGlowOccluder } from '../effects/PolishedPostFX';
 import { TUNING } from '../config/tuning';
 
 export type BallVisualVariant = 'normal' | 'live' | 'dead' | 'highlight';
@@ -20,6 +21,10 @@ export function createBallMesh(scene: Scene, name: string, position: Vector3, va
   // Polished Phase 3: balls reflect in the floor mirror (the mesh only — the blob shadow below is
   // excluded by the mirror facade). Safe no-op when no mirror exists (Performance/Neutral).
   registerGymMirrorMesh(mesh);
+  // Glow occluder: EVERY ball instance (held in first person, thrown, idle — offline BallManager
+  // and online networkBall_* all build here) must punch a hole in the glow map, or wall/portal
+  // light halos bleed straight through the ball as bright bands. Auto-unregisters on dispose.
+  addPolishedGlowOccluder(mesh);
   const shadow = createBallBlobShadow(scene, `${name}_blobShadow`, position);
   mesh.metadata = { ...(mesh.metadata ?? {}), ballBlobShadow: shadow };
   mesh.onDisposeObservable.add(() => {

@@ -1121,6 +1121,11 @@ export class ArenaScene {
     const matchStatus = snapshot?.room.match.status ?? null;
     if (matchStatus === 'countdown' && this.lastOnlineMatchStatus !== 'countdown') {
       this.tryRequestMatchFullscreen();
+      // Between-rounds transition: intermission → countdown means round 2+ is starting. The splash
+      // covers the world swap (balls re-racked, players re-pinned) while the countdown runs.
+      if (this.lastOnlineMatchStatus === 'intermission' && snapshot) {
+        this.hud.showRoundSplash(snapshot.room.match.currentRound, snapshot.room.match.roundCount);
+      }
     }
     this.lastOnlineMatchStatus = matchStatus;
     // Pre-round countdown gate: while the authoritative match is counting down, local input is

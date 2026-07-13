@@ -23,12 +23,18 @@ function installStorage(): Map<string, string> {
 }
 
 describe('CourseRun — gate extraction', () => {
-  it('the shipped featured starter is a complete timed route with ordered checkpoints and all pad types', () => {
+  it('the shipped default map is a free sandbox (no start pad / not timed) with a spawn and all pad types', () => {
+    // 2026-07-12: the user's own map replaced the featured starter as the shipped default, and the
+    // auto-added start checkpoint was removed with it — the default is a free-roam sandbox now, not
+    // a timed route. Timed courses remain a player-built thing (start/finish pads in the editor).
     const layout = committedCourseLayout();
     const gates = extractCourseGates(layout);
-    expect(isTimedCourse(gates)).toBe(true);
-    expect(gates.checkpoints.map((gate) => gate.metadata?.checkpointOrder)).toEqual([1, 2]);
-    const types = new Set(layout.objects.map((object) => object.type));
+    expect(isTimedCourse(gates)).toBe(false);
+    expect(gates.start).toBeNull();
+    const objects = layout.objects;
+    expect(objects.some((o) => o.type === 'spawn_point' && o.metadata?.defaultSpawn === true)).toBe(true);
+    expect(objects.some((o) => o.type === 'leave_portal')).toBe(true);
+    const types = new Set(objects.map((object) => object.type));
     for (const pad of ['stamina_pad', 'backflip_pad', 'speed_pad', 'bounce_pad']) {
       expect([...types]).toContain(pad);
     }

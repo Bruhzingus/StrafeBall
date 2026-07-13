@@ -1,4 +1,5 @@
 import { Color3, FreeCamera, Mesh, MeshBuilder, PBRMaterial, Scene, TransformNode, Vector3 } from '@babylonjs/core';
+import { addPolishedGlowOccluder } from '../effects/PolishedPostFX';
 import { TUNING } from '../config/tuning';
 import { HandController, HandState } from './HandController';
 import type { MovementSnapshot } from './MovementController';
@@ -110,6 +111,10 @@ export class Viewmodel {
     const sign = side === 'left' ? -1 : 1;
     const current = new Vector3(sign * TUNING.arms.restSide, TUNING.arms.restDrop, TUNING.arms.restForward);
     node.position.copyFrom(current);
+    // Glow occluders: the first-person arms fill a lot of screen right in front of glowing wall
+    // strips/portals — without a hole in the glow map the halos bleed through them as bright bands
+    // (same defect the balls had). Safe no-op outside Polished.
+    for (const mesh of [forearm, wrist, hand, ...knuckles]) addPolishedGlowOccluder(mesh);
     return { node, forearm, hand, wrist, knuckles, current };
   }
 

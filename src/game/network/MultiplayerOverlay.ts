@@ -1374,13 +1374,13 @@ function buildPostmatchHtml(room: RoomState, localPlayerId: string): string {
     actions = `
       <button class="multiplayer-postmatch-action" type="button" data-postmatch-action="rematch"${rematchVoted ? ' disabled' : ''}>${rematchVoted ? 'Rematch Voted' : 'Play Again'}${formatVoteTally(rematchCount, room.resetVote.requiredVotes)}</button>
       ${changeTeams}
-      <button class="multiplayer-postmatch-action multiplayer-postmatch-action--paper" type="button" data-postmatch-action="to-lobby"${lobbyVoted ? ' disabled' : ''}>${lobbyVoted ? `Lobby Voted${toLobbyTally}` : `Lobby & Settings${toLobbyTally}`}</button>
+      <button class="multiplayer-postmatch-action multiplayer-postmatch-action--paper" type="button" data-postmatch-action="to-lobby"${lobbyVoted ? ' disabled' : ''}>${lobbyVoted ? `Pregame Voted${toLobbyTally}` : `Back to Pregame${toLobbyTally}`}</button>
       <button class="multiplayer-postmatch-action multiplayer-postmatch-action--copy" type="button" data-postmatch-action="copy-code">Copy Code</button>
     `;
   } else {
     actions = `
       <button class="multiplayer-postmatch-action" type="button" data-postmatch-action="next-round"${nextVoted ? ' disabled' : ''}>${nextVoted ? `Round Voted${nextRoundTally}` : `Next Round${nextRoundTally}`}</button>
-      <button class="multiplayer-postmatch-action multiplayer-postmatch-action--paper" type="button" data-postmatch-action="to-lobby"${lobbyVoted ? ' disabled' : ''}>${lobbyVoted ? `Lobby Voted${toLobbyTally}` : `Lobby & Settings${toLobbyTally}`}</button>
+      <button class="multiplayer-postmatch-action multiplayer-postmatch-action--paper" type="button" data-postmatch-action="to-lobby"${lobbyVoted ? ' disabled' : ''}>${lobbyVoted ? `Pregame Voted${toLobbyTally}` : `Back to Pregame${toLobbyTally}`}</button>
       <button class="multiplayer-postmatch-action multiplayer-postmatch-action--copy" type="button" data-postmatch-action="copy-code">Copy Code</button>
     `;
   }
@@ -1424,13 +1424,14 @@ function buildReportTeamHtml(
   isFinal: boolean
 ): string {
   const totals = players.reduce((acc, player) => {
+    acc.throws += player.matchStats.throws;
     acc.hits += player.matchStats.hits;
     acc.hitsTaken += player.matchStats.hitsTaken;
     acc.catches += player.matchStats.catches;
     acc.parries += player.matchStats.parries;
     acc.lives += Math.max(0, player.lives);
     return acc;
-  }, { hits: 0, hitsTaken: 0, catches: 0, parries: 0, lives: 0 });
+  }, { throws: 0, hits: 0, hitsTaken: 0, catches: 0, parries: 0, lives: 0 });
   const isWinner = teamId === winnerTeamId;
   const teamMetric = room.match.roundsWonByTeamId[teamId] ?? 0;
   const teamLabel = room.match.mode === '2v2'
@@ -1447,9 +1448,10 @@ function buildReportTeamHtml(
         <div class="multiplayer-report-team__score">${teamMetric}</div>
       </div>
       <div class="multiplayer-report-team__totals">
+        <span><em>Thrown</em><strong>${totals.throws}</strong></span>
         <span><em>Hits</em><strong>${totals.hits}</strong></span>
+        <span><em>Accuracy</em><strong>${formatAccuracy(totals.hits, totals.throws)}</strong></span>
         <span><em>Catches</em><strong>${totals.catches}</strong></span>
-        <span><em>Parries</em><strong>${totals.parries}</strong></span>
         <span><em>Lives Lost</em><strong>${totals.hitsTaken}</strong></span>
         <span><em>Lives Left</em><strong>${totals.lives}</strong></span>
       </div>
@@ -1460,6 +1462,11 @@ function buildReportTeamHtml(
   `;
 }
 
+/** Accuracy as a display string; em dash when the player never threw (avoid 0/0 = fake 0%). */
+function formatAccuracy(hits: number, throws: number): string {
+  return throws > 0 ? `${Math.round((hits / throws) * 100)}%` : '&mdash;';
+}
+
 function buildReportPlayerHtml(room: RoomState, player: PlayerState, localPlayerId: string, winnerTeamId: string): string {
   const suffix = player.id === localPlayerId ? ' (You)' : player.connected === false ? ' (DC)' : '';
   // Both formats are lives-based now: show remaining lives (or Out), not the legacy 1v1 point count.
@@ -1467,6 +1474,7 @@ function buildReportPlayerHtml(room: RoomState, player: PlayerState, localPlayer
     ? 'Out'
     : `${player.lives} life${player.lives === 1 ? '' : 's'} left`;
   const grade = calculatePlayerReportGrade(room, player, winnerTeamId);
+  const s = player.matchStats;
 
   return `
     <div class="multiplayer-report-player">
@@ -1482,10 +1490,16 @@ function buildReportPlayerHtml(room: RoomState, player: PlayerState, localPlayer
         </div>
       </div>
       <div class="multiplayer-report-player__stats">
-        <span><em>Hits</em><strong>${player.matchStats.hits}</strong></span>
-        <span><em>Catches</em><strong>${player.matchStats.catches}</strong></span>
-        <span><em>Parries</em><strong>${player.matchStats.parries}</strong></span>
-        <span><em>Lives Lost</em><strong>${player.matchStats.hitsTaken}</strong></span>
+        <span><em>Thrown</em><strong>${s.throws}</strong></span>
+        <span><em>Hits</em><strong>${s.hits}</strong></span>
+        <span><em>Accuracy</em><strong>${formatAccuracy(s.hits, s.throws)}</strong></span>
+        <span><em>Catches</em><strong>${s.catches}</strong></span>
+        <span><em>Parries</em><strong>${s.parries}</strong></span>
+        <span><em>Direct</em><strong>${s.directHits}</strong></span>
+        <span><em>Bounce</em><strong>${s.bounceHits}</strong></span>
+        <span><em>Curve</em><strong>${s.curveHits}</strong></span>
+        <span><em>Backflip</em><strong>${s.backflipHits}</strong></span>
+        <span><em>Lives Lost</em><strong>${s.hitsTaken}</strong></span>
       </div>
     </div>
   `;

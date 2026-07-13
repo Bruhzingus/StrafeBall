@@ -688,6 +688,87 @@ html, body {
   color: var(--school-red);
 }
 
+/* --- Round transition splash: fullscreen "ROUND N" wipe between rounds (Hud.showRoundSplash) --- */
+.round-splash {
+  position: absolute;
+  inset: 0;
+  z-index: 11;
+  display: none;
+  align-items: center;
+  justify-content: center;
+  overflow: hidden;
+  pointer-events: none;
+}
+
+.round-splash--visible {
+  display: flex;
+}
+
+/* Horizontal ink band that sweeps across behind the panel, masking the world swap. */
+.round-splash__band {
+  position: absolute;
+  left: -5%;
+  right: -5%;
+  top: 50%;
+  height: 168px;
+  transform: translateY(-50%) rotate(-1.4deg);
+  background: rgba(16, 27, 52, 0.9);
+  border-top: 4px solid var(--ink);
+  border-bottom: 4px solid var(--ink);
+  animation: round-splash-band 2.3s cubic-bezier(0.22, 1, 0.36, 1) both;
+}
+
+.round-splash__panel {
+  position: relative;
+  padding: 18px 46px 20px;
+  text-align: center;
+  color: var(--paper);
+  animation: round-splash-panel 2.3s cubic-bezier(0.22, 1, 0.36, 1) both;
+}
+
+.round-splash__eyebrow {
+  font-size: 13px;
+  font-weight: 900;
+  letter-spacing: 0.3em;
+  text-transform: uppercase;
+  color: #ffd84d;
+}
+
+.round-splash__title {
+  margin-top: 4px;
+  font-size: 84px;
+  line-height: 0.95;
+  font-family: "Arial Black", "Trebuchet MS", "Segoe UI", Verdana, sans-serif;
+  font-weight: 900;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  -webkit-text-stroke: 2px var(--ink);
+}
+
+.round-splash__subtitle {
+  margin-top: 6px;
+  font-size: 15px;
+  font-weight: 900;
+  letter-spacing: 0.22em;
+  text-transform: uppercase;
+  color: rgba(255, 253, 245, 0.82);
+}
+
+@keyframes round-splash-band {
+  0% { transform: translate(-108%, -50%) rotate(-1.4deg); }
+  16% { transform: translate(0, -50%) rotate(-1.4deg); }
+  84% { transform: translate(0, -50%) rotate(-1.4deg); opacity: 1; }
+  100% { transform: translate(0, -50%) rotate(-1.4deg); opacity: 0; }
+}
+
+@keyframes round-splash-panel {
+  0% { transform: translateX(46vw); opacity: 0; }
+  10% { opacity: 0; }
+  22% { transform: none; opacity: 1; }
+  84% { transform: none; opacity: 1; }
+  100% { transform: translateX(-4vw); opacity: 0; }
+}
+
 @keyframes score-event-pop {
   0% {
     opacity: 0;
@@ -3366,23 +3447,46 @@ html, body {
   position: relative;
   z-index: 1;
   display: block;
-  width: min(880px, calc(100vw - 32px));
-  max-height: calc(100vh - 32px);
+  /* US-letter paper proportions (8.5 × 11), sized to nearly fill the screen height; width follows
+     via aspect-ratio, clamped by viewport width on squat/narrow screens. */
+  height: min(calc(100vh - 24px), calc((100vw - 48px) * 11 / 8.5));
+  aspect-ratio: 8.5 / 11;
+  width: auto;
+  max-height: none;
   margin: 0;
   overflow: auto;
   pointer-events: auto;
-  animation: postmatch-card-in 700ms cubic-bezier(0.16, 1, 0.3, 1) both;
+  /* "Passed to you": the sheet slides up from the bottom edge with a hand-off rotation, overshoots
+     a touch, then settles flat. */
+  animation: postmatch-paper-pass 900ms cubic-bezier(0.22, 1, 0.36, 1) both;
 }
 
-@keyframes postmatch-card-in {
-  from {
+@keyframes postmatch-paper-pass {
+  0% {
     opacity: 0;
-    transform: translateY(28px) scale(0.965);
+    transform: translate(14%, 110%) rotate(8deg);
   }
-  to {
+  45% {
+    opacity: 1;
+  }
+  74% {
+    transform: translate(-1.2%, -0.8%) rotate(-1.4deg);
+  }
+  100% {
     opacity: 1;
     transform: none;
   }
+}
+
+/* The report sheet fills the paper; the teams block absorbs the spare height so the CTAs sit at
+   the bottom edge like a form's signature line. */
+.multiplayer-modal--postmatch .multiplayer-report-card {
+  min-height: 100%;
+}
+
+.multiplayer-modal--postmatch .multiplayer-report-card__teams {
+  flex: 1 1 auto;
+  align-content: start;
 }
 
 .multiplayer-modal--postmatch .multiplayer-report-card {
@@ -3542,8 +3646,72 @@ html, body {
 }
 
 .multiplayer-modal--postmatch .multiplayer-report-player__stats {
+  /* 10 stats read as two clean rows of five: volume row (thrown/hits/accuracy/catches/parries),
+     then the hit-type breakdown row (direct/bounce/curve/backflip/lives lost). */
+  grid-template-columns: repeat(5, minmax(0, 1fr));
+  gap: 6px;
+  margin-top: 8px;
+}
+
+/* Five columns are narrow: shrink the stat labels so ACCURACY/BACKFLIP never clip mid-word. */
+.multiplayer-modal--postmatch .multiplayer-report-player__stats em {
+  font-size: 8px;
+  letter-spacing: 0.04em;
+  overflow: hidden;
+  white-space: nowrap;
+}
+
+.multiplayer-modal--postmatch .multiplayer-report-player__stats span {
+  padding: 6px 6px;
+}
+
+.multiplayer-modal--postmatch .multiplayer-report-player__stats strong {
+  font-size: 17px;
+}
+
+/* 2v2 packs 4 player blocks onto the sheet — tighten the vertical rhythm so nothing spills
+   past the paper's bottom edge at common resolutions. */
+.multiplayer-modal--postmatch .multiplayer-report-card[data-mode="2v2"] .multiplayer-report-team {
+  padding: 11px 12px;
+}
+
+.multiplayer-modal--postmatch .multiplayer-report-card[data-mode="2v2"] .multiplayer-report-team__totals {
+  gap: 6px;
+  margin-top: 8px;
+}
+
+.multiplayer-modal--postmatch .multiplayer-report-card[data-mode="2v2"] .multiplayer-report-team__totals span {
+  padding: 6px 8px;
+}
+
+.multiplayer-modal--postmatch .multiplayer-report-card[data-mode="2v2"] .multiplayer-report-team__totals strong {
+  font-size: 18px;
+}
+
+.multiplayer-modal--postmatch .multiplayer-report-card[data-mode="2v2"] .multiplayer-report-team__players {
   gap: 8px;
-  margin-top: 10px;
+  margin-top: 8px;
+}
+
+.multiplayer-modal--postmatch .multiplayer-report-card[data-mode="2v2"] .multiplayer-report-player {
+  padding: 9px 10px;
+}
+
+.multiplayer-modal--postmatch .multiplayer-report-card[data-mode="2v2"] .multiplayer-report-player__main strong {
+  font-size: 16px;
+}
+
+.multiplayer-modal--postmatch .multiplayer-report-card[data-mode="2v2"] .multiplayer-report-player__grade {
+  min-width: 58px;
+  padding: 5px 8px;
+}
+
+.multiplayer-modal--postmatch .multiplayer-report-card[data-mode="2v2"] .multiplayer-report-player__grade strong {
+  font-size: 22px;
+}
+
+.multiplayer-modal--postmatch .multiplayer-report-card[data-mode="2v2"] .multiplayer-report-card__title {
+  font-size: 30px;
 }
 
 .multiplayer-modal--postmatch .multiplayer-report-player__stats span {
