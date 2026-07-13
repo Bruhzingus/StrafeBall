@@ -333,7 +333,11 @@ export class MultiplayerOverlay {
     const connected = this.client.connected;
     const busy = this.client.status === 'connecting';
     const nameReady = this.nameInput.value.trim().length > 0;
-    const roomSummary = summarizeRoom(snapshot?.room ?? null, this.client.localPlayerId);
+    // Cheap change-key FIRST: update() runs every frame (144Hz), so the expensive part — building
+    // the roster/settings/pregame/report-card HTML strings — must only happen when this key (or any
+    // other memoized field) actually changed. Building the HTML just to compare-and-discard it was
+    // measurable per-frame garbage during online play.
+    const summaryKey = roomSummaryKey(snapshot?.room ?? null, this.client.localPlayerId);
     if (
       this.lastRendered.connected === connected &&
       this.lastRendered.busy === busy &&
@@ -347,7 +351,7 @@ export class MultiplayerOverlay {
       this.lastRendered.modalOpen === this.modalOpen &&
       this.lastRendered.settingsOpen === this.settingsOpen &&
       this.lastRendered.reportRevealed === this.reportRevealed &&
-      this.lastRendered.roomSummaryKey === roomSummary.key
+      this.lastRendered.roomSummaryKey === summaryKey
     ) {
       return;
     }
@@ -364,8 +368,9 @@ export class MultiplayerOverlay {
       modalOpen: this.modalOpen,
       settingsOpen: this.settingsOpen,
       reportRevealed: this.reportRevealed,
-      roomSummaryKey: roomSummary.key
+      roomSummaryKey: summaryKey
     };
+    const roomSummary = summarizeRoom(snapshot?.room ?? null, this.client.localPlayerId);
 
     this.roomValue.textContent = this.client.roomId || 'Practice';
     this.pingValue.textContent = this.client.pingMs === null ? '-' : `${this.client.pingMs} ms`;
@@ -813,8 +818,84 @@ function isLikelyFullscreen(): boolean {
   return widthDelta <= 8 && heightDelta <= 8;
 }
 
+/**
+ * Cheap change-detection key over every input the summary HTML renders from. update() computes THIS
+ * every frame and only calls summarizeRoom (the expensive HTML build) when it changes — so keep the
+ * two in sync: any new field the HTML reads must appear here, or the panel can go stale.
+ */
+function roomSummaryKey(room: RoomState | null, localPlayerId: string): string {
+  if (!room) return 'practice';
+  const players = Object.values(room.players).sort(compareRosterPlayers);
+  const disconnected = players.filter((player) => player.connected === false);
+  const s = room.settings;
+  return [
+    localPlayerId,
+    room.match.mode,
+    room.match.status,
+    room.match.countdownSeconds.toFixed(0),
+    room.netMode,
+    room.phase,
+    room.hostPlayerId ?? '',
+    room.match.currentRound,
+    room.match.roundCount,
+    Object.entries(room.match.roundsWonByTeamId).map(([t, w]) => `${t}:${w}`).join(','),
+    s.preset,
+    s.format,
+    s.livesPerPlayer,
+    s.dodgeballCount,
+    s.maxLiveBallBounces,
+    s.matPreset,
+    s.roundCount,
+    s.halfCourtTimerSeconds,
+    room.endVote.active ? 1 : 0,
+    room.endVote.voteCount,
+    room.endVote.requiredVotes,
+    Object.keys(room.endVote.votesByPlayerId).sort().join(','),
+    room.resetVote.mode,
+    room.resetVote.voteCount,
+    room.resetVote.requiredVotes,
+    Object.keys(room.resetVote.votesByPlayerId).sort().join(','),
+    room.startVote.voteCount,
+    room.startVote.requiredVotes,
+    Object.keys(room.startVote.votesByPlayerId).sort().join(','),
+    room.startVote.teamChoiceCount,
+    room.startVote.requiredTeamChoices,
+    Object.keys(room.startVote.teamChoicesByPlayerId).sort().join(','),
+    room.intermissionVote.active ? 1 : 0,
+    room.intermissionVote.allowsNextRound ? 1 : 0,
+    room.intermissionVote.nextRoundCount,
+    room.intermissionVote.toLobbyCount,
+    room.intermissionVote.requiredVotes,
+    Object.keys(room.intermissionVote.nextRoundByPlayerId).sort().join(','),
+    Object.keys(room.intermissionVote.toLobbyByPlayerId).sort().join(','),
+    players.length,
+    room.match.maxPlayers,
+    disconnected.map((player) => `${player.id}:${formatReconnectSeconds(player.reconnectDeadlineAtMs)}`).join(','),
+    players.map((player) =>
+      [
+        player.id,
+        player.connected ? 1 : 0,
+        player.teamId,
+        player.teamSlotIndex,
+        player.name,
+        player.score,
+        player.lives,
+        player.matchStats.hits,
+        player.matchStats.hitsTaken,
+        player.matchStats.catches,
+        player.matchStats.parries,
+        player.matchStats.saves,
+        player.matchStats.throws,
+        player.matchStats.directHits,
+        player.matchStats.bounceHits,
+        player.matchStats.curveHits,
+        player.matchStats.backflipHits
+      ].join(':')
+    ).join('|')
+  ].join('~');
+}
+
 function summarizeRoom(room: RoomState | null, localPlayerId: string): {
-  key: string;
   statusLabel: string;
   capacityLabel: string;
   rosterHtml: string;
@@ -828,7 +909,6 @@ function summarizeRoom(room: RoomState | null, localPlayerId: string): {
 } {
   if (!room) {
     return {
-      key: 'practice',
       statusLabel: 'practice',
       capacityLabel: '0 / 0',
       rosterHtml: '',
@@ -892,67 +972,7 @@ function summarizeRoom(room: RoomState | null, localPlayerId: string): {
   const controlsHtml = buildControlsHtml(room, localPlayerId);
   const settingsHtml = buildSettingsHtml(room, localPlayerId);
 
-  const s = room.settings;
   return {
-    key: [
-      room.match.mode,
-      room.match.status,
-      room.match.countdownSeconds.toFixed(0),
-      room.netMode,
-      room.phase,
-      room.hostPlayerId ?? '',
-      room.match.currentRound,
-      room.match.roundCount,
-      Object.entries(room.match.roundsWonByTeamId).map(([t, w]) => `${t}:${w}`).join(','),
-      s.preset,
-      s.format,
-      s.livesPerPlayer,
-      s.dodgeballCount,
-      s.maxLiveBallBounces,
-      s.matPreset,
-      s.roundCount,
-      s.halfCourtTimerSeconds,
-      room.endVote.active ? 1 : 0,
-      room.endVote.voteCount,
-      room.endVote.requiredVotes,
-      Object.keys(room.endVote.votesByPlayerId).sort().join(','),
-      room.resetVote.mode,
-      room.resetVote.voteCount,
-      room.resetVote.requiredVotes,
-      Object.keys(room.resetVote.votesByPlayerId).sort().join(','),
-      room.startVote.voteCount,
-      room.startVote.requiredVotes,
-      Object.keys(room.startVote.votesByPlayerId).sort().join(','),
-      room.startVote.teamChoiceCount,
-      room.startVote.requiredTeamChoices,
-      Object.keys(room.startVote.teamChoicesByPlayerId).sort().join(','),
-      room.intermissionVote.active ? 1 : 0,
-      room.intermissionVote.allowsNextRound ? 1 : 0,
-      room.intermissionVote.nextRoundCount,
-      room.intermissionVote.toLobbyCount,
-      room.intermissionVote.requiredVotes,
-      Object.keys(room.intermissionVote.nextRoundByPlayerId).sort().join(','),
-      Object.keys(room.intermissionVote.toLobbyByPlayerId).sort().join(','),
-      players.length,
-      maxPlayers,
-      disconnected.map((player) => `${player.id}:${formatReconnectSeconds(player.reconnectDeadlineAtMs)}`).join(','),
-      players.map((player) =>
-        [
-          player.id,
-          player.connected ? 1 : 0,
-          player.teamId,
-          player.teamSlotIndex,
-          player.name,
-          player.score,
-          player.lives,
-          player.matchStats.hits,
-          player.matchStats.hitsTaken,
-          player.matchStats.catches,
-          player.matchStats.parries,
-          player.matchStats.saves
-        ].join(':')
-      ).join('|')
-    ].join('~'),
     statusLabel,
     capacityLabel: `${players.length} / ${maxPlayers}`,
     rosterHtml,

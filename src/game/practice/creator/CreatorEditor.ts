@@ -239,6 +239,9 @@ export class CreatorEditor implements CreatorBridge, CoopEditorBridge {
   // Free-fly noclip toggled DURING playtest (= key / quick toolbar) — reuses the build fly camera.
   private playtestFly = false;
   private flyListenersActive = false;
+  // Hold progress on a placed LEAVE portal while playtesting (hold E on it to end the test).
+  private playtestLeaveHold = 0;
+  private playtestLeaveArmed = false;
 
   // Pointer/gizmo interaction state.
   private looking = false;
@@ -480,8 +483,39 @@ export class CreatorEditor implements CreatorBridge, CoopEditorBridge {
       }
       if (this.replay.isRecording()) this.replay.record(this.player.root.position, this.player.root.rotation.y);
       this.ui.setRecordingTimer(this.replay.recordingSeconds());
+      this.updatePlaytestLeavePortal(dt);
     }
     this.updateCoopPresence(dt);
+  }
+
+  /**
+   * A placed LEAVE portal (leave_portal object) is a functional exit while playtesting: walk into it
+   * and hold E to end the test and return to Build. Previously it was inert decoration, so a course
+   * whose only way out was its LEAVE portal trapped the playtester. Mirrors the yard portals' hold-E
+   * interaction (radius + hold), armed after one release of E so a carried-over hold can't insta-fire.
+   */
+  private updatePlaytestLeavePortal(dt: number): void {
+    const held = this.input.isKeyDown(CONTROL_KEYS.interact);
+    if (!held) this.playtestLeaveArmed = true;
+    const p = this.player.root.position;
+    const R = 2.4;
+    let near = false;
+    for (const obj of this.layout.objects) {
+      if (obj.type !== 'leave_portal') continue;
+      const dx = p.x - obj.position[0];
+      const dz = p.z - obj.position[2];
+      if (dx * dx + dz * dz <= R * R) { near = true; break; }
+    }
+    if (!near || !held || !this.playtestLeaveArmed) {
+      this.playtestLeaveHold = 0;
+      return;
+    }
+    this.playtestLeaveHold += dt;
+    if (this.playtestLeaveHold >= 0.6) {
+      this.playtestLeaveHold = 0;
+      this.ui.toast('Left playtest');
+      this.setMode('build');
+    }
   }
 
   /** Relay our pose (fly camera in Build, player in first-person Playtest) + smooth collaborator avatars. */
@@ -700,6 +734,8 @@ export class CreatorEditor implements CreatorBridge, CoopEditorBridge {
     // regardless of what was spent in a previous playtest session.
     this.player.dash.refill();
     this.player.backflip.cooldown = 0;
+    this.playtestLeaveHold = 0;
+    this.playtestLeaveArmed = false; // require a fresh E press before the LEAVE portal fires
     this.pads.reset();
     // Rebuild the timed-course tracker against the CURRENT layout (gates/edits since last playtest).
     this.courseHud?.dispose();

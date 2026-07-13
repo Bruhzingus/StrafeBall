@@ -18,7 +18,9 @@ export const CONTROL_KEYS = {
   debugBallLauncher: 'KeyL',
   toggleDebug: 'Tab',
   // Offline testing toggle: removes cooldowns/costs from catches, stamina (dash), backflip, parry.
-  toggleNoCooldown: 'KeyO'
+  toggleNoCooldown: 'KeyO',
+  // Movement Sandbox / Race Online only: toggle free-fly so friends can skip sections.
+  sandboxFly: 'KeyG'
 } as const;
 
 export const MOUSE_BUTTON = {

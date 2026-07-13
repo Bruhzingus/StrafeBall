@@ -98,6 +98,62 @@ export class MovementController {
     this.endWallRun();
   }
 
+  /** Free-fly toggle (Movement Sandbox / Race Online only). Zeroes velocity on any change. */
+  public flying = false;
+  setFlying(on: boolean): void {
+    if (this.flying === on) return;
+    this.flying = on;
+    this.velocity.setAll(0);
+    this.wallRunning = false;
+    this.sliding = false;
+    if (!on) this.grounded = false; // let the next normal tick re-detect the ground under you
+  }
+
+  /**
+   * One free-fly tick: WASD moves along the camera axes (so you fly where you look), Space rises and
+   * crouch descends, both scaled by a fast base speed (faster with dash held). Position is clamped to
+   * the active world's XZ bounds + [floor, ceiling]. Returns a grounded=false, zero-velocity snapshot.
+   */
+  private updateFlying(dt: number, input: InputManager): MovementSnapshot {
+    const moveX = (input.isKeyDown(CONTROL_KEYS.right) ? 1 : 0) - (input.isKeyDown(CONTROL_KEYS.left) ? 1 : 0);
+    const moveZ = (input.isKeyDown(CONTROL_KEYS.forward) ? 1 : 0) - (input.isKeyDown(CONTROL_KEYS.backward) ? 1 : 0);
+    const up = (input.isKeyDown(CONTROL_KEYS.jump) ? 1 : 0)
+      - (input.isKeyDown(CONTROL_KEYS.crouch) || input.isKeyDown(CONTROL_KEYS.crouchAlt) ? 1 : 0);
+
+    // Camera-relative axes (getDirection is roll-free here), so flight follows where you look.
+    const fwd = this.camera.getDirection(new Vector3(0, 0, 1));
+    const right = this.camera.getDirection(new Vector3(1, 0, 0));
+    const dir = fwd.scale(moveZ).add(right.scale(moveX));
+    dir.y += up;
+    const len = dir.length();
+
+    const boost = input.isKeyDown(CONTROL_KEYS.dash) ? 2.4 : 1;
+    const speed = 26 * boost;
+    const pos = this.root.position;
+    if (len > 1e-4) {
+      const step = (speed * dt) / len;
+      pos.x += dir.x * step;
+      pos.y += dir.y * step;
+      pos.z += dir.z * step;
+    }
+
+    const w = this.world;
+    const floor = w?.floorY ?? 0;
+    const ceil = w?.ceilingY ?? 40;
+    if (w) {
+      pos.x = Math.min(w.maxX, Math.max(w.minX, pos.x));
+      pos.z = Math.min(w.maxZ, Math.max(w.minZ, pos.z));
+    }
+    pos.y = Math.min(ceil, Math.max(floor, pos.y));
+
+    this.velocity.setAll(0);
+    this.grounded = false;
+    this.wallRunning = false;
+    this.sliding = false;
+    this.crouching = false;
+    return this.snapshot();
+  }
+
   resetKinematics(): void {
     this.velocity.setAll(0);
     this.grounded = true;
@@ -129,6 +185,10 @@ export class MovementController {
 
   update(dt: number, input: InputManager, catchStanceActive: boolean): MovementSnapshot {
     this.dashingThisFrame = false;
+    // Free-fly (Movement Sandbox / Race Online only) short-circuits the whole physics step: no
+    // gravity, no collision, move along the camera look direction. Clamped to the world bounds so you
+    // can't fly out of the yard. Never enabled online (that path uses shared/simulation/MovementSim).
+    if (this.flying) return this.updateFlying(dt, input);
     // Crouch only takes physical effect on the ground (body height, speed cap). Holding crouch in
     // the air must NOT shrink the hitbox/body height — that perturbs air-strafe momentum and feels
     // sluggish when prepping a slide — but it still arms the instant slide-on-landing via

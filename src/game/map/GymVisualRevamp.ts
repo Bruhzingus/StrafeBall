@@ -13,13 +13,7 @@ import {
 } from '@babylonjs/core';
 import { TUNING } from '../config/tuning';
 import { createBleacherTierSpecs } from '../../../shared/simulation/MapGeometry';
-import {
-  getGraphicsQuality,
-  isNeutralModeEnabled,
-  isShowcaseLightingEnabled,
-  SHOWCASE_CONFIG,
-  SHOWCASE_ENV_TEXTURE_NAME
-} from '../config/graphicsConfig';
+import { getGraphicsQuality, isNeutralModeEnabled } from '../config/graphicsConfig';
 import { resolvePolishedConfig } from '../config/graphicsTuning';
 
 type WallSide = 'north' | 'south' | 'east' | 'west';
@@ -535,11 +529,7 @@ export function getGymEnvironmentDebugInfo(): GymEnvironmentDebugInfo {
  * tiny generated gradient so the floor still reads glossy rather than flat (no brightness regression).
  */
 function applyGymEnvironment(scene: Scene): void {
-  if (
-    scene.getTextureByName(HDR_ENVIRONMENT_NAME) ||
-    scene.getTextureByName(FALLBACK_ENVIRONMENT_NAME) ||
-    scene.getTextureByName(SHOWCASE_ENV_TEXTURE_NAME)
-  ) {
+  if (scene.getTextureByName(HDR_ENVIRONMENT_NAME) || scene.getTextureByName(FALLBACK_ENVIRONMENT_NAME)) {
     return;
   }
 
@@ -547,16 +537,6 @@ function applyGymEnvironment(scene: Scene): void {
   // cheap gradient fallback, since that still contributes a visible PBR reflection sheen. Leaving
   // scene.environmentTexture unset means every PBR surface's environment contribution is zero.
   if (isNeutralModeEnabled()) {
-    environmentDebugInfo = { kind: 'none', name: null, size: null, loaded: true };
-    return;
-  }
-
-  // SHOWCASE mode (Phase 6): NO environment/reflection source at all — the fixture-aligned rig is the
-  // only lighting. The forbidden list bars the warm cafeteria HDR AND any generic global environment
-  // wash (the gradient fallback), so Showcase — like Neutral — leaves scene.environmentTexture unset
-  // (every PBR surface's environment contribution is zero). The .env loader is retained below but no
-  // longer called in any mode.
-  if (isShowcaseLightingEnabled()) {
     environmentDebugInfo = { kind: 'none', name: null, size: null, loaded: true };
     return;
   }
@@ -621,62 +601,6 @@ function createGradientEnvironmentFallback(scene: Scene): void {
 
   scene.environmentTexture = texture;
   environmentDebugInfo = { kind: 'gradient', name: FALLBACK_ENVIRONMENT_NAME, size: null, loaded: true };
-}
-
-/**
- * SHOWCASE material response (Part 1 + Part 6), applied as an override pass ON TOP of the competitive
- * baseline tuning so the baseline values are never mutated — flipping back to Competitive needs no undo.
- * Raises each gym PBR surface's roughness into its spec band and its environmentIntensity so reflection
- * response stays broad and soft, and lifts maxSimultaneousLights for the Showcase hemi/key rig. The
- * ceiling is a StandardMaterial (no PBR roughness): expressed as a near-zero specular.
- *
- * Call AFTER the gym build AND after the competitive reflection-target pass, so Showcase wins. No-op for
- * any material that does not exist / is not the expected type, and never touches non-gym/UI materials.
- */
-export function applyShowcaseGymMaterials(scene: Scene): void {
-  const m = SHOWCASE_CONFIG.materials;
-
-  applyShowcasePbrSurface(
-    scene,
-    'floor_material',
-    m.floor.roughness,
-    m.floor.environmentIntensity,
-    m.maxSimultaneousLights,
-    m.floor.specularIntensity,
-    m.floor.albedoTint
-  );
-  for (const wall of ['north_wall_brick_mat', 'south_wall_brick_mat', 'east_wall_brick_mat', 'west_wall_brick_mat']) {
-    applyShowcasePbrSurface(scene, wall, m.wall.roughness, m.wall.environmentIntensity, m.maxSimultaneousLights);
-  }
-  applyShowcasePbrSurface(scene, 'mat_material', m.coverMat.roughness, m.coverMat.environmentIntensity, m.maxSimultaneousLights);
-  applyShowcasePbrSurface(scene, 'bleacher_material', m.bleacher.roughness, m.bleacher.environmentIntensity, m.maxSimultaneousLights);
-
-  for (const name of ['gym_ceiling_mat', 'gym_roof_panel_mat']) {
-    const ceiling = scene.getMaterialByName(name);
-    if (ceiling instanceof StandardMaterial) {
-      ceiling.specularColor = new Color3(...m.ceiling.specular);
-      ceiling.specularPower = m.ceiling.specularPower;
-    }
-  }
-}
-
-function applyShowcasePbrSurface(
-  scene: Scene,
-  materialName: string,
-  roughness: number,
-  environmentIntensity: number,
-  maxSimultaneousLights: number,
-  specularIntensity?: number,
-  albedoTint?: readonly [number, number, number]
-): void {
-  const material = scene.getMaterialByName(materialName);
-  if (!(material instanceof PBRMaterial)) return;
-  if (albedoTint) material.albedoColor = new Color3(...albedoTint);
-  material.metallic = 0;
-  material.roughness = roughness;
-  material.environmentIntensity = environmentIntensity;
-  material.maxSimultaneousLights = maxSimultaneousLights;
-  if (specularIntensity !== undefined) material.specularIntensity = specularIntensity;
 }
 
 // World size (metres) covered by one repeat of the wall block texture. All four walls shared one

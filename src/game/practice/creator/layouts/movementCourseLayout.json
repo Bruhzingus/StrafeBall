@@ -2668,32 +2668,6 @@
       "metadata": {
         "label": ""
       }
-    },
-    {
-      "id": "obj_test_spawn_mriq2lv2_1_4ytwu",
-      "type": "test_spawn",
-      "position": [
-        851,
-        14,
-        128
-      ],
-      "rotation": [
-        0,
-        180,
-        0
-      ],
-      "scale": [
-        1,
-        1,
-        1
-      ],
-      "material": "marker_cyan",
-      "collision": false,
-      "opacity": 1,
-      "wallrunEnabled": true,
-      "metadata": {
-        "label": "TEST SPAWN"
-      }
     }
   ]
 }

@@ -49,13 +49,6 @@ const MODE_STORAGE_KEY = 'strafeball.graphics.mode';
 const LEGACY_TIER_STORAGE_KEY = 'strafeball.graphics.tier';
 export const GRAPHICS_DEBUG_STORAGE_KEY = 'strafeball.debug.graphics';
 
-export const SHOWCASE_TIER_ULTRA = 'ultra';
-export const SHOWCASE_TIER_HIGH = 'high';
-export type ShowcaseTier = typeof SHOWCASE_TIER_ULTRA | typeof SHOWCASE_TIER_HIGH;
-
-/** Legacy Showcase tier default — only read by the retired Showcase modules until Phase 7 deletes them. */
-export const DEFAULT_SHOWCASE_TIER: ShowcaseTier = SHOWCASE_TIER_ULTRA;
-
 function readLocalStorage(key: string): string | null {
   try {
     return window.localStorage.getItem(key);
@@ -119,21 +112,6 @@ export function isGraphicsDebugFlagEnabled(): boolean {
   return readLocalStorage(GRAPHICS_DEBUG_STORAGE_KEY) === '1';
 }
 
-/** Legacy Showcase tier resolver — only the retired Showcase modules read it (Phase 7 deletes both). */
-export function resolveShowcaseTier(): ShowcaseTier {
-  const override = readLocalStorage(LEGACY_TIER_STORAGE_KEY);
-  if (override === SHOWCASE_TIER_ULTRA || override === SHOWCASE_TIER_HIGH) return override;
-  return DEFAULT_SHOWCASE_TIER;
-}
-
-/**
- * @deprecated The 'showcase' mode no longer resolves (migrated to 'polished'), so this is always
- * false. Kept so the retired Showcase modules compile until Phase 7 deletes them.
- */
-export function isShowcaseLightingEnabled(): boolean {
-  return false;
-}
-
 /**
  * True when Neutral — the diagnostic truth baseline — is active: current geometry/materials, one
  * hemi + one directional + one ShadowGenerator, FXAA only, no env/reflection source, and none of the
@@ -174,12 +152,6 @@ export function persistGraphicsPreset(preset: GraphicsPreset): void {
   writeLocalStorage(MODE_STORAGE_KEY, preset);
   removeLocalStorage(LEGACY_TIER_STORAGE_KEY);
 }
-
-/**
- * Name once used by the (removed) Showcase .env loader. Retained ONLY as a defensive guard key in
- * GymVisualRevamp.applyGymEnvironment so a stale texture from an old session can never be doubled.
- */
-export const SHOWCASE_ENV_TEXTURE_NAME = 'gym_showcase_env';
 
 // -------------------------------------------------------------------------------------------------
 // POLISHED mode — the single tunable block for the graphics overhaul (plan: dreamy-chasing-quokka).
@@ -385,128 +357,3 @@ export const POLISHED_CONFIG: PolishedConfig = {
     }
   }
 };
-
-/**
- * Every Showcase tunable in one place (Part 1–6 of the spec). Read by ShowcaseLighting, ShowcasePostFX,
- * and the Showcase material pass in GymVisualRevamp. Tweak here; nothing is scattered as magic numbers.
- */
-export const SHOWCASE_CONFIG = {
-  /**
-   * Showcase lighting = EVEN ambient room light, not aimed sources (the old 6-spotlight rig pooled
-   * under each fixture and read like stage lights). One broad HemisphericLight is the main fill; one
-   * angled DirectionalLight is the key + the single ShadowGenerator. The visible ceiling fixtures stay
-   * emissive housings — they are NOT light sources, so there are no spotlight pools. 1 hemi + 1 key = 2.
-   */
-  lights: {
-    /**
-     * Broad even room fill. Warm-white on upward faces; the GROUND colour is deliberately darker + cool
-     * so downward-facing surfaces, corners, and under-bleacher areas fall off naturally — this is the
-     * main "depth + darker corners" lever, no fake AO needed. Kept moderate so the key still models.
-     */
-    hemi: {
-      intensityByTier: { [SHOWCASE_TIER_ULTRA]: 0.62, [SHOWCASE_TIER_HIGH]: 0.79 } as Record<ShowcaseTier, number>,
-      diffuse: [1.0, 0.975, 0.93] as [number, number, number],
-      ground: [0.26, 0.29, 0.36] as [number, number, number], // darker cool ground = natural corner depth
-      specular: [0.06, 0.06, 0.07] as [number, number, number]
-    },
-    /**
-     * The single directional KEY (and the only ShadowGenerator). Angled diagonally so it rakes across
-     * the court and casts readable shadows that give the whole map depth — corners away from it stay
-     * darker. Warm-neutral white. This is the dominant brightness source; the hemi is the fill.
-     */
-    key: {
-      intensityByTier: { [SHOWCASE_TIER_ULTRA]: 0.95, [SHOWCASE_TIER_HIGH]: 1.08 } as Record<ShowcaseTier, number>,
-      direction: [-0.35, -1, -0.25] as [number, number, number],
-      diffuse: [1.0, 0.99, 0.95] as [number, number, number],
-      specular: [0.16, 0.16, 0.16] as [number, number, number]
-    }
-  },
-
-  /**
-   * Showcase shadows: exactly ONE ShadowGenerator, bound to the directional key. Map size by tier
-   * (2048 Ultra / 1024 High). Darkness in the 0.14–0.20 band so player/mat/dummy + selected static
-   * shadows read as soft indoor shadows that give the court depth.
-   */
-  shadows: {
-    mapSizeByTier: { [SHOWCASE_TIER_ULTRA]: 2048, [SHOWCASE_TIER_HIGH]: 1024 } as Record<ShowcaseTier, number>,
-    /** Babylon darkness: 0 = black, 1 = invisible. */
-    darknessByTier: { [SHOWCASE_TIER_ULTRA]: 0.22, [SHOWCASE_TIER_HIGH]: 0.28 } as Record<ShowcaseTier, number>,
-    bias: 0.0016,
-    normalBias: 0.02,
-    /** 'pcf' (default, broad support) or 'pcfsoft' (softer, slightly heavier). */
-    filter: 'pcf' as 'pcf' | 'pcfsoft'
-  },
-
-  /**
-   * SSAO (Phase 8) — subtle contact depth in bleacher gaps / wall-floor & wall-ceiling joins / scoreboard
-   * recess / mat contact / pad seams. Showcase-only, and `enabled` is THE single kill switch: set it to
-   * false to remove SSAO entirely (no other change needed). Kept gentle with a raised `base` so it never
-   * turns the bright gym dark/dirty, greys the walls, hazes the room, or halos.
-   */
-  ssao: {
-    /** THE SSAO kill switch. RECOVERY: SSAO is OFF — the scene must pass a direct-light/material
-     * baseline before SSAO is reconsidered. true = subtle SSAO2 in Showcase; false = no SSAO anywhere. */
-    enabled: false,
-    /** Final occlusion = clamp(base + ssao). A high base keeps it subtle and stops black-out. */
-    base: 0.3,
-    totalStrength: 0.7, // softened for subtlety (Phase 8): contact darkening only, no dirty haze
-    radius: 1.3,
-    maxZ: 55,
-    /** Samples + render ratio scale with tier; expensive bilateral blur only at Ultra. */
-    byTier: {
-      [SHOWCASE_TIER_ULTRA]: { samples: 16, ssaoRatio: 1.0, blurRatio: 1.0, expensiveBlur: true, textureSamples: 4 },
-      [SHOWCASE_TIER_HIGH]: { samples: 8, ssaoRatio: 0.75, blurRatio: 1.0, expensiveBlur: false, textureSamples: 2 }
-    } as Record<ShowcaseTier, { samples: number; ssaoRatio: number; blurRatio: number; expensiveBlur: boolean; textureSamples: number }>
-  },
-
-  /**
-   * INERT since Phase 6/8: bloom is forbidden and is NOT wired anywhere. FXAA is the standalone post in
-   * ArenaScene (all modes). This block is retained only so the data isn't lost if a separate bloom test
-   * is requested later; nothing reads it today.
-   */
-  post: {
-    fxaa: true,
-    bloom: {
-      enabled: false,
-      /** High threshold so only bright emissive fixtures / scoreboard LEDs bloom — court lines, balls,
-       * and UI stay sharp. */
-      threshold: 0.85,
-      weight: 0.16,
-      kernel: 32,
-      scale: 0.5
-    }
-  },
-
-  /**
-   * Phase 7 static reflection probe. ONE Babylon ReflectionProbe centred at mid-court between floor and
-   * ceiling, rendered once over an explicit static render list (see GymReflectionProbe). 256 to start;
-   * 512 is permitted for High/Showcase only if 256 reads insufficient after screenshots.
-   */
-  reflectionProbe: {
-    resolution: 256,
-    /** Probe Y = wallHeight × this. 0.5 ⇒ roughly midway between floor and ceiling. */
-    centerHeightFraction: 0.5
-  },
-
-  /**
-   * Showcase material response (Part 1 + Part 6). Applied as an override pass ON TOP of the competitive
-   * baseline material tuning, only in Showcase mode, so the baseline values are never mutated. Roughness
-   * values sit inside the spec bands; environmentIntensity now scales the Phase-7 reflection PROBE (not
-   * an HDR env) — broad blurred fixture response mainly on the floor, never a mirror.
-   */
-  materials: {
-    /** PBR simultaneous-light cap. Showcase now has just 2 scene lights (1 hemi + 1 directional key),
-     * so the PBR default of 4 is ample; no surface ever needs more than 2 simultaneously. */
-    maxSimultaneousLights: 4,
-    // Calmed maple response (Materials Pass B): roughness raised and environmentIntensity/specularIntensity
-    // lowered so the probe reflection stays a faint blurred response rather than a wet/strong highlight,
-    // matching the Competitive baseline in GYM_MATERIAL_TUNING.floor.
-    floor: { albedoTint: [1.0, 0.99, 0.955] as [number, number, number], roughness: 0.58, environmentIntensity: 0.065, specularIntensity: 0.22 },
-    coverMat: { roughness: 0.48, environmentIntensity: 0.08 }, // tiny satin response
-    bleacher: { roughness: 0.8, environmentIntensity: 0.05 }, // matte like Neutral — no glossy highlight
-    wall: { roughness: 0.74, environmentIntensity: 0.0 }, // nearly none (no reflectionTexture wired)
-    /** Ceiling is a StandardMaterial (no PBR roughness): expressed as a near-zero specular response,
-     * the StandardMaterial equivalent of the 0.82–0.90 roughness intent. */
-    ceiling: { specular: [0.012, 0.012, 0.011] as [number, number, number], specularPower: 8 }
-  }
-} as const;

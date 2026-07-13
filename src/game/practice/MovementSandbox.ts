@@ -157,6 +157,11 @@ export class MovementSandbox implements MovementWorld {
   private coopPoint: { x: number; z: number; yaw: number; radius: number; holdSeconds: number };
   private coopHold = 0;
   private coopLatched = false;
+  // You arrive in the yard still holding E (you held it at the gym's Movement Course portal to get
+  // here). Without this gate that carried-over hold immediately re-fires whichever yard portal you
+  // spawn next to — which is why only the nearest portal ever seemed to "work". Require one genuine
+  // release of E after entering before ANY yard portal can begin a hold.
+  private interactArmed = false;
   /** Slot for the Course Creator's own entry portal (built separately by CreatorEditor), kept in the
    *  same row as leave/race so all three read as one connected hub regardless of course layout. */
   private readonly creatorEntrySlot: { x: number; y: number; z: number; yaw: number };
@@ -288,6 +293,11 @@ export class MovementSandbox implements MovementWorld {
 
     this.leaveHold = 0;
     this.leaveLatched = false;
+    this.raceHold = 0;
+    this.raceLatched = false;
+    this.coopHold = 0;
+    this.coopLatched = false;
+    this.interactArmed = false; // must release E once (carried over from the gym portal) before any yard portal arms
   }
 
   exit(player?: PlayerController): void {
@@ -475,7 +485,11 @@ export class MovementSandbox implements MovementWorld {
     }
 
     const p = player.root.position;
-    const held = input.isKeyDown(CONTROL_KEYS.interact);
+    const heldRaw = input.isKeyDown(CONTROL_KEYS.interact);
+    // Arm on the first release of E after entering the yard. Until then a carried-over hold (from the
+    // gym portal that brought you here) is ignored so it can't insta-trigger a yard portal.
+    if (!heldRaw) this.interactArmed = true;
+    const held = heldRaw && this.interactArmed;
 
     // Leave portal (hold E).
     const leave = this.leavePoint;
