@@ -113,11 +113,17 @@ export class PolishedPostFX {
     // --- 1. SSAO2 (before the pipeline so AO composes pre-tonemap) ---
     if (cfg.post.ssao.enabled && SSAO2RenderingPipeline.IsSupported) {
       const s = cfg.post.ssao;
+      // forceGeometryBuffer=true is CRITICAL: SSAO2 defaults to the PrePass renderer, which renders
+      // the scene COLOR single-sampled — that silently nullifies the pipeline's MSAA (the reported
+      // "MSAA did nothing; edges still jagged"). A separate geometry buffer gives SSAO its own
+      // depth/normal render and leaves the color path free to keep MSAA. Small extra cost; the FPS
+      // budget covers it.
       const ssao = new SSAO2RenderingPipeline(
         POLISHED_SSAO_PIPELINE,
         scene,
         { ssaoRatio: s.ssaoRatio, blurRatio: s.blurRatio },
-        [camera]
+        [camera],
+        true
       );
       ssao.base = s.base;
       ssao.totalStrength = s.totalStrength;

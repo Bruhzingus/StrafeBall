@@ -134,8 +134,11 @@ const GYM_MATERIAL_TUNING = {
     // Soft plank seams on a polished floor — lowered so the grain reads as real wood texture rather
     // than embossed relief.
     normalLevel: 0.3,
-    // Floor color (and its normal) filtered at 4x max — soft highlights, cheap filtering.
-    colorAnisotropy: 4,
+    // 16x anisotropic filtering: THE fix for the grazing-angle shimmer on the floor's plank seams
+    // and court markings (the "why are all these lines sharp/sparkly" symptom). MSAA can't touch
+    // texture-minification aliasing; anisotropy samples the stretched texture correctly at shallow
+    // view angles. Near-free on desktop GPUs (auto-clamped to the hardware max). Was capped at 4.
+    colorAnisotropy: 16,
     // Subtle plank-seam depth only — the bright maple floor must not read darker/dirtier overall.
     aoStrength: 0.08
   },
@@ -312,14 +315,25 @@ export function createBeveledPanelMesh(
   const raise = options.raise ?? Math.min(depth * 0.4, 0.015);
   const cushionWidth = Math.max(0.01, width - border * 2);
   const cushionHeight = Math.max(0.01, height - border * 2);
+  // A second inset turns the hard shoulder into a softly crowned foam profile. At normal gameplay
+  // distance the two highlights read as rolled vinyl instead of a flat box with a decal.
+  const crownInset = Math.min(border * 0.28, 0.026);
+  const crownWidth = Math.max(0.01, cushionWidth - crownInset * 2);
+  const crownHeight = Math.max(0.01, cushionHeight - crownInset * 2);
 
   const parts: Mesh[] = [MeshBuilder.CreateBox(`${name}_core`, { width, height, depth }, scene)];
   for (const sign of [-1, 1] as const) {
-    // depth = raise * 2 so the cushion protrudes `raise` past the core face and sinks `raise` inside
-    // it (the inner half is hidden), giving a clean raised step with no coplanar faces.
-    const cushion = MeshBuilder.CreateBox(`${name}_cushion_${sign}`, { width: cushionWidth, height: cushionHeight, depth: raise * 2 }, scene);
-    cushion.position.z = sign * (depth / 2);
-    parts.push(cushion);
+    // The shoulder is partly buried in the core and the crown overlaps it, avoiding coplanar faces
+    // while producing two progressively softer steps toward the centre of the foam.
+    const shoulder = MeshBuilder.CreateBox(`${name}_shoulder_${sign}`, {
+      width: cushionWidth, height: cushionHeight, depth: raise
+    }, scene);
+    shoulder.position.z = sign * (depth / 2 + raise * 0.15);
+    const crown = MeshBuilder.CreateBox(`${name}_crown_${sign}`, {
+      width: crownWidth, height: crownHeight, depth: raise * 0.9
+    }, scene);
+    crown.position.z = sign * (depth / 2 + raise * 0.55);
+    parts.push(shoulder, crown);
   }
 
   const merged = Mesh.MergeMeshes(parts, true, true, undefined, false, false) ?? parts[0];
@@ -415,7 +429,17 @@ function enhanceExistingMaterials(scene: Scene): void {
   if (coverMatMaterial instanceof PBRMaterial) {
     const cover = GYM_MATERIAL_TUNING.navy.coverMat;
     const coverTexture = createImageTexture(scene, 'gym_cover_mat_png', GYM_TEXTURES.coverMat, 1, 1);
+    const coverNormal = createImageTexture(scene, 'gym_cover_mat_vinyl_normal', GYM_TEXTURES.wallPadNavyNormal, 1, 1);
+    const coverRoughness = createImageTexture(scene, 'gym_cover_mat_vinyl_roughness', GYM_TEXTURES.wallPadNavyRoughness, 1, 1);
+    coverNormal.gammaSpace = false;
+    coverRoughness.gammaSpace = false;
+    coverNormal.level = 0.42;
     coverMatMaterial.albedoTexture = coverTexture;
+    coverMatMaterial.bumpTexture = coverNormal;
+    coverMatMaterial.metallicTexture = coverRoughness;
+    coverMatMaterial.useRoughnessFromMetallicTextureGreen = true;
+    coverMatMaterial.useRoughnessFromMetallicTextureAlpha = false;
+    coverMatMaterial.useMetallnessFromMetallicTextureBlue = false;
     coverMatMaterial.albedoColor = new Color3(...cover.albedoColor);
     coverMatMaterial.emissiveColor = new Color3(...cover.emissive);
     coverMatMaterial.metallic = cover.metallic;
@@ -907,14 +931,14 @@ const WALL_PAD_WORDMARK = 'STRAFEBALL';
 const WALL_PAD_MODULE_COUNT = 16;
 const WALL_PAD_SIDE_INSET = 0.24;
 // Real crash-pad proportions. The old pads were 5.2 cm flat boxes with 1.6 cm seams — they read as
-// cabinet doors. A school crash pad is ~7-10 cm of foam with a softly stepped vinyl face and a clear
+// cabinet doors. A school crash pad is ~10 cm of foam with a softly stepped vinyl face and a clear
 // recessed seam between sections (the dark backing board shows through the gap as depth).
-const WALL_PAD_SEAM_GAP = 0.032;
-const PAD_TOTAL_DEPTH = 0.085; // core slab depth off the wall
-const PAD_CUSHION_BORDER = 0.085; // vinyl border frame around the raised cushion face
-const PAD_CUSHION_RAISE = 0.018; // how far the cushion face steps out past the core slab
+const WALL_PAD_SEAM_GAP = 0.042;
+const PAD_TOTAL_DEPTH = 0.105; // believable four-inch foam slab depth off the wall
+const PAD_CUSHION_BORDER = 0.105; // rolled vinyl border around the raised pillow face
+const PAD_CUSHION_RAISE = 0.03; // crown that survives normal gameplay viewing distance
 // Pad core centred so its BACK face sits ~4 mm off the wall's inner face (no float gap) and the
-// cushion front lands ~10.7 cm into the court — believable padding depth, minimal ball-clip delta.
+// cushion front lands ~13.9 cm into the court — believable padding depth, minimal ball-clip delta.
 const PAD_CENTER_INSET = PAD_TOTAL_DEPTH * 0.5 + 0.004;
 const PAD_FACE_INSET = PAD_CENTER_INSET + PAD_TOTAL_DEPTH * 0.5 + PAD_CUSHION_RAISE;
 
@@ -1559,7 +1583,9 @@ function createImageTexture(
   uScale = 1,
   vScale = 1,
   clamp = false,
-  anisotropy = 8
+  // 16x anisotropic filtering by default (walls, cover mats, bleacher/ceiling textures, signage):
+  // kills grazing-angle texture shimmer that MSAA can't. Auto-clamped to the GPU max; near-free.
+  anisotropy = 16
 ): Texture {
   const texture = new Texture(url, scene);
   texture.name = name;

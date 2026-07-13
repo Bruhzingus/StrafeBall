@@ -196,6 +196,15 @@ export type Tuple3 = [number, number, number];
 export type Rgb3 = Tuple3;
 
 export interface PolishedConfig {
+  /**
+   * Supersampling factor: the WebGL buffer renders at renderScale× the canvas size, then downsamples
+   * to the screen (SSAA). This is the one AA technique that cleans EVERYTHING — geometric edges
+   * (bleacher rails, center line), thin bright emissives (the light strips' sparkle), texture
+   * shimmer, and specular — with no prepass/MSAA compatibility caveats. 1 = native; 1.5 = 2.25×
+   * fragments. The single biggest quality lever AND the single biggest GPU cost — the tuning panel's
+   * "Render scale" slider drives it live. Applied via engine.setHardwareScalingLevel(1/renderScale).
+   */
+  renderScale: number;
   /** Scene image processing (ACES stays on; these are the exposure/contrast lift values). */
   imageProcessing: { exposure: number; contrast: number };
   lights: {
@@ -298,6 +307,12 @@ export interface PolishedConfig {
 export const POLISHED_CONFIG: PolishedConfig = {
   // Reference-image grade: warmer + slightly punchier than the baseline (honey-toned court, gentle
   // contrast lift). Final calibration continues via the tuning panel against the reference render.
+  // 1.0 = native (no supersampling). Supersampling is the big FPS cost — even 1.10× dipped the target
+  // mid GPU below its 144 cap. With SSAO2 no longer stealing MSAA (forceGeometryBuffer), 4× MSAA
+  // (nearly free on modern GPUs) handles the geometric edges (center line, bleacher rails) that were
+  // the core complaint, so supersampling stays OFF by default. Raise the "Render scale" slider only
+  // to further soften thin bright emissives (light strips) when FPS headroom allows.
+  renderScale: 1.0,
   // Phase 7: baked from the user's live-tuned session (GraphicsTuningPanel "Log baked JSON",
   // reference-image calibration pass) — this IS the calibrated look, not a placeholder.
   imageProcessing: { exposure: 1.23, contrast: 1.11 },
@@ -330,7 +345,11 @@ export const POLISHED_CONFIG: PolishedConfig = {
   mirror: { enabled: true, ratio: 0.5, blurKernel: 20, floorEnvironmentIntensity: 0.69, floorSpecularIntensity: 0.05, maxRenderListSize: 120 },
   post: {
     fxaa: true,
-    msaaSamples: 4, // MSAA 4× for crisp bleacher rails / light strips (FXAA can't fix geometric edges)
+    // MSAA 4×: 8× held 144 in open views but dropped to ~100 in dense corner views (every wall, the
+    // full bleacher stack, and both goal areas resolving at once) — the MSAA resolve cost scales with
+    // how much high-frequency geometry fills the frame. 4× is the sustainable geometric-edge AA that
+    // keeps the cap even in the worst-case corner. Anisotropy 16× still handles all textured shimmer.
+    msaaSamples: 4,
     ssao: {
       enabled: true,
       base: 0.35,

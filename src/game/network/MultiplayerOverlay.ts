@@ -19,6 +19,14 @@ const MODE_LABEL: Record<LobbyMode, string> = {
   '2v2': '2v2 Team Room'
 };
 
+/**
+ * How long the in-game celebration plays before the report card fades in. Match end gets a long
+ * beat (victory lighting sweep ≈1.4s + pulse, HUD VICTORY banner); round ends a short one so the
+ * between-rounds flow stays snappy.
+ */
+const MATCH_REPORT_HOLD_MS = 3200;
+const ROUND_REPORT_HOLD_MS = 1200;
+
 export class MultiplayerOverlay {
   private readonly root: HTMLDivElement;
   private readonly panel: HTMLDivElement;
@@ -58,6 +66,10 @@ export class MultiplayerOverlay {
   private pendingAction: PendingAction = null;
   private awaitingInteractReleaseFocus = false;
   private lastCompletedMatchKey = '';
+  // The report card does NOT pop the moment a match/round ends: the in-game celebration (victory
+  // lighting + HUD banner) plays first, then the card fades in (CSS entrance on --postmatch).
+  private reportRevealed = false;
+  private reportRevealTimer: number | null = null;
   private lastRendered = {
     connected: false,
     busy: false,
@@ -70,6 +82,7 @@ export class MultiplayerOverlay {
     nameReady: false,
     modalOpen: false,
     settingsOpen: false,
+    reportRevealed: false,
     roomSummaryKey: ''
   };
 
@@ -239,6 +252,7 @@ export class MultiplayerOverlay {
   }
 
   dispose(): void {
+    this.cancelReportReveal();
     this.createButton.removeEventListener('click', this.createRoom);
     this.joinButton.removeEventListener('click', this.joinRoom);
     this.leaveButton.removeEventListener('click', this.leaveRoom);
@@ -275,11 +289,26 @@ export class MultiplayerOverlay {
     const completedKey = completedMatchKey(snapshot?.room ?? null);
     if (completedKey && completedKey !== this.lastCompletedMatchKey) {
       this.lastCompletedMatchKey = completedKey;
-      this.modalOpen = true;
+      // Don't slam the card open on the final hit: hold while the in-game celebration plays
+      // (victory lighting + banner), then reveal the card with its CSS entrance.
+      this.reportRevealed = false;
+      this.cancelReportReveal();
+      const holdMs = snapshot?.room.match.status === 'complete' ? MATCH_REPORT_HOLD_MS : ROUND_REPORT_HOLD_MS;
+      this.reportRevealTimer = window.setTimeout(() => {
+        this.reportRevealTimer = null;
+        this.reportRevealed = true;
+        const status = this.client.latestSnapshot?.room.match.status;
+        if (this.client.connected && (status === 'complete' || status === 'intermission')) this.modalOpen = true;
+        this.update();
+      }, holdMs);
     }
     const liveMatch = isLiveMatch(snapshot?.room ?? null);
     const matchStatus = snapshot?.room.match.status;
     const reportOpen = this.client.connected && (matchStatus === 'complete' || matchStatus === 'intermission');
+    if (!reportOpen) this.reportRevealed = false;
+    // Visible card = report state AND the celebration hold has elapsed.
+    const reportVisible = reportOpen && this.reportRevealed;
+    const celebrationHold = reportOpen && !this.reportRevealed;
     // Auto-close the menu only at the MOMENT the match goes live (so play isn't blocked). The player
     // can deliberately reopen it mid-match — e.g. to call or agree to an early-end vote — and it stays
     // open until they close it (or the next match starts).
@@ -317,6 +346,7 @@ export class MultiplayerOverlay {
       this.lastRendered.nameReady === nameReady &&
       this.lastRendered.modalOpen === this.modalOpen &&
       this.lastRendered.settingsOpen === this.settingsOpen &&
+      this.lastRendered.reportRevealed === this.reportRevealed &&
       this.lastRendered.roomSummaryKey === roomSummary.key
     ) {
       return;
@@ -333,6 +363,7 @@ export class MultiplayerOverlay {
       nameReady,
       modalOpen: this.modalOpen,
       settingsOpen: this.settingsOpen,
+      reportRevealed: this.reportRevealed,
       roomSummaryKey: roomSummary.key
     };
 
@@ -381,10 +412,12 @@ export class MultiplayerOverlay {
     const compact = connected && !busy && this.client.status !== 'error' && !reportOpen && !liveMatch && !this.modalOpen && !this.settingsOpen;
     this.root.classList.toggle('multiplayer-modal--compact', compact);
     this.root.classList.toggle('multiplayer-modal--live', liveMatch);
-    this.root.classList.toggle('multiplayer-modal--postmatch', reportOpen);
+    this.root.classList.toggle('multiplayer-modal--postmatch', reportVisible);
     this.root.classList.toggle('multiplayer-modal--connected', connected);
     this.root.classList.toggle('multiplayer-modal--settings-open', this.settingsOpen);
-    const shouldShow = (!liveMatch && (this.settingsOpen || this.modalOpen || connected)) || busy || this.client.status === 'error' || reportOpen;
+    // During the celebration hold the whole overlay stays hidden — the gym (victory lighting,
+    // HUD banner) IS the end-of-match screen until the card fades in.
+    const shouldShow = (!liveMatch && !celebrationHold && (this.settingsOpen || this.modalOpen || connected)) || busy || this.client.status === 'error' || reportVisible;
     this.root.classList.toggle('multiplayer-modal--hidden', !shouldShow);
     this.syncLockOverlaySuppression();
   }
@@ -401,9 +434,18 @@ export class MultiplayerOverlay {
     this.runWithFullscreenCheck(() => this.client.joinRoom(this.joinInput.value, this.nameInput.value));
   };
 
+  private cancelReportReveal(): void {
+    if (this.reportRevealTimer !== null) {
+      window.clearTimeout(this.reportRevealTimer);
+      this.reportRevealTimer = null;
+    }
+  }
+
   private leaveRoom = (): void => {
     this.client.leave();
     this.lastCompletedMatchKey = '';
+    this.cancelReportReveal();
+    this.reportRevealed = false;
     this.modalOpen = true;
     this.settingsOpen = false;
     this.update();
@@ -549,6 +591,8 @@ export class MultiplayerOverlay {
         this.client.leave();
         this.modalOpen = true;
         this.lastCompletedMatchKey = '';
+        this.cancelReportReveal();
+        this.reportRevealed = false;
         this.update();
         return;
       }
@@ -1316,19 +1360,27 @@ function buildPostmatchHtml(room: RoomState, localPlayerId: string): string {
   const nextVoted = iv.nextRoundByPlayerId[localPlayerId] === true;
   const lobbyVoted = iv.toLobbyByPlayerId[localPlayerId] === true;
 
+  // "Play again" is the hero action; "Lobby & Settings" is the explicit path to reconfigure the
+  // room (lives, rounds, court, teams); 2v2 additionally gets a direct "Change Teams" vote.
   let actions: string;
   if (isFinal) {
     const rematchVoted = room.resetVote.mode === 'same-teams' && room.resetVote.votesByPlayerId[localPlayerId] === true;
     const rematchCount = room.resetVote.mode === 'same-teams' ? room.resetVote.voteCount : 0;
+    const reshuffleVoted = room.resetVote.mode === 'reset-teams' && room.resetVote.votesByPlayerId[localPlayerId] === true;
+    const reshuffleCount = room.resetVote.mode === 'reset-teams' ? room.resetVote.voteCount : 0;
+    const changeTeams = room.match.mode === '2v2'
+      ? `<button class="multiplayer-postmatch-action multiplayer-postmatch-action--alt" type="button" data-postmatch-action="reshuffle"${reshuffleVoted ? ' disabled' : ''}>${reshuffleVoted ? 'Teams Voted' : 'Change Teams'}${formatVoteTally(reshuffleCount, room.resetVote.requiredVotes)}</button>`
+      : '';
     actions = `
-      <button class="multiplayer-postmatch-action" type="button" data-postmatch-action="rematch"${rematchVoted ? ' disabled' : ''}>${rematchVoted ? 'Rematch Voted' : 'Rematch'}${formatVoteTally(rematchCount, room.resetVote.requiredVotes)}</button>
-      <button class="multiplayer-postmatch-action multiplayer-postmatch-action--paper" type="button" data-postmatch-action="to-lobby"${lobbyVoted ? ' disabled' : ''}>${lobbyVoted ? `Pregame Voted${toLobbyTally}` : `Pregame Lobby${toLobbyTally}`}</button>
+      <button class="multiplayer-postmatch-action" type="button" data-postmatch-action="rematch"${rematchVoted ? ' disabled' : ''}>${rematchVoted ? 'Rematch Voted' : 'Play Again'}${formatVoteTally(rematchCount, room.resetVote.requiredVotes)}</button>
+      ${changeTeams}
+      <button class="multiplayer-postmatch-action multiplayer-postmatch-action--paper" type="button" data-postmatch-action="to-lobby"${lobbyVoted ? ' disabled' : ''}>${lobbyVoted ? `Lobby Voted${toLobbyTally}` : `Lobby & Settings${toLobbyTally}`}</button>
       <button class="multiplayer-postmatch-action multiplayer-postmatch-action--copy" type="button" data-postmatch-action="copy-code">Copy Code</button>
     `;
   } else {
     actions = `
       <button class="multiplayer-postmatch-action" type="button" data-postmatch-action="next-round"${nextVoted ? ' disabled' : ''}>${nextVoted ? `Round Voted${nextRoundTally}` : `Next Round${nextRoundTally}`}</button>
-      <button class="multiplayer-postmatch-action multiplayer-postmatch-action--paper" type="button" data-postmatch-action="to-lobby"${lobbyVoted ? ' disabled' : ''}>${lobbyVoted ? `Pregame Voted${toLobbyTally}` : `Pregame Lobby${toLobbyTally}`}</button>
+      <button class="multiplayer-postmatch-action multiplayer-postmatch-action--paper" type="button" data-postmatch-action="to-lobby"${lobbyVoted ? ' disabled' : ''}>${lobbyVoted ? `Lobby Voted${toLobbyTally}` : `Lobby & Settings${toLobbyTally}`}</button>
       <button class="multiplayer-postmatch-action multiplayer-postmatch-action--copy" type="button" data-postmatch-action="copy-code">Copy Code</button>
     `;
   }
@@ -1336,8 +1388,14 @@ function buildPostmatchHtml(room: RoomState, localPlayerId: string): string {
   const connectedCount = players.filter((player) => player.connected !== false).length;
   const voteHint = req > 0 ? `A vote passes at ${req} of ${connectedCount} players (70%).` : '';
 
+  // Winner's team block first — a scorecard reads top-down from the result.
+  const orderedTeamIds = [...room.match.teamIds].sort((a, b) => Number(b === winnerTeamId) - Number(a === winnerTeamId));
+  const teamsHtml = orderedTeamIds
+    .map((teamId) => buildReportTeamHtml(room, teamId, localPlayerId, winnerTeamId, players.filter((p) => p.teamId === teamId), isFinal))
+    .join('');
+
   return `
-    <div class="multiplayer-report-card multiplayer-report-card--compact multiplayer-report-card--${localWon ? 'win' : 'loss'}" data-mode="${room.match.mode}">
+    <div class="multiplayer-report-card multiplayer-report-card--${localWon ? 'win' : 'loss'}" data-mode="${room.match.mode}">
       <div class="multiplayer-report-card__top">
         <div>
           <div class="multiplayer-report-card__eyebrow">${eyebrow}</div>
@@ -1350,6 +1408,7 @@ function buildPostmatchHtml(room: RoomState, localPlayerId: string): string {
         <span><em>Series</em><strong>${formatRoundLine(room)}</strong></span>
         <span><em>${isFinal ? 'Winner' : 'Round'}</em><strong>${escapeHtml(winnerTeamId.toUpperCase())}</strong></span>
       </div>
+      <div class="multiplayer-report-card__teams">${teamsHtml}</div>
       <div class="multiplayer-report-card__actions">${actions}</div>
       <div class="multiplayer-report-card__vote">${escapeHtml(voteHint)}</div>
     </div>

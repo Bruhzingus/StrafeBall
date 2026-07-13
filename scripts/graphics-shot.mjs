@@ -79,6 +79,14 @@ page.on('pageerror', (err) => errorLines.push(`pageerror: ${err.message}`));
 
 await page.goto(url, { waitUntil: 'domcontentloaded' });
 await page.waitForTimeout(3500); // engine + gym build + one-shot audit
+// Wait out the "TIP-OFF!" asset-loading splash if it's still up (a fresh dev-server HMR rebuild can
+// push first load past the base wait). The loading overlay carries the #loading-screen id.
+for (let i = 0; i < 20; i += 1) {
+  const loading = page.locator('#loading-screen, #loading-overlay, .loading-screen');
+  const stillLoading = (await loading.count()) > 0 && (await loading.first().isVisible().catch(() => false));
+  if (!stillLoading) break;
+  await page.waitForTimeout(500);
+}
 
 // Hide the dev tuning panel so captures stay pixel-comparable across presets.
 await page.addStyleTag({ content: '#graphics-tuning-panel { display: none !important; }' });

@@ -3348,15 +3348,41 @@ html, body {
   display: none;
 }
 
+/* Postmatch reveal: the card rises in AFTER the in-game celebration beat (MultiplayerOverlay holds
+   the --postmatch class back), over a soft vignette that keeps the team-colored victory lighting
+   visible around the card. */
+.multiplayer-modal--postmatch .multiplayer-modal__shade {
+  display: block;
+  background: radial-gradient(circle at 50% 42%, rgba(8, 13, 26, 0.12), rgba(8, 13, 26, 0.5) 84%);
+  animation: postmatch-shade-in 1100ms ease-out both;
+}
+
+@keyframes postmatch-shade-in {
+  from { opacity: 0; }
+  to { opacity: 1; }
+}
+
 .multiplayer-modal--postmatch .multiplayer-postmatch {
   position: relative;
   z-index: 1;
   display: block;
-  width: min(640px, calc(100vw - 32px));
+  width: min(880px, calc(100vw - 32px));
   max-height: calc(100vh - 32px);
   margin: 0;
   overflow: auto;
   pointer-events: auto;
+  animation: postmatch-card-in 700ms cubic-bezier(0.16, 1, 0.3, 1) both;
+}
+
+@keyframes postmatch-card-in {
+  from {
+    opacity: 0;
+    transform: translateY(28px) scale(0.965);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
 }
 
 .multiplayer-modal--postmatch .multiplayer-report-card {
@@ -3428,26 +3454,10 @@ html, body {
   white-space: nowrap;
 }
 
-.multiplayer-modal--postmatch .multiplayer-report-card--compact .multiplayer-report-card__actions {
-  grid-template-columns: repeat(3, minmax(0, 1fr));
-  gap: 12px;
-  margin-top: 4px;
-}
-
-.multiplayer-modal--postmatch .multiplayer-report-card--compact .multiplayer-postmatch-action {
-  min-height: 50px;
-  padding: 12px 14px;
-  border-width: 2.5px;
-  border-radius: 11px;
-  font-size: 14px;
-  white-space: normal;
-}
-
-.multiplayer-modal--postmatch .multiplayer-report-card--compact .multiplayer-report-card__vote {
-  grid-column: 1 / -1;
-  margin-top: 4px;
-  padding: 10px 14px;
-  font-size: 15px;
+/* 1v1: the team block's totals row would duplicate its single player's stat row — hide it and let
+   the player card (with grade) carry the numbers. 2v2 keeps totals as the team rollup. */
+.multiplayer-modal--postmatch .multiplayer-report-card[data-mode="1v1"] .multiplayer-report-team__totals {
+  display: none;
 }
 
 .multiplayer-modal--postmatch .multiplayer-report-card__teams {
@@ -3545,7 +3555,8 @@ html, body {
 }
 
 .multiplayer-modal--postmatch .multiplayer-report-card__actions {
-  grid-template-columns: repeat(3, minmax(0, 1fr));
+  /* One even row whether the card has 3 CTAs (1v1) or 4 (2v2 adds Change Teams). */
+  grid-template-columns: repeat(auto-fit, minmax(160px, 1fr));
   gap: 12px;
   margin-top: 0;
 }

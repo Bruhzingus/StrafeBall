@@ -357,7 +357,10 @@ export class GymArena {
         width: MAT_DIMENSIONS.width,
         height: MAT_DIMENSIONS.height,
         depth: MAT_DIMENSIONS.depth,
-        material: this.loader.material('mat')
+        material: this.loader.material('mat'),
+        // Broad rolled border and a crown strong enough to read while moving past the obstacle.
+        border: 0.105,
+        raise: 0.032
       });
       const mat = new MatObstacle(spec.id, visual, new Vector3(spec.x, spec.y, spec.z), spec.yawRadians);
       this.mats.push(mat);

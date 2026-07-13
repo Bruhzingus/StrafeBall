@@ -47,6 +47,7 @@ import {
   registerGymMirrorMesh
 } from '../map/GymFloorMirror';
 import { createGymCoveLighting, disposeGymCoveLighting } from '../map/GymCoveLighting';
+import { startGymVictoryLighting, stopGymVictoryLighting } from '../map/GymVictoryLighting';
 import { addPolishedGlowMesh, addPolishedGlowOccluder, PolishedPostFX } from '../effects/PolishedPostFX';
 import { MatObstacle } from '../map/MatObstacle';
 import { ModelLoader } from '../assets/ModelLoader';
@@ -348,6 +349,14 @@ export class ArenaScene {
     this.scene.clearColor.set(0.04, 0.05, 0.065, 1);
     this.input = new InputManager(canvas);
 
+    // Polished supersampling: render the WebGL buffer at renderScale× the canvas, then downsample
+    // (SSAA) — the AA that actually tames the thin bright light strips / center line. Engine-level,
+    // so it must be set before/independent of the pipeline. Performance/Neutral render at native 1×.
+    if (this.quality === 'polished') {
+      const renderScale = Math.max(1, resolvePolishedConfig().renderScale);
+      engine.setHardwareScalingLevel(1 / renderScale);
+    }
+
     this.createLighting();
 
     const loader = new ModelLoader(this.scene);
@@ -430,6 +439,16 @@ export class ArenaScene {
       window.setTimeout(() => {
         if (!this.onlineModeActive && !this.multiplayer.connected) this.enterMovementCourse();
       }, 800);
+    }
+
+    // Dev-only preview of the match-win light celebration (the real trigger is the online winner
+    // event): `__sbVictoryLighting('blue' | 'red')` sweeps the gym strips, `__sbVictoryLighting()`
+    // eases them back. Lets the harness/user check the look without finishing an online match.
+    if (isGraphicsDebugEnabled()) {
+      (window as unknown as Record<string, unknown>).__sbVictoryLighting = (teamId?: string): void => {
+        if (teamId) startGymVictoryLighting(this.scene, teamId);
+        else stopGymVictoryLighting();
+      };
     }
   }
 
@@ -1994,6 +2013,7 @@ export class ArenaScene {
     if (!this.onlineModeActive) return;
     this.onlineModeActive = false;
     this.onlineModeStartedAtMs = 0;
+    stopGymVictoryLighting(true); // leaving the room: snap the strip lighting back immediately
     this.resetBackflipQte();
     this.networkRenderer.clear();
     this.onlineCharging.left = false;
@@ -2168,6 +2188,10 @@ export class ArenaScene {
     const winnerTeamId = snapshot.room.match.winnerTeamId;
     if (winnerTeamId && winnerTeamId !== this.lastOnlineWinnerTeamId) {
       this.effects.onMatchWin();
+      // In-game celebration: the gym's cove/strip lights sweep to the winner's color and slowly
+      // pulse while the report card holds off (MultiplayerOverlay delays its reveal). Restored by
+      // detectServerReset / exitOnlineMode when the room moves on.
+      startGymVictoryLighting(this.scene, winnerTeamId);
       const local = snapshot.room.players[this.multiplayer.localPlayerId];
       const localWon = local?.teamId === winnerTeamId;
       this.hud.showScoreEvent(
@@ -2543,6 +2567,7 @@ export class ArenaScene {
     this.lastOnlineScoreByTeamId = {};
     this.pendingOnlineScoreEvents = [];
     this.lastOnlineWinnerTeamId = null;
+    stopGymVictoryLighting(); // ease the victory strip colors back to warm for the next match
     this.lastOnlineBallBounceCount.clear();
     this.lastTeamChoiceAnnouncementKeyByPlayerId.clear();
     this.hud.showScoreEvent('RESET', 'Room reset', 'neutral');

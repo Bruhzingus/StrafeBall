@@ -42,6 +42,14 @@ interface SliderDef {
 function sliderDefs(): SliderDef[] {
   return [
     {
+      // Supersampling — the biggest AA lever AND the biggest GPU cost. Live via hardware scaling.
+      label: 'Render scale',
+      min: 1, max: 2, step: 0.05,
+      read: (c) => c.renderScale,
+      apply: (v, scene) => scene.getEngine().setHardwareScalingLevel(1 / Math.max(1, v)),
+      write: (o, v) => { o.renderScale = v; }
+    },
+    {
       label: 'Exposure',
       min: 0.6, max: 1.8, step: 0.01,
       read: (c) => c.imageProcessing.exposure,
