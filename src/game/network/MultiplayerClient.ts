@@ -118,6 +118,11 @@ export class MultiplayerClient {
   private missedPongs = 0;
   private consecutiveMissedPongs = 0;
   private awaitingPong = false;
+  // Server-side connection mirror from the latest pong (see the pong protocol comment): the
+  // server's outbound socket backlog toward US, and the server event-loop delay p95. null until a
+  // pong carrying them arrives (older server builds omit the fields).
+  private serverOutBufferedB: number | null = null;
+  private serverLoopP95Ms: number | null = null;
   // Wall-clock time the in-flight ping was SENT. If the gap until its pong (or until the next send)
   // far exceeds the ping interval, our timer was throttled/frozen — a backgrounded tab, the machine
   // sleeping, or a long main-thread stall. The resulting "RTT" is that frozen wall-clock gap, NOT
@@ -207,6 +212,8 @@ export class MultiplayerClient {
     rttEstimateMs: number;
     maxRecentPingMs: number;
     lastSnapshotAgeMs: number | null;
+    serverOutBufferedB: number | null;
+    serverLoopP95Ms: number | null;
   } {
     const now = Date.now();
     const perfNow = performance.now();
@@ -235,7 +242,11 @@ export class MultiplayerClient {
       // time on the client's own uplink, not network round-trip.
       socketBufferedPeak: Math.round(this.wsBufferedPeakBytes),
       pingSendBufferedAmount: this.lastPingSendBufferedBytes,
-      lastSnapshotAgeMs: this.lastSnapshotReceivedAtMs > 0 ? Math.max(0, perfNow - this.lastSnapshotReceivedAtMs) : null
+      lastSnapshotAgeMs: this.lastSnapshotReceivedAtMs > 0 ? Math.max(0, perfNow - this.lastSnapshotReceivedAtMs) : null,
+      // Server-side mirror from the latest pong: the server's outbound backlog toward us (downstream
+      // path congestion) and its event-loop p95 (shared-host stall). See the pong protocol comment.
+      serverOutBufferedB: this.serverOutBufferedB,
+      serverLoopP95Ms: this.serverLoopP95Ms
     };
   }
 
@@ -601,6 +612,10 @@ export class MultiplayerClient {
       this.awaitingPong = false;
       this.lastPongReceivedAtMs = now;
       this.consecutiveMissedPongs = 0;
+      // Server-side connection mirror (newer servers only). Recorded even for freeze-discarded
+      // round trips below — these two describe the SERVER's state, not this ping's travel time.
+      if (typeof message.outBufferedB === 'number') this.serverOutBufferedB = message.outBufferedB;
+      if (typeof message.loopP95Ms === 'number') this.serverLoopP95Ms = message.loopP95Ms;
 
       // Discard a round trip that spans a detected freeze (backgrounded tab / sleep / long stall) or
       // is itself implausibly large for network RTT. Its "RTT" is frozen wall-clock time, not latency.
@@ -807,6 +822,8 @@ export class MultiplayerClient {
     this.maxRecentPingWindowStartedAtMs = 0;
     this.lastPingSentAtMs = 0;
     this.pingStale = false;
+    this.serverOutBufferedB = null;
+    this.serverLoopP95Ms = null;
     this.netFlightRecorderEnabled = false;
   }
 

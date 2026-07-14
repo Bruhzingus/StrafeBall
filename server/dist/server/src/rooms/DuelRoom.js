@@ -309,10 +309,18 @@ class DuelRoom extends colyseus_1.Room {
             this.recordIncomingMessage(client, 'ping');
             if (!this.allow(client, 'ping'))
                 return;
+            // Mirror the server's side of THIS connection back in the pong (see the protocol comment):
+            // outBufferedB = server→client socket backlog (downstream-path congestion detector),
+            // loopP95Ms = event-loop delay p95 (shared-host stall detector). Together with the client's
+            // own WS-buffer reading, the Tab HUD can name which leg a ping spike lives on.
+            const buffered = readClientBufferedAmount(client);
+            const loopP95Ns = this.eventLoopDelay.percentile(95);
             client.send('pong', {
                 type: 'pong',
                 clientTimeMs: message?.clientTimeMs ?? 0,
-                serverTimeMs: Date.now()
+                serverTimeMs: Date.now(),
+                ...(buffered !== null ? { outBufferedB: buffered } : {}),
+                ...(loopP95Ns > 0 ? { loopP95Ms: Math.round(loopP95Ns / 1e5) / 10 } : {})
             });
         });
         this.onMessage('net-anomaly-report', (client, message) => {

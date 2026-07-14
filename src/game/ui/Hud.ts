@@ -8,7 +8,7 @@ import { MusicHud } from './MusicHud';
 import { TeamScoreboard, type MatchScoreboardData } from './TeamScoreboard';
 import type { ServerSnapshot } from '../../../shared/protocol';
 import type { HalfCourtViolationState, PlayerState, RoomState } from '../../../shared/types';
-import { SERVER_TICK_RATE, SNAPSHOT_RATE } from '../../../shared/netConfig';
+import { SERVER_TICK_RATE, SNAPSHOT_RATE, netModeConfig } from '../../../shared/netConfig';
 import type { MusicHudState } from '../audio/MusicManager';
 
 export class Hud {
@@ -511,6 +511,8 @@ export class Hud {
       pingSendBufferedAmount: number;
       rttEstimateMs: number;
       maxRecentPingMs: number;
+      serverOutBufferedB: number | null;
+      serverLoopP95Ms: number | null;
       predictionActive: boolean;
     }
   ): void {
@@ -544,6 +546,19 @@ export class Hud {
         : netDebug.residualAfterReplayM > 0.05 || netDebug.desyncRecentMaxM > 0.1
           ? 'hud-warn'
           : 'hud-good';
+      // The room's ACTUAL rates come from its tick preset (room.netMode) — the compiled
+      // SERVER_TICK_RATE/SNAPSHOT_RATE constants are only the create-room default and were being
+      // shown even when the host picked a different preset (e.g. Ultra Low 60/48).
+      const roomNet = netModeConfig(room.netMode);
+      const tickRateHz = roomNet?.serverTickRate ?? SERVER_TICK_RATE;
+      const snapRateHz = roomNet?.snapshotRate ?? SNAPSHOT_RATE;
+      // Server-side connection mirror (from the pong): out-buf = the server's queued bytes toward
+      // US (downstream-path congestion, even when our own WS buf reads 0); loop p95 = server event
+      // loop health (elevated for everyone when the shared host stalls). '-' = older server build.
+      const srvBuf = netDebug.serverOutBufferedB;
+      const srvLoop = netDebug.serverLoopP95Ms;
+      const srvBufColor = srvBuf === null ? 'hud-good' : srvBuf >= 16384 ? 'hud-bad' : srvBuf >= 4096 ? 'hud-warn' : 'hud-good';
+      const srvLoopColor = srvLoop === null ? 'hud-good' : srvLoop >= 18 ? 'hud-bad' : srvLoop >= 10 ? 'hud-warn' : 'hud-good';
       this.setHtml(this.topLeft, `
         <div class="hud-title">Online <span style="font-weight:400;opacity:0.45;font-size:10px">[Tab]</span></div>
         <div>FPS <span class="hud-good">${Math.round(fps)}</span> &middot; ${frameMs.toFixed(1)} ms</div>
@@ -552,7 +567,8 @@ export class Hud {
         <div>Snap recv/render: <span class="hud-good">${netDebug.snapshotRateHz.toFixed(1)}</span> / ${netDebug.renderSnapshotRateHz.toFixed(1)} Hz | Ack age: ${netDebug.ackAgeMs === null ? '-' : `${netDebug.ackAgeMs} ms`}</div>
         <div>Jitter: ${netDebug.pingJitterMs.toFixed(1)} ms | Pong age: ${netDebug.lastPongAgeMs === null ? '-' : `${netDebug.lastPongAgeMs} ms`} | Missed: ${netDebug.missedPongs}</div>
         <div>WS buf: <span class="${wsBufferColor(netDebug.socketBufferedPeak)}">${netDebug.socketBufferedAmount} B</span> · peak ${netDebug.socketBufferedPeak} B · @ping ${netDebug.pingSendBufferedAmount} B</div>
-        <div>Tick rate: <span class="hud-good">${SERVER_TICK_RATE} Hz</span> &middot; Snap ${SNAPSHOT_RATE} Hz</div>
+        <div>Server: loop p95 <span class="${srvLoopColor}">${srvLoop === null ? '-' : `${srvLoop.toFixed(1)} ms`}</span> · out-buf <span class="${srvBufColor}">${srvBuf === null ? '-' : `${srvBuf} B`}</span></div>
+        <div>Tick rate: <span class="hud-good">${tickRateHz} Hz</span> &middot; Snap ${snapRateHz} Hz</div>
         <div>Raw lead: ${netDebug.predictionErrorM.toFixed(3)} m / ~${netDebug.expectedLeadM.toFixed(3)} m</div>
         <div>Desync: <span class="${desyncColor}">${netDebug.residualAfterReplayM.toFixed(3)} m</span> avg ${netDebug.desyncAverageM.toFixed(3)} max ${netDebug.desyncRecentMaxM.toFixed(3)} peak ${netDebug.desyncPeakM.toFixed(3)}</div>
         <div>Input seq: ${netDebug.inputSeq} · Acked: ${netDebug.lastAckedSeq} · Pending: ${netDebug.pendingInputs}</div>

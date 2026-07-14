@@ -92,15 +92,23 @@ export function createGymReflectionProbe(scene: Scene, resolution: number): Refl
   // Render EXACTLY ONCE, on the next frame after this static setup — no per-frame reflection cost.
   probe.cubeTexture.refreshRate = RenderTargetTexture.REFRESHRATE_RENDER_ONCE;
 
-  // Wire the probe cube as the reflection source on the receiver PBR materials (metallic stays 0; the
-  // strength per surface is the environmentIntensity already applied by the Showcase material pass).
-  for (const receiver of probeReceivers()) {
-    const material = scene.getMaterialByName(receiver.materialName);
-    if (material instanceof PBRMaterial) {
-      material.reflectionTexture = probe.cubeTexture;
-      material.environmentIntensity = receiver.intensity;
+  // Wire the probe cube onto the receiver PBR materials only AFTER the one-time render has fully
+  // completed and unbound. Wiring synchronously here caused a WebGL "Feedback loop formed between
+  // Framebuffer and active Texture" error burst at load (observed on a player's machine): the walls
+  // and bleachers are on the probe's OWN render list above, so if their materials already sample
+  // reflectionTexture = this cube when the cube renders, the draw reads the texture currently bound
+  // as the render target. Deferring one tick is free — render-once means the first frame that could
+  // show the reflection is the frame after the capture anyway. Dispose-safe: RenderTargetTexture
+  // .dispose() clears onAfterUnbindObservable, so an early teardown just drops this callback.
+  probe.cubeTexture.onAfterUnbindObservable.addOnce(() => {
+    for (const receiver of probeReceivers()) {
+      const material = scene.getMaterialByName(receiver.materialName);
+      if (material instanceof PBRMaterial) {
+        material.reflectionTexture = probe.cubeTexture;
+        material.environmentIntensity = receiver.intensity;
+      }
     }
-  }
+  });
 
   activeProbe = probe;
   return probe;

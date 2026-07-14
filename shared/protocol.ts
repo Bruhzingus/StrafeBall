@@ -331,4 +331,20 @@ export type ServerMessage =
   | { type: 'input-rejected'; sequence: number; reason: string }
   | { type: 'request-rejected'; request: ClientMessage['type']; reason: string }
   | NetFlightRecorderConfigMessage
-  | { type: 'pong'; clientTimeMs: number; serverTimeMs: number };
+  | {
+      type: 'pong';
+      clientTimeMs: number;
+      serverTimeMs: number;
+      /**
+       * Diagnostic mirror of the SERVER's side of this client's connection, sampled at pong time —
+       * the two numbers that disambiguate "why is my ping spiking" from the client's Tab HUD alone:
+       *  - outBufferedB: bytes the server has queued toward THIS client that the socket hasn't
+       *    flushed yet. Balloons when the client's DOWNSTREAM path is congested/lossy (TCP
+       *    retransmit stalls) even while the client's own WS buffer reads 0.
+       *  - loopP95Ms: server event-loop delay p95 over the current perf window. Elevated for
+       *    EVERYONE when the shared-CPU host stalls — high here + clean outBufferedB = the host.
+       * Optional so mixed-version client/server pairs interop cleanly.
+       */
+      outBufferedB?: number;
+      loopP95Ms?: number;
+    };

@@ -508,6 +508,8 @@ export class ArenaScene {
             pingSendBufferedAmount: connectionDebug.pingSendBufferedAmount,
             rttEstimateMs: connectionDebug.rttEstimateMs,
             maxRecentPingMs: connectionDebug.maxRecentPingMs,
+            serverOutBufferedB: connectionDebug.serverOutBufferedB,
+            serverLoopP95Ms: connectionDebug.serverLoopP95Ms,
             predictionActive: this.predictedMovement !== null,
           }
         );
