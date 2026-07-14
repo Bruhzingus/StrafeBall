@@ -1,5 +1,6 @@
 import type { ServerSnapshot } from './protocol';
 import type { BallState, HandSide, PlayerHandsState, PlayerState, RoomState, Vec3 } from './types';
+import { facingFromAngles } from './simulation/AimMath';
 
 export type PlayerRoster = Record<string, { name: string }>;
 
@@ -32,7 +33,12 @@ export interface TieredCompactServerSnapshot {
   l: number;
   /** Fast reset serial so reset detection never waits for the world lane. */
   rs: number;
-  /** Fast local-reconciliation player rows. Clients merge only their own row. */
+  /**
+   * Fast player pose rows for ALL players, every snapshot. The local player merges everything
+   * (pose + movementInternal + hands + dash — reconciliation needs it); REMOTE players merge their
+   * pose rows too, so remote interpolation runs at the full snapshot rate instead of the half-rate
+   * full-player lane (the rows are already paid for — not merging them was pure added remote delay).
+   */
   f?: unknown[][];
   /** 48 Hz full player rows. */
   p?: unknown[][];
@@ -67,47 +73,37 @@ export function rosterFromRoom(room: RoomState): PlayerRoster {
   return roster;
 }
 
-export function makeLeanSnapshot(snapshot: ServerSnapshot): ServerSnapshot {
-  const players: RoomState['players'] = {};
-  const balls: RoomState['balls'] = {};
-
-  for (const playerId in snapshot.room.players) {
-    players[playerId] = leanPlayer(snapshot.room.players[playerId]);
-  }
-  for (const ballId in snapshot.room.balls) {
-    balls[ballId] = leanBall(snapshot.room.balls[ballId]);
-  }
-
+/**
+ * Room metadata (everything but players/balls) with the few per-tick float fields quantized.
+ * Player/ball quantization happens INSIDE the pack helpers now (they emit scaled integers), so the
+ * packed paths no longer deep-clone every player and ball per snapshot just to round their floats —
+ * that lean pre-pass was a meaningful per-broadcast allocation cost at 96Hz on a starved host.
+ */
+function leanWorld(room: RoomState): Omit<RoomState, 'players' | 'balls'> {
+  const { players: _players, balls: _balls, ...world } = room;
   return {
-    ...snapshot,
-    serverTimeMs: q0(snapshot.serverTimeMs),
-    room: {
-      ...snapshot.room,
-      match: {
-        ...snapshot.room.match,
-        elapsedSeconds: q3(snapshot.room.match.elapsedSeconds),
-        countdownSeconds: q3(snapshot.room.match.countdownSeconds),
-        boundary: {
-          ...snapshot.room.match.boundary,
-          elapsedSeconds: q3(snapshot.room.match.boundary.elapsedSeconds)
-        }
-      },
-      players,
-      balls
+    ...world,
+    match: {
+      ...world.match,
+      elapsedSeconds: q3(world.match.elapsedSeconds),
+      countdownSeconds: q3(world.match.countdownSeconds),
+      boundary: {
+        ...world.match.boundary,
+        elapsedSeconds: q3(world.match.boundary.elapsedSeconds)
+      }
     }
   };
 }
 
 export function makeCompactSnapshot(snapshot: ServerSnapshot): CompactServerSnapshot {
-  const lean = makeLeanSnapshot(snapshot);
   return {
     type: 'snapshot-compact',
-    tick: lean.tick,
-    serverTimeMs: lean.serverTimeMs,
+    tick: snapshot.tick,
+    serverTimeMs: q0(snapshot.serverTimeMs),
     room: {
-      ...lean.room,
-      players: Object.values(lean.room.players).map(packPlayer),
-      balls: Object.values(lean.room.balls).map(packBall)
+      ...leanWorld(snapshot.room),
+      players: Object.values(snapshot.room.players).map(packPlayer),
+      balls: Object.values(snapshot.room.balls).map(packBall)
     }
   };
 }
@@ -123,28 +119,28 @@ export function makeTieredCompactSnapshot(
   snapshot: ServerSnapshot,
   options: MakeTieredCompactSnapshotOptions
 ): TieredCompactServerSnapshot {
-  const lean = makeLeanSnapshot(snapshot);
   const includePlayerLane = options.includePlayerLane;
   const includeFastPlayerLane = options.includeFastPlayerLane ?? !includePlayerLane;
   const includeBallLane = options.includeBallLane ?? true;
   const includeWorldLane = options.includeWorldLane;
-  const { players: _players, balls: _balls, ...world } = lean.room;
   const lanes =
     (includeFastPlayerLane ? TIERED_SNAPSHOT_LANES.FAST_PLAYERS : 0) |
     (includePlayerLane ? TIERED_SNAPSHOT_LANES.PLAYER : 0) |
     (includeBallLane ? TIERED_SNAPSHOT_LANES.BALL : 0) |
     (includeWorldLane ? TIERED_SNAPSHOT_LANES.WORLD : 0);
 
+  // Lanes pack straight off the live state (the pack helpers quantize inline); the world clone is
+  // only paid on the snapshots that actually carry the world lane.
   return {
     type: 'snapshot-tiered-v1',
-    tick: lean.tick,
-    serverTimeMs: lean.serverTimeMs,
+    tick: snapshot.tick,
+    serverTimeMs: q0(snapshot.serverTimeMs),
     l: lanes,
-    rs: lean.room.resetVote.resetSerial,
-    ...(includeFastPlayerLane ? { f: Object.values(lean.room.players).map(packFastPlayer) } : {}),
-    ...(includePlayerLane ? { p: Object.values(lean.room.players).map(packPlayer) } : {}),
-    ...(includeBallLane ? { b: Object.values(lean.room.balls).map(packBall) } : {}),
-    ...(includeWorldLane ? { w: world } : {})
+    rs: snapshot.room.resetVote.resetSerial,
+    ...(includeFastPlayerLane ? { f: Object.values(snapshot.room.players).map(packFastPlayer) } : {}),
+    ...(includePlayerLane ? { p: Object.values(snapshot.room.players).map(packPlayer) } : {}),
+    ...(includeBallLane ? { b: Object.values(snapshot.room.balls).map(packBall) } : {}),
+    ...(includeWorldLane ? { w: leanWorld(snapshot.room) } : {})
   };
 }
 
@@ -188,13 +184,16 @@ export function mergeTieredCompactSnapshot(
       : {};
   if (!snapshot.p && !previousRoom) return null;
 
-  if (!snapshot.p && snapshot.f && localPlayerId) {
+  if (!snapshot.p && snapshot.f) {
+    // Merge EVERY fast row that has a base (local for reconciliation, remotes for interpolation) —
+    // the rows are on the wire regardless, and merging remotes doubles their effective pose rate
+    // (96Hz instead of the 48Hz player lane). A row without a base (player joined since our last
+    // full lane) is skipped; the next player lane (≤2 snapshots away) introduces them whole.
     for (const packedPlayer of snapshot.f) {
       const playerId = packedPlayer[0] as string | undefined;
-      if (playerId !== localPlayerId) continue;
+      if (!playerId) continue;
       const base = players[playerId];
       if (base) players[playerId] = mergeFastPlayer(base, packedPlayer);
-      break;
     }
   }
 
@@ -266,18 +265,19 @@ function packPlayer(player: PlayerState): unknown[] {
     player.legalHalf,
     packPos(player.movement.position),
     packVel(player.movement.velocity),
-    player.movement.yawRadians,
-    player.movement.pitchRadians,
-    packUnit(player.movement.facing),
+    pq4(player.movement.yawRadians),
+    pq4(player.movement.pitchRadians),
+    // facing slot: derived from yaw/pitch on unpack (facingFromAngles) — never sent.
+    0,
     b(player.movement.grounded),
     b(player.movement.crouching),
     b(player.movement.sliding),
     b(player.movement.wallRunning),
     b(player.movement.dashingThisFrame),
-    player.movement.speed,
+    pq3(player.movement.speed),
     packMovementInternal(player.movementInternal),
     [packHand(player.hands.left), packHand(player.hands.right)],
-    [player.dash.charges, player.dash.rechargeTimerSeconds, player.dash.cooldownSeconds],
+    [player.dash.charges, pq3(player.dash.rechargeTimerSeconds), pq3(player.dash.cooldownSeconds)],
     player.score,
     [
       player.matchStats.hits,
@@ -306,18 +306,19 @@ function packFastPlayer(player: PlayerState): unknown[] {
     player.id,
     packPos(player.movement.position),
     packVel(player.movement.velocity),
-    player.movement.yawRadians,
-    player.movement.pitchRadians,
-    packUnit(player.movement.facing),
+    pq4(player.movement.yawRadians),
+    pq4(player.movement.pitchRadians),
+    // facing slot: derived from yaw/pitch on unpack (facingFromAngles) — never sent.
+    0,
     b(player.movement.grounded),
     b(player.movement.crouching),
     b(player.movement.sliding),
     b(player.movement.wallRunning),
     b(player.movement.dashingThisFrame),
-    player.movement.speed,
+    pq3(player.movement.speed),
     packMovementInternal(player.movementInternal),
     [packHand(player.hands.left), packHand(player.hands.right)],
-    [player.dash.charges, player.dash.rechargeTimerSeconds, player.dash.cooldownSeconds],
+    [player.dash.charges, pq3(player.dash.rechargeTimerSeconds), pq3(player.dash.cooldownSeconds)],
     player.lives,
     player.combatState,
     player.eliminatedAtMs,
@@ -343,15 +344,17 @@ function unpackPlayer(packed: unknown[]): PlayerState {
     movement: {
       position: unpackPos(packed[5] as unknown[]),
       velocity: unpackVel(packed[6] as unknown[]),
-      yawRadians: packed[7] as number,
-      pitchRadians: packed[8] as number,
-      facing: unpackUnit(packed[9] as unknown[]),
+      yawRadians: uq4(packed[7]),
+      pitchRadians: uq4(packed[8]),
+      // The facing slot is a placeholder 0 on the wire; facing is a pure function of yaw/pitch
+      // (MovementSim recomputes it every tick the same way), so it is derived here instead of sent.
+      facing: facingFromAngles(uq4(packed[7]), uq4(packed[8])),
       grounded: Boolean(packed[10]),
       crouching: Boolean(packed[11]),
       sliding: Boolean(packed[12]),
       wallRunning: Boolean(packed[13]),
       dashingThisFrame: Boolean(packed[14]),
-      speed: packed[15] as number
+      speed: uq3(packed[15])
     },
     movementInternal: unpackMovementInternal(movementInternal),
     hands: {
@@ -360,8 +363,8 @@ function unpackPlayer(packed: unknown[]): PlayerState {
     },
     dash: {
       charges: dash[0] as number,
-      rechargeTimerSeconds: dash[1] as number,
-      cooldownSeconds: dash[2] as number
+      rechargeTimerSeconds: uq3(dash[1]),
+      cooldownSeconds: uq3(dash[2])
     },
     score: packed[19] as number,
     matchStats: {
@@ -395,15 +398,16 @@ function mergeFastPlayer(base: PlayerState, packed: unknown[]): PlayerState {
     movement: {
       position: unpackPos(packed[1] as unknown[]),
       velocity: unpackVel(packed[2] as unknown[]),
-      yawRadians: packed[3] as number,
-      pitchRadians: packed[4] as number,
-      facing: unpackUnit(packed[5] as unknown[]),
+      yawRadians: uq4(packed[3]),
+      pitchRadians: uq4(packed[4]),
+      // Facing slot is a placeholder 0 on the wire — derived from yaw/pitch (see unpackPlayer).
+      facing: facingFromAngles(uq4(packed[3]), uq4(packed[4])),
       grounded: Boolean(packed[6]),
       crouching: Boolean(packed[7]),
       sliding: Boolean(packed[8]),
       wallRunning: Boolean(packed[9]),
       dashingThisFrame: Boolean(packed[10]),
-      speed: packed[11] as number
+      speed: uq3(packed[11])
     },
     movementInternal: unpackMovementInternal(packed[12] as unknown[]),
     hands: {
@@ -412,8 +416,8 @@ function mergeFastPlayer(base: PlayerState, packed: unknown[]): PlayerState {
     },
     dash: {
       charges: dash[0] as number,
-      rechargeTimerSeconds: dash[1] as number,
-      cooldownSeconds: dash[2] as number
+      rechargeTimerSeconds: uq3(dash[1]),
+      cooldownSeconds: uq3(dash[2])
     },
     lives: packed[15] as number,
     combatState: packed[16] as PlayerState['combatState'],
@@ -427,39 +431,39 @@ function mergeFastPlayer(base: PlayerState, packed: unknown[]): PlayerState {
 
 function packMovementInternal(movementInternal: PlayerState['movementInternal']): unknown[] {
   return [
-    movementInternal.slideTimer,
-    movementInternal.slideBufferTimer,
-    movementInternal.jumpGraceTimer,
-    movementInternal.wallRunTimer,
-    movementInternal.wallReattachCooldown,
-    movementInternal.dashActiveTimer,
+    pq3(movementInternal.slideTimer),
+    pq3(movementInternal.slideBufferTimer),
+    pq3(movementInternal.jumpGraceTimer),
+    pq3(movementInternal.wallRunTimer),
+    pq3(movementInternal.wallReattachCooldown),
+    pq3(movementInternal.dashActiveTimer),
     b(movementInternal.doubleJumpAvailable),
-    movementInternal.catchBoostTimer,
-    movementInternal.groundHeight,
-    movementInternal.lastWallNormalX,
-    movementInternal.lastWallNormalZ,
+    pq3(movementInternal.catchBoostTimer),
+    pq3(movementInternal.groundHeight),
+    pq4(movementInternal.lastWallNormalX),
+    pq4(movementInternal.lastWallNormalZ),
     b(movementInternal.backflipActive),
-    movementInternal.backflipTimer,
-    movementInternal.backflipCooldown
+    pq3(movementInternal.backflipTimer),
+    pq3(movementInternal.backflipCooldown)
   ];
 }
 
 function unpackMovementInternal(movementInternal: unknown[]): PlayerState['movementInternal'] {
   return {
-    slideTimer: movementInternal[0] as number,
-    slideBufferTimer: movementInternal.length > 13 ? movementInternal[1] as number : 0,
-    jumpGraceTimer: movementInternal[movementInternal.length > 13 ? 2 : 1] as number,
-    wallRunTimer: movementInternal[movementInternal.length > 13 ? 3 : 2] as number,
-    wallReattachCooldown: movementInternal[movementInternal.length > 13 ? 4 : 3] as number,
-    dashActiveTimer: movementInternal[movementInternal.length > 13 ? 5 : 4] as number,
+    slideTimer: uq3(movementInternal[0]),
+    slideBufferTimer: movementInternal.length > 13 ? uq3(movementInternal[1]) : 0,
+    jumpGraceTimer: uq3(movementInternal[movementInternal.length > 13 ? 2 : 1]),
+    wallRunTimer: uq3(movementInternal[movementInternal.length > 13 ? 3 : 2]),
+    wallReattachCooldown: uq3(movementInternal[movementInternal.length > 13 ? 4 : 3]),
+    dashActiveTimer: uq3(movementInternal[movementInternal.length > 13 ? 5 : 4]),
     doubleJumpAvailable: Boolean(movementInternal[movementInternal.length > 13 ? 6 : 5]),
-    catchBoostTimer: movementInternal[movementInternal.length > 13 ? 7 : 6] as number,
-    groundHeight: movementInternal[movementInternal.length > 13 ? 8 : 7] as number,
-    lastWallNormalX: movementInternal[movementInternal.length > 13 ? 9 : 8] as number,
-    lastWallNormalZ: movementInternal[movementInternal.length > 13 ? 10 : 9] as number,
+    catchBoostTimer: uq3(movementInternal[movementInternal.length > 13 ? 7 : 6]),
+    groundHeight: uq3(movementInternal[movementInternal.length > 13 ? 8 : 7]),
+    lastWallNormalX: uq4(movementInternal[movementInternal.length > 13 ? 9 : 8]),
+    lastWallNormalZ: uq4(movementInternal[movementInternal.length > 13 ? 10 : 9]),
     backflipActive: Boolean(movementInternal[movementInternal.length > 13 ? 11 : 10]),
-    backflipTimer: movementInternal[movementInternal.length > 13 ? 12 : 11] as number,
-    backflipCooldown: movementInternal[movementInternal.length > 13 ? 13 : 12] as number
+    backflipTimer: uq3(movementInternal[movementInternal.length > 13 ? 12 : 11]),
+    backflipCooldown: uq3(movementInternal[movementInternal.length > 13 ? 13 : 12])
   };
 }
 
@@ -467,8 +471,8 @@ function packHand(hand: PlayerHandsState[HandSide]): unknown[] {
   return [
     hand.heldBallId,
     hand.mode,
-    hand.chargeSeconds,
-    hand.cooldownSeconds,
+    pq3(hand.chargeSeconds),
+    pq3(hand.cooldownSeconds),
     hand.lastCatchAttemptId
   ];
 }
@@ -478,8 +482,8 @@ function unpackHand(side: HandSide, packed: unknown[]): PlayerHandsState[HandSid
     side,
     heldBallId: packed[0] as string | null,
     mode: packed[1] as PlayerHandsState[HandSide]['mode'],
-    chargeSeconds: packed[2] as number,
-    cooldownSeconds: packed[3] as number,
+    chargeSeconds: uq3(packed[2]),
+    cooldownSeconds: uq3(packed[3]),
     catchTrackingSecondsByBallId: {},
     lastCatchAttemptId: packed[4] as number
   };
@@ -497,7 +501,7 @@ function packBall(ball: BallState): unknown[] {
     ball.heldHand,
     ball.bounceCount,
     b(ball.isSuper),
-    ball.dropScale,
+    pq3(ball.dropScale),
     packVel(ball.curveAccel),
     ball.lastTouchedByPlayerId,
     ball.throwId
@@ -516,7 +520,7 @@ function unpackBall(packed: unknown[]): BallState {
     heldHand: packed[7] as HandSide | null,
     bounceCount: packed[8] as number,
     isSuper: Boolean(packed[9]),
-    dropScale: packed[10] as number,
+    dropScale: uq3(packed[10]),
     curveAccel: unpackVel(packed[11] as unknown[]),
     // Not wire-synced: each side (server, client prediction) tracks its own curve ramp distance
     // locally from the throw, so a decoded snapshot ball doesn't need this to drive curve replay.
@@ -620,6 +624,26 @@ function b(value: boolean): 0 | 1 {
   return value ? 1 : 0;
 }
 
+/**
+ * Scaled-INTEGER quantizers for the scalar floats in the hot player/ball lanes. Colyseus encodes
+ * room messages with msgpack, where any non-integer number costs 9 bytes (float64) but small
+ * integers cost 1–3. ×1000 (pq3) / ×10000 (pq4) match the q3/q4 rounding makeLeanSnapshot has
+ * always applied, so the DECODED values are identical to before — only the wire bytes shrink.
+ * (Math.round(n·s)/s and Math.round(n·s) then /s are the same double.)
+ */
+function pq3(n: number): number {
+  return Number.isFinite(n) ? Math.round(n * 1000) : 0;
+}
+function uq3(n: unknown): number {
+  return typeof n === 'number' && Number.isFinite(n) ? n / 1000 : 0;
+}
+function pq4(n: number): number {
+  return Number.isFinite(n) ? Math.round(n * 10000) : 0;
+}
+function uq4(n: unknown): number {
+  return typeof n === 'number' && Number.isFinite(n) ? n / 10000 : 0;
+}
+
 export function isCompactSnapshot(
   snapshot: ServerSnapshot | CompactServerSnapshot | TieredCompactServerSnapshot
 ): snapshot is CompactServerSnapshot {
@@ -653,87 +677,10 @@ export function hydrateSnapshotRoster(snapshot: ServerSnapshot, roster: PlayerRo
     : snapshot;
 }
 
-function leanPlayer(player: PlayerState): PlayerState {
-  const { name: _name, ...withoutName } = player;
-  return {
-    ...withoutName,
-    movement: {
-      ...player.movement,
-      position: qVec(player.movement.position, q3),
-      velocity: qVec(player.movement.velocity, q3),
-      facing: qVec(player.movement.facing, q4),
-      yawRadians: q4(player.movement.yawRadians),
-      pitchRadians: q4(player.movement.pitchRadians),
-      speed: q3(player.movement.speed)
-    },
-    movementInternal: {
-      ...player.movementInternal,
-      slideTimer: q3(player.movementInternal.slideTimer),
-      slideBufferTimer: q3(player.movementInternal.slideBufferTimer),
-      jumpGraceTimer: q3(player.movementInternal.jumpGraceTimer),
-      wallRunTimer: q3(player.movementInternal.wallRunTimer),
-      wallReattachCooldown: q3(player.movementInternal.wallReattachCooldown),
-      dashActiveTimer: q3(player.movementInternal.dashActiveTimer),
-      catchBoostTimer: q3(player.movementInternal.catchBoostTimer),
-      groundHeight: q3(player.movementInternal.groundHeight),
-      lastWallNormalX: q4(player.movementInternal.lastWallNormalX),
-      lastWallNormalZ: q4(player.movementInternal.lastWallNormalZ),
-      backflipTimer: q3(player.movementInternal.backflipTimer),
-      backflipCooldown: q3(player.movementInternal.backflipCooldown)
-    },
-    hands: leanHands(player.hands),
-    dash: {
-      ...player.dash,
-      rechargeTimerSeconds: q3(player.dash.rechargeTimerSeconds),
-      cooldownSeconds: q3(player.dash.cooldownSeconds)
-    },
-    eliminatedAtMs: player.eliminatedAtMs === null ? null : q0(player.eliminatedAtMs),
-    lastPlayerBuffUntilMs: player.lastPlayerBuffUntilMs === null ? null : q0(player.lastPlayerBuffUntilMs),
-    reconnectDeadlineAtMs: player.reconnectDeadlineAtMs === null ? null : q0(player.reconnectDeadlineAtMs)
-  } as PlayerState;
-}
-
-function leanHands(hands: PlayerHandsState): PlayerHandsState {
-  return {
-    left: leanHand(hands.left),
-    right: leanHand(hands.right)
-  };
-}
-
-function leanHand(hand: PlayerHandsState[HandSide]): PlayerHandsState[HandSide] {
-  return {
-    ...hand,
-    chargeSeconds: q3(hand.chargeSeconds),
-    cooldownSeconds: q3(hand.cooldownSeconds)
-  };
-}
-
-function leanBall(ball: BallState): BallState {
-  return {
-    ...ball,
-    position: qVec(ball.position, q3),
-    velocity: qVec(ball.velocity, q3),
-    curveAccel: qVec(ball.curveAccel, q3),
-    dropScale: q3(ball.dropScale)
-  };
-}
-
-function qVec(v: Vec3, quantize: (n: number) => number): Vec3 {
-  return {
-    x: quantize(v.x),
-    y: quantize(v.y),
-    z: quantize(v.z)
-  };
-}
-
 function q0(n: number): number {
   return Math.round(n);
 }
 
 function q3(n: number): number {
   return Math.round(n * 1000) / 1000;
-}
-
-function q4(n: number): number {
-  return Math.round(n * 10000) / 10000;
 }

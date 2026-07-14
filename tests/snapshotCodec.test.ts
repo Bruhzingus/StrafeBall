@@ -107,6 +107,9 @@ describe('snapshot codec', () => {
     const player = createPlayerState('p1', 'blue', 'negativeZ');
     player.movement.position = vec3(12.3456, 7.891, -17.654);
     player.movement.velocity = vec3(-8.337, 0.42, 23.918);
+    // Facing is DERIVED from yaw/pitch on decode (never sent) — set the yaw that faces (0.6018, 0, 0.7986).
+    player.movement.yawRadians = Math.atan2(0.6018, 0.7986);
+    player.movement.pitchRadians = 0;
     player.movement.facing = vec3(0.6018, 0, 0.7986);
 
     const ball = createBallState('b1', vec3(-12.999, 8.4, 17.001), {
@@ -169,7 +172,7 @@ describe('snapshot codec', () => {
     expect(dp.movement.position.z).toBeCloseTo(3, 2);
   });
 
-  it('merges tiered snapshots without clearing absent lanes or stamping remote players', () => {
+  it('merges tiered snapshots without clearing absent lanes, applying every fast row (remote poses too)', () => {
     const p1 = createPlayerState('p1', 'blue', 'negativeZ', { lastProcessedInputSeq: 10 });
     const p2 = createPlayerState('p2', 'red', 'positiveZ', { lastProcessedInputSeq: 20 });
     p1.movement.position = vec3(1, 0, 1);
@@ -223,8 +226,10 @@ describe('snapshot codec', () => {
     expect(fastDecoded!.snapshot.room.resetVote.resetSerial).toBe(5);
     expect(fastDecoded!.snapshot.room.players.p1.movement.position.x).toBeCloseTo(5, 2);
     expect(fastDecoded!.snapshot.room.players.p1.lastProcessedInputSeq).toBe(11);
-    expect(fastDecoded!.snapshot.room.players.p2.movement.position.x).toBeCloseTo(2, 2);
-    expect(fastDecoded!.snapshot.room.players.p2.lastProcessedInputSeq).toBe(20);
+    // Remote fast rows are merged too (their pose data is on the wire every snapshot anyway) —
+    // this is what keeps remote interpolation at the full snapshot rate between player lanes.
+    expect(fastDecoded!.snapshot.room.players.p2.movement.position.x).toBeCloseTo(9, 2);
+    expect(fastDecoded!.snapshot.room.players.p2.lastProcessedInputSeq).toBe(21);
     expect(fastDecoded!.snapshot.room.balls.ball_0.position.x).toBeCloseTo(3, 2);
   });
 
