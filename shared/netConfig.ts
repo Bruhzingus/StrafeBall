@@ -243,12 +243,30 @@ export const SNAPSHOT_BACKPRESSURE_BYTES = 16 * 1024;
 function resolveSnapshotTierMode(env: Record<string, string | undefined> = processEnv()): SnapshotTierMode {
   const explicit = env.SNAPSHOT_TIER_MODE?.toLowerCase();
   if (explicit === 'tiered_v1') return 'tiered_v1';
-  return 'baseline';
+  if (explicit === 'baseline') return 'baseline';
+  return 'tiered_v1';
 }
 
-/** Reversible snapshot payload tiering mode. Baseline is the default and preserves current shape. */
+/**
+ * Snapshot payload tiering. DEFAULT = tiered_v1 (enabled 2026-07-13): the full player lane rides
+ * every 2nd snapshot and the world lane every 4th (or immediately when their dirty-keys change),
+ * with the lean fast-player lane in between — a large steady-state downlink cut that most helps
+ * players on weak/jittery connections. The client decodes by payload SHAPE
+ * (isTieredCompactSnapshot), so server/client flag mismatch is harmless in either direction.
+ * Revert switch: SNAPSHOT_TIER_MODE=baseline on the server env.
+ */
 export const SNAPSHOT_TIER_MODE: SnapshotTierMode = resolveSnapshotTierMode();
 export const USE_TIERED_SNAPSHOTS = SNAPSHOT_TIER_MODE === 'tiered_v1';
+
+/**
+ * After a client trips snapshot backpressure (buffered > SNAPSHOT_BACKPRESSURE_BYTES), send that
+ * client snapshots at HALF rate for this long instead of resuming full-rate the instant the buffer
+ * drains. Full-rate re-entry into a still-congested link immediately re-fills the buffer and
+ * produces the oscillating skip/blast pattern weak connections experience as repeated ping spikes;
+ * a brief half-rate ramp lets the link drain for real. Client-side adaptive interpolation widens
+ * automatically over the halved cadence, so this degrades smoothly instead of stuttering.
+ */
+export const SNAPSHOT_RECOVERY_HALF_RATE_MS = 1500;
 
 export function describeSnapshotProfile(): string {
   return `${ACTIVE_NET_MODE}_${SNAPSHOT_TIER_MODE === 'tiered_v1' ? 'TIERED_V1' : 'BASELINE'}`;

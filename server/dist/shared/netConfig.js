@@ -19,7 +19,7 @@
  *   E. 30 sim / 30 input / 30 snapshots   (baseline for constrained hosts)
  */
 Object.defineProperty(exports, "__esModule", { value: true });
-exports.LIVE_BALL_COMBAT_SUBSTEPS = exports.PERF_REPORT_INTERVAL_MS = exports.DEBUG_DEFAULTS = exports.USE_TIERED_SNAPSHOTS = exports.SNAPSHOT_TIER_MODE = exports.SNAPSHOT_BACKPRESSURE_BYTES = exports.USE_COMPACT_SNAPSHOTS = exports.SNAPSHOT_ENCODING = exports.HUGE_ERROR_SNAP_METERS = exports.EXTRAPOLATION_LIMIT_MS = exports.SNAPSHOT_BUFFER_LIMIT_MS = exports.SERVER_INPUT_QUEUE_LIMIT = exports.PENDING_INPUT_LIMIT = exports.MAX_ACCUMULATOR_CLAMP_MS = exports.MAX_ACCUMULATOR_STEPS = exports.ROOM_LOOP_WAKE_INTERVAL_MS = exports.ROOM_LOOP_WAKE_RATE = exports.ADAPTIVE_INTERP_UNDERRUN_TOLERANCE = exports.ADAPTIVE_INTERP_SHRINK_PER_WINDOW_MS = exports.ADAPTIVE_INTERP_GAP_DECAY_PER_WINDOW = exports.ADAPTIVE_INTERP_GAP_MARGIN_MS = exports.ADAPTIVE_INTERP_MAX_DELAY_MS = exports.ADAPTIVE_INTERP_MIN_DELAY_MS = exports.ADAPTIVE_INTERP_ENABLED = exports.INTERPOLATION_DELAY_MS = exports.SERVER_STEP_MS = exports.SNAPSHOT_INTERVAL_MS = exports.CLIENT_FIXED_DT = exports.SERVER_FIXED_DT = exports.SNAPSHOT_RATE = exports.CLIENT_INPUT_RATE = exports.SERVER_TICK_RATE = exports.ACTIVE_NET_MODE = exports.DEFAULT_NET_MODE = void 0;
+exports.LIVE_BALL_COMBAT_SUBSTEPS = exports.PERF_REPORT_INTERVAL_MS = exports.DEBUG_DEFAULTS = exports.SNAPSHOT_RECOVERY_HALF_RATE_MS = exports.USE_TIERED_SNAPSHOTS = exports.SNAPSHOT_TIER_MODE = exports.SNAPSHOT_BACKPRESSURE_BYTES = exports.USE_COMPACT_SNAPSHOTS = exports.SNAPSHOT_ENCODING = exports.HUGE_ERROR_SNAP_METERS = exports.EXTRAPOLATION_LIMIT_MS = exports.SNAPSHOT_BUFFER_LIMIT_MS = exports.SERVER_INPUT_QUEUE_LIMIT = exports.PENDING_INPUT_LIMIT = exports.MAX_ACCUMULATOR_CLAMP_MS = exports.MAX_ACCUMULATOR_STEPS = exports.ROOM_LOOP_WAKE_INTERVAL_MS = exports.ROOM_LOOP_WAKE_RATE = exports.ADAPTIVE_INTERP_UNDERRUN_TOLERANCE = exports.ADAPTIVE_INTERP_SHRINK_PER_WINDOW_MS = exports.ADAPTIVE_INTERP_GAP_DECAY_PER_WINDOW = exports.ADAPTIVE_INTERP_GAP_MARGIN_MS = exports.ADAPTIVE_INTERP_MAX_DELAY_MS = exports.ADAPTIVE_INTERP_MIN_DELAY_MS = exports.ADAPTIVE_INTERP_ENABLED = exports.INTERPOLATION_DELAY_MS = exports.SERVER_STEP_MS = exports.SNAPSHOT_INTERVAL_MS = exports.CLIENT_FIXED_DT = exports.SERVER_FIXED_DT = exports.SNAPSHOT_RATE = exports.CLIENT_INPUT_RATE = exports.SERVER_TICK_RATE = exports.ACTIVE_NET_MODE = exports.DEFAULT_NET_MODE = void 0;
 exports.netModeConfig = netModeConfig;
 exports.deriveAdaptiveInterpBounds = deriveAdaptiveInterpBounds;
 exports.describeSnapshotProfile = describeSnapshotProfile;
@@ -201,11 +201,29 @@ function resolveSnapshotTierMode(env = processEnv()) {
     const explicit = env.SNAPSHOT_TIER_MODE?.toLowerCase();
     if (explicit === 'tiered_v1')
         return 'tiered_v1';
-    return 'baseline';
+    if (explicit === 'baseline')
+        return 'baseline';
+    return 'tiered_v1';
 }
-/** Reversible snapshot payload tiering mode. Baseline is the default and preserves current shape. */
+/**
+ * Snapshot payload tiering. DEFAULT = tiered_v1 (enabled 2026-07-13): the full player lane rides
+ * every 2nd snapshot and the world lane every 4th (or immediately when their dirty-keys change),
+ * with the lean fast-player lane in between — a large steady-state downlink cut that most helps
+ * players on weak/jittery connections. The client decodes by payload SHAPE
+ * (isTieredCompactSnapshot), so server/client flag mismatch is harmless in either direction.
+ * Revert switch: SNAPSHOT_TIER_MODE=baseline on the server env.
+ */
 exports.SNAPSHOT_TIER_MODE = resolveSnapshotTierMode();
 exports.USE_TIERED_SNAPSHOTS = exports.SNAPSHOT_TIER_MODE === 'tiered_v1';
+/**
+ * After a client trips snapshot backpressure (buffered > SNAPSHOT_BACKPRESSURE_BYTES), send that
+ * client snapshots at HALF rate for this long instead of resuming full-rate the instant the buffer
+ * drains. Full-rate re-entry into a still-congested link immediately re-fills the buffer and
+ * produces the oscillating skip/blast pattern weak connections experience as repeated ping spikes;
+ * a brief half-rate ramp lets the link drain for real. Client-side adaptive interpolation widens
+ * automatically over the halved cadence, so this degrades smoothly instead of stuttering.
+ */
+exports.SNAPSHOT_RECOVERY_HALF_RATE_MS = 1500;
 function describeSnapshotProfile() {
     return `${exports.ACTIVE_NET_MODE}_${exports.SNAPSHOT_TIER_MODE === 'tiered_v1' ? 'TIERED_V1' : 'BASELINE'}`;
 }

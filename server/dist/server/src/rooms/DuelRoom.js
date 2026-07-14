@@ -47,6 +47,11 @@ class DuelRoom extends colyseus_1.Room {
     snapshotNoNewTickSkipsThisWindow = 0;
     snapshotBackpressureSkipsThisWindow = 0;
     snapshotAllBackpressureSkipsThisWindow = 0;
+    snapshotRecoveryHalvedThisWindow = 0;
+    // Clients recently past the backpressure threshold receive snapshots at HALF rate until this
+    // deadline (see snapshotSendableClients): a congested link needs a drain ramp, not an instant
+    // full-rate blast that immediately re-fills its buffer and re-triggers the skip/spike oscillation.
+    snapshotRecoveryUntilMsByClient = new Map();
     snapshotClientSendsThisWindow = 0;
     // Approximate snapshot payload size, sampled cheaply (only when PERF_DEBUG is on) once per window.
     snapshotPayloadBytesTotal = 0;
@@ -426,6 +431,7 @@ class DuelRoom extends colyseus_1.Room {
     // wins by forfeit (#13).
     onLeave(client, _code) {
         this.buckets.delete(client.sessionId);
+        this.snapshotRecoveryUntilMsByClient.delete(client.sessionId);
         this.game.abandon(client.sessionId);
         this.markTieredFullSnapshotDirty();
         this.log(`player left id=${client.sessionId}`);
@@ -472,6 +478,7 @@ class DuelRoom extends colyseus_1.Room {
         this.snapshotNoNewTickSkipsThisWindow = 0;
         this.snapshotBackpressureSkipsThisWindow = 0;
         this.snapshotAllBackpressureSkipsThisWindow = 0;
+        this.snapshotRecoveryHalvedThisWindow = 0;
         this.snapshotClientSendsThisWindow = 0;
         this.snapshotPayloadBytesTotal = 0;
         this.snapshotPayloadBytesMax = 0;
@@ -612,7 +619,7 @@ class DuelRoom extends colyseus_1.Room {
             `simTickMs avg=${avgSimTickMs.toFixed(2)} max=${this.simTickMsMax.toFixed(2)} ` +
             `snapshotBuildMs avg=${avgSnapshotBuildMs.toFixed(3)} max=${this.snapshotBuildMsMax.toFixed(3)} ` +
             `snapshotBroadcastMs avg=${avgSnapshotBroadcastMs.toFixed(3)} max=${this.snapshotBroadcastMsMax.toFixed(3)} ` +
-            `snapshotLateMs avg=${avgSnapshotLateMs.toFixed(2)} max=${this.snapshotLateMsMax.toFixed(2)} skippedSnapshots=${this.snapshotDeadlineSkipsThisWindow} noNewTickSkips=${this.snapshotNoNewTickSkipsThisWindow} backpressureSkips=${this.snapshotBackpressureSkipsThisWindow} allBackpressureSkips=${this.snapshotAllBackpressureSkipsThisWindow} ` +
+            `snapshotLateMs avg=${avgSnapshotLateMs.toFixed(2)} max=${this.snapshotLateMsMax.toFixed(2)} skippedSnapshots=${this.snapshotDeadlineSkipsThisWindow} noNewTickSkips=${this.snapshotNoNewTickSkipsThisWindow} backpressureSkips=${this.snapshotBackpressureSkipsThisWindow} allBackpressureSkips=${this.snapshotAllBackpressureSkipsThisWindow} recoveryHalved=${this.snapshotRecoveryHalvedThisWindow} ` +
             `incoming=${incomingRate.toFixed(1)}/s ` +
             `players total=${playerStates.length} active=${activePlayers} alive=${alivePlayers} eliminated=${eliminatedPlayers} disconnected=${disconnectedPlayers} ` +
             `balls total=${balls.length} active=${activeBalls} live=${liveBalls} settled=${settledBalls} ` +
@@ -748,14 +755,16 @@ class DuelRoom extends colyseus_1.Room {
         this.broadcastSnapshot(dueAtMs, actualNowMs);
     }
     broadcastSnapshot(dueAtMs, actualNowMs) {
-        const sendableClients = this.snapshotSendableClients();
+        // Cadence advances on every broadcast attempt (even when no client is sendable) so a client in
+        // half-rate recovery can never wedge on a stuck cadence parity.
+        const cadence = this.snapshotCadenceCounter;
+        this.snapshotCadenceCounter += 1;
+        const sendableClients = this.snapshotSendableClients(cadence, actualNowMs);
         if (sendableClients.length === 0)
             return;
         const snapshot = this.game.snapshot();
         const snapshotBuildMs = this.game.getLastSnapshotBuildMs();
         const encodeStartedAt = node_perf_hooks_1.performance.now();
-        const cadence = this.snapshotCadenceCounter;
-        this.snapshotCadenceCounter += 1;
         const payload = this.encodeSnapshot(snapshot, cadence);
         const buildMs = snapshotBuildMs + (node_perf_hooks_1.performance.now() - encodeStartedAt);
         const frameBytesEstimate = this.netFlightRecorderEnabled ? encodedRoomMessageBytes('snapshot', payload) : 0;
@@ -773,7 +782,7 @@ class DuelRoom extends colyseus_1.Room {
         this.lastSnapshotTickSent = snapshot.tick;
         this.recordSnapshot(snapshot, payload, buildMs, broadcastMs, Math.max(0, actualNowMs - dueAtMs), sendableClients.length, frameBytesEstimate);
     }
-    snapshotSendableClients() {
+    snapshotSendableClients(cadence, nowMs) {
         const sendable = [];
         let skipped = 0;
         for (const client of this.clients) {
@@ -783,8 +792,22 @@ class DuelRoom extends colyseus_1.Room {
             this.recordObservedColyseusMessageRate(client);
             if (buffered !== null && buffered > netConfig_1.SNAPSHOT_BACKPRESSURE_BYTES) {
                 skipped += 1;
+                // Congested: skip as before, and arm the half-rate recovery ramp for when the buffer drains.
+                this.snapshotRecoveryUntilMsByClient.set(client.sessionId, nowMs + netConfig_1.SNAPSHOT_RECOVERY_HALF_RATE_MS);
                 this.recordSnapshotClientSkip(client.sessionId);
                 continue;
+            }
+            const recoveryUntilMs = this.snapshotRecoveryUntilMsByClient.get(client.sessionId);
+            if (recoveryUntilMs !== undefined) {
+                if (nowMs >= recoveryUntilMs) {
+                    this.snapshotRecoveryUntilMsByClient.delete(client.sessionId);
+                }
+                else if (cadence % 2 === 1) {
+                    // Recovery ramp: send only even cadences (the ones that carry the tiered player lane), so
+                    // the recovering client gets a steady half-rate stream instead of a full-rate re-flood.
+                    this.snapshotRecoveryHalvedThisWindow += 1;
+                    continue;
+                }
             }
             sendable.push(client);
         }
