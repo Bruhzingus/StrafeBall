@@ -56,7 +56,18 @@ export function clearTuningOverrides(): void {
  * shipped block, and a caller mutating its copy can never corrupt another system's values.
  */
 export function resolvePolishedConfig(): PolishedConfig {
-  return deepMerge(structuredClone(POLISHED_CONFIG) as PolishedConfig, loadTuningOverrides());
+  return mergePolishedConfig(loadTuningOverrides());
+}
+
+/**
+ * Merge an explicit overrides object onto POLISHED_CONFIG (does NOT read localStorage). Used by
+ * resolvePolishedConfig() (persisted overrides) and by the tuning panel's "Log baked JSON" (the
+ * panel's LIVE in-memory overrides — which only get persisted on "Save", so logging via
+ * resolvePolishedConfig() could silently show a stale localStorage snapshot instead of what the
+ * sliders currently show on screen).
+ */
+export function mergePolishedConfig(overrides: PolishedConfigOverrides): PolishedConfig {
+  return deepMerge(structuredClone(POLISHED_CONFIG) as PolishedConfig, overrides);
 }
 
 function isPlainObject(value: unknown): value is Record<string, unknown> {

@@ -20,6 +20,7 @@ import { type PolishedConfig } from '../config/graphicsConfig';
 import {
   clearTuningOverrides,
   loadTuningOverrides,
+  mergePolishedConfig,
   resolvePolishedConfig,
   saveTuningOverrides,
   type PolishedConfigOverrides
@@ -160,8 +161,11 @@ export class GraphicsTuningPanel {
       this.button('Save', () => { saveTuningOverrides(this.overrides); this.flash('saved'); }),
       this.button('Reset', () => this.resetAll()),
       this.button('Log baked JSON', () => {
-        // The full resolved config — copy this straight into POLISHED_CONFIG when the look is final.
-        console.log('[graphics-tuning] baked POLISHED_CONFIG:\n' + JSON.stringify(resolvePolishedConfig(), null, 2));
+        // Logs the LIVE slider state (this.overrides), not resolvePolishedConfig() — that reads
+        // localStorage, which only updates on "Save". Logging it directly would silently show a
+        // stale snapshot whenever sliders were dragged after the last Save (the bug that produced a
+        // baked JSON not matching the on-screen sliders). This always matches what's on screen.
+        console.log('[graphics-tuning] baked POLISHED_CONFIG:\n' + JSON.stringify(mergePolishedConfig(this.overrides), null, 2));
         this.flash('logged to console');
       })
     );

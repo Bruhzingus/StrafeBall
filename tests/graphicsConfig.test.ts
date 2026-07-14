@@ -116,13 +116,13 @@ describe('polished config tuning overlay', () => {
   it('ships the user-baked polished lighting and mirror values', async () => {
     installWindowStorage();
     const { POLISHED_CONFIG } = await import('../src/game/config/graphicsConfig');
-    expect(POLISHED_CONFIG.imageProcessing).toEqual({ exposure: 1.23, contrast: 1.11 });
-    expect(POLISHED_CONFIG.lights.hemi.intensity).toBe(0.32);
-    expect(POLISHED_CONFIG.lights.key.intensity).toBe(1.23);
-    expect(POLISHED_CONFIG.shadows).toMatchObject({ darkness: 0.15, bias: 0.0046, normalBias: 0.04 });
+    expect(POLISHED_CONFIG.imageProcessing).toEqual({ exposure: 0.99, contrast: 1.11 });
+    expect(POLISHED_CONFIG.lights.hemi.intensity).toBe(0.26);
+    expect(POLISHED_CONFIG.lights.key.intensity).toBe(1.82);
+    expect(POLISHED_CONFIG.shadows).toMatchObject({ darkness: 0.23, bias: 0.0046, normalBias: 0.04 });
     expect(POLISHED_CONFIG.mirror).toMatchObject({
-      blurKernel: 20,
-      floorEnvironmentIntensity: 0.69,
+      blurKernel: 18,
+      floorEnvironmentIntensity: 0.75,
       floorSpecularIntensity: 0.05
     });
     expect(POLISHED_CONFIG.glow).toMatchObject({ ceilingSourceScale: 0.72, wallSourceScale: 0.85 });

@@ -287,16 +287,16 @@ export const POLISHED_CONFIG: PolishedConfig = {
   renderScale: 1.0,
   // Phase 7: baked from the user's live-tuned session (GraphicsTuningPanel "Log baked JSON",
   // reference-image calibration pass) — this IS the calibrated look, not a placeholder.
-  imageProcessing: { exposure: 1.23, contrast: 1.11 },
+  imageProcessing: { exposure: 0.99, contrast: 1.11 },
   lights: {
     hemi: {
-      intensity: 0.32,
+      intensity: 0.26,
       diffuse: [1.0, 0.95, 0.86],
       ground: [0.4, 0.42, 0.47],
       specular: [0.12, 0.12, 0.13]
     },
     key: {
-      intensity: 1.23,
+      intensity: 1.82,
       direction: [-0.35, -1, -0.25],
       diffuse: [1.0, 0.96, 0.88],
       specular: [0.2, 0.2, 0.2]
@@ -304,7 +304,7 @@ export const POLISHED_CONFIG: PolishedConfig = {
   },
   // Phase 2 shadow system (2048 PCF, backface-only against acne on the merged wall-pad panels),
   // darkness/bias retuned in the Phase 7 calibration pass.
-  shadows: { mapSize: 2048, darkness: 0.15, bias: 0.0046, normalBias: 0.04, forceBackFacesOnly: true },
+  shadows: { mapSize: 2048, darkness: 0.23, bias: 0.0046, normalBias: 0.04, forceBackFacesOnly: true },
   probe: {
     enabled: true,
     resolution: 256,
@@ -314,7 +314,7 @@ export const POLISHED_CONFIG: PolishedConfig = {
   // Phase 7 calibration: floorEnvironmentIntensity/blurKernel tuned against the reference image;
   // floorSpecularIntensity stays low so the mirror (not the analytic key/hemi highlights) owns the
   // floor's shine (see the interface comment above — this is the camera-following-blob fix).
-  mirror: { enabled: true, ratio: 0.5, blurKernel: 20, floorEnvironmentIntensity: 0.69, floorSpecularIntensity: 0.05, maxRenderListSize: 120 },
+  mirror: { enabled: true, ratio: 0.5, blurKernel: 18, floorEnvironmentIntensity: 0.75, floorSpecularIntensity: 0.05, maxRenderListSize: 120 },
   post: {
     fxaa: true,
     // MSAA 4×: 8× held 144 in open views but dropped to ~100 in dense corner views (every wall, the
