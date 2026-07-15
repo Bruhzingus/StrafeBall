@@ -44,7 +44,7 @@ import {
 } from './CreatorLayout';
 import { layoutWorldBounds } from './CreatorWorld';
 import { SANDBOX_CENTER } from '../MovementSandboxLayout';
-import { addPolishedGlowMesh } from '../../effects/PolishedPostFX';
+import { addPolishedGlowMesh, addPolishedGlowOccluder } from '../../effects/PolishedPostFX';
 import { getGraphicsQuality } from '../../config/graphicsConfig';
 import { registerSandboxShadowGeometry } from '../SandboxAtmosphere';
 import { padKind } from './CreatorPads';
@@ -85,6 +85,9 @@ export class CreatorGeometry {
   // Textures owned by the CACHED materials (grid floor + terrain) — they must outlive a rebuild, so
   // they are disposed only on full teardown (NOT in disposePerBuild, which runs every edit).
   private readonly cachedTextures: Array<{ dispose(): void }> = [];
+  // Label texture/material cache keyed by rendered CONTENT (see signPlane) — rebuild() runs per edit,
+  // and re-rasterizing every label texture each time was the editor's biggest large-course cost.
+  private readonly labelCache = new Map<string, { material: StandardMaterial; worldW: number; worldH: number }>();
   private readonly perBuild: Array<{ dispose(): void }> = [];
   private readonly objectRoots = new Map<string, TransformNode>();
 
@@ -172,15 +175,23 @@ export class CreatorGeometry {
         // cast one itself; casting from it can blanket the whole course and erase the sun modelling.
         registerSandboxShadowGeometry(child, obj.type !== 'kill_block');
         if (this.isPolishedCourseGlowEmitter(obj, child)) addPolishedGlowMesh(child);
-        // Do not add sandbox geometry as GlowLayer occluders. Babylon's black override material is
-        // reliable for the compact gym, but on several WebGL paths a course mesh filling the camera
-        // is composited as a black fullscreen glow layer. The yard has no long-range cove lights to
-        // occlude, so emitter-only registration is both cheaper and visually safer here.
+        // OCCLUDERS: opaque terrain solids must punch holes in the glow map, or portal/pad/beacon
+        // halos bleed straight through course walls and platforms as blurry blobs (the reported
+        // yard artifact). Safe now that the occluder override material is depth-only
+        // (disableColorWrite) — the old fullscreen-black-compositing failure needed color writes,
+        // so it can no longer happen. Translucent objects (kill blocks, opacity-reduced solids)
+        // stay unregistered: a see-through mesh must not block glow behind it.
+        else if (moduleDef(obj.type)?.category === 'terrain' && objectOpacity(obj) >= 0.999) {
+          addPolishedGlowOccluder(child);
+        }
       }
     }
   }
 
   private isPolishedCourseGlowEmitter(obj: CreatorLayoutObject, mesh: Mesh): boolean {
+    // Kill blocks are deliberately NOT GlowLayer emitters: the floor killboxes can be 100m+ wide,
+    // and their blurred halo washed the whole course red (and smeared through walls before the
+    // terrain occluders existed). Their neon read comes from the material emissive alone.
     if (padKind(obj.type) !== null) return mesh.name.endsWith('_dir');
     return false;
   }
@@ -347,21 +358,31 @@ export class CreatorGeometry {
     // grazing angles. The trigger still uses the untouched layout volume, so gameplay is unchanged.
     const scaleY = Math.max(0.0001, Math.abs(obj.scale[1] ?? 1));
     const localBottomInset = Math.min(h * 0.45, 0.025 / scaleY);
-    const visH = Math.max(0.01, h - localBottomInset);
+    // De-coplanar the TOP too: adjacent floor killboxes overlap by a metre or two with tops at the
+    // exact same height, and two coincident translucent faces z-fight (the reported flicker — the
+    // depth prepass alternates which surface wins per frame). A deterministic per-object jitter of
+    // 4–16 mm (invisible at gameplay scale) guarantees no two hazard shells share a plane.
+    let seed = 0;
+    for (let i = 0; i < obj.id.length; i += 1) seed = (seed * 31 + obj.id.charCodeAt(i)) >>> 0;
+    const topJitter = (0.004 + (seed % 97) / 97 * 0.012) / scaleY;
+    const visH = Math.max(0.01, h - localBottomInset - topJitter);
     const box = MeshBuilder.CreateBox(`creator_${obj.id}_hazard`, { width: w, height: visH, depth: d }, this.scene);
     box.position.set(0, localBottomInset + visH / 2, 0);
-    const hazardColor = new Color3(0.95, 0.22, 0.22);
+    // Neon red so a kill block reads as unmistakably lethal. The fill stays translucent; the polished
+    // GlowLayer (registerPolishedCourseGeometry marks the hazard mesh a glow emitter) spreads a soft
+    // red halo around it. Emissive kept moderate so the glow is a clear warning, not a blinding bloom.
+    const hazardColor = new Color3(1.0, 0.06, 0.12);
     const mat = this.translucentMaterial(
       'creator_hazard_mat',
       hazardColor,
-      this.polishedVisuals ? 0.18 : 0.34
+      this.polishedVisuals ? 0.2 : 0.34
     );
     if (this.polishedVisuals) {
-      // Keep the hazard readable without replacing the sun/shadow result beneath it with a flat,
-      // emissive red sheet. This material is unique to kill blocks, so the editor debug overlays
-      // retain their intentionally unlit colours.
+      // Drive the neon glow off a saturated red emissive (the GlowLayer only spreads emissive). Lit is
+      // left on so the volume still takes the sun/shadow beneath it instead of a flat emissive sheet.
+      // This material is unique to kill blocks, so the editor debug overlays keep their unlit colours.
       mat.disableLighting = false;
-      mat.emissiveColor = hazardColor.scale(0.08);
+      mat.emissiveColor = hazardColor.scale(0.62);
       mat.specularColor = new Color3(0.025, 0.025, 0.025);
       mat.specularPower = 24;
     }
@@ -1289,8 +1310,22 @@ export class CreatorGeometry {
    * A text sign whose texture AND world plane both size to fit the text: the width flexes with the
    * longest line (measured), the height with the line count. So "GO" gets a small tag and a long label
    * a wide banner, with a consistent text height and no stretching (texture + plane share one aspect).
+   *
+   * PERF: the rendered texture + material are cached by CONTENT (text/color/size/placeholder), not by
+   * object. rebuild() runs on every single edit and used to re-rasterize + re-upload a DynamicTexture
+   * for every label in the course (N canvas paints + N GPU uploads + N disposals per placement) — the
+   * main reason Build mode bogged down on large courses. Now an edit only rasterizes labels whose text
+   * actually changed, and objects sharing a label ("KILL", "CP 1") share one texture + material. Cache
+   * entries live in cachedTextures/cachedMaterials, so they survive rebuilds and die on dispose().
    */
   private signPlane(name: string, text: string, options: LabelRenderOptions): Mesh {
+    const cacheKey = `label|${options.color}|${options.size}|${options.placeholder ? 'ph' : 'solid'}|${text}`;
+    const cached = this.labelCache.get(cacheKey);
+    if (cached) {
+      const mesh = MeshBuilder.CreatePlane(name, { width: cached.worldW, height: cached.worldH }, this.scene);
+      mesh.material = cached.material;
+      return mesh;
+    }
     const lines = text.split('\n').map((l) => l.slice(0, 40)).slice(0, 3);
     const fontPx = 64;
     const padX = 46;
@@ -1344,9 +1379,14 @@ export class CreatorGeometry {
     // World size shares the texture aspect (no stretch); a constant world-per-pixel keeps text height
     // uniform while the banner grows/shrinks with the content.
     const worldPerPx = LABEL_SIZE_WORLD_PER_PX[options.size];
-    const mesh = MeshBuilder.CreatePlane(name, { width: texW * worldPerPx, height: texH * worldPerPx }, this.scene);
+    const worldW = texW * worldPerPx;
+    const worldH = texH * worldPerPx;
+    const mesh = MeshBuilder.CreatePlane(name, { width: worldW, height: worldH }, this.scene);
     mesh.material = mat;
-    this.perBuild.push(tex, mat);
+    // Content-cached: texture + material persist across rebuilds (only the plane is per-build).
+    this.labelCache.set(cacheKey, { material: mat, worldW, worldH });
+    this.cachedTextures.push(tex);
+    this.cachedMaterials.set(cacheKey, mat);
     return mesh;
   }
 
@@ -1392,6 +1432,7 @@ export class CreatorGeometry {
     this.cachedMaterials.clear();
     for (const t of this.cachedTextures) t.dispose();
     this.cachedTextures.length = 0;
+    this.labelCache.clear(); // materials/textures above own the GPU resources
     this.objectRoots.clear();
     this.previewRoot.dispose();
     this.root.dispose();

@@ -102,6 +102,8 @@ export interface CreatorLayoutObject {
   visible?: boolean;
   /** Whether this collidable solid contributes wall-run faces. Missing = enabled for old layouts. */
   wallrunEnabled?: boolean;
+  /** Whether this collidable solid contributes wall-BOUNCE faces. Missing = enabled for old layouts. */
+  wallbounceEnabled?: boolean;
   metadata?: CreatorObjectMetadata;
 }
 
@@ -736,7 +738,8 @@ export function sanitizeObject(raw: unknown): CreatorLayoutObject | null {
     material: CREATOR_MATERIAL_IDS.includes(String(o.material)) ? String(o.material) : def.material,
     collision: typeof o.collision === 'boolean' ? o.collision : def.collision,
     opacity: objectOpacity(o),
-    wallrunEnabled: typeof o.wallrunEnabled === 'boolean' ? o.wallrunEnabled : true
+    wallrunEnabled: typeof o.wallrunEnabled === 'boolean' ? o.wallrunEnabled : true,
+    wallbounceEnabled: typeof o.wallbounceEnabled === 'boolean' ? o.wallbounceEnabled : true
   };
   if (typeof o.name === 'string') obj.name = sanitizeText(o.name, CREATOR_LIMITS.maxNameLength);
   if (typeof o.color === 'string') obj.color = sanitizeText(o.color, 16);
@@ -978,7 +981,10 @@ export function defaultCreatorLayout(): CreatorLayout {
     metadata: { yawDeg: 0, label: 'LEAVE' }
   });
 
-  for (const obj of objects) obj.wallrunEnabled = true;
+  for (const obj of objects) {
+    obj.wallrunEnabled = true;
+    obj.wallbounceEnabled = true;
+  }
 
   return {
     version: CREATOR_SCHEMA_VERSION,
@@ -1010,6 +1016,7 @@ export function blankCourseLayout(): CreatorLayout {
       collision: false,
       opacity: 1,
       wallrunEnabled: true,
+      wallbounceEnabled: true,
       metadata: { defaultSpawn: true }
     },
     {
@@ -1023,6 +1030,7 @@ export function blankCourseLayout(): CreatorLayout {
       collision: false,
       opacity: 1,
       wallrunEnabled: true,
+      wallbounceEnabled: true,
       metadata: { yawDeg: 0, label: 'LEAVE' }
     }
   ];

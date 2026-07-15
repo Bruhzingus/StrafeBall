@@ -401,7 +401,9 @@ export class MovementController {
    * moving INTO the wall, the farther out and higher you launch. Reflects the into-wall velocity
    * (keeping along-wall momentum) and sets a fresh upward kick, both scaling with the approach speed.
    * Doesn't require an active wall-run and costs no stamina/dash charge; still sets the reattach
-   * cooldown so you can't immediately wall-run/bounce the same wall again. Mirrors MovementSim exactly.
+   * cooldown so you can't immediately wall-run/bounce the same wall again. Mirrors MovementSim
+   * exactly for the gym walls; Creator bounce-only walls (wallrun toggled off) additionally bounce
+   * at any into-wall angle, since the "shallow → wall-run instead" half of the rule can't apply.
    */
   private tryWallBounce(): boolean {
     if (this.grounded) return false;
@@ -412,8 +414,16 @@ export class MovementController {
     if (horizSpeed < TUNING.wall.minEntrySpeed) return false;
 
     const intoWall = -(this.velocity.x * normal.x + this.velocity.z * normal.z) / horizSpeed;
+    // The gym rule: too head-on to wall-run → bounce; shallow → the wall-run owns the jump. That
+    // split only makes sense where a wall-run is actually POSSIBLE. On a Creator wall with wallrun
+    // toggled off (bounce-only), the same gate left a dead zone — shallow approaches gave neither
+    // a wall-run (face excluded) nor a bounce (gate said "wall-run instead") — the reported
+    // "wall bounce doesn't work in the editor". If this spot offers no wall-run surface, any
+    // meaningfully into-wall jump bounces. Gym walls always wall-run, so gym behavior is unchanged.
+    const wallRunPossibleHere = this.detectWall() !== null;
     const maxInto = Math.sin(TUNING.wall.runTriggerAngleDegrees * DEG2RAD);
-    if (intoWall <= maxInto) return false; // shallow enough to wall-run instead
+    if (wallRunPossibleHere && intoWall <= maxInto) return false; // shallow enough to wall-run instead
+    if (!wallRunPossibleHere && intoWall <= 0.15) return false; // grazing along a bounce-only wall
 
     const vn = this.velocity.x * normal.x + this.velocity.z * normal.z; // along outward normal (neg = into wall)
     const approach = Math.min(TUNING.wall.bounceMaxApproachSpeed, Math.max(0, -vn));

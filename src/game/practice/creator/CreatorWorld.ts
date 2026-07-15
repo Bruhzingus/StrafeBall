@@ -22,6 +22,8 @@ import {
 } from './CreatorLayout';
 
 const WALL_RUN_MARGIN = 1.0;
+/** Vertical reach used to test face overlap against the player's body (feet y is what's queried). */
+const PLAYER_BODY_HEIGHT = 1.8;
 
 /** A vertical wall-run surface (face line in world XZ with an outward normal). */
 export interface CreatorWallFace {
@@ -33,6 +35,8 @@ export interface CreatorWallFace {
   tz: number;
   halfLen: number;
   topY: number;
+  /** Bottom of the physical face. Faces don't extend below their box (floating platforms). */
+  bottomY: number;
 }
 
 /** The four vertical wall-run faces of one oriented box (normals point outward). */
@@ -42,6 +46,7 @@ function boxFaces(box: OrientedBox): CreatorWallFace[] {
   const hw = box.w / 2;
   const hd = box.d / 2;
   const top = box.cy + box.h / 2;
+  const bottom = box.cy - box.h / 2;
   const local: Array<{ n: [number, number]; t: [number, number]; off: number; half: number }> = [
     { n: [-1, 0], t: [0, 1], off: hw, half: hd },
     { n: [1, 0], t: [0, 1], off: hw, half: hd },
@@ -54,9 +59,36 @@ function boxFaces(box: OrientedBox): CreatorWallFace[] {
     const nz = -f.n[0] * sin + f.n[1] * cos;
     const tx = f.t[0] * cos + f.t[1] * sin;
     const tz = -f.t[0] * sin + f.t[1] * cos;
-    faces.push({ nx, nz, ox: box.cx + nx * f.off, oz: box.cz + nz * f.off, tx, tz, halfLen: f.half, topY: top });
+    faces.push({ nx, nz, ox: box.cx + nx * f.off, oz: box.cz + nz * f.off, tx, tz, halfLen: f.half, topY: top, bottomY: bottom });
   }
   return faces;
+}
+
+/**
+ * Nearest face within range whose vertical band overlaps the player's body, else null.
+ * The ONE face query for both wall-run and wall-bounce, shared by CreatorWorld (editor playtest)
+ * and MovementSandbox (the yard) so course walls always feel identical in both.
+ *
+ * `y` is the player's FEET height (MovementController root). A face counts while the feet are below
+ * its top (can't ride above a wall) AND the body still reaches its bottom — without the bottom
+ * check, floating platforms projected phantom faces all the way to the ground, which both allowed
+ * bouncing off empty air below them and could hijack the query from the REAL wall behind it (the
+ * reported "wall bounce doesn't work / picks the wrong wall" in stacked-box courses).
+ */
+export function creatorWallNormalAt(faces: readonly CreatorWallFace[], x: number, z: number, y: number): Vector3 | null {
+  let best: CreatorWallFace | null = null;
+  let bestDist = WALL_RUN_MARGIN;
+  for (const f of faces) {
+    if (y > f.topY) continue;
+    if (y + PLAYER_BODY_HEIGHT < f.bottomY) continue;
+    const d = (x - f.ox) * f.nx + (z - f.oz) * f.nz; // distance along the outward normal
+    if (d < 0 || d > bestDist) continue;
+    const t = (x - f.ox) * f.tx + (z - f.oz) * f.tz; // position along the face tangent
+    if (t < -f.halfLen || t > f.halfLen) continue;
+    best = f;
+    bestDist = d;
+  }
+  return best ? new Vector3(best.nx, 0, best.nz) : null;
 }
 
 export interface CreatorWorldBounds {
@@ -115,16 +147,20 @@ function appendBoundaryFaces(faces: CreatorWallFace[], layout: CreatorLayout): v
   const cz = SANDBOX_CENTER.z;
   const halfX = (b.maxX - b.minX) / 2;
   const halfZ = (b.maxZ - b.minZ) / 2;
-  faces.push({ nx: 1, nz: 0, ox: b.minX, oz: cz, tx: 0, tz: 1, halfLen: halfZ, topY: SANDBOX_CEILING_Y });
-  faces.push({ nx: -1, nz: 0, ox: b.maxX, oz: cz, tx: 0, tz: 1, halfLen: halfZ, topY: SANDBOX_CEILING_Y });
-  faces.push({ nx: 0, nz: 1, ox: cx, oz: b.minZ, tx: 1, tz: 0, halfLen: halfX, topY: SANDBOX_CEILING_Y });
-  faces.push({ nx: 0, nz: -1, ox: cx, oz: b.maxZ, tx: 1, tz: 0, halfLen: halfX, topY: SANDBOX_CEILING_Y });
+  const BOUNDARY_BOTTOM = -1000; // boundary walls reach the floor whatever the ground height is
+  faces.push({ nx: 1, nz: 0, ox: b.minX, oz: cz, tx: 0, tz: 1, halfLen: halfZ, topY: SANDBOX_CEILING_Y, bottomY: BOUNDARY_BOTTOM });
+  faces.push({ nx: -1, nz: 0, ox: b.maxX, oz: cz, tx: 0, tz: 1, halfLen: halfZ, topY: SANDBOX_CEILING_Y, bottomY: BOUNDARY_BOTTOM });
+  faces.push({ nx: 0, nz: 1, ox: cx, oz: b.minZ, tx: 1, tz: 0, halfLen: halfX, topY: SANDBOX_CEILING_Y, bottomY: BOUNDARY_BOTTOM });
+  faces.push({ nx: 0, nz: -1, ox: cx, oz: b.maxZ, tx: 1, tz: 0, halfLen: halfX, topY: SANDBOX_CEILING_Y, bottomY: BOUNDARY_BOTTOM });
 }
 
-function buildCreatorSurfaceFaces(layout: CreatorLayout, includeWallrunDisabled: boolean): CreatorWallFace[] {
+function buildCreatorSurfaceFaces(layout: CreatorLayout, kind: 'run' | 'bounce'): CreatorWallFace[] {
   const faces: CreatorWallFace[] = [];
   for (const obj of layout.objects) {
-    if (!includeWallrunDisabled && obj.wallrunEnabled === false) continue;
+    // Independent per-object toggles: an author can make a wall bounce-only (wallrun off),
+    // run-only (wallbounce off), or fully inert (both off). Missing = enabled, like old layouts.
+    if (kind === 'run' && obj.wallrunEnabled === false) continue;
+    if (kind === 'bounce' && obj.wallbounceEnabled === false) continue;
     // Moving platforms translate at runtime; wall surfaces are static, so movers provide none
     // (documented limitation — their COLLIDERS still move and push/carry the player correctly).
     if (obj.metadata?.mover) continue;
@@ -137,12 +173,12 @@ function buildCreatorSurfaceFaces(layout: CreatorLayout, includeWallrunDisabled:
 
 /** All wall-run faces: wallrun-enabled solid boxes + the four inner boundary faces. */
 export function buildCreatorWallFaces(layout: CreatorLayout): CreatorWallFace[] {
-  return buildCreatorSurfaceFaces(layout, false);
+  return buildCreatorSurfaceFaces(layout, 'run');
 }
 
-/** All wall-bounce faces: every solid box's four faces + the four inner boundary faces. */
+/** All wall-bounce faces: wallbounce-enabled solid boxes + the four inner boundary faces. */
 export function buildCreatorWallBounceFaces(layout: CreatorLayout): CreatorWallFace[] {
-  return buildCreatorSurfaceFaces(layout, true);
+  return buildCreatorSurfaceFaces(layout, 'bounce');
 }
 
 export class CreatorWorld implements MovementWorld {
@@ -173,25 +209,10 @@ export class CreatorWorld implements MovementWorld {
   }
 
   wallNormalAt(x: number, z: number, y: number): Vector3 | null {
-    return this.normalAt(this.wallRunFaces, x, z, y);
+    return creatorWallNormalAt(this.wallRunFaces, x, z, y);
   }
 
   wallBounceNormalAt(x: number, z: number, y: number): Vector3 | null {
-    return this.normalAt(this.wallBounceFaces, x, z, y);
-  }
-
-  private normalAt(faces: CreatorWallFace[], x: number, z: number, y: number): Vector3 | null {
-    let best: CreatorWallFace | null = null;
-    let bestDist = WALL_RUN_MARGIN;
-    for (const f of faces) {
-      if (y > f.topY) continue;
-      const d = (x - f.ox) * f.nx + (z - f.oz) * f.nz;
-      if (d < 0 || d > bestDist) continue;
-      const t = (x - f.ox) * f.tx + (z - f.oz) * f.tz;
-      if (t < -f.halfLen || t > f.halfLen) continue;
-      best = f;
-      bestDist = d;
-    }
-    return best ? new Vector3(best.nx, 0, best.nz) : null;
+    return creatorWallNormalAt(this.wallBounceFaces, x, z, y);
   }
 }

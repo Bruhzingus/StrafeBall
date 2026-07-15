@@ -1776,6 +1776,7 @@ export class CreatorEditor implements CreatorBridge, CoopEditorBridge {
       collision: def.collision,
       opacity: 1,
       wallrunEnabled: true,
+      wallbounceEnabled: true,
       metadata: cloneMetadata(def.defaultMetadata)
     };
     this.geometry.setPlacementPreview(this.placementPreview);
@@ -1934,6 +1935,13 @@ export class CreatorEditor implements CreatorBridge, CoopEditorBridge {
     const obj = this.getSelectedObject();
     if (!obj) return;
     obj.wallrunEnabled = value;
+    this.commit(obj.id);
+  }
+
+  setSelectedWallbounce(value: boolean): void {
+    const obj = this.getSelectedObject();
+    if (!obj) return;
+    obj.wallbounceEnabled = value;
     this.commit(obj.id);
   }
 

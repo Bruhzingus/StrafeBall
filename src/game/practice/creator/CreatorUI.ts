@@ -127,6 +127,7 @@ export interface CreatorBridge {
   setSelectedCollision(value: boolean): void;
   setSelectedOpacity(value: number): void;
   setSelectedWallrun(value: boolean): void;
+  setSelectedWallbounce(value: boolean): void;
   setSelectedMetadata(patch: Partial<CreatorObjectMetadata>): void;
   duplicateSelected(): void;
   deleteSelected(): void;
@@ -873,11 +874,12 @@ export class CreatorUI {
       this.inspectorEl.appendChild(texRow);
     }
 
-    // Collision + opacity + wallrun controls
+    // Collision + opacity + wallrun/wallbounce controls
     const toggles = el('div', 'creator-field-row');
     toggles.append(
       this.checkbox('Collision', obj.collision !== false, (v) => this.bridge.setSelectedCollision(v)),
-      this.checkbox('Wallrun', obj.wallrunEnabled !== false, (v) => this.bridge.setSelectedWallrun(v))
+      this.checkbox('Wallrun', obj.wallrunEnabled !== false, (v) => this.bridge.setSelectedWallrun(v)),
+      this.checkbox('Wallbounce', obj.wallbounceEnabled !== false, (v) => this.bridge.setSelectedWallbounce(v))
     );
     this.inspectorEl.appendChild(toggles);
     this.inspectorEl.appendChild(this.opacitySlider(objectOpacity(obj), (v) => this.bridge.setSelectedOpacity(v)));
@@ -1517,6 +1519,7 @@ function inspectorSignature(obj: CreatorLayoutObject): string {
     obj.collision !== false ? 1 : 0,
     Math.round(objectOpacity(obj) * 1000),
     obj.wallrunEnabled !== false ? 1 : 0,
+    obj.wallbounceEnabled !== false ? 1 : 0,
     JSON.stringify(obj.metadata ?? {})
   ].join('|');
 }

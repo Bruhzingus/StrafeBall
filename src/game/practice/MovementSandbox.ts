@@ -35,6 +35,7 @@ import {
   buildCreatorCollisionBoxes,
   buildCreatorWallBounceFaces,
   buildCreatorWallFaces,
+  creatorWallNormalAt,
   layoutWorldBounds,
   type CreatorWallFace
 } from './creator/CreatorWorld';
@@ -59,7 +60,6 @@ import {
 export type SandboxAction = 'leave' | 'race' | 'coop';
 
 const COLLISION_ID_PREFIX = 'sandbox_';
-const WALL_RUN_MARGIN = 1.0;
 /** World size (metres) of one grid cell on the ground + walls — large + spaced out, consistent on every face. */
 const GRID_CELL_METRES = 10;
 
@@ -233,28 +233,13 @@ export class MovementSandbox implements MovementWorld {
   // MovementWorld
   // ---------------------------------------------------------------------------------------------
 
-  /** Nearest wall-run face within range (below its top, within its span, on its open side), else null. */
+  /** Nearest wall-run face within range (same shared query the Creator playtest uses). */
   wallNormalAt(x: number, z: number, y: number): Vector3 | null {
-    return this.normalAt(this.wallRunFaces, x, z, y);
+    return creatorWallNormalAt(this.wallRunFaces, x, z, y);
   }
 
   wallBounceNormalAt(x: number, z: number, y: number): Vector3 | null {
-    return this.normalAt(this.wallBounceFaces, x, z, y);
-  }
-
-  private normalAt(faces: CreatorWallFace[], x: number, z: number, y: number): Vector3 | null {
-    let best: CreatorWallFace | null = null;
-    let bestDist = WALL_RUN_MARGIN;
-    for (const f of faces) {
-      if (y > f.topY) continue;
-      const d = (x - f.ox) * f.nx + (z - f.oz) * f.nz; // distance along the outward normal
-      if (d < 0 || d > bestDist) continue;
-      const t = (x - f.ox) * f.tx + (z - f.oz) * f.tz; // position along the face tangent
-      if (t < -f.halfLen || t > f.halfLen) continue;
-      best = f;
-      bestDist = d;
-    }
-    return best ? new Vector3(best.nx, 0, best.nz) : null;
+    return creatorWallNormalAt(this.wallBounceFaces, x, z, y);
   }
 
   // ---------------------------------------------------------------------------------------------
