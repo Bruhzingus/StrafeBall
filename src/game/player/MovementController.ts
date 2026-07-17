@@ -8,6 +8,7 @@ import { DashController } from './DashController';
 import { BackflipController } from './BackflipController';
 import { CollisionWorld, type RampCollider } from '../map/Collider';
 import { catchRecoilForVelocity } from '../../../shared/simulation/CatchFeedback';
+import { wallBounceAllowed, wallBounceVelocity } from '../../../shared/simulation/WallBounce';
 
 export type FrictionMode = 'air' | 'normal' | 'slide' | 'dashSuppressed';
 
@@ -77,6 +78,14 @@ export class MovementController {
   private groundIsSlope = false;
   // Normal (pointing into the court) of the wall currently being run on; drives wall-jump.
   private lastWallNormal = Vector3.Zero();
+  // Horizontal velocity as it stood BEFORE this frame's collision push-out — the "approach velocity"
+  // wall-bounce needs (see shared/simulation/WallBounce.ts). resolveCollisions zeroes the into-wall
+  // component on contact, and tryJump runs at the TOP of the next frame, so reading the live velocity
+  // there measured a player who had already been stopped by the wall: the bounce gate saw
+  // intoWall ≈ 0 and refused. Online has no equivalent problem — its gym walls are a position clamp
+  // that never touches velocity — which is exactly why bounces felt reliable there and random here.
+  private approachVx = 0;
+  private approachVz = 0;
   private catchRecoilOffsetX = 0;
   private catchRecoilOffsetZ = 0;
   private slideHoldActive = false;
@@ -104,6 +113,8 @@ export class MovementController {
     if (this.flying === on) return;
     this.flying = on;
     this.velocity.setAll(0);
+    this.approachVx = 0; // free-fly never approaches a wall; don't leave a stale one armed
+    this.approachVz = 0;
     this.wallRunning = false;
     this.sliding = false;
     if (!on) this.grounded = false; // let the next normal tick re-detect the ground under you
@@ -147,6 +158,8 @@ export class MovementController {
     pos.y = Math.min(ceil, Math.max(floor, pos.y));
 
     this.velocity.setAll(0);
+    this.approachVx = 0;
+    this.approachVz = 0;
     this.grounded = false;
     this.wallRunning = false;
     this.sliding = false;
@@ -175,6 +188,10 @@ export class MovementController {
     this.groundNormal.set(0, 1, 0);
     this.groundIsSlope = false;
     this.lastWallNormal.setAll(0);
+    // Must clear with the velocity it shadows: a stale approach would let the first jump after a
+    // teleport/respawn bounce off whatever wall you were flying at before.
+    this.approachVx = 0;
+    this.approachVz = 0;
     this.catchRecoilOffsetX = 0;
     this.catchRecoilOffsetZ = 0;
     this.slideHoldActive = false;
@@ -247,6 +264,10 @@ export class MovementController {
     this.root.position.x += this.velocity.x * dt;
     this.root.position.y += this.velocity.y * dt;
     this.root.position.z += this.velocity.z * dt;
+    // Snapshot the approach velocity BEFORE push-out can zero the into-wall component; next frame's
+    // tryWallBounce reads it. See the field comment + shared/simulation/WallBounce.ts.
+    this.approachVx = this.velocity.x;
+    this.approachVz = this.velocity.z;
     this.clampToGymBounds();
     this.resolveCollisions();
     this.applyCameraHeight();
@@ -398,42 +419,39 @@ export class MovementController {
   /**
    * Wall-bounce: hit a wall too head-on to wall-run (steeper than runTriggerAngleDegrees) while
    * airborne, then press jump near/touching the wall to bounce off like a spring — the faster you're
-   * moving INTO the wall, the farther out and higher you launch. Reflects the into-wall velocity
-   * (keeping along-wall momentum) and sets a fresh upward kick, both scaling with the approach speed.
-   * Doesn't require an active wall-run and costs no stamina/dash charge; still sets the reattach
-   * cooldown so you can't immediately wall-run/bounce the same wall again. Mirrors MovementSim
-   * exactly for the gym walls; Creator bounce-only walls (wallrun toggled off) additionally bounce
-   * at any into-wall angle, since the "shallow → wall-run instead" half of the rule can't apply.
+   * moving INTO the wall, the farther out and higher you launch. Doesn't require an active wall-run
+   * and costs no stamina/dash charge; still sets the reattach cooldown so you can't immediately
+   * wall-run/bounce the same wall again.
+   *
+   * The gate and the impulse are shared/simulation/WallBounce.ts — the SAME code the online sim runs,
+   * so gym walls and Creator course walls now bounce by one identical rule. Only the surface query
+   * differs (gym planes online, authored faces here).
+   *
+   * Both reads use the APPROACH velocity, not the live one. That is the whole fix for "wall bounce is
+   * inconsistent": course walls are collision boxes whose push-out zeroes the into-wall velocity on
+   * contact, so by the time jump was pressed the live velocity said "not moving into any wall" and the
+   * gate refused — a bounce only landed in the 1–2 frames between entering detect range and touching.
+   * A previous attempt papered over this by loosening the ANGLE (a second, surface-dependent threshold
+   * of 0.15 on bounce-only walls, chosen by "is any run face nearby" — which could be a different wall
+   * entirely). That is removed: one threshold, everywhere, reading a velocity that wasn't destroyed.
    */
   private tryWallBounce(): boolean {
     if (this.grounded) return false;
     const normal = this.detectWallBounceSurface();
     if (!normal) return false;
+    if (!wallBounceAllowed(this.approachVx, this.approachVz, normal.x, normal.z, TUNING.wall)) return false;
 
-    const horizSpeed = this.horizontalSpeed();
-    if (horizSpeed < TUNING.wall.minEntrySpeed) return false;
-
-    const intoWall = -(this.velocity.x * normal.x + this.velocity.z * normal.z) / horizSpeed;
-    // The gym rule: too head-on to wall-run → bounce; shallow → the wall-run owns the jump. That
-    // split only makes sense where a wall-run is actually POSSIBLE. On a Creator wall with wallrun
-    // toggled off (bounce-only), the same gate left a dead zone — shallow approaches gave neither
-    // a wall-run (face excluded) nor a bounce (gate said "wall-run instead") — the reported
-    // "wall bounce doesn't work in the editor". If this spot offers no wall-run surface, any
-    // meaningfully into-wall jump bounces. Gym walls always wall-run, so gym behavior is unchanged.
-    const wallRunPossibleHere = this.detectWall() !== null;
-    const maxInto = Math.sin(TUNING.wall.runTriggerAngleDegrees * DEG2RAD);
-    if (wallRunPossibleHere && intoWall <= maxInto) return false; // shallow enough to wall-run instead
-    if (!wallRunPossibleHere && intoWall <= 0.15) return false; // grazing along a bounce-only wall
-
-    const vn = this.velocity.x * normal.x + this.velocity.z * normal.z; // along outward normal (neg = into wall)
-    const approach = Math.min(TUNING.wall.bounceMaxApproachSpeed, Math.max(0, -vn));
-    const tx = this.velocity.x - vn * normal.x; // along-wall component, preserved
-    const tz = this.velocity.z - vn * normal.z;
-    const outward = TUNING.wall.bounceBaseAwaySpeed + approach * TUNING.wall.bounceAwayGain;
-    const up = TUNING.wall.bounceBaseUpSpeed + approach * TUNING.wall.bounceUpGain;
-    this.velocity.x = tx + normal.x * outward;
-    this.velocity.z = tz + normal.z * outward;
-    this.velocity.y = Math.max(this.velocity.y, up);
+    const bounced = wallBounceVelocity(
+      this.approachVx,
+      this.velocity.y,
+      this.approachVz,
+      normal.x,
+      normal.z,
+      TUNING.wall
+    );
+    this.velocity.x = bounced.x;
+    this.velocity.y = bounced.y;
+    this.velocity.z = bounced.z;
     this.wallReattachCooldown = TUNING.wall.reattachCooldownSeconds;
     return true;
   }
@@ -544,6 +562,15 @@ export class MovementController {
     this.wallRunTimer = 0;
     this.wallRunClimbing = false;
     this.wallRunVerticalInput = 0;
+  }
+
+  /**
+   * Outward normal of the wall currently being run on, or null when not wall-running. Read by the
+   * offline moving-platform runtime (CreatorMovers) to identify WHICH wall a rider is attached to, so
+   * only that wall's platform carries them.
+   */
+  activeWallNormal(): Vector3 | null {
+    return this.wallRunning ? this.lastWallNormal : null;
   }
 
   /**
@@ -721,6 +748,7 @@ export class MovementController {
     let supportNormalZ = 0;
     let supportIsSlope = false;
     for (const b of boxes) {
+      if (b.enabled === false) continue; // trigger-disabled: intangible this frame
       if (b.ramp) {
         const hit = this.rampSupportAt(b.ramp, p.x, p.z, r);
         if (!hit) continue;
@@ -759,6 +787,7 @@ export class MovementController {
 
     // Pass 2: horizontal push-out for boxes acting as walls (rising above the support).
     for (const b of boxes) {
+      if (b.enabled === false) continue; // trigger-disabled: intangible this frame
       if (b.ramp) {
         this.resolveRampWalls(b.ramp, p, r, bodyHeight, support);
         continue;

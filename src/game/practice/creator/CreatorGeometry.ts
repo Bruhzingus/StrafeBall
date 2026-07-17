@@ -113,6 +113,8 @@ export class CreatorGeometry {
   private readonly collisionMeshes: Mesh[] = [];
   /** Build-only moving-platform previews: the travel line + a far-end ghost box. */
   private readonly moverPreviewMeshes: Mesh[] = [];
+  /** Build-only trigger→target link lines (drawn when the trigger overlay is on). */
+  private readonly triggerLinkMeshes: Mesh[] = [];
   // Invisible editor-only pick volumes so 0%-opacity objects remain clickable in Build.
   private readonly opacityPickMeshes: Mesh[] = [];
 
@@ -144,6 +146,7 @@ export class CreatorGeometry {
     this.collisionMeshes.length = 0;
     this.opacityPickMeshes.length = 0;
     this.moverPreviewMeshes.length = 0;
+    this.triggerLinkMeshes.length = 0;
 
     this.ensureGrid();
     this.ensureSelectionBox();
@@ -171,9 +174,10 @@ export class CreatorGeometry {
       if (!node) continue;
       for (const child of node.getChildMeshes(false)) {
         if (!(child instanceof Mesh)) continue;
-        // The huge translucent floor killbox should receive nearby object shadows, but must never
-        // cast one itself; casting from it can blanket the whole course and erase the sun modelling.
-        registerSandboxShadowGeometry(child, obj.type !== 'kill_block');
+        // Huge translucent walk-through VOLUMES (kill blocks, trigger volumes) should receive nearby
+        // object shadows, but must never cast one themselves; a cast from a course-spanning volume
+        // can blanket the whole course and erase the sun modelling.
+        registerSandboxShadowGeometry(child, obj.type !== 'kill_block' && obj.type !== 'trigger_volume');
         if (this.isPolishedCourseGlowEmitter(obj, child)) addPolishedGlowMesh(child);
         // OCCLUDERS: opaque terrain solids must punch holes in the glow map, or portal/pad/beacon
         // halos bleed straight through course walls and platforms as blurry blobs (the reported
@@ -368,12 +372,14 @@ export class CreatorGeometry {
     const visH = Math.max(0.01, h - localBottomInset - topJitter);
     const box = MeshBuilder.CreateBox(`creator_${obj.id}_hazard`, { width: w, height: visH, depth: d }, this.scene);
     box.position.set(0, localBottomInset + visH / 2, 0);
-    // Neon red so a kill block reads as unmistakably lethal. The fill stays translucent; the polished
-    // GlowLayer (registerPolishedCourseGeometry marks the hazard mesh a glow emitter) spreads a soft
-    // red halo around it. Emissive kept moderate so the glow is a clear warning, not a blinding bloom.
-    const hazardColor = new Color3(1.0, 0.06, 0.12);
+    // Kill blocks read neon RED (lethal); trigger volumes read cyan (a switch, not a hazard) — same
+    // translucent walk-through shell, different colour so they can't be confused at a glance.
+    const isTrigger = obj.type === 'trigger_volume';
+    const hazardColor = isTrigger ? new Color3(0.16, 0.86, 0.92) : new Color3(1.0, 0.06, 0.12);
     const mat = this.translucentMaterial(
-      'creator_hazard_mat',
+      // Distinct name from the editor overlay's 'creator_trigger_mat' — translucentMaterial caches by
+      // name, and the polished branch below mutates emissive/lighting on this instance.
+      isTrigger ? 'creator_trigger_fill_mat' : 'creator_hazard_mat',
       hazardColor,
       this.polishedVisuals ? 0.2 : 0.34
     );
@@ -625,6 +631,56 @@ export class CreatorGeometry {
         this.perBuild.push(mesh);
       }
     }
+
+    this.buildTriggerLinks(layout);
+  }
+
+  /**
+   * A thin line from each trigger to every object it drives (direct id targets + channel listeners),
+   * so a course author can SEE the wiring in Build. Toggled with the trigger overlay; disabled in
+   * Playtest. Reuses the mover-preview visual idiom (thin box between two points). Object CENTRES are
+   * resolved from the current layout, so the line updates the moment a link is added/removed and the
+   * geometry rebuilt.
+   */
+  private buildTriggerLinks(layout: CreatorLayout): void {
+    const byId = new Map(layout.objects.map((o) => [o.id, o] as const));
+    const mat = this.solidMaterial('marker_cyan');
+    for (const trigger of layout.objects) {
+      const spec = trigger.metadata?.triggerSpec;
+      if (!spec) continue;
+      const targetIds = new Set<string>();
+      if (spec.targets) for (const id of spec.targets) if (id !== trigger.id && byId.has(id)) targetIds.add(id);
+      if (spec.channel) {
+        for (const o of layout.objects) if (o.id !== trigger.id && o.metadata?.listenChannel === spec.channel) targetIds.add(o.id);
+      }
+      const from = this.objectCenter(trigger);
+      for (const id of targetIds) {
+        const target = byId.get(id);
+        if (!target) continue;
+        this.buildLinkLine(`creator_link_${trigger.id}_${id}`, from, this.objectCenter(target), mat);
+      }
+    }
+  }
+
+  private objectCenter(obj: CreatorLayoutObject): { x: number; y: number; z: number } {
+    const a = objectWorldAabb(obj);
+    return { x: (a.minX + a.maxX) / 2, y: (a.minY + a.maxY) / 2, z: (a.minZ + a.maxZ) / 2 };
+  }
+
+  private buildLinkLine(name: string, from: { x: number; y: number; z: number }, to: { x: number; y: number; z: number }, mat: StandardMaterial): void {
+    const dx = to.x - from.x;
+    const dy = to.y - from.y;
+    const dz = to.z - from.z;
+    const len = Math.hypot(dx, dy, dz);
+    if (len < 1e-3) return;
+    const line = MeshBuilder.CreateBox(name, { width: 0.07, height: 0.07, depth: len }, this.scene);
+    line.position.set(from.x + dx / 2, from.y + dy / 2, from.z + dz / 2);
+    line.rotation.set(-Math.asin(Math.max(-1, Math.min(1, dy / len))), Math.atan2(dx, dz), 0);
+    line.material = mat;
+    line.isPickable = false;
+    line.parent = this.root;
+    this.perBuild.push(line);
+    this.triggerLinkMeshes.push(line);
   }
 
   private ensureGrid(): void {
@@ -1052,6 +1108,7 @@ export class CreatorGeometry {
     // the "show grid" toggle hides it. Trigger/collision debug volumes are Build-only.
     if (this.gridMesh) this.gridMesh.setEnabled(this.gridVisible);
     for (const m of this.triggerMeshes) m.setEnabled(on && this.triggersVisible);
+    for (const m of this.triggerLinkMeshes) m.setEnabled(on && this.triggersVisible); // link wiring
     for (const m of this.collisionMeshes) m.setEnabled(on && this.collisionVisible);
     for (const m of this.opacityPickMeshes) m.setEnabled(on);
     for (const m of this.moverPreviewMeshes) m.setEnabled(on); // Build-only travel-path previews
@@ -1073,6 +1130,17 @@ export class CreatorGeometry {
 
   getObjectRoot(id: string): TransformNode | undefined {
     return this.objectRoots.get(id);
+  }
+
+  /**
+   * Runtime show/hide of one object's whole visual (Creator trigger show/hide effect). Toggles the
+   * object root's enabled flag — a disabled node renders nothing and is unpickable. Purely visual:
+   * collision is a separate concern (the trigger runtime toggles the colliders' `enabled` flag). A
+   * layout rebuild recreates every node enabled, so the trigger runtime re-applies hidden state after
+   * a rebuild; here we just flip the node.
+   */
+  setObjectVisible(id: string, visible: boolean): void {
+    this.objectRoots.get(id)?.setEnabled(visible);
   }
 
   // ---------------------------------------------------------------------------------------------

@@ -10,6 +10,33 @@ let nextBallId = 1;
 const IMPACT_SQUASH_MIN_SPEED = 8;
 const IMPACT_SQUASH_SPEED_RANGE = 22;
 
+/**
+ * Optional world override for the OFFLINE ball only (the Creator sandbox / Movement Course yard uses
+ * it). It replaces the default GYM world: the simple bounds bounce uses these XZ bounds, floor and
+ * ceiling, and `collision` replaces the gym's ball collision boxes.
+ *
+ * Without it, a ball in the yard is unplayable: the yard sits at x≈800 (SANDBOX_CENTER) while the
+ * default bounds are the gym's own halfWidth 13 / halfLength 18 / wallHeight 8.5, so a ball spawned
+ * from a Creator `ball_spawn` marker was clamped ~787m back into the gym on its very first frame —
+ * registering a bounce, going Dead→Loose, and coming to rest inside the gym bleachers, silently.
+ *
+ * This mirrors MovementController's MovementWorld exactly, including the isolation guarantee: when
+ * null (normal gym practice, the debug launcher, bots, tests) every path is byte-for-byte unchanged,
+ * and no online path can reach it — online balls run shared/simulation/BallSim on the server.
+ */
+export interface BallWorld {
+  minX: number;
+  maxX: number;
+  minZ: number;
+  maxZ: number;
+  /** Bounce ceiling (world Y). */
+  ceilingY: number;
+  /** Walkable floor height. The gym's is 0; a Creator course's is layout.ground.bounds.y. */
+  floorY: number;
+  /** Boxes the ball resolves against — the course's own colliders, not the gym's. */
+  collision: CollisionWorld;
+}
+
 export class Ball {
   public readonly id = nextBallId++;
   public state = BallState.Loose;
@@ -30,6 +57,8 @@ export class Ball {
   // Visual-only state updated by BallManager. These never feed back into gameplay physics.
   public visualTrailTimer = 0;
   public impactPulse = 0;
+  // Offline-only world override (Creator sandbox / yard). Null = the default gym world, unchanged.
+  private world: BallWorld | null = null;
 
   // The mesh is the ball's VISUAL, created by the ModelLoader and injected here. Gameplay
   // (state machine, physics, collision radius) is independent of it.
@@ -39,6 +68,36 @@ export class Ball {
     private readonly onImpact?: (speed: number, bounceCount: number, position: Vector3) => void
   ) {
     this.mesh.position.copyFrom(position);
+  }
+
+  /** Offline only: install (or clear with null) a world override for the Creator sandbox / yard. */
+  setWorld(world: BallWorld | null): void {
+    this.world = world;
+  }
+
+  /** Height of the surface a resting ball settles on — the world's floor, or the gym's y=0. */
+  private floorY(): number {
+    return this.world?.floorY ?? 0;
+  }
+
+  /**
+   * Put the ball back at `position`, at rest and fully re-armed (Loose, no velocity, no bounce
+   * history, not super, no curve). Used to return Creator balls to their spawn markers when a
+   * playtest or timed run restarts, so every attempt begins identically.
+   */
+  reset(position: Vector3): void {
+    this.state = BallState.Loose;
+    this.owner = null;
+    this.heldHand = null;
+    this.mesh.position.copyFrom(position);
+    this.velocity.setAll(0);
+    this.bounceCount = 0;
+    this.isSuper = false;
+    this.dropScale = 1;
+    this.curveDistance = 0;
+    this.curveAccel.setAll(0);
+    this.impactPulse = 0;
+    this.visualTrailTimer = 0;
   }
 
   setHeld(hand: HandSide): void {
@@ -94,7 +153,8 @@ export class Ball {
       this.velocity.x += this.curveAccel.x * rampFactor * dt;
       this.velocity.z += this.curveAccel.z * rampFactor * dt;
     }
-    if ((this.state === BallState.Dead || this.state === BallState.Loose) && this.mesh.position.y <= TUNING.ball.radius + 0.05) {
+    if ((this.state === BallState.Dead || this.state === BallState.Loose)
+      && this.mesh.position.y <= this.floorY() + TUNING.ball.radius + 0.05) {
       const frictionFactor = Math.max(0, 1 - TUNING.ball.looseFriction * dt);
       this.velocity.x *= frictionFactor;
       this.velocity.z *= frictionFactor;
@@ -110,7 +170,10 @@ export class Ball {
     }
 
     this.resolveSimpleBounds();
-    if (collision) this.resolveBoxCollisions(collision);
+    // The override's boxes REPLACE the gym's: a Creator ball must resolve against the course's own
+    // floors/walls (the caller passes the gym's ball-collision world, which holds none of them).
+    const boxes = this.world?.collision ?? collision;
+    if (boxes) this.resolveBoxCollisions(boxes);
 
     if (this.state === BallState.Dead && this.velocity.length() < 0.2) {
       this.state = BallState.Loose;
@@ -121,15 +184,19 @@ export class Ball {
   private resolveSimpleBounds(): void {
     const p = this.mesh.position;
     const r = TUNING.ball.radius;
-    const minX = -TUNING.map.halfWidth + r;
-    const maxX = TUNING.map.halfWidth - r;
-    const minZ = -TUNING.map.halfLength + r;
-    const maxZ = TUNING.map.halfLength - r;
-    const maxY = TUNING.map.wallHeight - r;
+    // The world override (Creator yard) or the gym. Getting this wrong is not a subtle bug: the yard
+    // is ~800m from the gym, so the gym's bounds don't merely misbehave there, they teleport the ball.
+    const w = this.world;
+    const minX = (w ? w.minX : -TUNING.map.halfWidth) + r;
+    const maxX = (w ? w.maxX : TUNING.map.halfWidth) - r;
+    const minZ = (w ? w.minZ : -TUNING.map.halfLength) + r;
+    const maxZ = (w ? w.maxZ : TUNING.map.halfLength) - r;
+    const maxY = (w ? w.ceilingY : TUNING.map.wallHeight) - r;
+    const floor = this.floorY();
 
-    if (p.y < r) {
+    if (p.y < floor + r) {
       const normalImpactSpeed = Math.abs(this.velocity.y);
-      p.y = r;
+      p.y = floor + r;
       this.velocity.y = Math.abs(this.velocity.y) * TUNING.ball.bounceRestitution;
       this.onBounce(normalImpactSpeed);
     }
@@ -165,6 +232,7 @@ export class Ball {
     const e = TUNING.ball.bounceRestitution;
 
     for (const b of collision.boxes) {
+      if (b.enabled === false) continue; // trigger-disabled: intangible this frame
       if (p.x < b.minX - r || p.x > b.maxX + r) continue;
       if (p.y < b.minY - r || p.y > b.maxY + r) continue;
       if (p.z < b.minZ - r || p.z > b.maxZ + r) continue;

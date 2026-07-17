@@ -4,6 +4,7 @@ import type { AABB } from './MapGeometry';
 import { DEG2RAD, clamp } from './CollisionMath';
 import { clampLookPitch, facingFromAngles } from './AimMath';
 import { advanceDashState, tryDash, tryUpwardDash } from './PlayerSim';
+import { wallBounceAllowed, wallBounceVelocity } from './WallBounce';
 
 export { facingFromAngles } from './AimMath';
 
@@ -206,20 +207,14 @@ export function stepMovement(
       doubleJumpAvailable = true;
     } else if (!grounded && wallBounceNormal !== null) {
       // Hit a wall too head-on to wall-run (steeper than runTriggerAngleDegrees): bounce off like a
-      // spring. The faster you're moving INTO the wall, the farther out and higher you launch — we
-      // reflect the into-wall velocity (keeping along-wall momentum) and set a fresh upward kick, both
-      // scaling with the approach speed. Free (no stamina/dash cost); still sets the reattach cooldown.
-      const nx = wallBounceNormal.x;
-      const nz = wallBounceNormal.z;
-      const vn = vx * nx + vz * nz; // along the outward normal; negative = moving into the wall
-      const approach = Math.min(c.wall.bounceMaxApproachSpeed, Math.max(0, -vn));
-      const tx = vx - vn * nx; // along-wall (tangential) component, preserved
-      const tz = vz - vn * nz;
-      const outward = c.wall.bounceBaseAwaySpeed * speedScale + approach * c.wall.bounceAwayGain;
-      const up = c.wall.bounceBaseUpSpeed * speedScale + approach * c.wall.bounceUpGain;
-      vx = tx + nx * outward;
-      vz = tz + nz * outward;
-      vy = Math.max(vy, up);
+      // spring. Free (no stamina/dash cost); still sets the reattach cooldown. The rule + impulse live
+      // in shared/simulation/WallBounce.ts, which the OFFLINE controller calls too — the gym walls here
+      // are a position clamp (see :436), so `vx/vz` still carry the full into-wall speed that
+      // WallBounce's approach-velocity contract requires.
+      const bounced = wallBounceVelocity(vx, vy, vz, wallBounceNormal.x, wallBounceNormal.z, c.wall, speedScale);
+      vx = bounced.x;
+      vy = bounced.y;
+      vz = bounced.z;
       wallReattachCooldown = c.wall.reattachCooldownSeconds;
     } else if (grounded || jumpGraceTimer > 0) {
       if (sliding) {
@@ -529,19 +524,15 @@ function detectWall(px: number, pz: number, c: GameConstants): { x: number; z: n
 }
 
 /**
- * Returns the wall normal to bounce off of if the player is airborne, near a wall, and moving
- * into it too head-on to wall-run (steeper than runTriggerAngleDegrees) — null otherwise. Mirrors
- * the offline MovementController.tryWallBounce angle math exactly.
+ * Returns the wall normal to bounce off of if the player is airborne, near a wall, and moving into it
+ * too head-on to wall-run (steeper than runTriggerAngleDegrees) — null otherwise. The gate is
+ * shared/simulation/WallBounce.wallBounceAllowed, which the offline MovementController also uses, so
+ * the two can no longer drift apart.
  */
 function detectWallBounce(px: number, pz: number, vx: number, vz: number, c: GameConstants): { x: number; z: number } | null {
   const normal = detectWall(px, pz, c);
   if (!normal) return null;
-  const horizSpeed = Math.hypot(vx, vz);
-  if (horizSpeed < c.wall.minEntrySpeed) return null;
-  const intoWall = -(vx * normal.x + vz * normal.z) / horizSpeed;
-  const maxInto = Math.sin(c.wall.runTriggerAngleDegrees * DEG2RAD);
-  if (intoWall <= maxInto) return null;
-  return normal;
+  return wallBounceAllowed(vx, vz, normal.x, normal.z, c.wall) ? normal : null;
 }
 
 function wallJumpAwayDirection(px: number, pz: number, yaw: number, c: GameConstants): { x: number; z: number } {

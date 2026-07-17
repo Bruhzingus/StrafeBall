@@ -304,6 +304,17 @@ export class CourseRunTracker {
     this.previousPosition = position;
   }
 
+  /**
+   * Forget only the swept-from position, so this frame's gate sweep doesn't span a teleport. A
+   * trigger-volume teleport is a shortcut, not a death: the run stays live (unlike reset()), but the
+   * pre-jump → post-jump segment must not be dragged through a start/checkpoint/finish gate it never
+   * physically crossed. The point-inside test still fires if the teleport lands INSIDE a gate — that
+   * is a real touch, and course authors may use it deliberately.
+   */
+  clearSweep(): void {
+    this.previousPosition = null;
+  }
+
   /** Cancel a live attempt (K reset / kill death / leaving the yard / exiting playtest). */
   reset(reason: 'death' | 'reset' | 'leave'): void {
     const wasRunning = this.state.phase === 'running';

@@ -21,6 +21,7 @@ import { Vector3 } from '@babylonjs/core';
 import { PlayerController } from '../../player/PlayerController';
 import { TUNING } from '../../config/tuning';
 import { CreatorLayout, CreatorLayoutObject, objectDimensions } from './CreatorLayout';
+import type { CreatorMovers, MoverOffset } from './CreatorMovers';
 
 export type PadKind = 'stamina' | 'backflip' | 'speed' | 'bounce';
 
@@ -157,6 +158,11 @@ export class CreatorPads {
   private previousPlayerPosition: PadProbePoint | null = null;
   // Most-recently-touched checkpoint (kill blocks respawn you here, or at spawn if none touched yet).
   private lastCheckpoint: { x: number; y: number; z: number; yaw: number } | null = null;
+  // Set per frame from update()'s args; kept as fields so the per-object helpers can read them without
+  // threading two extra params through every call. Both are optional creator-trigger features.
+  private movers: CreatorMovers | null = null;
+  private disabledObjects: ReadonlySet<string> | null = null;
+  private readonly scratchOffset: MoverOffset = { x: 0, y: 0, z: 0 };
 
   /** Clear all per-pad state (call when entering a fresh Playtest run). */
   reset(): void {
@@ -167,11 +173,32 @@ export class CreatorPads {
   }
 
   /**
+   * Forget only the swept-from position, so the NEXT frame's pad/kill sweep doesn't span a teleport.
+   * Unlike reset() this keeps the player's checkpoint + pad cooldowns — a trigger teleport is a
+   * shortcut, not a fresh run.
+   */
+  clearSweep(): void {
+    this.previousPlayerPosition = null;
+  }
+
+  /**
    * Run one frame of pad effects. Call in Playtest / the live yard AFTER the player movement update.
    * Returns true when a kill block killed (and respawned) the player this frame, so the course-run
    * controller can reset a live timed run.
+   *
+   * `movers` lets a pad/kill/gate mounted on a moving platform ride it (its volume follows the
+   * platform); `disabledObjects` is the trigger runtime's disabled-id set — a disabled pad/kill/gate
+   * does nothing this frame. Both optional; omitting them is the pre-trigger behaviour exactly.
    */
-  update(dt: number, layout: CreatorLayout, player: PlayerController): boolean {
+  update(
+    dt: number,
+    layout: CreatorLayout,
+    player: PlayerController,
+    movers: CreatorMovers | null = null,
+    disabledObjects: ReadonlySet<string> | null = null
+  ): boolean {
+    this.movers = movers;
+    this.disabledObjects = disabledObjects;
     for (const [id, t] of this.cooldownById) {
       const next = t - dt;
       if (next <= 0) this.cooldownById.delete(id);
@@ -185,12 +212,14 @@ export class CreatorPads {
     // Checkpoints: touching a checkpoint gate's trigger volume records it as the respawn point.
     for (const obj of layout.objects) {
       if (obj.type !== 'checkpoint_gate') continue;
-      if (insideObjectTrigger(obj, p.x, p.y, p.z, r)) {
+      if (this.isDisabled(obj.id)) continue;
+      const off = this.offsetFor(obj.id);
+      if (insideObjectTrigger(obj, p.x - off.x, p.y - off.y, p.z - off.z, r)) {
         const floorY = layout.ground.bounds.y ?? 0;
         const checkpoint = {
-          x: obj.position[0],
-          y: Math.max(floorY, obj.position[1]),
-          z: obj.position[2],
+          x: obj.position[0] + off.x,
+          y: Math.max(floorY, obj.position[1] + off.y),
+          z: obj.position[2] + off.z,
           yaw: (obj.rotation[1] ?? 0) * DEG2RAD
         };
         this.lastCheckpoint = checkpoint;
@@ -201,8 +230,10 @@ export class CreatorPads {
     // Kill blocks: entering one resets you to the last checkpoint (or spawn). Skip pads this frame.
     for (const obj of layout.objects) {
       if (obj.type !== 'kill_block') continue;
+      if (this.isDisabled(obj.id)) continue;
+      const off = this.offsetFor(obj.id);
       const [w, h, d] = objectDimensions(obj);
-      if (insideOrientedVolume(obj, p.x, p.y, p.z, w / 2, h, d / 2, r)) {
+      if (insideOrientedVolume(obj, p.x - off.x, p.y - off.y, p.z - off.z, w / 2, h, d / 2, r)) {
         if (this.lastCheckpoint) {
           const target = this.lastCheckpoint;
           player.teleportTo(new Vector3(target.x, target.y, target.z), target.yaw, 0);
@@ -225,7 +256,8 @@ export class CreatorPads {
     for (const obj of layout.objects) {
       const kind = padKind(obj.type);
       if (!kind) continue;
-      if (!this.isOnPad(obj, p.x, p.y, p.z, r, previous)) continue;
+      if (this.isDisabled(obj.id)) continue;
+      if (!this.isOnPad(obj, p.x, p.y, p.z, r, previous, this.offsetFor(obj.id))) continue;
       stillOn.add(obj.id);
 
       if (kind === 'stamina') {
@@ -255,30 +287,59 @@ export class CreatorPads {
 
   /**
    * Oriented footprint test. Uses the current point plus a short XZ sweep from the previous point so a
-   * fast render tick cannot skip over a walk-over pad.
+   * fast render tick cannot skip over a walk-over pad. `off` is the pad's live mover offset (0 for a
+   * static pad): the probe (current AND previous) is shifted by −off, which is equivalent to moving
+   * the pad by +off, so a pad mounted on a platform tests against where the platform now is.
    */
-  private isOnPad(obj: CreatorLayoutObject, px: number, py: number, pz: number, radius: number, previous: PadProbePoint | null): boolean {
+  private isOnPad(
+    obj: CreatorLayoutObject,
+    px: number,
+    py: number,
+    pz: number,
+    radius: number,
+    previous: PadProbePoint | null,
+    off: MoverOffset
+  ): boolean {
+    const sx = px - off.x;
+    const sy = py - off.y;
+    const sz = pz - off.z;
+    const prevX = previous ? previous.x - off.x : 0;
+    const prevY = previous ? previous.y - off.y : 0;
+    const prevZ = previous ? previous.z - off.z : 0;
+
     const base = obj.position[1];
     const [w, h, d] = objectDimensions(obj);
     const minY = base - PAD_TUNING.activationDepth;
     const maxY = base + Math.max(0, h) + PAD_TUNING.activationHeight;
-    const probeMinY = previous ? Math.min(previous.y, py) : py;
-    const probeMaxY = previous ? Math.max(previous.y, py) : py;
+    const probeMinY = previous ? Math.min(prevY, sy) : sy;
+    const probeMaxY = previous ? Math.max(prevY, sy) : sy;
     if (probeMaxY < minY || probeMinY > maxY) return false;
 
     const halfW = w / 2 + radius;
     const halfD = d / 2 + radius;
-    const current = this.padLocalPoint(obj, px, pz);
+    const current = this.padLocalPoint(obj, sx, sz);
     if (this.localPointInPad(current.x, current.z, halfW, halfD)) return true;
 
     if (!previous) return false;
-    const sweepDx = px - previous.x;
-    const sweepDz = pz - previous.z;
+    const sweepDx = sx - prevX;
+    const sweepDz = sz - prevZ;
     if (sweepDx * sweepDx + sweepDz * sweepDz > PAD_TUNING.maxSweepDistance * PAD_TUNING.maxSweepDistance) {
       return false;
     }
-    const prev = this.padLocalPoint(obj, previous.x, previous.z);
+    const prev = this.padLocalPoint(obj, prevX, prevZ);
     return this.localSegmentIntersectsPad(prev.x, prev.z, current.x, current.z, halfW, halfD);
+  }
+
+  private isDisabled(objectId: string): boolean {
+    return this.disabledObjects?.has(objectId) ?? false;
+  }
+
+  /** The pad's current mover offset (or {0,0,0}); shared scratch, so read before the next call. */
+  private offsetFor(objectId: string): MoverOffset {
+    const s = this.scratchOffset;
+    s.x = 0; s.y = 0; s.z = 0;
+    this.movers?.offsetOf(objectId, s);
+    return s;
   }
 
   private padLocalPoint(obj: CreatorLayoutObject, px: number, pz: number): { x: number; z: number } {

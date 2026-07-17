@@ -17,7 +17,8 @@ import { PlayerController } from '../player/PlayerController';
 import { MovementWorld } from '../player/MovementController';
 import { InputManager } from '../input/InputManager';
 import { CONTROL_KEYS } from '../config/controls';
-import { AABB } from '../map/Collider';
+import { AABB, CollisionWorld } from '../map/Collider';
+import type { Ball, BallWorld } from '../ball/Ball';
 import {
   BOUNDARY_HEIGHT,
   BOUNDARY_THICKNESS,
@@ -43,6 +44,7 @@ import { loadCurrentCourseLayout } from './creator/CreatorStorage';
 import { CreatorGeometry } from './creator/CreatorGeometry';
 import { CreatorPads } from './creator/CreatorPads';
 import { CreatorMovers } from './creator/CreatorMovers';
+import { CreatorTriggers } from './creator/CreatorTriggers';
 import { CourseRunTracker } from './creator/CourseRun';
 import { CourseRunHud } from './creator/CourseRunHud';
 import { TUNING } from '../config/tuning';
@@ -118,6 +120,7 @@ export class MovementSandbox implements MovementWorld {
   private readonly collisionBoxes: AABB[] = [];
   private wallRunFaces: CreatorWallFace[] = [];
   private wallBounceFaces: CreatorWallFace[] = [];
+  private ballWorldCache: BallWorld | null = null;
   private built = false;
 
   // The committed course layout the yard renders. `courseLayout` excludes the outer boundary walls
@@ -140,6 +143,8 @@ export class MovementSandbox implements MovementWorld {
   private readonly pads = new CreatorPads();
   // Moving platforms — same deterministic runtime as creator playtest.
   private readonly movers = new CreatorMovers();
+  // Trigger volumes — same runtime as creator playtest, so a published course behaves identically.
+  private readonly triggers = new CreatorTriggers();
   // Timed course run (start → checkpoints → finish). Inert unless the layout has BOTH gates.
   private courseRun: CourseRunTracker | null = null;
   private courseHud: CourseRunHud | null = null;
@@ -167,6 +172,8 @@ export class MovementSandbox implements MovementWorld {
   private readonly creatorEntrySlot: { x: number; y: number; z: number; yaw: number };
   /** Optional tee of course-run events (start/checkpoint/finish/reset) for the online race relay. */
   private runEventListener: ((event: RaceRunEvent) => void) | null = null;
+  /** Host callback to return spawned balls to their markers when an attempt restarts. */
+  private runRestartListener: (() => void) | null = null;
 
   /**
    * @param layoutOverride A specific course to build instead of the player's own (used when
@@ -256,6 +263,7 @@ export class MovementSandbox implements MovementWorld {
     this.suspended = false;
     this.pads.reset();
     this.movers.resetPhase();
+    this.triggers.reset();
     this.ensureCourseRun();
     this.courseRun?.reset('leave');
     if (this.courseRun?.isTimed()) {
@@ -293,6 +301,7 @@ export class MovementSandbox implements MovementWorld {
     this.courseRun?.reset('leave');
     this.courseHud?.setVisible(false);
     this.movers.resetPhase();
+    this.triggers.reset();
     this.removeCollisionFromGym();
     if (this.polishedAtmosphere) exitSandboxAtmosphere(this.scene);
     else this.restoreSky();
@@ -307,9 +316,45 @@ export class MovementSandbox implements MovementWorld {
     return collectSpawnerMarkers(this.fullLayout);
   }
 
+  /**
+   * The BallWorld the yard's balls resolve against: the yard's bounds + THIS course's colliders.
+   * Without it a ball spawned here is clamped to the gym's bounds and teleports ~800m home on frame
+   * one. The CollisionWorld wraps `collisionBoxes` by reference — the array build() fills and whose
+   * boxes the mover runtime mutates in place — so it tracks moving platforms with no rebinding.
+   */
+  ballWorld(): BallWorld {
+    if (!this.ballWorldCache) {
+      this.ballWorldCache = {
+        minX: this.minX,
+        maxX: this.maxX,
+        minZ: this.minZ,
+        maxZ: this.maxZ,
+        ceilingY: this.ceilingY,
+        floorY: this.floorY,
+        collision: new CollisionWorld(this.collisionBoxes)
+      };
+    }
+    return this.ballWorldCache;
+  }
+
   /** The complete course layout this yard is running (what an online race host shares). */
   getFullLayout(): CreatorLayout {
     return this.fullLayout;
+  }
+
+  /** Balls the movers carry + can fire ball-triggers (host owns their lifecycle). [] to carry none. */
+  setCarriedBalls(balls: readonly Ball[]): void {
+    this.movers.setBalls(balls);
+    this.triggers.setBalls(balls);
+  }
+
+  /**
+   * Called when an attempt restarts (timed run start, or the K reset) so the host can return the
+   * course's spawned balls to their markers — the yard's counterpart of the editor's onRunRestart
+   * hook, kept so a published course behaves exactly like its playtest.
+   */
+  setRunRestartListener(listener: (() => void) | null): void {
+    this.runRestartListener = listener;
   }
 
   /** World position + facing for the Course Creator's own entry portal (built by CreatorEditor),
@@ -332,6 +377,8 @@ export class MovementSandbox implements MovementWorld {
     this.courseRun?.reset('reset');
     this.pads.reset();
     this.movers.resetPhase();
+    this.triggers.reset();
+    this.runRestartListener?.();
     player.dash.refill();
     player.backflip.cooldown = 0;
     const spawn = layoutCourseSpawn(this.fullLayout);
@@ -347,8 +394,11 @@ export class MovementSandbox implements MovementWorld {
     this.courseHud = hud;
     this.courseRun = new CourseRunTracker(this.fullLayout, {
       onRunStart: () => {
-        // Deterministic routes: every attempt sees the platforms at their starting phase.
+        // Deterministic routes: every attempt sees the platforms at their starting phase, triggers
+        // reverted, and the balls back on their markers (a trigger/ball course is only repeatable so).
         this.movers.resetPhase();
+        this.triggers.reset();
+        this.runRestartListener?.();
         hud.tick(0, 0, this.courseRun?.state.checkpointCount ?? 0);
         this.runEventListener?.({ kind: 'start' });
       },
@@ -401,6 +451,7 @@ export class MovementSandbox implements MovementWorld {
     this.courseRun?.reset('leave');
     this.courseHud?.setVisible(false);
     this.movers.resetPhase(); // platforms home while the editor owns the yard
+    this.triggers.reset();
     this.removeCollisionFromGym();
   }
 
@@ -412,6 +463,7 @@ export class MovementSandbox implements MovementWorld {
     this.suspended = false;
     this.pads.reset();
     this.movers.resetPhase();
+    this.triggers.reset();
     if (this.courseRun?.isTimed()) {
       this.courseHud?.renderLeaderboard(this.courseRun.localRecords());
       this.courseHud?.setVisible(true);
@@ -450,8 +502,18 @@ export class MovementSandbox implements MovementWorld {
     // called (like playtest) AFTER the player's movement update for this frame, so velocity written
     // by a pad carries into the next tick.
     const resetPressed = input.wasKeyPressed(CONTROL_KEYS.reset);
-    if (resetPressed) this.pads.reset(); // K teleports; never sweep that discontinuity through pads.
-    const killed = this.pads.update(dt, this.fullLayout, player);
+    if (resetPressed) {
+      this.pads.reset(); // K teleports; never sweep that discontinuity through pads.
+      this.triggers.reset(); // ...and revert trigger effects
+      this.runRestartListener?.(); // ...and put the balls back, like a fresh attempt
+    }
+    const killed = this.pads.update(dt, this.fullLayout, player, this.movers, this.triggers.disabledObjects());
+    // A trigger teleport clears BOTH sweeps — the pads' and the course tracker's, which runs below in
+    // this same frame and would otherwise sweep the pre-jump → post-jump segment through gates.
+    if (this.triggers.update(dt, this.fullLayout, player)) {
+      this.pads.clearSweep();
+      this.courseRun?.clearSweep();
+    }
 
     // Timed course run: start/checkpoint/finish gate crossings + live clock. A kill-block death or
     // the K reset cancels a live attempt (the checkpoint respawn itself is unchanged).
@@ -600,8 +662,29 @@ export class MovementSandbox implements MovementWorld {
     this.collisionBoxes.push(...buildCreatorCollisionBoxes(this.courseLayout, COLLISION_ID_PREFIX));
     this.wallRunFaces = buildCreatorWallFaces(this.courseLayout);
     this.wallBounceFaces = buildCreatorWallBounceFaces(this.courseLayout);
-    // Bind moving platforms to the built colliders + visuals (same runtime as creator playtest).
-    this.movers.build(this.courseLayout, this.collisionBoxes, this.geometry, COLLISION_ID_PREFIX);
+    // Bind moving platforms to the built colliders, wall faces + visuals (same runtime as creator
+    // playtest). Faces are passed so a moving platform's wall surfaces travel with it; the arrays are
+    // mutated in place, and wallNormalAt/wallBounceNormalAt above read these same references.
+    this.movers.build(
+      this.courseLayout,
+      this.collisionBoxes,
+      this.geometry,
+      COLLISION_ID_PREFIX,
+      this.wallRunFaces,
+      this.wallBounceFaces
+    );
+    // Trigger volumes bind to the same boxes/faces + movers (start/stop, riding a platform). Built
+    // after movers so its offset queries are live. Uses fullLayout so gates/markers are resolvable
+    // targets even though the mover/collision build works off courseLayout (boundary walls dropped).
+    this.triggers.build(
+      this.fullLayout,
+      this.collisionBoxes,
+      this.wallRunFaces,
+      this.wallBounceFaces,
+      this.geometry,
+      this.movers,
+      COLLISION_ID_PREFIX
+    );
 
     for (const child of this.root.getChildMeshes(false)) {
       if (child instanceof Mesh) {

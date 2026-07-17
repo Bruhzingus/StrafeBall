@@ -28,7 +28,8 @@ import {
 import { GymArena } from '../../map/GymArena';
 import { PlayerController } from '../../player/PlayerController';
 import { InputManager } from '../../input/InputManager';
-import { AABB } from '../../map/Collider';
+import { AABB, CollisionWorld } from '../../map/Collider';
+import type { Ball, BallWorld } from '../../ball/Ball';
 import { PortalArch, type PortalPalette } from '../PortalArch';
 import {
   COURSE_DIFFICULTIES,
@@ -53,6 +54,7 @@ import {
   isLayoutValid,
   layoutSpawn,
   makePrefabFromObjects,
+  remapTriggerTargets,
   moduleDef,
   objectDimensions,
   objectOpacity,
@@ -69,6 +71,7 @@ import { setSandboxSkyPreset } from '../SandboxAtmosphere';
 import { CreatorWorld, buildCreatorCollisionBoxes } from './CreatorWorld';
 import { CreatorPads } from './CreatorPads';
 import { CreatorMovers } from './CreatorMovers';
+import { CreatorTriggers } from './CreatorTriggers';
 import { CourseRunTracker } from './CourseRun';
 import { CourseRunHud } from './CourseRunHud';
 import { TUNING } from '../../config/tuning';
@@ -143,6 +146,12 @@ export interface CreatorEditorHooks {
   onPlaytestStart(markers: CreatorSpawnerMarkers): void;
   /** Leaving Playtest (to Build, exit, or online): despawn those actors. */
   onPlaytestEnd(): void;
+  /**
+   * A timed run (re)started, or the player pressed reset: return the spawned actors to their markers
+   * so every attempt starts from the same arrangement. Fires alongside movers.resetPhase(), which
+   * does the same job for platforms.
+   */
+  onRunRestart(): void;
 }
 
 // Re-exported for existing importers (ArenaScene); the type + collector now live in CreatorLayout so
@@ -178,6 +187,8 @@ export class CreatorEditor implements CreatorBridge, CoopEditorBridge {
   private readonly pads = new CreatorPads();
   /** Moving-platform runtime (Playtest only; Build shows the static piece + its path preview). */
   private readonly movers = new CreatorMovers();
+  /** Trigger runtime (Playtest only): volumes that apply effects to linked objects on touch. */
+  private readonly triggers = new CreatorTriggers();
   // Timed course run for Playtest (start → checkpoints → finish). Rebuilt on each playtest entry so
   // it always tracks the CURRENT edited layout; inert unless the layout has both gates.
   private courseRun: CourseRunTracker | null = null;
@@ -187,7 +198,11 @@ export class CreatorEditor implements CreatorBridge, CoopEditorBridge {
 
   private editorCamera: FreeCamera | null = null;
   private gizmoManager: GizmoManager | null = null;
-  private creatorCollisionBoxes: AABB[] = [];
+  // Stable ARRAY IDENTITY, refilled in place by installWorldAndCollision — never reassigned. The ball
+  // world below wraps it in a CollisionWorld once and keeps that binding across every rebuild (a
+  // mid-playtest edit reinstalls the world), and the mover runtime mutates these same box objects.
+  private readonly creatorCollisionBoxes: AABB[] = [];
+  private ballWorldCache: BallWorld | null = null;
   private worldInstalled = false;
 
   private selectedId: string | null = null;
@@ -198,6 +213,9 @@ export class CreatorEditor implements CreatorBridge, CoopEditorBridge {
    *  the group's internal offsets around its shared center. */
   private clipboard: CreatorLayoutObject[] | null = null;
   private armedModule: string | null = null;
+  // Trigger link tool: while set to a trigger's id, the next object click toggles that object in the
+  // trigger's target list (instead of selecting it). Escape / right-click / re-invoking exits.
+  private linkModeTriggerId: string | null = null;
   // --- Prefab library (saved multi-object assemblies; stamped from the hotbar) ---
   private prefabs: CreatorPrefab[] = loadPrefabLibrary();
   private armedPrefab: CreatorPrefab | null = null;
@@ -458,10 +476,22 @@ export class CreatorEditor implements CreatorBridge, CoopEditorBridge {
     } else if (this.playtestFly) {
       this.updateFlyCamera(dt);
     } else {
-      // Playtest, first-person: apply ability-pad effects after the movement step ran this frame.
+      // Playtest, first-person: apply ability-pad + trigger effects after the movement step this frame.
       const resetPressed = this.input.wasKeyPressed(CONTROL_KEYS.reset);
-      if (resetPressed) this.pads.reset(); // K teleports; never sweep that discontinuity through pads.
-      const killed = this.pads.update(dt, this.layout, this.player);
+      if (resetPressed) {
+        this.pads.reset(); // K teleports; never sweep that discontinuity through pads.
+        this.triggers.reset(); // ...and revert trigger effects + clear its sweep
+        this.hooks.onRunRestart(); // ...and put the balls back, like a fresh attempt
+      }
+      const killed = this.pads.update(dt, this.layout, this.player, this.movers, this.triggers.disabledObjects());
+      // Triggers run after pads (same post-movement slot). A teleport clears BOTH sweeps: the pads'
+      // (so next frame doesn't drag a segment through a pad) and the course tracker's — the tracker
+      // runs BELOW in this same frame and would otherwise sweep pre-jump → post-jump straight through
+      // any start/checkpoint/finish gate between the two points (its sweep cap is 24m).
+      if (this.triggers.update(dt, this.layout, this.player)) {
+        this.pads.clearSweep();
+        this.courseRun?.clearSweep();
+      }
       // Timed course run (same controller the live yard uses): gate crossings + live clock; a
       // kill-block death or the K reset cancels a live attempt.
       const run = this.courseRun;
@@ -675,6 +705,7 @@ export class CreatorEditor implements CreatorBridge, CoopEditorBridge {
 
   setMode(mode: Mode): void {
     if (!this.active || mode === this.mode) return;
+    this.exitLinkMode(); // never carry the modal link tool across a mode switch
     if (mode === 'playtest') this.enterPlaytestMode();
     else this.enterBuildMode();
     this.ui.refresh();
@@ -690,8 +721,9 @@ export class CreatorEditor implements CreatorBridge, CoopEditorBridge {
     this.hooks.onPlaytestEnd();
     this.courseRun?.reset('leave');
     this.courseHud?.setVisible(false);
-    // Snap moving platforms back to their authored home positions for editing.
+    // Snap moving platforms back to their authored home positions + revert trigger effects for editing.
     this.movers.resetPhase();
+    this.triggers.reset();
     this.mode = 'build';
     this.uninstallWorldAndCollision();
     this.player.movement.setWorld(null);
@@ -737,14 +769,19 @@ export class CreatorEditor implements CreatorBridge, CoopEditorBridge {
     this.playtestLeaveHold = 0;
     this.playtestLeaveArmed = false; // require a fresh E press before the LEAVE portal fires
     this.pads.reset();
+    // Triggers are already reset by installWorldAndCollision → triggers.build; onPlaytestStart below
+    // spawns the balls AT their markers, so no onRunRestart here either.
     // Rebuild the timed-course tracker against the CURRENT layout (gates/edits since last playtest).
     this.courseHud?.dispose();
     this.courseHud = new CourseRunHud(document.getElementById('hud-root') ?? document.body, this.layout.name);
     const hud = this.courseHud;
     this.courseRun = new CourseRunTracker(this.layout, {
       onRunStart: () => {
-        // Deterministic routes: every attempt sees the platforms at their starting phase.
+        // Deterministic routes: every attempt sees the platforms at their starting phase, triggers
+        // reverted, and the balls back on their markers (a trigger/ball course is only repeatable so).
         this.movers.resetPhase();
+        this.triggers.reset();
+        this.hooks.onRunRestart();
         hud.tick(0, 0, this.courseRun?.state.checkpointCount ?? 0);
       },
       onCheckpoint: (collected, total, splitMs) => hud.showCheckpoint(collected, total, splitMs),
@@ -790,6 +827,7 @@ export class CreatorEditor implements CreatorBridge, CoopEditorBridge {
     this.courseRun?.reset('leave');
     this.courseHud?.setVisible(false);
     this.movers.resetPhase(); // platforms home before the world tears down
+    this.triggers.reset(); // revert any live trigger effects before teardown
     this.removeListeners();
     this.detachGizmo();
     this.uninstallWorldAndCollision();
@@ -830,14 +868,36 @@ export class CreatorEditor implements CreatorBridge, CoopEditorBridge {
   private installWorldAndCollision(): void {
     this.uninstallWorldAndCollision();
     this.world.rebuild(this.layout);
-    this.creatorCollisionBoxes = buildCreatorCollisionBoxes(this.layout, COLLISION_ID_PREFIX);
+    this.creatorCollisionBoxes.push(...buildCreatorCollisionBoxes(this.layout, COLLISION_ID_PREFIX));
     for (const box of this.creatorCollisionBoxes) this.gym.collision.add(box);
     this.player.movement.setWorld(this.world);
+    this.refreshBallWorld();
     this.worldInstalled = true;
-    // Bind the moving-platform runtime to the freshly built collider entries + visuals. Rebinding
-    // here also covers mid-playtest edits (rebuildAfterChange reinstalls the world).
-    this.movers.build(this.layout, this.creatorCollisionBoxes, this.geometry, COLLISION_ID_PREFIX);
+    // Bind the moving-platform runtime to the freshly built collider entries, wall faces + visuals.
+    // Rebinding here also covers mid-playtest edits (rebuildAfterChange reinstalls the world). The
+    // face arrays MUST be read after world.rebuild() above — rebuild REPLACES them, so binding to a
+    // pre-rebuild array would translate faces nothing queries.
+    this.movers.build(
+      this.layout,
+      this.creatorCollisionBoxes,
+      this.geometry,
+      COLLISION_ID_PREFIX,
+      this.world.runFaces(),
+      this.world.bounceFaces()
+    );
     this.movers.resetPhase();
+    // Triggers bind to the same boxes/faces (so collide/move effects reach them) + the movers (so a
+    // start/stop effect + a trigger volume riding a platform work). Built after movers so its offset
+    // queries are live.
+    this.triggers.build(
+      this.layout,
+      this.creatorCollisionBoxes,
+      this.world.runFaces(),
+      this.world.bounceFaces(),
+      this.geometry,
+      this.movers,
+      COLLISION_ID_PREFIX
+    );
   }
 
   private uninstallWorldAndCollision(): void {
@@ -846,8 +906,45 @@ export class CreatorEditor implements CreatorBridge, CoopEditorBridge {
     for (let i = boxes.length - 1; i >= 0; i -= 1) {
       if (boxes[i].id?.startsWith(COLLISION_ID_PREFIX)) boxes.splice(i, 1);
     }
-    this.creatorCollisionBoxes = [];
+    this.creatorCollisionBoxes.length = 0; // emptied in place — see the field comment
     this.worldInstalled = false;
+  }
+
+  /**
+   * The BallWorld playtest balls resolve against: the editor world's bounds + the course's OWN
+   * colliders. Refreshed (not recreated) on every install so balls already holding it pick up an
+   * edited course's new bounds, while the CollisionWorld stays bound to the stable box array.
+   */
+  private refreshBallWorld(): void {
+    if (!this.ballWorldCache) {
+      this.ballWorldCache = {
+        minX: this.world.minX,
+        maxX: this.world.maxX,
+        minZ: this.world.minZ,
+        maxZ: this.world.maxZ,
+        ceilingY: this.world.ceilingY,
+        floorY: this.world.floorY,
+        collision: new CollisionWorld(this.creatorCollisionBoxes)
+      };
+      return;
+    }
+    const w = this.ballWorldCache;
+    w.minX = this.world.minX;
+    w.maxX = this.world.maxX;
+    w.minZ = this.world.minZ;
+    w.maxZ = this.world.maxZ;
+    w.floorY = this.world.floorY;
+  }
+
+  /** The BallWorld for the current playtest (null before the world is installed). */
+  ballWorld(): BallWorld | null {
+    return this.ballWorldCache;
+  }
+
+  /** Balls the moving platforms carry + can fire ball-triggers (host owns their lifecycle; [] none). */
+  setCarriedBalls(balls: readonly Ball[]): void {
+    this.movers.setBalls(balls);
+    this.triggers.setBalls(balls);
   }
 
   // ---------------------------------------------------------------------------------------------
@@ -990,12 +1087,21 @@ export class CreatorEditor implements CreatorBridge, CoopEditorBridge {
       return;
     }
     if (code === 'Escape') {
-      if (this.armedModule) {
+      if (this.linkModeTriggerId) {
+        this.exitLinkMode();
+      } else if (this.armedModule) {
         this.armModule(null);
         this.ui.refresh();
       } else {
         this.select(null);
       }
+      return;
+    }
+    // L toggles the link tool for a selected trigger (Build only — this key handler stays bound in
+    // Playtest, where a selection carried over from Build must not silently arm a modal tool).
+    if (code === 'KeyL' && this.mode === 'build' && !e.ctrlKey && !e.metaKey && !e.altKey) {
+      e.preventDefault();
+      this.beginTargetLink();
       return;
     }
     if (code === 'Delete' || code === 'Backspace') {
@@ -1130,9 +1236,11 @@ export class CreatorEditor implements CreatorBridge, CoopEditorBridge {
       if (this.looking) {
         this.looking = false;
         this.setCanvasCursor('');
-        // A right-click tap (negligible drag, not a look) cancels placement / deselects.
+        // A right-click tap (negligible drag, not a look) cancels placement / link mode / deselects.
         if (this.lookMoved < 6) {
-          if (this.armedModule) {
+          if (this.linkModeTriggerId) {
+            this.exitLinkMode();
+          } else if (this.armedModule) {
             this.armModule(null);
             this.ui.refresh();
           } else {
@@ -1276,6 +1384,12 @@ export class CreatorEditor implements CreatorBridge, CoopEditorBridge {
     const x = e.clientX - rect.left;
     const y = e.clientY - rect.top;
     const pick = this.pickWorld(x, y);
+    // Link tool: a click on an object toggles it as a target of the trigger being linked; a click on
+    // empty space (or the trigger itself) is ignored so a stray miss doesn't drop out of link mode.
+    if (this.linkModeTriggerId) {
+      if (pick?.objectId) this.toggleTriggerTarget(this.linkModeTriggerId, pick.objectId);
+      return;
+    }
     if (this.armedPrefab) {
       if (pick) this.stampPrefab(pick.point);
       return;
@@ -1293,6 +1407,48 @@ export class CreatorEditor implements CreatorBridge, CoopEditorBridge {
       return;
     }
     this.select(pick?.objectId ?? null);
+  }
+
+  /** Enter/exit the trigger link tool for the selected trigger (CreatorBridge.beginTargetLink). */
+  beginTargetLink(): void {
+    if (this.mode !== 'build') return; // the link tool is a Build-mode editing tool only
+    const obj = this.getSelectedObject();
+    if (!obj || obj.type !== 'trigger_volume') return;
+    if (this.linkModeTriggerId === obj.id) {
+      this.exitLinkMode();
+      return;
+    }
+    this.linkModeTriggerId = obj.id;
+    this.ui.toast('Link mode: click objects to link/unlink. Esc to finish.');
+    this.ui.refresh();
+  }
+
+  isLinkingTargets(): boolean {
+    return this.linkModeTriggerId !== null;
+  }
+
+  private exitLinkMode(): void {
+    if (!this.linkModeTriggerId) return;
+    this.linkModeTriggerId = null;
+    this.ui.toast('Link mode off');
+    this.ui.refresh();
+  }
+
+  /** Toggle `targetId` in `triggerId`'s target list; a self-link and duplicates are rejected. */
+  private toggleTriggerTarget(triggerId: string, targetId: string): void {
+    if (triggerId === targetId) return;
+    const trigger = this.layout.objects.find((o) => o.id === triggerId);
+    if (!trigger) { this.exitLinkMode(); return; }
+    const spec = trigger.metadata?.triggerSpec;
+    if (!spec) return;
+    const targets = new Set(spec.targets ?? []);
+    if (targets.has(targetId)) targets.delete(targetId);
+    else targets.add(targetId);
+    trigger.metadata = {
+      ...trigger.metadata,
+      triggerSpec: { ...spec, targets: targets.size > 0 ? Array.from(targets) : undefined }
+    };
+    this.commit(triggerId);
   }
 
   private pickWorld(x: number, y: number): { point: Vector3; objectId: string | null } | null {
@@ -1318,6 +1474,8 @@ export class CreatorEditor implements CreatorBridge, CoopEditorBridge {
   // ---------------------------------------------------------------------------------------------
 
   private select(id: string | null): void {
+    // Changing the selection ends the (modal) link tool — re-enter it with L / the inspector button.
+    this.exitLinkMode();
     if (id && this.isLockedByOther(id)) {
       // A collaborator is editing this object — can't grab it. Clear to nothing rather than select it.
       this.notify('Locked', 'A collaborator is editing that object');
@@ -1823,14 +1981,18 @@ export class CreatorEditor implements CreatorBridge, CoopEditorBridge {
     // Duplicate the WHOLE selection as one unit (one history entry): each copy exactly on top of its
     // source (same positions) so the group can be dragged out, and the clones become the selection.
     const clones: CreatorLayoutObject[] = [];
+    const idMap = new Map<string, string>();
     for (const obj of objs) {
       const copy = this.cloneObject(obj);
       copy.id = createObjectId(obj.type);
+      idMap.set(obj.id, copy.id);
       copy.position = [...obj.position];
       this.layout.objects.push(copy);
       if (copy.type === 'spawn_point') setExclusiveDefaultSpawn(this.layout, copy.id);
       clones.push(copy);
     }
+    // Trigger links between two duplicated objects follow the copies; links to un-copied objects stay.
+    remapTriggerTargets(clones, idMap);
     this.selectedIds.clear();
     for (const c of clones) this.selectedIds.add(c.id);
     this.selectedId = clones[clones.length - 1].id;
@@ -1839,8 +2001,18 @@ export class CreatorEditor implements CreatorBridge, CoopEditorBridge {
 
   deleteSelected(): void {
     if (this.selectedIds.size === 0) return;
+    this.exitLinkMode();
     const doomed = new Set(this.selectedIds);
     this.layout.objects = this.layout.objects.filter((o) => !doomed.has(o.id));
+    // Purge dangling links to the deleted objects so a trigger doesn't keep a stale id (a re-id on a
+    // later paste could otherwise collide). Channels are untouched — they're not id references.
+    for (const o of this.layout.objects) {
+      const targets = o.metadata?.triggerSpec?.targets;
+      if (targets && targets.some((id) => doomed.has(id))) {
+        const kept = targets.filter((id) => !doomed.has(id));
+        o.metadata!.triggerSpec!.targets = kept.length > 0 ? kept : undefined;
+      }
+    }
     this.selectedIds.clear();
     this.selectedId = null;
     this.commit(null);
@@ -1997,9 +2169,11 @@ export class CreatorEditor implements CreatorBridge, CoopEditorBridge {
     const targetX = at ? this.snapValue(at.x) : origin.x + off;
     const targetZ = at ? this.snapValue(at.z) : origin.z + off;
     const pasted: CreatorLayoutObject[] = [];
+    const idMap = new Map<string, string>();
     for (const source of this.clipboard) {
       const copy = this.cloneObject(source);
       copy.id = createObjectId(copy.type);
+      idMap.set(source.id, copy.id);
       copy.position = [
         targetX + (source.position[0] - origin.x),
         Math.max(groundY, source.position[1]),
@@ -2009,6 +2183,8 @@ export class CreatorEditor implements CreatorBridge, CoopEditorBridge {
       if (copy.type === 'spawn_point') setExclusiveDefaultSpawn(this.layout, copy.id);
       pasted.push(copy);
     }
+    // Trigger links within the pasted group follow the copies; links out of it stay on the originals.
+    remapTriggerTargets(pasted, idMap);
     this.selectedIds.clear();
     for (const c of pasted) this.selectedIds.add(c.id);
     this.selectedId = pasted[pasted.length - 1].id;

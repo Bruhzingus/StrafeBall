@@ -19,10 +19,17 @@ import {
   CREATOR_MATERIALS,
   CREATOR_MODULES,
   CREATOR_TEXTURES,
+  TRIGGER_ACTIVATORS,
+  TRIGGER_FIRE_MODES,
+  TRIGGER_ACTIONS,
   type CourseDifficulty,
   type CourseSkyPreset,
+  type TriggerAction,
+  type TriggerActivator,
+  type TriggerFireMode,
   CreatorLayoutObject,
   CreatorObjectMetadata,
+  CreatorTriggerSpec,
   moduleDef,
   objectOpacity,
   objectDimensions,
@@ -129,6 +136,10 @@ export interface CreatorBridge {
   setSelectedWallrun(value: boolean): void;
   setSelectedWallbounce(value: boolean): void;
   setSelectedMetadata(patch: Partial<CreatorObjectMetadata>): void;
+  /** Enter/exit the trigger link tool for the selected trigger (click objects to link/unlink). */
+  beginTargetLink(): void;
+  /** True while the link tool is active (so the inspector can show its live state). */
+  isLinkingTargets(): boolean;
   duplicateSelected(): void;
   deleteSelected(): void;
   destroyAllTestSpawns(): void;
@@ -157,6 +168,32 @@ const LABEL_SIZE_LABELS: Record<string, string> = {
   small: 'Small',
   medium: 'Medium',
   large: 'Large'
+};
+
+const TRIGGER_ACTIVATOR_LABELS: Record<string, string> = {
+  player: 'Player',
+  ball: 'Ball',
+  any: 'Player or Ball'
+};
+
+const TRIGGER_FIRE_LABELS: Record<string, string> = {
+  once: 'Once per run',
+  every: 'Every entry',
+  toggle: 'Toggle on/off',
+  while: 'While inside'
+};
+
+const TRIGGER_ACTION_LABELS: Record<string, string> = {
+  show: 'Show target',
+  hide: 'Hide target',
+  collide_on: 'Collision on',
+  collide_off: 'Collision off',
+  mover_start: 'Start platform',
+  mover_stop: 'Stop platform',
+  enable: 'Enable target',
+  disable: 'Disable target',
+  move: 'Move target',
+  teleport_player: 'Teleport player here'
 };
 
 export class CreatorUI {
@@ -884,10 +921,18 @@ export class CreatorUI {
     this.inspectorEl.appendChild(toggles);
     this.inspectorEl.appendChild(this.opacitySlider(objectOpacity(obj), (v) => this.bridge.setSelectedOpacity(v)));
 
+    // Trigger volume config (activator / fire mode / effect / targets + channel).
+    if (obj.type === 'trigger_volume') {
+      this.buildTriggerMeta(obj);
+    }
+
     // Marker-specific metadata
     if (def && def.category !== 'terrain') {
       this.buildMarkerMeta(obj);
     }
+
+    // Listen channel — ANY object can respond to a trigger broadcasting this channel name.
+    this.buildListenChannelRow(obj);
 
     // Moving platform (solid terrain only): toggle + travel/speed/pause fields. The travel path
     // previews in Build; the runtime animates only in Playtest / the live yard.
@@ -914,17 +959,119 @@ export class CreatorUI {
       })
     );
     if (mover) {
-      const patch = (p: Partial<NonNullable<CreatorObjectMetadata['mover']>>) =>
-        this.bridge.setSelectedMetadata({ mover: { ...mover, ...p } });
+      // Read the CURRENT mover spec at edit time — the inspector doesn't rebuild while focused (see
+      // buildTriggerMeta), so a build-time `mover` spread would revert edits made through other rows.
+      const patch = (p: Partial<NonNullable<CreatorObjectMetadata['mover']>>) => {
+        const cur = this.bridge.getSelectedObject()?.metadata?.mover ?? mover;
+        this.bridge.setSelectedMetadata({ mover: { ...cur, ...p } });
+      };
       wrap.append(
         this.compactNumberRow('Move X', mover.dx, 1, (v) => patch({ dx: v })),
         this.compactNumberRow('Move Y', mover.dy, 1, (v) => patch({ dy: v })),
         this.compactNumberRow('Move Z', mover.dz, 1, (v) => patch({ dz: v })),
         this.compactNumberRow('Speed m/s', mover.speed, 0.5, (v) => patch({ speed: v })),
-        this.compactNumberRow('Pause s', mover.pauseSeconds, 0.25, (v) => patch({ pauseSeconds: v }))
+        this.compactNumberRow('Pause s', mover.pauseSeconds, 0.25, (v) => patch({ pauseSeconds: v })),
+        // Start paused: the platform waits at home until a trigger's "Start platform" effect runs it.
+        this.checkbox('Start paused (needs trigger)', mover.startPaused === true, (v) => patch({ startPaused: v || undefined }))
       );
     }
     this.inspectorEl.appendChild(wrap);
+  }
+
+  /** Trigger-volume config: activator, fire mode, effect, its offset/channel, and the target linker. */
+  private buildTriggerMeta(obj: CreatorLayoutObject): void {
+    const spec: CreatorTriggerSpec = obj.metadata?.triggerSpec ?? { by: 'player', fire: 'once', action: 'show' };
+    // Every mutation reads the CURRENT spec at click time, never the build-time `spec` closure:
+    // refresh() deliberately skips rebuilding the inspector while focus is inside it (so it can't
+    // steal focus mid-edit), which means these closures outlive edits made through OTHER rows. A
+    // build-time spread here would clobber them — set "Fires", then "Effect", and the second write
+    // silently reverts the first. Same for Unlink (two consecutive unlinks resurrected the first).
+    const readSpec = (): CreatorTriggerSpec =>
+      this.bridge.getSelectedObject()?.metadata?.triggerSpec ?? spec;
+    const patch = (p: Partial<CreatorTriggerSpec>) =>
+      this.bridge.setSelectedMetadata({ triggerSpec: { ...readSpec(), ...p } });
+
+    const wrap = el('div', 'creator-meta');
+    const title = el('div', 'creator-section-title');
+    title.textContent = 'Trigger';
+    wrap.appendChild(title);
+
+    wrap.appendChild(this.optionRow('Activated by', TRIGGER_ACTIVATORS, spec.by, TRIGGER_ACTIVATOR_LABELS, (v) => patch({ by: v as TriggerActivator })));
+    wrap.appendChild(this.optionRow('Fires', TRIGGER_FIRE_MODES, spec.fire, TRIGGER_FIRE_LABELS, (v) => patch({ fire: v as TriggerFireMode })));
+    wrap.appendChild(this.optionRow('Effect', TRIGGER_ACTIONS, spec.action, TRIGGER_ACTION_LABELS, (v) => patch({ action: v as TriggerAction })));
+
+    // Offset (metres) only matters for the Move effect.
+    if (spec.action === 'move') {
+      const off = spec.offset ?? [0, 0, 0];
+      wrap.appendChild(this.vectorRow('Move by (X,Y,Z)', off, 0.5, (axis, v) => {
+        const cur = readSpec().offset ?? off;
+        const next: [number, number, number] = [cur[0], cur[1], cur[2]];
+        next[axis] = v;
+        patch({ offset: next });
+      }));
+    }
+
+    // teleport_player ignores targets; every other effect drives its linked/channelled objects.
+    if (spec.action !== 'teleport_player') {
+      const linking = this.bridge.isLinkingTargets();
+      const linkBtn = button(
+        linking ? 'Linking… click objects (Esc to finish)' : 'Link targets (L)',
+        linking ? 'creator-btn creator-btn-active' : 'creator-btn',
+        () => this.bridge.beginTargetLink()
+      );
+      wrap.appendChild(linkBtn);
+
+      const targets = spec.targets ?? [];
+      const count = el('div', 'creator-meta-note');
+      count.textContent = targets.length === 0 ? 'No direct targets linked.' : `${targets.length} linked target${targets.length === 1 ? '' : 's'}.`;
+      wrap.appendChild(count);
+      // Each linked target: a row that focuses it, plus an unlink button.
+      for (const id of targets) {
+        const t = this.bridge.listObjects().find((o) => o.id === id);
+        const row = el('div', 'creator-field creator-field--compact');
+        const name = el('div', 'creator-readonly');
+        name.textContent = t ? (t.name || moduleDef(t.type)?.label || t.type) : '(missing)';
+        row.appendChild(name);
+        row.appendChild(button('Unlink', 'creator-btn creator-btn-warn', () => {
+          const kept = (readSpec().targets ?? []).filter((x) => x !== id);
+          patch({ targets: kept.length > 0 ? kept : undefined });
+        }));
+        wrap.appendChild(row);
+      }
+
+      // Broadcast channel: any object with a matching Listen channel also responds.
+      wrap.appendChild(this.textRow('Broadcast channel', spec.channel ?? '', 'e.g. gate_a', (v) => {
+        const ch = v.trim();
+        patch({ channel: ch || undefined });
+      }));
+    }
+
+    this.inspectorEl.appendChild(wrap);
+  }
+
+  /** A "listen channel" field for ANY object — it responds to a trigger broadcasting the same name. */
+  private buildListenChannelRow(obj: CreatorLayoutObject): void {
+    // A trigger already shows its OWN broadcast channel; a listen channel there would be confusing.
+    if (obj.type === 'trigger_volume') return;
+    const wrap = el('div', 'creator-meta');
+    wrap.appendChild(this.textRow('Listen channel', obj.metadata?.listenChannel ?? '', 'e.g. gate_a', (v) => {
+      const ch = v.trim();
+      this.bridge.setSelectedMetadata({ listenChannel: ch || undefined });
+    }));
+    this.inspectorEl.appendChild(wrap);
+  }
+
+  private textRow(labelText: string, value: string, placeholder: string, onChange: (value: string) => void): HTMLDivElement {
+    const row = el('div', 'creator-field');
+    row.appendChild(label(labelText));
+    const input = document.createElement('input');
+    input.type = 'text';
+    input.className = 'creator-text';
+    input.placeholder = placeholder;
+    input.value = value;
+    input.addEventListener('change', () => onChange(input.value));
+    row.appendChild(input);
+    return row;
   }
 
   private buildMarkerMeta(obj: CreatorLayoutObject): void {

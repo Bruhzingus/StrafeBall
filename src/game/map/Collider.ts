@@ -13,6 +13,13 @@ export interface AABB {
   kind?: 'bleacher' | 'mat';
   id?: string;
   /**
+   * When false the box is skipped by collision (player + ball) and by mover rider-carry — an
+   * intangible solid. Undefined ⇒ solid, so every existing box (gym, mats, untouched creator
+   * geometry) is unaffected. Only the offline Creator trigger runtime sets it, to make a wall/floor
+   * toggle solidity live. Anything that never reads it keeps seeing a normal collider.
+   */
+  enabled?: boolean;
+  /**
    * Optional oriented (Y-rotated) box. When set, collision resolves EXACTLY in the box's local frame
    * instead of using the enclosing min/max — so a rotated wall collides as its true thin footprint, not
    * a fat axis-aligned square. minX..maxZ still hold the enclosing AABB (broad-phase + fallback). Only

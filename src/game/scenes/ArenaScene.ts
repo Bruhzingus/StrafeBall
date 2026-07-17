@@ -40,7 +40,7 @@ import { addPolishedGlowMesh, addPolishedGlowOccluder, PolishedPostFX } from '..
 import { MatObstacle } from '../map/MatObstacle';
 import { ModelLoader } from '../assets/ModelLoader';
 import { BallManager } from '../ball/BallManager';
-import { Ball } from '../ball/Ball';
+import { Ball, type BallWorld } from '../ball/Ball';
 import { BallVisualEffects } from '../ball/BallVisualEffects';
 import { BallState } from '../ball/BallState';
 import { Hud } from '../ui/Hud';
@@ -140,6 +140,9 @@ export class ArenaScene {
   private lastScoreboardVisible = true;
   // Functional Creator-playtest actors (spawned from ball/bot/dummy markers; despawned on exit).
   private readonly creatorBalls: Ball[] = [];
+  // Where each creator ball started, so a run restart returns it there — otherwise attempt #2 of a
+  // ball-triggered course begins with the balls wherever attempt #1 happened to leave them.
+  private readonly creatorBallSpawns: Array<{ ball: Ball; x: number; y: number; z: number }> = [];
   private readonly creatorBots: PracticeBot[] = [];
   private readonly creatorDummies: Mesh[] = [];
   private readonly practiceState: PracticeState = createPracticeState();
@@ -2231,9 +2234,10 @@ export class ArenaScene {
     this.setPracticePropsEnabled(false);
     this.movementSandbox.enter(this.player);
     // Course parity: spawn the published layout's ball/bot/dummy actors, exactly like a playtest run.
-    this.spawnCreatorActors(this.movementSandbox.getSpawnerMarkers());
+    this.spawnCreatorActors(this.movementSandbox.getSpawnerMarkers(), this.movementSandbox.ballWorld());
     // Tee course-run events to the online race relay (a cheap no-op while no race is live).
     this.movementSandbox.setRunEventListener((event) => this.courseRace?.reportRunEvent(event));
+    this.movementSandbox.setRunRestartListener(() => this.resetCreatorBalls());
     this.ensureCreator();
     this.creator?.setEntrySignVisible(true);
     this.creatorEntryHold = 0;
@@ -2295,8 +2299,9 @@ export class ArenaScene {
     }
     this.movementSandbox = new MovementSandbox(this.scene, this.gym, layout);
     this.movementSandbox.enter(this.player);
-    this.spawnCreatorActors(this.movementSandbox.getSpawnerMarkers());
+    this.spawnCreatorActors(this.movementSandbox.getSpawnerMarkers(), this.movementSandbox.ballWorld());
     this.movementSandbox.setRunEventListener((event) => this.courseRace?.reportRunEvent(event));
+    this.movementSandbox.setRunRestartListener(() => this.resetCreatorBalls());
   }
 
   /**
@@ -2344,17 +2349,23 @@ export class ArenaScene {
           this.movementSandbox = new MovementSandbox(this.scene, this.gym);
           this.movementSandbox.enter(this.player);
           this.movementSandbox.setRunEventListener((event) => this.courseRace?.reportRunEvent(event));
+    this.movementSandbox.setRunRestartListener(() => this.resetCreatorBalls());
         } else {
           old?.resume(this.player);
         }
         // Back in the live yard: restore actors from the newly active course.
-        if (this.movementSandbox?.active) this.spawnCreatorActors(this.movementSandbox.getSpawnerMarkers());
+        if (this.movementSandbox?.active) {
+          this.spawnCreatorActors(this.movementSandbox.getSpawnerMarkers(), this.movementSandbox.ballWorld());
+        }
       },
       setHudVisible: (visible: boolean) => this.hud.setVisible(visible),
       setRenderCamera: (camera) => this.polishedPostFx?.setActiveCamera(camera),
       setGameSettingsDock: (host) => (host ? this.settingsPanel.dock(host) : this.settingsPanel.undock()),
-      onPlaytestStart: (markers) => this.spawnCreatorActors(markers),
-      onPlaytestEnd: () => this.clearCreatorActors()
+      // The editor installs its world (and thus its ball world) before firing this, so the balls bind
+      // to the course they're about to be played in.
+      onPlaytestStart: (markers) => this.spawnCreatorActors(markers, this.creator?.ballWorld() ?? null),
+      onPlaytestEnd: () => this.clearCreatorActors(),
+      onRunRestart: () => this.resetCreatorBalls()
     });
   }
 
@@ -2363,16 +2374,26 @@ export class ArenaScene {
    * bots — from the layout's spawner markers. Offline/local only; despawned by clearCreatorActors on
    * leaving playtest. Kept entirely separate from the gym's own balls/bots/dummies.
    */
-  private spawnCreatorActors(markers: CreatorSpawnerMarkers): void {
+  private spawnCreatorActors(markers: CreatorSpawnerMarkers, ballWorld: BallWorld | null): void {
     this.clearCreatorActors();
     const ballR = TUNING.ball.radius;
+    const floorY = ballWorld?.floorY ?? 0;
     // Markers keep their placed height so spawners on raised platforms spawn their actors up there
-    // (not at ground level under the platform). Y is floored at 0 — the sandbox floor.
+    // (not at ground level under the platform). Y is floored at the course's own floor.
     markers.balls.forEach((m, i) => {
-      const ball = this.ballManager.createBall(`creator_ball_${i}`, new Vector3(m.x, Math.max(0, m.y) + ballR + 0.05, m.z));
+      const spawnY = Math.max(floorY, m.y) + ballR + 0.05;
+      const ball = this.ballManager.createBall(`creator_ball_${i}`, new Vector3(m.x, spawnY, m.z));
+      // The yard/course sits ~800m from the gym: without its own world a ball is clamped to the GYM's
+      // bounds and teleports into the bleachers on its first frame, and it sees none of the course's
+      // colliders (BallManager holds gym.ballCollision, which Creator boxes never enter). Both are
+      // fixed by this one binding.
+      ball.setWorld(ballWorld);
+      // Remember the marker so a run restart can put the ball back exactly here.
+      this.creatorBallSpawns.push({ ball, x: m.x, y: spawnY, z: m.z });
       this.ballManager.balls.push(ball);
       this.creatorBalls.push(ball);
     });
+    this.publishCarriedBalls();
     for (const m of markers.bots) {
       const bot = new PracticeBot(this.scene, this.ballManager, m.charge ? 'charge' : 'quick', new Vector3(m.x, Math.max(0, m.y), m.z));
       bot.setEnabled(true);
@@ -2388,6 +2409,51 @@ export class ArenaScene {
     });
   }
 
+  /**
+   * "Press E to pick up ball" for Creator balls. Deliberately not updateInteractPrompt(): that one
+   * also handles practice mats, which the yard doesn't have and whose props are disabled there. The
+   * HUD interact prompt is otherwise unused in the yard — the leave/race/co-op portals draw their own
+   * hold prompt through CreatorUI.setEntryPromptVisible — so there's nothing to fight over.
+   */
+  private updateCreatorInteractPrompt(): void {
+    const left = this.player.hands.getHand('left');
+    const right = this.player.hands.getHand('right');
+    if (!left.ball || !right.ball) {
+      const waist = this.player.lastMovementSnapshot.position.add(new Vector3(0, 0.8, 0));
+      if (this.ballManager.findPickupCandidate(waist)) {
+        this.hud.setInteractPrompt('Press', 'to pick up ball');
+        return;
+      }
+    }
+    this.hud.setInteractPrompt(null, '');
+  }
+
+  /**
+   * Tell whichever host owns the moving platforms which balls to carry. Both are addressed because
+   * only one is ever live at a time (the editor suspends the yard), and a stale list on the other is
+   * harmless — the movers only read it while they're updating.
+   */
+  private publishCarriedBalls(): void {
+    this.creator?.setCarriedBalls(this.creatorBalls);
+    this.movementSandbox?.setCarriedBalls(this.creatorBalls);
+  }
+
+  /**
+   * Return every creator ball to its spawn marker, dead still. Called on a playtest/timed-run restart
+   * so each attempt at a ball-triggered course starts from the identical arrangement.
+   *
+   * A ball currently HELD is skipped: HandController owns it and pins it to the hand every frame —
+   * force-resetting it to Loose here would leave the hand holding a stale reference (a ball glued to
+   * the hand that other systems think is free). Carrying a ball across the start line is the player's
+   * own choice; it stays in their hand.
+   */
+  private resetCreatorBalls(): void {
+    for (const spawn of this.creatorBallSpawns) {
+      if (spawn.ball.state === BallState.Held) continue;
+      spawn.ball.reset(new Vector3(spawn.x, spawn.y, spawn.z));
+    }
+  }
+
   /** Despawn everything spawnCreatorActors created (idempotent; safe to call when nothing is spawned). */
   private clearCreatorActors(): void {
     for (const ball of this.creatorBalls) {
@@ -2396,6 +2462,11 @@ export class ArenaScene {
       ball.mesh.dispose();
     }
     this.creatorBalls.length = 0;
+    this.creatorBallSpawns.length = 0;
+    this.publishCarriedBalls(); // drop the movers' references to the disposed balls
+    // updateCreatorActors early-outs once there are no actors, so clear its prompt here or the last
+    // "press E to pick up ball" would stick on screen after leaving.
+    this.hud.setInteractPrompt(null, '');
     for (const bot of this.creatorBots) bot.dispose();
     this.creatorBots.length = 0;
     for (const dummy of this.creatorDummies) dummy.dispose();
@@ -2420,6 +2491,10 @@ export class ArenaScene {
       this.ballManager.findPickupLookCandidate(this.player.camera.globalPosition, cameraForward(this.player.camera))
     );
     this.ballManager.update(dt);
+    // Parity with the practice path: without these, Creator balls were silently pickup-able with no
+    // prompt telling you so, and threw with no trail/impact visuals.
+    this.updateCreatorInteractPrompt();
+    this.ballVisualEffects.update(dt);
     const eye = this.player.camera.globalPosition;
     for (const bot of this.creatorBots) {
       if (bot.update(dt, eye)) this.effects.botThrow();

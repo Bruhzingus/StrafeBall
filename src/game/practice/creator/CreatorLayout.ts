@@ -112,6 +112,66 @@ export type CreatorLabelSize = typeof CREATOR_LABEL_SIZES[number];
 export const CREATOR_LABEL_COLORS = ['white', 'gold', 'blue', 'green', 'red'] as const;
 export type CreatorLabelColor = typeof CREATOR_LABEL_COLORS[number];
 
+// ---------------------------------------------------------------------------------------------
+// Triggers — a volume that applies effects to OTHER objects when touched.
+// ---------------------------------------------------------------------------------------------
+
+/** What can set a trigger off. */
+export const TRIGGER_ACTIVATORS = ['player', 'ball', 'any'] as const;
+export type TriggerActivator = typeof TRIGGER_ACTIVATORS[number];
+
+/**
+ * How often a trigger fires.
+ *  - once  : one shot per run, then dead until the run resets.
+ *  - every : re-fires on each fresh entry (leaving re-arms it).
+ *  - toggle: alternates between the action and its inverse on each fresh entry.
+ *  - while : the action holds only while something is inside; leaving reverts it.
+ */
+export const TRIGGER_FIRE_MODES = ['once', 'every', 'toggle', 'while'] as const;
+export type TriggerFireMode = typeof TRIGGER_FIRE_MODES[number];
+
+/**
+ * The effect applied to each target. Grouped by what they touch:
+ *  - show / hide            : the target's visual opacity.
+ *  - collide_on / collide_off: the target's solidity (its colliders enter/leave the world live).
+ *  - mover_start / mover_stop: a moving platform's run state.
+ *  - enable / disable        : whether another FUNCTIONAL object acts (pads, kill blocks, triggers).
+ *  - move                    : displace the target by `offset` metres.
+ *  - teleport_player         : send the player to the trigger's own position (targets are ignored).
+ *
+ * Each pair has an inverse, which is what `toggle` and `while` revert to. `teleport_player` has no
+ * inverse and is therefore rejected for those modes (see sanitizeTriggerSpec).
+ */
+export const TRIGGER_ACTIONS = [
+  'show', 'hide',
+  'collide_on', 'collide_off',
+  'mover_start', 'mover_stop',
+  'enable', 'disable',
+  'move',
+  'teleport_player'
+] as const;
+export type TriggerAction = typeof TRIGGER_ACTIONS[number];
+
+export interface CreatorTriggerSpec {
+  /** What can fire it. */
+  by: TriggerActivator;
+  /** How often it fires. */
+  fire: TriggerFireMode;
+  /** The effect applied to every resolved target. */
+  action: TriggerAction;
+  /**
+   * Direct target object ids. Resolved LAZILY, at fire time, never cached as pointers: co-op applies
+   * upserts in arrival order, so a trigger legitimately arrives before its target exists. Ids that
+   * match nothing are simply skipped — deleting a target, or a layout truncated at maxObjects, must
+   * degrade to "does nothing", never throw.
+   */
+  targets?: string[];
+  /** Broadcast channel: every object whose `listenChannel` equals this also responds. */
+  channel?: string;
+  /** Metres to displace targets by, for the `move` action. */
+  offset?: Vec3Tuple;
+}
+
 /** Restricted, well-known metadata fields (no arbitrary scripting / URLs). */
 export interface CreatorObjectMetadata {
   /** Marker facing (spawn / leave / arrow), degrees. */
@@ -140,7 +200,21 @@ export interface CreatorObjectMetadata {
    * position and position+(dx,dy,dz), at `speed` m/s with `pauseSeconds` dwell at each end.
    * Offline-only runtime (CreatorMovers); translation only — the object's yaw never animates.
    */
-  mover?: { dx: number; dy: number; dz: number; speed: number; pauseSeconds: number };
+  mover?: { dx: number; dy: number; dz: number; speed: number; pauseSeconds: number; startPaused?: boolean };
+  /**
+   * Trigger config (trigger_volume only) — a volume that applies `action` to other objects on touch.
+   *
+   * Deliberately a NEW key rather than a reuse of `triggerType`/`trigger` above: extractCourseGates
+   * (CourseRun.ts) switches purely on `triggerType` and never checks obj.type, so anything carrying
+   * 'start'|'checkpoint'|'finish' is silently adopted as a course gate and would hijack run timing.
+   */
+  triggerSpec?: CreatorTriggerSpec;
+  /**
+   * Channel this object LISTENS on. Any trigger broadcasting the same channel name affects it. The
+   * decoupled half of targeting: unlike a `targets` id list, this survives copy/paste, duplication
+   * and prefab stamping for free, because it names a channel rather than an identity.
+   */
+  listenChannel?: string;
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -162,6 +236,8 @@ export const CREATOR_LIMITS = {
   maxLabelLength: 64,
   maxNameLength: 48,
   maxDescriptionLength: 240,
+  maxChannelLength: 32,
+  maxTriggerTargets: 64,
   maxTriggerDimension: 100000,
   minLabelOffsetY: -10,
   maxLabelOffsetY: 30,
@@ -337,6 +413,7 @@ export type CreatorModuleType =
   | 'speed_pad'
   | 'bounce_pad'
   | 'kill_block'
+  | 'trigger_volume'
   | 'bot_spawn'
   | 'target_dummy'
   | 'ball_spawn';
@@ -382,6 +459,10 @@ export const CREATOR_MODULES: readonly CreatorModuleDef[] = [
   // Kill block: a walk-through hazard VOLUME (no collision) that resets the player to their last
   // checkpoint (or spawn) on touch in Playtest. Scale it to cover pits / out-of-bounds / hazards.
   { type: 'kill_block', label: 'Kill Block', category: 'pad', shape: 'box', baseSize: [4, 4, 4], material: 'marker_red', collision: false, defaultMetadata: { label: 'KILL' } },
+  // Trigger volume: a walk-through VOLUME (no collision) that applies an effect to LINKED objects when
+  // a player or ball touches it. Scale it to size the touch zone; link targets or set a channel + the
+  // action in the inspector. Purely local/offline, like every other functional module here.
+  { type: 'trigger_volume', label: 'Trigger Volume', category: 'pad', shape: 'box', baseSize: [4, 4, 4], material: 'marker_cyan', collision: false, defaultMetadata: { label: 'TRIGGER', triggerSpec: { by: 'player', fire: 'once', action: 'show' } } },
 
   // --- Optional future-ready markers (metadata only; ignored by the normal sandbox) ---
   { type: 'bot_spawn', label: 'Bot Spawn Marker', category: 'optional', shape: 'pad', baseSize: [2, 0.1, 2], material: 'marker_red', collision: false, defaultMetadata: { yawDeg: 0, label: 'BOT' } },
@@ -790,8 +871,56 @@ function sanitizeMetadata(raw: unknown, def: CreatorModuleDef): CreatorObjectMet
       speed: clampNumber(mv.speed, 0.1, 100, 4),
       pauseSeconds: clampNumber(mv.pauseSeconds, 0, 30, 0.5)
     };
+    // A platform that waits, parked at home, for a trigger to start it (mover_start). Optional so the
+    // field is absent — and the platform runs immediately — on every layout authored before triggers.
+    if (mv.startPaused === true) out.mover.startPaused = true;
+  }
+  const triggerSpec = sanitizeTriggerSpec(m.triggerSpec);
+  if (triggerSpec) out.triggerSpec = triggerSpec;
+  if (typeof m.listenChannel === 'string') {
+    const ch = sanitizeChannel(m.listenChannel);
+    if (ch) out.listenChannel = ch;
   }
   return out;
+}
+
+/** Channel names are short plain text; empty ⇒ dropped (no channel). */
+function sanitizeChannel(v: unknown): string {
+  return sanitizeText(v, CREATOR_LIMITS.maxChannelLength).trim();
+}
+
+/**
+ * Validate + clamp an untrusted trigger spec. Returns undefined for a missing/unusable spec (the
+ * object simply isn't a working trigger then). Unknown enum values fall back to safe defaults rather
+ * than dropping the whole spec, so a partially-corrupt import still yields a functioning trigger.
+ */
+export function sanitizeTriggerSpec(raw: unknown): CreatorTriggerSpec | undefined {
+  if (!raw || typeof raw !== 'object') return undefined;
+  const t = raw as Record<string, unknown>;
+  const by: TriggerActivator = (TRIGGER_ACTIVATORS as readonly string[]).includes(String(t.by)) ? (t.by as TriggerActivator) : 'player';
+  let fire: TriggerFireMode = (TRIGGER_FIRE_MODES as readonly string[]).includes(String(t.fire)) ? (t.fire as TriggerFireMode) : 'once';
+  let action: TriggerAction = (TRIGGER_ACTIONS as readonly string[]).includes(String(t.action)) ? (t.action as TriggerAction) : 'show';
+  // teleport_player has no inverse, so it can't be toggled or held. Demote such a combo to 'every'
+  // rather than reject it, so importing never silently deletes the trigger.
+  if (action === 'teleport_player' && (fire === 'toggle' || fire === 'while')) fire = 'every';
+
+  const spec: CreatorTriggerSpec = { by, fire, action };
+
+  const rawTargets = asArray(t.targets)
+    .filter((v): v is string => typeof v === 'string' && v.length > 0)
+    .map((v) => v.slice(0, 80));
+  // De-dupe + bound; a trigger driving more than this many direct targets is almost certainly corrupt.
+  if (rawTargets.length > 0) {
+    spec.targets = Array.from(new Set(rawTargets)).slice(0, CREATOR_LIMITS.maxTriggerTargets);
+  }
+  if (typeof t.channel === 'string') {
+    const ch = sanitizeChannel(t.channel);
+    if (ch) spec.channel = ch;
+  }
+  if (action === 'move') {
+    spec.offset = clampTuple(t.offset, -2000, 2000, [0, 0, 0]);
+  }
+  return spec;
 }
 
 function asArray(v: unknown): unknown[] {
@@ -1169,14 +1298,39 @@ export function makePrefabFromObjects(name: string, objects: readonly CreatorLay
   return { name: name.trim().slice(0, 48) || 'Prefab', objects: cloned };
 }
 
+/**
+ * Rewrite trigger target ids IN PLACE across a freshly-cloned object set, using oldId→newId.
+ *
+ * Copy/duplicate/prefab all mint new ids for the objects they clone. A trigger among them still holds
+ * the SOURCE ids in its `triggerSpec.targets`, so without this a pasted "trigger + door" pair drives
+ * the ORIGINAL door, and a prefab stamped twice points both copies' triggers at the one original.
+ *
+ * The rule: a target id that was part of the cloned set is remapped to the clone; a target id that
+ * was NOT (an external object the author linked to) is preserved. Channels need no remap — they're
+ * matched by name, which is exactly why they survive this operation untouched.
+ */
+export function remapTriggerTargets(objects: CreatorLayoutObject[], idMap: Map<string, string>): void {
+  for (const obj of objects) {
+    const targets = obj.metadata?.triggerSpec?.targets;
+    if (!targets) continue;
+    obj.metadata!.triggerSpec!.targets = targets.map((id) => idMap.get(id) ?? id);
+  }
+}
+
 /** Instantiate a prefab at a world point: fresh ids, absolute positions (origin + relative offset). */
 export function instantiatePrefab(prefab: CreatorPrefab, at: { x: number; y: number; z: number }): CreatorLayoutObject[] {
-  return prefab.objects.map((o) => {
+  const idMap = new Map<string, string>();
+  const objects = prefab.objects.map((o) => {
     const copy = JSON.parse(JSON.stringify(o)) as CreatorLayoutObject;
     copy.id = createObjectId(o.type);
+    idMap.set(o.id, copy.id);
     copy.position = [at.x + o.position[0], at.y + o.position[1], at.z + o.position[2]];
     return copy;
   });
+  // Prefab-internal trigger links follow the clones; links to objects OUTSIDE the prefab (if any
+  // survived capture) resolve to nothing at fire time and are harmlessly skipped.
+  remapTriggerTargets(objects, idMap);
+  return objects;
 }
 
 /** World-space AABB of a prefab stamped at `at` — drives the placement ghost box. */

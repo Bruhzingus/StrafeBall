@@ -21,9 +21,11 @@ import {
   type OrientedBox
 } from './CreatorLayout';
 
-const WALL_RUN_MARGIN = 1.0;
+/** How far off a face the player can be and still attach to it. Exported so the mover runtime's
+ *  rider test uses the exact same reach the face query does. */
+export const WALL_RUN_MARGIN = 1.0;
 /** Vertical reach used to test face overlap against the player's body (feet y is what's queried). */
-const PLAYER_BODY_HEIGHT = 1.8;
+export const PLAYER_BODY_HEIGHT = 1.8;
 
 /** A vertical wall-run surface (face line in world XZ with an outward normal). */
 export interface CreatorWallFace {
@@ -37,10 +39,19 @@ export interface CreatorWallFace {
   topY: number;
   /** Bottom of the physical face. Faces don't extend below their box (floating platforms). */
   bottomY: number;
+  /**
+   * Owning layout object, so the mover runtime can find and translate this face each frame (exactly
+   * as it does the object's colliders). Left UNDEFINED for the yard boundary faces — they belong to
+   * no object and must never be claimed by a mover.
+   */
+  objectId?: string;
+  /** When false the face is skipped by the wall query — an object whose collision a trigger turned
+   *  off is also un-wall-runnable. Undefined ⇒ active, so untouched faces are unaffected. */
+  enabled?: boolean;
 }
 
 /** The four vertical wall-run faces of one oriented box (normals point outward). */
-function boxFaces(box: OrientedBox): CreatorWallFace[] {
+function boxFaces(box: OrientedBox, objectId: string): CreatorWallFace[] {
   const cos = Math.cos(box.ry);
   const sin = Math.sin(box.ry);
   const hw = box.w / 2;
@@ -59,7 +70,7 @@ function boxFaces(box: OrientedBox): CreatorWallFace[] {
     const nz = -f.n[0] * sin + f.n[1] * cos;
     const tx = f.t[0] * cos + f.t[1] * sin;
     const tz = -f.t[0] * sin + f.t[1] * cos;
-    faces.push({ nx, nz, ox: box.cx + nx * f.off, oz: box.cz + nz * f.off, tx, tz, halfLen: f.half, topY: top, bottomY: bottom });
+    faces.push({ nx, nz, ox: box.cx + nx * f.off, oz: box.cz + nz * f.off, tx, tz, halfLen: f.half, topY: top, bottomY: bottom, objectId });
   }
   return faces;
 }
@@ -79,6 +90,7 @@ export function creatorWallNormalAt(faces: readonly CreatorWallFace[], x: number
   let best: CreatorWallFace | null = null;
   let bestDist = WALL_RUN_MARGIN;
   for (const f of faces) {
+    if (f.enabled === false) continue; // trigger-disabled collision: no wall-run either
     if (y > f.topY) continue;
     if (y + PLAYER_BODY_HEIGHT < f.bottomY) continue;
     const d = (x - f.ox) * f.nx + (z - f.oz) * f.nz; // distance along the outward normal
@@ -161,10 +173,11 @@ function buildCreatorSurfaceFaces(layout: CreatorLayout, kind: 'run' | 'bounce')
     // run-only (wallbounce off), or fully inert (both off). Missing = enabled, like old layouts.
     if (kind === 'run' && obj.wallrunEnabled === false) continue;
     if (kind === 'bounce' && obj.wallbounceEnabled === false) continue;
-    // Moving platforms translate at runtime; wall surfaces are static, so movers provide none
-    // (documented limitation — their COLLIDERS still move and push/carry the player correctly).
-    if (obj.metadata?.mover) continue;
-    for (const box of objectCollisionBoxes(obj)) faces.push(...boxFaces(box));
+    // Moving platforms DO contribute faces, by the same toggles as any other solid. Each face carries
+    // its objectId so CreatorMovers can translate it every frame alongside the object's colliders —
+    // the mover only ever translates (its yaw never animates), and nx/nz/tx/tz/halfLen derive purely
+    // from the box's yaw + size, so a moving face stays exact with 4 scalars updated.
+    for (const box of objectCollisionBoxes(obj)) faces.push(...boxFaces(box, obj.id));
   }
 
   appendBoundaryFaces(faces, layout);
@@ -214,5 +227,18 @@ export class CreatorWorld implements MovementWorld {
 
   wallBounceNormalAt(x: number, z: number, y: number): Vector3 | null {
     return creatorWallNormalAt(this.wallBounceFaces, x, z, y);
+  }
+
+  /**
+   * The live face arrays, for CreatorMovers to bind to and translate in place. These are the SAME
+   * arrays the queries above read, and `rebuild()` REPLACES them — so anything holding them must
+   * re-bind after every rebuild (CreatorEditor.installWorldAndCollision does, in that order).
+   */
+  runFaces(): CreatorWallFace[] {
+    return this.wallRunFaces;
+  }
+
+  bounceFaces(): CreatorWallFace[] {
+    return this.wallBounceFaces;
   }
 }
