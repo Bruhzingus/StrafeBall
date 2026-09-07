@@ -1,0 +1,6 @@
+{
+  "extends": "../../tsconfig.json",
+  "compilerOptions": { "noEmit": true, "module": "ESNext", "lib": ["ES2022", "DOM", "DOM.Iterable"], "types": ["node", "vite/client"], "rootDir": "../../.." },
+  "include": ["./*.ts", "../../../spikes/direct-p2p/*.ts"],
+  "exclude": ["../../../spikes/direct-p2p/vite.config.ts"]
+}

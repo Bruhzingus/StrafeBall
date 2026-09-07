@@ -9,6 +9,9 @@
     "typecheck": "tsc -p tsconfig.json --noEmit",
     "start": "node dist/server/src/index.js",
     "host:private": "node dist/server/src/index.js --private-host",
+    "spike:p2p": "tsx spikes/direct-p2p/host.ts",
+    "spike:p2p:typecheck": "tsc -p spikes/direct-p2p/tsconfig.json",
+    "spike:p2p:smoke": "tsx spikes/direct-p2p/smoke.ts",
     "test": "vitest run"
   },
   "dependencies": {
@@ -20,6 +23,7 @@
     "@types/ws": "^8.18.1",
     "tsx": "^4.22.4",
     "typescript": "^5.0.0",
-    "vitest": "^4.1.9"
+    "vitest": "^4.1.9",
+    "werift": "0.24.4"
   }
 }
