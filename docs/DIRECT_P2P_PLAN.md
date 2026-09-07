@@ -237,3 +237,43 @@ Record direct/relay typical and maximum RTT, jitter, loop p95, buffer peaks, vis
 match duration, and selected ICE candidate pair. Do not infer improvement over the historical
 approximately 99ms relay value from this loopback result. Later production integration awaits
 the required real-pair measurement.
+
+## 2026-09-07: remaining integration requested; performance gate still unverified
+
+After the manual prototype was explained, the user requested "do all of the rest." The automatic
+HOST-code flow, host UI, and relay fallback have therefore been implemented for their playtest.
+This changes implementation sequencing; it does **not** turn the loopback result into a passed
+cross-network gate or establish a performance win.
+
+The broker now forwards size/count/lifetime-bounded opaque signaling independently per guest.
+The host uses a pinned werift runtime, with the WebRTC module loaded only in private-host mode.
+The browser negotiates before requesting a seat, then reuses HostSessionClient and the normal
+reservation route. A five-second ICE failure falls back before any seat is consumed. SDK 0.17.43
+is pinned and Room/Connection source hashes guard the override on upgrades. Gameplay remains
+reliable and ordered; DuelRoom and ServerGameLoop are unchanged.
+
+Host startup opens the website, which asks for loopback access only on an explicit host link.
+The localhost fallback proxies fixed website assets when they are not packaged. Codes are shown
+after publication; normal Join selects Direct or Relay automatically and the HUD identifies the
+path. Connection options allow an explicit relay comparison. The Windows package omits game
+assets and foreign uWebSockets binaries: 56,886,133 bytes compressed in this build.
+
+Validation on this machine:
+
+- 507 tests passed, including SDK compatibility, bounded frames/queues, cancellation, close-code
+  handling, host origin policy, opaque signaling isolation, and existing public room regressions.
+- Real Chromium + broker + native Node host: automatic Direct join approximately 1.2 seconds;
+  deliberately impossible ICE followed by Relay approximately 5.0 seconds; explicit Relay join
+  approximately 10ms. These are **loopback connection setup times**, not internet RTT numbers.
+- All three paths delivered real live-match snapshots and acknowledged gameplay input. Consented
+  leave and killing the host process produced clean disconnects.
+- The portable Node package started without installed developer dependencies. Its localhost UI
+  proxy worked. The rebuilt website was served to Chromium under the production HTTPS origin for
+  a local test: permission granted, host discovered, room created and published, and share-code
+  visibility checked. No page errors. This was a local browser test, not evidence of deployment.
+- `npm run verify:live` rebuilt client, server, and the retained manual spike.
+
+Still required from the real player pair: full cross-network Direct and Relay matches with equal
+duration/preset, RTT typical/max, jitter, loop p95, buffer peaks, and visible stalls. Conditional
+Phase 5 stays deferred until loss safety and an actual stall improvement can be demonstrated.
+Use [PRIVATE_HOST_SESSIONS.md](PRIVATE_HOST_SESSIONS.md) for the normal play flow.

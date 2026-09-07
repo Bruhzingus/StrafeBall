@@ -14,7 +14,7 @@
     "host:package": "npm run verify:live && node scripts/package-private-host.mjs",
     "prebuild": "npm run music:manifest",
     "build": "tsc && vite build",
-    "build:live": "npm run build && npm --prefix server run build",
+    "build:live": "npm run build && npm --prefix server run build && npm run spike:p2p:build",
     "music:manifest": "node scripts/generateBattleMusicManifest.mjs",
     "typecheck:all": "npm run typecheck && npm --prefix server run typecheck",
     "verify:live": "npm run music:manifest && npm run typecheck:all && npm run build:live",
@@ -27,7 +27,7 @@
   "dependencies": {
     "@babylonjs/core": "^8.0.0",
     "@babylonjs/loaders": "^8.0.0",
-    "@colyseus/sdk": "^0.17.43",
+    "@colyseus/sdk": "0.17.43",
     "typescript": "^5.0.0",
     "vite": "^6.0.0"
   },

@@ -5881,3 +5881,19 @@ html, body {
   color: #ffe08a;
 }
 .creator-chip-label { white-space: nowrap; }
+
+.multiplayer-host-help, .multiplayer-connection-options {
+  margin-top: 10px;
+  font-size: 12px;
+  line-height: 1.5;
+}
+.multiplayer-host-help summary, .multiplayer-connection-options summary { cursor: pointer; }
+.multiplayer-host-help a { color: #2152b3; text-decoration: underline; }
+.multiplayer-host-help p, .multiplayer-connection-options p { margin: 8px 0; }
+.multiplayer-connection-options input { width: auto; }
+.multiplayer-modal--host-session .multiplayer-room {
+  font-family: monospace;
+  font-size: 12px;
+  letter-spacing: 0;
+  white-space: nowrap;
+}

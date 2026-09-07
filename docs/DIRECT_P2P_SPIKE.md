@@ -93,7 +93,7 @@ guest. It checks live-match snapshots, acknowledged input, pongs, and leaving. I
 or play a complete match. Results go to ignored `tmp/p2p-spike-loopback.json`. By default traffic
 runs for 20 seconds; `P2P_SPIKE_SECONDS` may extend it. STUN is disabled for this loopback test.
 
-Build the spike **after** `verify:live`: the normal build clears `dist/`. The isolated Vite build
+`verify:live` now rebuilds the spike after the normal build clears `dist/`. The isolated Vite build
 writes `dist/p2p-spike/`, bundles the actual game, and reuses game assets already at `dist/assets/`.
 Commit that directory with the source and any changed normal deployment artifacts, then use the
 existing DEPLOY.md / update-strafeball.sh / PM2 flow. No droplet build or new service is needed.

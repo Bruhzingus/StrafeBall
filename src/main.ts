@@ -7,6 +7,7 @@ import {
   installBrowserCompatAttributes
 } from './game/browser/browserCompat';
 import { ACTIVE_NET_MODE, describeNetConfig, netModeConfig } from '../shared/netConfig';
+import { initializeHostSession } from './game/network/hostSession';
 
 // Netcode mode guard. The active rates (sim/input/snapshot Hz, prediction dt, interpolation delay)
 // are compiled into the client from shared/netConfig.ts; the client and server MUST run the same
@@ -47,13 +48,15 @@ if (compat.missingRequired.length > 0) {
   throw new Error(`Missing required browser APIs: ${compat.missingRequired.join(', ')}`);
 }
 
-const loadingScreen = new LoadingScreen();
-const game = new Game(canvas);
-game.start();
-if (game.activeScene) {
-  loadingScreen.track(game.activeScene);
-}
+void initializeHostSession().then(() => {
+  const loadingScreen = new LoadingScreen();
+  const game = new Game(canvas);
+  game.start();
+  if (game.activeScene) {
+    loadingScreen.track(game.activeScene);
+  }
 
-window.addEventListener('beforeunload', () => {
-  game.dispose();
+  window.addEventListener('beforeunload', () => {
+    game.dispose();
+  });
 });

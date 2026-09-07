@@ -1,6 +1,6 @@
 "use strict";
 Object.defineProperty(exports, "__esModule", { value: true });
-exports.RELAY_ERRORS = exports.RELAY_CLOSE = exports.RELAY_TIMEOUT_MS = exports.RELAY_PATH = exports.HOST_CODE_PATTERN = void 0;
+exports.SIGNAL_SUFFIX = exports.SIGNAL_LIFETIME_MS = exports.SIGNAL_MAX_FRAMES = exports.SIGNAL_MAX_BYTES = exports.RELAY_ERRORS = exports.RELAY_CLOSE = exports.RELAY_TIMEOUT_MS = exports.RELAY_PATH = exports.HOST_CODE_PATTERN = void 0;
 exports.isHostCode = isHostCode;
 exports.relayErrorMessage = relayErrorMessage;
 /** Separate namespace from Colyseus room IDs. Codes are case insensitive. */
@@ -15,6 +15,17 @@ exports.RELAY_ERRORS = {
     active: 'A private session is already running. Rejoin its code or close that session before creating another.',
     full: 'This private session is full. Ask your host for an available spot.'
 };
+/**
+ * Signaling limits. Payloads (WebRTC SDP/ICE today) are opaque to the broker and the host agent's
+ * transport layer — only the peer connection at each end ever interprets them. A full SDP with
+ * trickled candidates is a few KB; the frame cap leaves generous headroom without letting one
+ * guest flood the host's control socket.
+ */
+exports.SIGNAL_MAX_BYTES = 16 * 1024;
+exports.SIGNAL_MAX_FRAMES = 256;
+/** Signaling only needs to live through ICE negotiation; an ICE restart opens a fresh channel. */
+exports.SIGNAL_LIFETIME_MS = 120_000;
+exports.SIGNAL_SUFFIX = '/signal';
 function isHostCode(value) {
     return exports.HOST_CODE_PATTERN.test(value.trim().toUpperCase());
 }

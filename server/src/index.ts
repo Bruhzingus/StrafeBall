@@ -4,7 +4,6 @@ import { DuelRoom } from './rooms/DuelRoom';
 import { CourseRoom } from './rooms/CourseRoom';
 import { EditRoom } from './rooms/EditRoom';
 import { TunnelBroker } from './relay/TunnelBroker';
-import { startHostAgent } from './relay/hostAgent';
 
 const DEFAULT_PORT = 2567;
 
@@ -31,10 +30,12 @@ export const server = defineServer({
 const port = readPort();
 const privateHost = process.argv.includes('--private-host');
 
-void server.listen(port, privateHost ? '127.0.0.1' : undefined).then(() => {
+void server.listen(port, privateHost ? '127.0.0.1' : undefined).then(async () => {
   const httpServer = server.transport.server;
   if (!httpServer) throw new Error('Relay tunnels require the existing HTTP/WebSocket transport.');
   if (privateHost) {
+    // Keep the WebRTC stack out of the public server's memory/CPU footprint.
+    const { startHostAgent } = await import('./relay/hostAgent');
     const agent = startHostAgent(httpServer, port);
     server.onBeforeShutdown(() => agent.stop());
   } else {

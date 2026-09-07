@@ -82,6 +82,11 @@ class TunnelBroker {
         for (const join of session.joins.values())
             clearTimeout(join.timer);
         session.joins.clear();
+        for (const signal of session.signals.values()) {
+            clearTimeout(signal.timer);
+            (0, socketUtils_1.closeSocket)(signal.socket, relayTunnel_1.RELAY_CLOSE.disconnected, 'Host disconnected');
+        }
+        session.signals.clear();
     }
     async request(req, res) {
         if (this.closed) {
@@ -176,6 +181,11 @@ class TunnelBroker {
                 this.data(ws, url, req);
                 return;
             }
+            const signalling = /^\/relay\/(HOST-[A-F0-9]{16})\/signal$/.exec(url.pathname);
+            if (signalling) {
+                this.signal(ws, signalling[1]);
+                return;
+            }
             const match = /^\/relay\/(HOST-[A-F0-9]{16})(\/[A-Za-z0-9_-]+\/[A-Za-z0-9_-]+)$/.exec(url.pathname);
             const session = match && this.sessions.get(match[1]);
             if (!session) {
@@ -235,7 +245,10 @@ class TunnelBroker {
                     (0, socketUtils_1.closeSocket)(ws);
                     return;
                 }
-                session = { secret: message.secret, control: null, disconnectedAt: 0, sockets: new Set(), pending: new Map(), joins: new Map() };
+                session = {
+                    secret: message.secret, control: null, disconnectedAt: 0,
+                    sockets: new Set(), pending: new Map(), joins: new Map(), signals: new Map()
+                };
                 this.sessions.set(code, session);
             }
             const owned = session;
@@ -243,7 +256,7 @@ class TunnelBroker {
             (0, socketUtils_1.heartbeat)(ws);
             ws.on('message', (raw) => {
                 try {
-                    if ((0, socketUtils_1.bytes)(raw).length > 64 * 1024) {
+                    if ((0, socketUtils_1.bytes)(raw).length > 128 * 1024) {
                         (0, socketUtils_1.closeSocket)(ws);
                         return;
                     }
@@ -260,6 +273,25 @@ class TunnelBroker {
                             (0, socketUtils_1.closeSocket)(join.socket);
                         }
                     }
+                    else if (response.type === 'signal' && typeof response.id === 'string' && typeof response.data === 'string') {
+                        // Forwarded verbatim as a text frame. The broker does not know this is SDP.
+                        const signal = owned.signals.get(response.id);
+                        if (signal) {
+                            if (Buffer.byteLength(response.data) > relayTunnel_1.SIGNAL_MAX_BYTES || ++signal.sent > relayTunnel_1.SIGNAL_MAX_FRAMES) {
+                                (0, socketUtils_1.closeSocket)(signal.socket);
+                                return;
+                            }
+                            (0, socketUtils_1.sendFrame)(signal.socket, Buffer.from(response.data), false);
+                        }
+                    }
+                    else if (response.type === 'signal-close' && typeof response.id === 'string') {
+                        const signal = owned.signals.get(response.id);
+                        if (signal) {
+                            clearTimeout(signal.timer);
+                            owned.signals.delete(response.id);
+                            (0, socketUtils_1.closeSocket)(signal.socket);
+                        }
+                    }
                 }
                 catch {
                     (0, socketUtils_1.closeSocket)(ws);
@@ -273,6 +305,56 @@ class TunnelBroker {
             });
             ws.send(JSON.stringify({ type: 'registered', code }));
         });
+    }
+    /**
+     * One guest's signaling channel, keyed by host code. Frames are opaque in both directions: the
+     * guest writes raw payloads, the host receives them wrapped in an envelope purely for routing,
+     * and host replies are unwrapped straight back onto the guest's socket. Nothing here parses SDP,
+     * so this stays valid across any future change to the peer-negotiation format.
+     */
+    signal(ws, code) {
+        const session = this.sessions.get(code);
+        if (!session) {
+            (0, socketUtils_1.closeSocket)(ws, relayTunnel_1.RELAY_CLOSE.expired, 'Invalid or expired host code');
+            return;
+        }
+        if (!session.control) {
+            (0, socketUtils_1.closeSocket)(ws, relayTunnel_1.RELAY_CLOSE.disconnected, 'Host disconnected');
+            return;
+        }
+        if (session.signals.size >= 16
+            || session.sockets.size + session.joins.size + session.signals.size >= 32) {
+            (0, socketUtils_1.closeSocket)(ws);
+            return;
+        }
+        const control = session.control;
+        const id = (0, node_crypto_1.randomBytes)(16).toString('hex');
+        const timer = setTimeout(() => (0, socketUtils_1.closeSocket)(ws), relayTunnel_1.SIGNAL_LIFETIME_MS);
+        timer.unref();
+        session.signals.set(id, { socket: ws, timer, sent: 0 });
+        (0, socketUtils_1.heartbeat)(ws);
+        let frames = 0;
+        ws.on('message', (raw, binary) => {
+            const data = (0, socketUtils_1.bytes)(raw);
+            if (binary || data.length > relayTunnel_1.SIGNAL_MAX_BYTES || ++frames > relayTunnel_1.SIGNAL_MAX_FRAMES) {
+                (0, socketUtils_1.closeSocket)(ws);
+                return;
+            }
+            if (session.control !== control || control.readyState !== ws_1.default.OPEN) {
+                (0, socketUtils_1.closeSocket)(ws);
+                return;
+            }
+            (0, socketUtils_1.sendFrame)(control, Buffer.from(JSON.stringify({ type: 'signal', id, data: data.toString() })), false);
+        });
+        ws.once('close', () => {
+            clearTimeout(timer);
+            // Only retract a channel this socket still owns: a host-driven close already removed it.
+            if (session.signals.get(id)?.socket !== ws)
+                return;
+            session.signals.delete(id);
+            (0, socketUtils_1.sendFrame)(control, Buffer.from(JSON.stringify({ type: 'signal-close', id })), false);
+        });
+        (0, socketUtils_1.sendFrame)(control, Buffer.from(JSON.stringify({ type: 'signal-open', id })), false);
     }
     data(ws, url, req) {
         const session = this.sessions.get(url.searchParams.get('code') ?? '');

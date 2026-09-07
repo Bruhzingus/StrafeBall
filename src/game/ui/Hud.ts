@@ -504,6 +504,7 @@ export class Hud {
       desyncPeakM: number;
       ackAgeMs: number | null;
       pingJitterMs: number;
+      connectionPath?: string;
       lastPongAgeMs: number | null;
       missedPongs: number;
       socketBufferedAmount: number;
@@ -563,7 +564,7 @@ export class Hud {
         <div class="hud-title">Online <span style="font-weight:400;opacity:0.45;font-size:10px">[Tab]</span></div>
         <div>FPS <span class="hud-good">${Math.round(fps)}</span> &middot; ${frameMs.toFixed(1)} ms</div>
         <div>Room: <span class="hud-good">${escapeHtml(room.id)}</span> · Players: ${Object.keys(room.players).length}/${room.match.maxPlayers}</div>
-        <div>Ping: <span class="hud-good">${pingMs === null ? '-' : `${pingMs} ms`}</span> · net RTT ~${netDebug.rttEstimateMs} ms · recent max ${netDebug.maxRecentPingMs} ms · Tick: ${snapshot.tick}</div>
+        <div>Ping: <span class="hud-good">${pingMs === null ? '-' : `${pingMs} ms`}</span> · ${netDebug.connectionPath === 'direct' ? 'Direct' : netDebug.connectionPath === 'relay' ? 'Relay' : netDebug.connectionPath === 'local' ? 'Local host' : 'Server'} · net RTT ~${netDebug.rttEstimateMs} ms · recent max ${netDebug.maxRecentPingMs} ms · Tick: ${snapshot.tick}</div>
         <div>Snap recv/render: <span class="hud-good">${netDebug.snapshotRateHz.toFixed(1)}</span> / ${netDebug.renderSnapshotRateHz.toFixed(1)} Hz | Ack age: ${netDebug.ackAgeMs === null ? '-' : `${netDebug.ackAgeMs} ms`}</div>
         <div>Jitter: ${netDebug.pingJitterMs.toFixed(1)} ms | Pong age: ${netDebug.lastPongAgeMs === null ? '-' : `${netDebug.lastPongAgeMs} ms`} | Missed: ${netDebug.missedPongs}</div>
         <div>WS buf: <span class="${wsBufferColor(netDebug.socketBufferedPeak)}">${netDebug.socketBufferedAmount} B</span> · peak ${netDebug.socketBufferedPeak} B · @ping ${netDebug.pingSendBufferedAmount} B</div>

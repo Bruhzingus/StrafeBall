@@ -11,6 +11,7 @@ import {
 } from '../../../shared/tickPresets';
 import type { InputManager } from '../input/InputManager';
 import { MultiplayerClient } from './MultiplayerClient';
+import { hostSetupError, localHostConfig } from './hostSession';
 
 type PendingAction = (() => Promise<void>) | null;
 
@@ -145,6 +146,13 @@ export class MultiplayerOverlay {
               <div class="multiplayer-launch-option__title">CREATE A MATCH</div>
               <div class="multiplayer-launch-option__desc">Start a new room with the selected mode and lobby settings.</div>
               <button class="multiplayer-create">CREATE ROOM</button>
+              <details class="multiplayer-host-help" data-no-lock>
+                <summary>Host on your computer</summary>
+                <p>Download and unzip the Windows host app, then run <b>Start Private Host.cmd</b>. Keep it running while you play. Your friends only need this website.</p>
+                <p><a href="https://github.com/Bruhzingus/StrafeBall/releases/download/private-host-latest/strafeball-host-win32-x64.zip" target="_blank" rel="noopener">Download host app (Windows)</a></p>
+                <p><a href="https://strafeball.xyz/?host=1">Connect to my host app</a> · <a href="http://localhost:2567/" target="_blank" rel="noopener">Open localhost fallback</a></p>
+                <p class="multiplayer-host-status"></p>
+              </details>
             </div>
             <div class="multiplayer-launch-divider">OR</div>
             <div class="multiplayer-launch-option multiplayer-launch-option--join">
@@ -154,6 +162,10 @@ export class MultiplayerOverlay {
                 <input class="multiplayer-join-code" placeholder="Enter room code" aria-label="Room code" />
                 <button class="multiplayer-join">JOIN</button>
               </div>
+              <details class="multiplayer-connection-options"><summary>Connection options</summary>
+                <label><input type="checkbox" class="multiplayer-relay-only" /> Use relay for this join</label>
+                <p>Automatic direct connection is the default. Use relay to compare ping or troubleshoot a connection.</p>
+              </details>
             </div>
           </div>
           <div class="multiplayer-drawer-hint">Create makes a new room with the format above. Join uses the room's existing settings — just the code.</div>
@@ -243,6 +255,7 @@ export class MultiplayerOverlay {
     window.addEventListener('keyup', this.onPortalFocusKeyUp);
     window.addEventListener('keydown', this.onPortalKeyDown);
     document.body.appendChild(this.root);
+    this.mustQuery<HTMLDetailsElement>('.multiplayer-host-help').open = Boolean(hostSetupError());
     this.update();
   }
 
@@ -370,10 +383,15 @@ export class MultiplayerOverlay {
       reportRevealed: this.reportRevealed,
       roomSummaryKey: summaryKey
     };
-    const roomSummary = summarizeRoom(snapshot?.room ?? null, this.client.localPlayerId);
+    // Every displayed/copyable code must be the published HOST code, including settings and
+    // the match summary. The simulation's internal room id is not a join code for remote guests.
+    const displayRoom = snapshot?.room ? { ...snapshot.room, id: this.client.roomId || 'Publishing...' } : null;
+    const roomSummary = summarizeRoom(displayRoom, this.client.localPlayerId);
+    this.root.classList.toggle('multiplayer-modal--host-session', this.client.roomId.startsWith('HOST-'));
 
     this.roomValue.textContent = this.client.roomId || 'Practice';
-    this.pingValue.textContent = this.client.pingMs === null ? '-' : `${this.client.pingMs} ms`;
+    const path = { direct: 'Direct', relay: 'Relay', local: 'Local host', public: 'Server' }[this.client.connectionPath];
+    this.pingValue.textContent = this.client.pingMs === null ? '-' : `${this.client.pingMs} ms · ${path}`;
     this.rosterValue.innerHTML = roomSummary.rosterHtml;
     this.settingsEntryValue.innerHTML = roomSummary.settingsEntryHtml;
     this.controlsValue.innerHTML = roomSummary.controlsHtml;
@@ -400,13 +418,17 @@ export class MultiplayerOverlay {
       button.classList.toggle('multiplayer-tick-preset--active', button.dataset.tickPreset === this.selectedTickPresetId);
     }
 
-    this.createButton.disabled = connected || busy || !supported;
+    this.createButton.disabled = connected || busy || !supported || Boolean(hostSetupError());
+    this.mustQuery<HTMLElement>('.multiplayer-host-status').textContent = hostSetupError()
+      || (localHostConfig() ? 'Host app connected. Create a match to get your HOST code.' : 'Normal Create uses the game server. Connect to your host app to run the match on your computer.');
+    this.mustQuery<HTMLInputElement>('.multiplayer-relay-only').disabled = connected || busy;
     // Joining is format-independent (you adopt the room's settings), so it isn't gated by `supported`.
     this.joinButton.disabled = connected || busy;
     this.leaveButton.disabled = !connected && !busy;
     this.copyButton.disabled = !connected || !this.client.roomId;
     this.root.classList.toggle('multiplayer-modal--name-ready', nameReady);
-    this.createButton.textContent = busy ? 'Creating...' : supported ? `Create ${this.selectedMode}` : '2v2 Soon';
+    this.createButton.textContent = busy ? 'Creating...' : supported
+      ? `${localHostConfig() ? 'Host' : 'Create'} ${this.selectedMode}` : '2v2 Soon';
     this.joinButton.textContent = busy ? 'Joining...' : 'Join';
     this.createButton.disabled = this.createButton.disabled || !nameReady;
     this.joinButton.disabled = this.joinButton.disabled || !nameReady;
@@ -434,6 +456,7 @@ export class MultiplayerOverlay {
   };
 
   private joinRoom = (): void => {
+    this.client.relayOnly = this.mustQuery<HTMLInputElement>('.multiplayer-relay-only').checked;
     if (!this.modeSupported(this.selectedMode)) return;
     if (this.nameInput.value.trim().length === 0) return;
     this.runWithFullscreenCheck(() => this.client.joinRoom(this.joinInput.value, this.nameInput.value));

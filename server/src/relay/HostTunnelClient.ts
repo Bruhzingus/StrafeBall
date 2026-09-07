@@ -1,6 +1,8 @@
 import { randomBytes } from 'node:crypto';
 import WebSocket from 'ws';
-import { isHostCode, RELAY_CLOSE, RELAY_ERRORS, RELAY_TIMEOUT_MS } from '../../../shared/relayTunnel';
+import {
+  isHostCode, RELAY_CLOSE, RELAY_ERRORS, RELAY_TIMEOUT_MS, SIGNAL_MAX_BYTES
+} from '../../../shared/relayTunnel';
 import { bridge, bytes, closeSocket, heartbeat, sendFrame } from './socketUtils';
 
 export interface HostTunnelOptions {
@@ -12,6 +14,12 @@ export interface HostTunnelOptions {
   expired?: () => boolean;
   onStatus?: (status: string) => void;
   retryBaseMs?: number;
+  /** A guest opened a signaling channel. Reply with sendSignal(id, ...) / closeSignal(id). */
+  onSignalOpen?: (id: string) => void;
+  /** One opaque payload from a guest (WebRTC SDP/ICE today). Never parsed by the tunnel. */
+  onSignal?: (id: string, data: string) => void;
+  onSignalClose?: (id: string) => void;
+  onStop?: () => void;
 }
 
 /** One outbound control socket plus one outbound byte tunnel per guest. */
@@ -27,6 +35,7 @@ export class HostTunnelClient {
   private readonly broker: string;
   private readonly local: string;
   private readonly requests = new Set<AbortController>();
+  private readonly signals = new Set<string>();
 
   constructor(private readonly options: HostTunnelOptions) {
     this.code = options.code?.trim().toUpperCase() ?? `HOST-${randomBytes(8).toString('hex').toUpperCase()}`;
@@ -50,7 +59,8 @@ export class HostTunnelClient {
 
   start(): void {
     if (this.stopped || this.control) return;
-    const ws = new WebSocket(`${this.broker}/relay/register`, { handshakeTimeout: RELAY_TIMEOUT_MS, maxPayload: 64 * 1024 });
+    // 16KiB opaque strings can expand sixfold when escaped inside the routing envelope.
+    const ws = new WebSocket(`${this.broker}/relay/register`, { handshakeTimeout: RELAY_TIMEOUT_MS, maxPayload: 128 * 1024 });
     this.control = ws;
     heartbeat(ws);
     const registrationTimer = setTimeout(() => ws.terminate(), RELAY_TIMEOUT_MS);
@@ -61,11 +71,19 @@ export class HostTunnelClient {
         if (message.type === 'registered' && message.code === this.code) {
           clearTimeout(registrationTimer);
           this.registeredAt = Date.now();
-          this.options.onStatus?.(`Relay connected. Share code: ${this.code}`);
+          this.options.onStatus?.('Relay connected. Create a match to get a share code.');
         } else if (message.type === 'http' && typeof message.id === 'string' && typeof message.body === 'string') {
           void this.reserve(ws, message.id, message.body);
         } else if (message.type === 'open' && typeof message.id === 'string' && typeof message.path === 'string') {
           this.open(ws, message.id, message.path);
+        } else if (message.type === 'signal-open' && typeof message.id === 'string') {
+          if (this.signals.size >= 16) { this.closeSignal(message.id); return; }
+          this.signals.add(message.id);
+          this.options.onSignalOpen?.(message.id);
+        } else if (message.type === 'signal' && typeof message.id === 'string' && typeof message.data === 'string') {
+          if (this.signals.has(message.id)) this.options.onSignal?.(message.id, message.data);
+        } else if (message.type === 'signal-close' && typeof message.id === 'string') {
+          if (this.signals.delete(message.id)) this.options.onSignalClose?.(message.id);
         }
       } catch { ws.terminate(); }
     });
@@ -73,6 +91,9 @@ export class HostTunnelClient {
       clearTimeout(registrationTimer);
       if (this.control !== ws) return;
       this.control = null;
+      // Losing the control socket loses every signaling channel riding on it.
+      for (const id of [...this.signals]) this.options.onSignalClose?.(id);
+      this.signals.clear();
       for (const request of this.requests) request.abort();
       for (const socket of this.sockets) closeSocket(socket, RELAY_CLOSE.disconnected, 'Host disconnected');
       if (this.stopped) return;
@@ -89,10 +110,31 @@ export class HostTunnelClient {
 
   stop(): void {
     this.stopped = true;
+    this.options.onStop?.();
+    for (const id of [...this.signals]) this.options.onSignalClose?.(id);
+    this.signals.clear();
     clearTimeout(this.retry);
     this.control?.terminate();
     for (const request of this.requests) request.abort();
     for (const socket of this.sockets) socket.terminate();
+  }
+
+  /** Send one opaque payload to a guest. False if that channel is gone or the payload is oversized. */
+  sendSignal(id: string, data: string): boolean {
+    const control = this.control;
+    if (!control || control.readyState !== WebSocket.OPEN || !this.signals.has(id)
+      || Buffer.byteLength(data) > SIGNAL_MAX_BYTES) return false;
+    sendFrame(control, Buffer.from(JSON.stringify({ type: 'signal', id, data })), false);
+    return true;
+  }
+
+  /** Retract a guest's signaling channel (negotiation finished, failed, or was rejected). */
+  closeSignal(id: string): void {
+    this.signals.delete(id);
+    const control = this.control;
+    if (control?.readyState === WebSocket.OPEN) {
+      sendFrame(control, Buffer.from(JSON.stringify({ type: 'signal-close', id })), false);
+    }
   }
 
   private async reserve(control: WebSocket, id: string, body: string): Promise<void> {

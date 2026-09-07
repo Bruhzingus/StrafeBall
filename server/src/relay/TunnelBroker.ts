@@ -2,7 +2,10 @@ import { randomBytes, timingSafeEqual } from 'node:crypto';
 import type { IncomingMessage, Server, ServerResponse } from 'node:http';
 import type { Duplex } from 'node:stream';
 import WebSocket, { WebSocketServer } from 'ws';
-import { isHostCode, RELAY_CLOSE, RELAY_ERRORS, RELAY_TIMEOUT_MS } from '../../../shared/relayTunnel';
+import {
+  isHostCode, RELAY_CLOSE, RELAY_ERRORS, RELAY_TIMEOUT_MS,
+  SIGNAL_LIFETIME_MS, SIGNAL_MAX_BYTES, SIGNAL_MAX_FRAMES
+} from '../../../shared/relayTunnel';
 import { bridge, bytes, closeSocket, heartbeat, json, readBody, routeRequests, sendFrame } from './socketUtils';
 
 interface Session {
@@ -12,6 +15,8 @@ interface Session {
   sockets: Set<WebSocket>;
   pending: Map<string, { finish: (status: number, body: string) => void }>;
   joins: Map<string, { socket: WebSocket; path: string; timer: NodeJS.Timeout }>;
+  /** Opaque bidirectional channels (WebRTC SDP/ICE today); payloads are never parsed here. */
+  signals: Map<string, { socket: WebSocket; timer: NodeJS.Timeout; sent: number }>;
 }
 
 /** No Colyseus imports: matchmaking bodies and gameplay messages are opaque to this service. */
@@ -53,6 +58,11 @@ export class TunnelBroker {
     for (const pending of session.pending.values()) pending.finish(503, JSON.stringify({ code: RELAY_CLOSE.disconnected, error: RELAY_ERRORS.disconnected }));
     for (const join of session.joins.values()) clearTimeout(join.timer);
     session.joins.clear();
+    for (const signal of session.signals.values()) {
+      clearTimeout(signal.timer);
+      closeSocket(signal.socket, RELAY_CLOSE.disconnected, 'Host disconnected');
+    }
+    session.signals.clear();
   }
 
   private async request(req: IncomingMessage, res: ServerResponse): Promise<void> {
@@ -112,6 +122,8 @@ export class TunnelBroker {
       ws.on('error', () => ws.terminate());
       if (url.pathname === '/relay/register') { this.register(ws); return; }
       if (url.pathname === '/relay/data') { this.data(ws, url, req); return; }
+      const signalling = /^\/relay\/(HOST-[A-F0-9]{16})\/signal$/.exec(url.pathname);
+      if (signalling) { this.signal(ws, signalling[1]); return; }
       const match = /^\/relay\/(HOST-[A-F0-9]{16})(\/[A-Za-z0-9_-]+\/[A-Za-z0-9_-]+)$/.exec(url.pathname);
       const session = match && this.sessions.get(match[1]);
       if (!session) { closeSocket(ws, RELAY_CLOSE.expired, 'Invalid or expired host code'); return; }
@@ -149,7 +161,10 @@ export class TunnelBroker {
       }
       if (!session) {
         if (this.sessions.size >= 256) { closeSocket(ws); return; }
-        session = { secret: message.secret, control: null, disconnectedAt: 0, sockets: new Set(), pending: new Map(), joins: new Map() };
+        session = {
+          secret: message.secret, control: null, disconnectedAt: 0,
+          sockets: new Set(), pending: new Map(), joins: new Map(), signals: new Map()
+        };
         this.sessions.set(code, session);
       }
       const owned = session;
@@ -157,7 +172,7 @@ export class TunnelBroker {
       heartbeat(ws);
       ws.on('message', (raw) => {
         try {
-          if (bytes(raw).length > 64 * 1024) { closeSocket(ws); return; }
+          if (bytes(raw).length > 128 * 1024) { closeSocket(ws); return; }
           const response = JSON.parse(bytes(raw).toString());
           if (response.type === 'http-result' && typeof response.id === 'string' && typeof response.body === 'string'
             && Number.isInteger(response.status) && response.status >= 200 && response.status <= 599) {
@@ -165,6 +180,18 @@ export class TunnelBroker {
           } else if (response.type === 'open-failed' && typeof response.id === 'string') {
             const join = owned.joins.get(response.id);
             if (join) { clearTimeout(join.timer); owned.joins.delete(response.id); closeSocket(join.socket); }
+          } else if (response.type === 'signal' && typeof response.id === 'string' && typeof response.data === 'string') {
+            // Forwarded verbatim as a text frame. The broker does not know this is SDP.
+            const signal = owned.signals.get(response.id);
+            if (signal) {
+              if (Buffer.byteLength(response.data) > SIGNAL_MAX_BYTES || ++signal.sent > SIGNAL_MAX_FRAMES) {
+                closeSocket(signal.socket); return;
+              }
+              sendFrame(signal.socket, Buffer.from(response.data), false);
+            }
+          } else if (response.type === 'signal-close' && typeof response.id === 'string') {
+            const signal = owned.signals.get(response.id);
+            if (signal) { clearTimeout(signal.timer); owned.signals.delete(response.id); closeSocket(signal.socket); }
           }
         } catch { closeSocket(ws); }
       });
@@ -175,6 +202,41 @@ export class TunnelBroker {
       });
       ws.send(JSON.stringify({ type: 'registered', code }));
     });
+  }
+
+  /**
+   * One guest's signaling channel, keyed by host code. Frames are opaque in both directions: the
+   * guest writes raw payloads, the host receives them wrapped in an envelope purely for routing,
+   * and host replies are unwrapped straight back onto the guest's socket. Nothing here parses SDP,
+   * so this stays valid across any future change to the peer-negotiation format.
+   */
+  private signal(ws: WebSocket, code: string): void {
+    const session = this.sessions.get(code);
+    if (!session) { closeSocket(ws, RELAY_CLOSE.expired, 'Invalid or expired host code'); return; }
+    if (!session.control) { closeSocket(ws, RELAY_CLOSE.disconnected, 'Host disconnected'); return; }
+    if (session.signals.size >= 16
+      || session.sockets.size + session.joins.size + session.signals.size >= 32) { closeSocket(ws); return; }
+    const control = session.control;
+    const id = randomBytes(16).toString('hex');
+    const timer = setTimeout(() => closeSocket(ws), SIGNAL_LIFETIME_MS);
+    timer.unref();
+    session.signals.set(id, { socket: ws, timer, sent: 0 });
+    heartbeat(ws);
+    let frames = 0;
+    ws.on('message', (raw, binary) => {
+      const data = bytes(raw);
+      if (binary || data.length > SIGNAL_MAX_BYTES || ++frames > SIGNAL_MAX_FRAMES) { closeSocket(ws); return; }
+      if (session.control !== control || control.readyState !== WebSocket.OPEN) { closeSocket(ws); return; }
+      sendFrame(control, Buffer.from(JSON.stringify({ type: 'signal', id, data: data.toString() })), false);
+    });
+    ws.once('close', () => {
+      clearTimeout(timer);
+      // Only retract a channel this socket still owns: a host-driven close already removed it.
+      if (session.signals.get(id)?.socket !== ws) return;
+      session.signals.delete(id);
+      sendFrame(control, Buffer.from(JSON.stringify({ type: 'signal-close', id })), false);
+    });
+    sendFrame(control, Buffer.from(JSON.stringify({ type: 'signal-open', id })), false);
   }
 
   private data(ws: WebSocket, url: URL, req: IncomingMessage): void {

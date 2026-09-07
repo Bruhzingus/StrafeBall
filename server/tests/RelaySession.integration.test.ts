@@ -35,10 +35,10 @@ async function start(port: number, host = false): Promise<{ process: ChildProces
     const timeout = setTimeout(() => reject(new Error(`Server startup timed out: ${log}`)), 15_000);
     const inspect = (data: Buffer) => {
       log += data.toString();
-      const match = /Share code: (HOST-[A-F0-9]{16})/.exec(log);
-      if (host ? match : log.includes('Colyseus server listening')) {
+      if (log.includes('Colyseus server listening')) {
         clearTimeout(timeout);
-        resolve({ process: child, code: match?.[1] });
+        if (host) void fetch(`http://127.0.0.1:${port}/private-host/config`).then(res => res.json()).then(config => resolve({ process: child, code: config.code }), reject);
+        else resolve({ process: child });
       }
     };
     child.stdout!.on('data', inspect);
@@ -70,6 +70,15 @@ afterAll(async () => {
 });
 
 it('joins an unmodified DuelRoom through the relay, exchanges snapshots/pong, preserves public room types, and handles host death', async () => {
+  const localConfigUrl = hostUrl.replace('ws:', 'http:') + '/private-host/config';
+  expect((await fetch(localConfigUrl, { headers: { Origin: 'https://untrusted.example' } })).status).toBe(403);
+  const trusted = await fetch(localConfigUrl, { headers: { Origin: 'https://strafeball.xyz' } });
+  expect(trusted.status).toBe(200);
+  expect(trusted.headers.get('access-control-allow-origin')).toBe('https://strafeball.xyz');
+  const preflight = await fetch(hostUrl.replace('ws:', 'http:') + '/private-host/publish', {
+    method: 'OPTIONS', headers: { Origin: 'https://strafeball.xyz', 'Access-Control-Request-Method': 'POST' }
+  });
+  expect(preflight.status).toBe(204);
   for (const type of ['duel', 'course', 'coop']) {
     const room = await new Client(brokerUrl).create(type, { name: 'Public regression', courseJson: JSON.stringify({ version: 1, objects: [] }) });
     room.onMessage('*', () => undefined);

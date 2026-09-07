@@ -6,6 +6,28 @@ export function localHostConfig(): { code: string; serverUrl: string; brokerUrl:
   return (window as Window & { __STRAFEBALL_HOST__?: { code: string; serverUrl: string; brokerUrl: string } }).__STRAFEBALL_HOST__;
 }
 
+let setupError = '';
+export function hostSetupError(): string { return setupError; }
+
+/** Only an explicit host link contacts loopback; ordinary visitors never get a permission prompt. */
+export async function initializeHostSession(): Promise<void> {
+  if (localHostConfig() || new URLSearchParams(location.search).get('host') !== '1') return;
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), 15_000);
+  try {
+    const response = await fetch('http://127.0.0.1:2567/private-host/config', { signal: controller.signal, cache: 'no-store' });
+    if (!response.ok) throw new Error('Agent unavailable');
+    const config = await response.json();
+    if (config.serverUrl !== 'ws://127.0.0.1:2567' || typeof config.code !== 'string'
+      || !/^HOST-[A-F0-9]{16}$/.test(config.code) || config.brokerUrl !== 'wss://strafeball.xyz/colyseus') throw new Error('Invalid agent');
+    Object.assign(window, { __STRAFEBALL_HOST__: config });
+  } catch {
+    setupError = 'Start the host app and allow local network access, then retry. You can also play from the localhost link.';
+  } finally { clearTimeout(timer); }
+}
+
+function hostHttpBase(): string { return localHostConfig()?.serverUrl.replace(/^ws/, 'http') ?? ''; }
+
 /** Own the Room before connecting so timeout/close-before-handshake always disposes its socket. */
 export class HostSessionClient extends Client {
   constructor(endpoint: string, private readonly signal?: AbortSignal) {
@@ -60,7 +82,7 @@ export class HostSessionClient extends Client {
 }
 
 export async function publishHostRoom(room: Room, signal: AbortSignal): Promise<void> {
-    const response = await fetch('/private-host/publish', {
+    const response = await fetch(`${hostHttpBase()}/private-host/publish`, {
       method: 'POST', headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ roomId: room.roomId, sessionId: room.sessionId }),
       signal
@@ -69,7 +91,7 @@ export async function publishHostRoom(room: Room, signal: AbortSignal): Promise<
 }
 
 export async function localHostRoomId(signal: AbortSignal): Promise<string> {
-  const response = await fetch('/private-host/session', { signal, cache: 'no-store' });
+  const response = await fetch(`${hostHttpBase()}/private-host/session`, { signal, cache: 'no-store' });
   if (!response.ok) throw new Error(response.status === 404 ? RELAY_ERRORS.expired : RELAY_ERRORS.unreachable);
   const body = await response.json();
   if (typeof body.roomId !== 'string' || !/^[\w-]{1,64}$/.test(body.roomId)) throw new Error(RELAY_ERRORS.unreachable);

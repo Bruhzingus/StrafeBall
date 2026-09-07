@@ -1,6 +1,8 @@
 import { Client, Room } from '@colyseus/sdk';
 import { isHostCode, RELAY_ERRORS, relayErrorMessage } from '../../../shared/relayTunnel';
-import { HostSessionClient, localHostConfig, localHostRoomId, publishHostRoom } from './hostSession';
+import { HostSessionClient, localHostConfig, localHostRoomId, publishHostRoom, hostSetupError } from './hostSession';
+import { joinPrivateHost, roomConnectionPath } from './directSession';
+import type { ConnectionPath } from '../../../shared/directTransport';
 import { toWireInput } from '../../../shared/protocol';
 import type {
   BattleMusicSyncMessage,
@@ -73,6 +75,8 @@ const EMPTY_HIT_EVENTS: readonly HitEvent[] = [];
 const EMPTY_HIT_REVERT_EVENTS: readonly HitRevertEvent[] = [];
 
 export class MultiplayerClient {
+  public connectionPath: ConnectionPath = 'public';
+  public relayOnly = false;
   // A ping send-gap or round-trip beyond this is not network latency: the ping timer (1s) was
   // throttled by a backgrounded tab / OS sleep / long main-thread stall. 4s is ~4 intervals — well
   // clear of any real RTT or transient hitch, but far below the multi-second freezes we must reject.
@@ -207,6 +211,7 @@ export class MultiplayerClient {
   }
 
   getConnectionDebug(): {
+    connectionPath: ConnectionPath;
     pingJitterMs: number;
     lastPongAgeMs: number | null;
     missedPongs: number;
@@ -233,6 +238,7 @@ export class MultiplayerClient {
       this.maxRecentPingWindowStartedAtMs = now;
     }
     return {
+      connectionPath: this.connectionPath,
       pingJitterMs: this.pingJitterMs,
       lastPongAgeMs: this.lastPongReceivedAtMs > 0 ? Math.max(0, now - this.lastPongReceivedAtMs) : null,
       missedPongs: this.missedPongs,
@@ -256,6 +262,7 @@ export class MultiplayerClient {
   }
 
   async createRoom(name: string, mode: MatchMode = '1v1', tickPresetId?: TickPresetId): Promise<void> {
+    if (hostSetupError()) { this.status = 'error'; this.errorMessage = hostSetupError(); return; }
     const host = localHostConfig();
     await this.connect((signal) => (host ? new HostSessionClient(this.serverUrl, signal) : this.client)
       .create('duel', { name: cleanName(name), mode, tickPresetId }), host?.code,
@@ -294,8 +301,7 @@ export class MultiplayerClient {
           return new HostSessionClient(host.serverUrl, signal).joinById(roomId, { name: cleanName(name) });
         }
         const endpoint = host?.brokerUrl ?? this.serverUrl;
-        const client = new HostSessionClient(`${endpoint.replace(/\/$/, '')}/relay/${hostCode}`, signal);
-        return client.joinById(hostCode, { name: cleanName(name) });
+        return joinPrivateHost(endpoint, hostCode, cleanName(name), signal, { relayOnly: this.relayOnly });
       }, hostCode);
     } else {
       await this.connect(() => this.client.joinById(code, { name: cleanName(name) }));
@@ -515,7 +521,7 @@ export class MultiplayerClient {
     const gen = this.connectGeneration;
     const controller = new AbortController();
     this.pendingConnection = controller;
-    const timer = hostCode ? setTimeout(() => controller.abort(), 12_000) : undefined;
+    const timer = hostCode ? setTimeout(() => controller.abort(), 25_000) : undefined;
     this.status = 'connecting';
     this.errorMessage = '';
 
@@ -532,7 +538,8 @@ export class MultiplayerClient {
       }
 
       this.room = room;
-      this.roomId = hostCode ?? room.roomId;
+      this.connectionPath = roomConnectionPath(room) ?? (localHostConfig() ? 'local' : 'public');
+      this.roomId = publish ? '' : hostCode ?? room.roomId;
       this.localPlayerId = room.sessionId;
       if (this.hasConnectedOnce) this.reconnectCount += 1;
       this.hasConnectedOnce = true;
@@ -541,6 +548,7 @@ export class MultiplayerClient {
       // Bind immediately: joined-room/roster/net-mode messages arrive before publication HTTP finishes.
       if (publish) await publish(room, controller.signal);
       if (gen !== this.connectGeneration || this.room !== room) return;
+      this.roomId = hostCode ?? room.roomId;
       this.status = 'connected';
     } catch (error) {
       if (gen !== this.connectGeneration) return; // superseded, ignore the error

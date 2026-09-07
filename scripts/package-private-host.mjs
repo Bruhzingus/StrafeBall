@@ -1,6 +1,6 @@
-import { cp, copyFile, mkdir, readFile, writeFile } from 'node:fs/promises';
+import { cp, copyFile, mkdir, readFile, writeFile, readdir, rm } from 'node:fs/promises';
 import { spawn } from 'node:child_process';
-import { dirname, resolve } from 'node:path';
+import { dirname, resolve, sep } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 // Build on the target OS/architecture. The resulting folder includes Node, runtime dependencies,
@@ -8,7 +8,7 @@ import { fileURLToPath } from 'node:url';
 const root = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 const output = resolve(root, 'releases', `strafeball-host-${process.platform}-${process.arch}-${Date.now()}`);
 await mkdir(resolve(output, 'server'), { recursive: true });
-await cp(resolve(root, 'dist'), resolve(output, 'dist'), { recursive: true });
+// UI comes from the website. The agent also serves a localhost proxy for browsers without LNA.
 await cp(resolve(root, 'server/dist'), resolve(output, 'server/dist'), { recursive: true });
 await copyFile(resolve(root, 'server/package.json'), resolve(output, 'server/package.json'));
 await copyFile(resolve(root, 'server/package-lock.json'), resolve(output, 'server/package-lock.json'));
@@ -25,9 +25,16 @@ await new Promise((resolveRun, reject) => {
   child.on('error', reject);
   child.on('exit', (code) => code === 0 ? resolveRun() : reject(new Error(`Runtime dependency install failed (${code})`)));
 });
-await writeFile(resolve(output, 'Start Private Host.cmd'), '@echo off\r\ncd /d "%~dp0"\r\nnode.exe server\\dist\\server\\src\\index.js --private-host\r\npause\r\n');
-await writeFile(resolve(output, 'start-private-host.sh'), '#!/usr/bin/env sh\ncd -- "$(dirname -- "$0")" || exit 1\nexec ./node server/dist/server/src/index.js --private-host\n', { mode: 0o755 });
-await writeFile(resolve(output, 'README.txt'), `Strafeball Private Host (${process.platform}/${process.arch})\n\nRun ${process.platform === 'win32' ? 'Start Private Host.cmd' : './start-private-host.sh'}.\nOpen http://localhost:2567, enter your name and Create a match.\nShare the HOST- code shown in the lobby with friends. They join at https://strafeball.xyz.\nKeep the host window running. Closing it disconnects guests. Restarting generates a new code.\nNo port forwarding, npm install, or separate Node download is needed.\n\nThe production relay and client must be deployed before remote joining works.\n`);
+const uwsDir = resolve(output, 'server/node_modules/uWebSockets.js');
+for (const file of await readdir(uwsDir)) {
+  if (!file.endsWith('.node') || file === `uws_${process.platform}_${process.arch}_${process.versions.modules}.node`) continue;
+  const target = resolve(uwsDir, file);
+  if (!target.startsWith(output + sep)) throw new Error('Refusing to prune outside host package');
+  await rm(target);
+}
+await writeFile(resolve(output, 'Start Private Host.cmd'), '@echo off\r\ncd /d "%~dp0"\r\nset HOST_OPEN_BROWSER=1\r\nnode.exe server\\dist\\server\\src\\index.js --private-host\r\npause\r\n');
+await writeFile(resolve(output, 'start-private-host.sh'), '#!/usr/bin/env sh\ncd -- "$(dirname -- "$0")" || exit 1\nexport HOST_OPEN_BROWSER=1\nexec ./node server/dist/server/src/index.js --private-host\n', { mode: 0o755 });
+await writeFile(resolve(output, 'README.txt'), `Strafeball Private Host (${process.platform}/${process.arch})\n\nRun ${process.platform === 'win32' ? 'Start Private Host.cmd' : './start-private-host.sh'}.\nThe website opens automatically. Allow local network access, enter your name, and create a match.\nIf your browser cannot connect to the app, open http://localhost:2567 instead.\nShare the HOST- code shown after creating the match. Friends join at https://strafeball.xyz with no download.\nDirect connections are automatic; relay is the fallback. The ping display identifies the active path.\nKeep the host window running. Closing it disconnects guests. Restarting generates a new code.\nNo port forwarding, npm install, or separate Node download is needed. Internet access is required for the game UI.\n\nThe production broker and client must be deployed before remote joining works.\n`);
 console.log(`Portable host prepared: ${output}`);
 if (process.platform === 'win32') {
   // Literal paths are passed via environment variables; no shell interpolation of generated paths.

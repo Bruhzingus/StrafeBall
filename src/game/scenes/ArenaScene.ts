@@ -1,6 +1,7 @@
 import { Color3, Engine, Mesh, MeshBuilder, PBRMaterial, Scene, StandardMaterial, Vector3 } from '@babylonjs/core';
 import { FxaaPostProcess } from '@babylonjs/core/PostProcesses/fxaaPostProcess';
 import { InputManager } from '../input/InputManager';
+import { hostSetupError, localHostConfig } from '../network/hostSession';
 import { PlayerController } from '../player/PlayerController';
 import { GymArena } from '../map/GymArena';
 import { GYM_REFLECTION_TARGETS, getGymEnvironmentDebugInfo } from '../map/GymVisualRevamp';
@@ -406,6 +407,7 @@ export class ArenaScene {
       onDevGraphicsTuningChanged: (enabled) => this.setGraphicsTuningPanelEnabled(enabled)
     });
     this.multiplayerOverlay = new MultiplayerOverlay(this.multiplayer, this.input);
+    if (localHostConfig() || hostSetupError()) this.multiplayerOverlay.openMode('1v1');
     this.networkRenderer = new NetworkRenderer(this.scene, this.ballVisualEffects);
     this.onlineTeamSelector = new OnlineTeamSelectorPads(this.scene);
 
@@ -504,6 +506,7 @@ export class ArenaScene {
             desyncPeakM: this.desyncPeakM,
             ackAgeMs: this.ackAgeMs(),
             pingJitterMs: connectionDebug.pingJitterMs,
+            connectionPath: connectionDebug.connectionPath,
             lastPongAgeMs: connectionDebug.lastPongAgeMs,
             missedPongs: connectionDebug.missedPongs,
             socketBufferedAmount: connectionDebug.socketBufferedAmount,

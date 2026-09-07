@@ -1,4 +1,37 @@
 "use strict";
+var __createBinding = (this && this.__createBinding) || (Object.create ? (function(o, m, k, k2) {
+    if (k2 === undefined) k2 = k;
+    var desc = Object.getOwnPropertyDescriptor(m, k);
+    if (!desc || ("get" in desc ? !m.__esModule : desc.writable || desc.configurable)) {
+      desc = { enumerable: true, get: function() { return m[k]; } };
+    }
+    Object.defineProperty(o, k2, desc);
+}) : (function(o, m, k, k2) {
+    if (k2 === undefined) k2 = k;
+    o[k2] = m[k];
+}));
+var __setModuleDefault = (this && this.__setModuleDefault) || (Object.create ? (function(o, v) {
+    Object.defineProperty(o, "default", { enumerable: true, value: v });
+}) : function(o, v) {
+    o["default"] = v;
+});
+var __importStar = (this && this.__importStar) || (function () {
+    var ownKeys = function(o) {
+        ownKeys = Object.getOwnPropertyNames || function (o) {
+            var ar = [];
+            for (var k in o) if (Object.prototype.hasOwnProperty.call(o, k)) ar[ar.length] = k;
+            return ar;
+        };
+        return ownKeys(o);
+    };
+    return function (mod) {
+        if (mod && mod.__esModule) return mod;
+        var result = {};
+        if (mod != null) for (var k = ownKeys(mod), i = 0; i < k.length; i++) if (k[i] !== "default") __createBinding(result, mod, k[i]);
+        __setModuleDefault(result, mod);
+        return result;
+    };
+})();
 Object.defineProperty(exports, "__esModule", { value: true });
 exports.server = void 0;
 const colyseus_1 = require("colyseus");
@@ -7,7 +40,6 @@ const DuelRoom_1 = require("./rooms/DuelRoom");
 const CourseRoom_1 = require("./rooms/CourseRoom");
 const EditRoom_1 = require("./rooms/EditRoom");
 const TunnelBroker_1 = require("./relay/TunnelBroker");
-const hostAgent_1 = require("./relay/hostAgent");
 const DEFAULT_PORT = 2567;
 ensureGlobalWebSocket();
 function readPort() {
@@ -28,12 +60,14 @@ exports.server = (0, colyseus_1.defineServer)({
 });
 const port = readPort();
 const privateHost = process.argv.includes('--private-host');
-void exports.server.listen(port, privateHost ? '127.0.0.1' : undefined).then(() => {
+void exports.server.listen(port, privateHost ? '127.0.0.1' : undefined).then(async () => {
     const httpServer = exports.server.transport.server;
     if (!httpServer)
         throw new Error('Relay tunnels require the existing HTTP/WebSocket transport.');
     if (privateHost) {
-        const agent = (0, hostAgent_1.startHostAgent)(httpServer, port);
+        // Keep the WebRTC stack out of the public server's memory/CPU footprint.
+        const { startHostAgent } = await Promise.resolve().then(() => __importStar(require('./relay/hostAgent')));
+        const agent = startHostAgent(httpServer, port);
         exports.server.onBeforeShutdown(() => agent.stop());
     }
     else {
