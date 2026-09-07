@@ -55,6 +55,7 @@ temp/
 
 # Optional: local test/build assets
 coverage/
+releases/
 
 # If Babylon or other libraries were accidentally downloaded/copied here
 # Keep this ONLY if these are not your actual source files

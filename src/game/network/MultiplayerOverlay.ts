@@ -805,6 +805,7 @@ function copyTextFallback(text: string): boolean {
 
 function friendlyError(message: string): string {
   if (!message) return '';
+  if (/^(Invalid or expired host code|Host disconnected|Host agent not reachable|This private session|A private session)/.test(message)) return message;
   if (/not found|room/i.test(message)) return 'Room not found. Check the code and try again.';
   if (/timeout|closed|abnormal|network|websocket/i.test(message)) return 'Connection hiccup. Try again or create a new room.';
   if (/full|seat/i.test(message)) return 'That room is full. Create a fresh duel.';

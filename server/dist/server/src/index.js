@@ -6,6 +6,8 @@ const netConfig_1 = require("../../shared/netConfig");
 const DuelRoom_1 = require("./rooms/DuelRoom");
 const CourseRoom_1 = require("./rooms/CourseRoom");
 const EditRoom_1 = require("./rooms/EditRoom");
+const TunnelBroker_1 = require("./relay/TunnelBroker");
+const hostAgent_1 = require("./relay/hostAgent");
 const DEFAULT_PORT = 2567;
 ensureGlobalWebSocket();
 function readPort() {
@@ -25,10 +27,25 @@ exports.server = (0, colyseus_1.defineServer)({
     }
 });
 const port = readPort();
-void exports.server.listen(port).then(() => {
+const privateHost = process.argv.includes('--private-host');
+void exports.server.listen(port, privateHost ? '127.0.0.1' : undefined).then(() => {
+    const httpServer = exports.server.transport.server;
+    if (!httpServer)
+        throw new Error('Relay tunnels require the existing HTTP/WebSocket transport.');
+    if (privateHost) {
+        const agent = (0, hostAgent_1.startHostAgent)(httpServer, port);
+        exports.server.onBeforeShutdown(() => agent.stop());
+    }
+    else {
+        const broker = new TunnelBroker_1.TunnelBroker(httpServer);
+        exports.server.onBeforeShutdown(() => broker.close());
+    }
     console.log(`Strafeball Colyseus server listening on ws://localhost:${port}`);
     console.log(`Network config: ${(0, netConfig_1.describeNetConfig)()}`);
     console.log('Create a private room with client.create("duel", { name }) and join by roomId with client.joinById(roomId, { name }).');
+}).catch((error) => {
+    console.error('Unable to start Strafeball:', error);
+    void exports.server.gracefullyShutdown(false).finally(() => { process.exitCode = 1; });
 });
 function ensureGlobalWebSocket() {
     const globalScope = globalThis;

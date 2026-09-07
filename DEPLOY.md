@@ -10,6 +10,12 @@ The two build outputs ARE committed (un-ignored in `.gitignore`):
 - `dist/` — Vite client bundle, served as static files off the droplet.
 - `server/dist/` — compiled server (`tsc`); entry point `server/dist/server/src/index.js`.
 
+Private host relay support ships in that same server process and client build. The existing
+`/colyseus/` proxy must forward nested HTTP requests and WebSocket upgrades (including `/relay/`)
+with the same prefix stripping used for normal rooms. No new infrastructure or PM2 process is
+needed. Build the optional portable host download with `npm run host:package`; see
+[private host sessions](docs/PRIVATE_HOST_SESSIONS.md).
+
 ---
 
 ## Releasing a change (on your machine)

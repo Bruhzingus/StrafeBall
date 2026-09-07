@@ -370,8 +370,19 @@ export class CreatorGeometry {
     for (let i = 0; i < obj.id.length; i += 1) seed = (seed * 31 + obj.id.charCodeAt(i)) >>> 0;
     const topJitter = (0.004 + (seed % 97) / 97 * 0.012) / scaleY;
     const visH = Math.max(0.01, h - localBottomInset - topJitter);
+    let localCenterY = localBottomInset + visH / 2;
+    // Ground-flush hazards (a "lava floor" kill_block authored with its top at/below the sandbox floor)
+    // would render their whole translucent shell buried under MovementSandbox's opaque ground deck (one
+    // big box spanning the course at floor height) — completely invisible even though the kill trigger
+    // still fires (CreatorPads reads the untouched obj.position/size). Lift the VISUAL shell only, so its
+    // top always clears the floor by a small margin. The margin carries a per-object jitter so floor
+    // kills tiled edge-to-edge don't share an exact top plane (which would z-fight). Collision/gameplay
+    // is unaffected — those read obj.position directly, never this mesh.
+    const worldTopY = obj.position[1] + (localCenterY + visH / 2) * scaleY;
+    const minVisibleTopY = this.groundY + 0.05 + (seed % 61) / 61 * 0.03; // 50–80 mm above the deck
+    if (worldTopY < minVisibleTopY) localCenterY += (minVisibleTopY - worldTopY) / scaleY;
     const box = MeshBuilder.CreateBox(`creator_${obj.id}_hazard`, { width: w, height: visH, depth: d }, this.scene);
-    box.position.set(0, localBottomInset + visH / 2, 0);
+    box.position.set(0, localCenterY, 0);
     // Kill blocks read neon RED (lethal); trigger volumes read cyan (a switch, not a hazard) — same
     // translucent walk-through shell, different colour so they can't be confused at a glance.
     const isTrigger = obj.type === 'trigger_volume';

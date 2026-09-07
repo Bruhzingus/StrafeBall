@@ -57,6 +57,10 @@ Open the local URL printed by Vite, usually `http://localhost:5173`.
 
 ## Run Multiplayer Locally
 
+To host friends across different home networks using the production relay, see
+[Private host sessions](docs/PRIVATE_HOST_SESSIONS.md). Joiners use the normal website and a
+`HOST-…` room code; the host runs a portable download or `npm run host:private` after building.
+
 Fast path from the repo root:
 
 ```bash

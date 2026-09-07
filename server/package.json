@@ -8,13 +8,16 @@
     "diagnose:network": "tsx scripts/networkLoadHarness.ts",
     "typecheck": "tsc -p tsconfig.json --noEmit",
     "start": "node dist/server/src/index.js",
+    "host:private": "node dist/server/src/index.js --private-host",
     "test": "vitest run"
   },
   "dependencies": {
-    "colyseus": "^0.17.10"
+    "colyseus": "^0.17.10",
+    "ws": "^8.21.3"
   },
   "devDependencies": {
     "@types/node": "^25.9.3",
+    "@types/ws": "^8.18.1",
     "tsx": "^4.22.4",
     "typescript": "^5.0.0",
     "vitest": "^4.1.9"

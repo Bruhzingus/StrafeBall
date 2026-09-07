@@ -1,4 +1,6 @@
 import { Client, Room } from '@colyseus/sdk';
+import { isHostCode, RELAY_ERRORS, relayErrorMessage } from '../../../shared/relayTunnel';
+import { HostSessionClient, localHostConfig, localHostRoomId, publishHostRoom } from './hostSession';
 import { toWireInput } from '../../../shared/protocol';
 import type {
   BattleMusicSyncMessage,
@@ -53,6 +55,8 @@ export type ConnectionStatus = 'offline' | 'connecting' | 'connected' | 'error';
  * the page's protocol (wss for https, ws for http) to avoid mixed-content/origin failures.
  */
 export function resolveServerUrl(): string {
+  const host = localHostConfig();
+  if (host) return host.serverUrl;
   const override = import.meta.env.VITE_SERVER_URL;
   if (override) return override;
   if (typeof window === 'undefined') return 'ws://localhost:2567';
@@ -145,6 +149,7 @@ export class MultiplayerClient {
   // newer call (e.g. user double-clicks Create) and leave the orphaned room rather than
   // overwriting this.room and leaking the server-side session.
   private connectGeneration = 0;
+  private pendingConnection: AbortController | null = null;
   private lastServerTimeSampleMs: number | null = null;
   private lastServerTimeSampleReceivedAtMs = 0;
   // Rolling peak of the client uplink WebSocket send buffer (bytes). An instantaneous read at HUD
@@ -251,7 +256,10 @@ export class MultiplayerClient {
   }
 
   async createRoom(name: string, mode: MatchMode = '1v1', tickPresetId?: TickPresetId): Promise<void> {
-    await this.connect(() => this.client.create('duel', { name: cleanName(name), mode, tickPresetId }));
+    const host = localHostConfig();
+    await this.connect((signal) => (host ? new HostSessionClient(this.serverUrl, signal) : this.client)
+      .create('duel', { name: cleanName(name), mode, tickPresetId }), host?.code,
+      host ? publishHostRoom : undefined);
   }
 
   /**
@@ -276,13 +284,35 @@ export class MultiplayerClient {
       this.errorMessage = 'Enter a room code.';
       return;
     }
-    await this.connect(() => this.client.joinById(code, { name: cleanName(name) }));
+    if (/^HOST-/i.test(code)) {
+      const hostCode = code.toUpperCase();
+      await this.connect(async (signal) => {
+        if (!isHostCode(hostCode)) throw new Error(RELAY_ERRORS.expired);
+        const host = localHostConfig();
+        if (host?.code === hostCode) {
+          const roomId = await localHostRoomId(signal);
+          return new HostSessionClient(host.serverUrl, signal).joinById(roomId, { name: cleanName(name) });
+        }
+        const endpoint = host?.brokerUrl ?? this.serverUrl;
+        const client = new HostSessionClient(`${endpoint.replace(/\/$/, '')}/relay/${hostCode}`, signal);
+        return client.joinById(hostCode, { name: cleanName(name) });
+      }, hostCode);
+    } else {
+      await this.connect(() => this.client.joinById(code, { name: cleanName(name) }));
+    }
   }
 
   leave(): void {
+    ++this.connectGeneration;
+    this.pendingConnection?.abort();
+    this.pendingConnection = null;
     this.stopPing();
-    this.room?.leave();
+    const previous = this.room;
     this.room = null;
+    if (previous) {
+      previous.reconnection.enabled = false;
+      void previous.leave().catch(() => undefined);
+    }
     this.status = 'offline';
     this.roomId = '';
     this.localPlayerId = '';
@@ -479,40 +509,51 @@ export class MultiplayerClient {
     return true;
   }
 
-  private async connect(join: () => Promise<Room>): Promise<void> {
-    const gen = ++this.connectGeneration;
+  private async connect(join: (signal: AbortSignal) => Promise<Room>, hostCode?: string,
+    publish?: (room: Room, signal: AbortSignal) => Promise<void>): Promise<void> {
     this.leave();
+    const gen = this.connectGeneration;
+    const controller = new AbortController();
+    this.pendingConnection = controller;
+    const timer = hostCode ? setTimeout(() => controller.abort(), 12_000) : undefined;
     this.status = 'connecting';
     this.errorMessage = '';
 
     try {
-      const room = await join();
+      const room = await join(controller.signal);
 
       if (gen !== this.connectGeneration) {
         // A newer connect() started while we were awaiting the server handshake. Leave the
         // orphaned room so the server session is cleaned up immediately rather than waiting for
         // a timeout. Don't update any shared state — the newer call owns it.
-        void room.leave().catch(() => undefined);
+        room.reconnection.enabled = false;
+        room.connection.close();
         return;
       }
 
       this.room = room;
-      this.status = 'connected';
-      this.roomId = room.roomId;
+      this.roomId = hostCode ?? room.roomId;
       this.localPlayerId = room.sessionId;
       if (this.hasConnectedOnce) this.reconnectCount += 1;
       this.hasConnectedOnce = true;
       this.bindRoom(room);
       this.startPing();
+      // Bind immediately: joined-room/roster/net-mode messages arrive before publication HTTP finishes.
+      if (publish) await publish(room, controller.signal);
+      if (gen !== this.connectGeneration || this.room !== room) return;
+      this.status = 'connected';
     } catch (error) {
       if (gen !== this.connectGeneration) return; // superseded, ignore the error
-      this.room = null;
+      this.leave();
       this.status = 'error';
-      this.errorMessage = error instanceof Error ? error.message : String(error);
+      this.errorMessage = hostCode ? relayErrorMessage(error) : error instanceof Error ? error.message : String(error);
       console.error(
         `[MultiplayerClient] Matchmaking failed against ${this.serverUrl}:`,
         error
       );
+    } finally {
+      clearTimeout(timer);
+      if (this.pendingConnection === controller) this.pendingConnection = null;
     }
   }
 
@@ -655,14 +696,16 @@ export class MultiplayerClient {
     room.onError((code, message) => {
       if (this.room !== room) return;
       this.status = 'error';
-      this.errorMessage = `${code}: ${message}`;
+      this.errorMessage = isHostCode(this.roomId) ? relayErrorMessage({ code, message }) : `${code}: ${message}`;
     });
 
-    room.onLeave(() => {
+    room.onLeave((code) => {
       if (this.room !== room) return;
+      const hostSession = isHostCode(this.roomId);
       this.stopPing();
       this.room = null;
-      this.status = 'offline';
+      this.status = hostSession ? 'error' : 'offline';
+      if (hostSession) this.errorMessage = code === 4411 ? RELAY_ERRORS.unreachable : RELAY_ERRORS.disconnected;
       this.roomId = '';
       this.localPlayerId = '';
       this.latestSnapshot = null;
