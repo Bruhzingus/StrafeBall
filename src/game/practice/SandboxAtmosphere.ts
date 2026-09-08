@@ -127,7 +127,7 @@ export function registerSandboxShadowGeometry(
   mesh: Mesh | null | undefined,
   castsShadow = true
 ): void {
-  if (!mesh || mesh.isDisposed() || getGraphicsQuality() !== 'polished') return;
+  if (!mesh || mesh.isDisposed()) return;
   mesh.receiveShadows = true;
   const previous = shadowGeometry.get(mesh);
   if (previous !== undefined) {
@@ -345,8 +345,18 @@ export function exitSandboxAtmosphere(scene: Scene): void {
   enterGymWorld();
 }
 
-/** Scene teardown. Individual sandbox rebuilds intentionally do not call this. */
-export function disposeSandboxAtmosphere(scene?: Scene): void {
+/**
+ * Scene teardown. Individual sandbox rebuilds intentionally do not call this.
+ *
+ * `retainShadowGeometry` is for the live graphics-preset swap, which disposes the atmosphere so the
+ * rebuilt one re-registers its sun/CSM handles (ensureState reuses existing state and would not).
+ * The course geometry itself survives that swap, so its registrations must too — createState replays
+ * them into the new CSM.
+ */
+export function disposeSandboxAtmosphere(
+  scene?: Scene,
+  options: { retainShadowGeometry?: boolean } = {}
+): void {
   const current = state;
   if (!current || (scene && current.scene !== scene)) return;
   if (current.active) exitSandboxAtmosphere(current.scene);
@@ -355,8 +365,10 @@ export function disposeSandboxAtmosphere(scene?: Scene): void {
   current.sky.dispose();
   current.skyMaterial.dispose();
   current.skyTexture.dispose();
-  for (const mesh of [...shadowGeometry.keys()]) {
-    if (mesh.getScene() === current.scene) shadowGeometry.delete(mesh);
+  if (!options.retainShadowGeometry) {
+    for (const mesh of [...shadowGeometry.keys()]) {
+      if (mesh.getScene() === current.scene) shadowGeometry.delete(mesh);
+    }
   }
   state = null;
   registerPolishedHandles({ sandboxSun: undefined, sandboxCsm: undefined });

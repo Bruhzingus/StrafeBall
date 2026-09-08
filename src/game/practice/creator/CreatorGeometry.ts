@@ -78,7 +78,13 @@ interface ResolvedLabelText {
 
 export class CreatorGeometry {
   /** Polished adds lighting response and outdoor shadows; Performance keeps the legacy flat editor. */
-  private readonly polishedVisuals = getGraphicsQuality() === 'polished';
+  // Read LIVE rather than latched at construction: the graphics preset can now be swapped mid-session
+  // without a page reload, and rebuild() runs on every edit — so each rebuild picks up the current
+  // mode. (Existing meshes keep the previous mode's tint until their next rebuild; nothing forces one
+  // here because the yard's movers/triggers bind to the meshes a rebuild would replace.)
+  private get polishedVisuals(): boolean {
+    return getGraphicsQuality() === 'polished';
+  }
   private readonly root: TransformNode;
   private readonly previewRoot: TransformNode;
   private readonly cachedMaterials = new Map<string, StandardMaterial>();

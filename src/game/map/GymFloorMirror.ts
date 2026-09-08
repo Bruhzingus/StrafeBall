@@ -47,15 +47,35 @@ const STATIC_INCLUDE_PREFIXES: readonly string[] = [
   'decor_cove_' // polished cove/strip lighting — the glowing lines reflecting in the floor
 ];
 
+interface FloorResponseSnapshot {
+  environmentIntensity: number;
+  specularIntensity: number;
+}
+
 interface MirrorState {
   scene: Scene;
   texture: MirrorTexture;
   staticList: AbstractMesh[];
-  dynamic: Set<AbstractMesh>;
   paused: boolean;
+  /**
+   * The floor material's plain (non-mirror) reflection response, captured before this mirror
+   * overwrote it. Restored on dispose so a live graphics-preset swap to Competitive gets its normal
+   * glossy floor back — without this the floor keeps the mirror's suppressed specularIntensity
+   * (0.05) and reads flat and dead in a mode that has no mirror to supply the shine instead.
+   */
+  floorResponse: FloorResponseSnapshot | null;
 }
 
 let state: MirrorState | null = null;
+
+/**
+ * Dynamic registrations, retained at MODULE level so they outlive the mirror itself. Two reasons: a
+ * live graphics-preset swap disposes and rebuilds the mirror mid-session (the retained set is
+ * replayed into the new render list), and meshes created while Competitive is active — remote
+ * players who joined before the swap — must still be known when a mirror later comes up. Entries
+ * auto-remove when their mesh is disposed.
+ */
+const retainedDynamic = new Set<AbstractMesh>();
 
 function matchesStaticInclude(name: string): boolean {
   return STATIC_INCLUDE_PREFIXES.some((prefix) => name.startsWith(prefix));
@@ -69,7 +89,13 @@ function floorMaterial(scene: Scene): PBRMaterial | null {
 /** Rebuild the RTT's render list from the capped static seed + the live dynamic set. */
 function syncRenderList(): void {
   if (!state) return;
-  state.texture.renderList = [...state.staticList, ...state.dynamic];
+  const scene = state.scene;
+  const dynamic: AbstractMesh[] = [];
+  for (const mesh of retainedDynamic) {
+    // Retained entries can outlive a scene (preset swaps) — only this scene's live meshes render.
+    if (!mesh.isDisposed() && mesh.getScene() === scene) dynamic.push(mesh);
+  }
+  state.texture.renderList = [...state.staticList, ...dynamic];
 }
 
 /**
@@ -98,7 +124,13 @@ export function createGymFloorMirror(scene: Scene): MirrorTexture | null {
   );
   const staticList = matched.slice(0, Math.max(0, cfg.maxRenderListSize));
 
-  state = { scene, texture, staticList, dynamic: new Set(), paused: false };
+  // Captured BEFORE the overwrites below (disposeGymFloorMirror above already restored any prior
+  // mirror's snapshot, so these are always the plain values, never another mirror's).
+  const floorResponse: FloorResponseSnapshot = {
+    environmentIntensity: floor.environmentIntensity,
+    specularIntensity: floor.specularIntensity
+  };
+  state = { scene, texture, staticList, paused: false, floorResponse };
   syncRenderList();
 
   floor.reflectionTexture = texture;
@@ -117,7 +149,7 @@ export function createGymFloorMirror(scene: Scene): MirrorTexture | null {
  * auto-unregistered when the mesh is disposed (e.g. a remote player leaving).
  */
 export function registerGymMirrorMesh(mesh: Mesh | null | undefined, includeDescendants = false): void {
-  if (!mesh || !state) return;
+  if (!mesh) return;
   const additions: AbstractMesh[] = includeDescendants
     ? [mesh, ...mesh.getChildMeshes(false)]
     : [mesh];
@@ -126,8 +158,8 @@ export function registerGymMirrorMesh(mesh: Mesh | null | undefined, includeDesc
     // Blob shadows ride along as ball/dummy children — a flat black disc in the reflection reads
     // as a hole in the floor, so they are excluded even via descendant registration.
     if (add.name.endsWith('_blobShadow')) continue;
-    if (state.dynamic.has(add)) continue;
-    state.dynamic.add(add);
+    if (retainedDynamic.has(add)) continue;
+    retainedDynamic.add(add);
     changed = true;
     add.onDisposeObservable.addOnce(() => unregisterGymMirrorMesh(add));
   }
@@ -135,8 +167,16 @@ export function registerGymMirrorMesh(mesh: Mesh | null | undefined, includeDesc
 }
 
 export function unregisterGymMirrorMesh(mesh: AbstractMesh | null | undefined): void {
-  if (!mesh || !state) return;
-  if (state.dynamic.delete(mesh)) syncRenderList();
+  if (!mesh) return;
+  if (retainedDynamic.delete(mesh)) syncRenderList();
+}
+
+/**
+ * Forget every retained dynamic registration. Scene teardown only — a preset swap must NOT call
+ * this, or the rebuilt mirror would reflect the static room but none of the players or balls.
+ */
+export function clearRetainedGymMirrorMeshes(): void {
+  retainedDynamic.clear();
 }
 
 /**
@@ -168,6 +208,13 @@ export function disposeGymFloorMirror(): void {
   if (!state) return;
   const floor = floorMaterial(state.scene);
   if (floor && floor.reflectionTexture === state.texture) floor.reflectionTexture = null;
+  // Hand the floor back its plain reflection response (see FloorResponseSnapshot). On a preset swap
+  // setupGymEnvironmentResponse re-applies the authoritative GYM_REFLECTION_TARGETS value right
+  // afterwards; restoring here keeps dispose correct on its own, including at scene teardown.
+  if (floor && state.floorResponse) {
+    floor.environmentIntensity = state.floorResponse.environmentIntensity;
+    floor.specularIntensity = state.floorResponse.specularIntensity;
+  }
   state.texture.dispose();
   state = null;
 }
@@ -191,6 +238,6 @@ export function getGymFloorMirrorDebugInfo(): {
     paused: state.paused,
     renderListSize: state.texture.renderList?.length ?? 0,
     staticCount: state.staticList.length,
-    dynamicCount: state.dynamic.size
+    dynamicCount: retainedDynamic.size
   };
 }

@@ -688,7 +688,27 @@ function applyWallStoneTexture(scene: Scene): void {
   }
 }
 
-function tuneSceneImageProcessing(scene: Scene): void {
+/**
+ * Re-evaluate the scene's environment/reflection source for the ACTIVE graphics mode.
+ *
+ * applyGymEnvironment runs once during the gym build and deliberately never replaces an existing
+ * texture, so a LIVE preset swap needs this: switching into Neutral — the diagnostic baseline whose
+ * whole point is having no environment contribution at all — would otherwise silently keep the
+ * previous mode's environment and stop being a truth baseline. Swapping back re-creates it.
+ */
+export function syncGymEnvironmentForMode(scene: Scene): void {
+  if (isNeutralModeEnabled()) {
+    const existing =
+      scene.getTextureByName(HDR_ENVIRONMENT_NAME) ?? scene.getTextureByName(FALLBACK_ENVIRONMENT_NAME);
+    existing?.dispose();
+    scene.environmentTexture = null;
+    environmentDebugInfo = { kind: 'none', name: null, size: null, loaded: true };
+    return;
+  }
+  applyGymEnvironment(scene);
+}
+
+export function tuneSceneImageProcessing(scene: Scene): void {
   const ip = scene.imageProcessingConfiguration;
   // RECOVERY: NEUTRAL is a true diagnostic baseline — tone mapping OFF, exposure = 1.0, contrast = 1.0.
   // No ACES, no exposure/contrast lift; image processing must NOT compensate for the raw lighting here.

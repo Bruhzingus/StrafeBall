@@ -31,7 +31,6 @@ import {
   SSAO2RenderingPipeline,
   StandardMaterial
 } from '@babylonjs/core';
-import { getGraphicsQuality } from '../config/graphicsConfig';
 import { resolvePolishedConfig } from '../config/graphicsTuning';
 
 let activeGlow: GlowLayer | null = null;
@@ -52,9 +51,12 @@ function unregisterIncludedMesh(mesh: Mesh): void {
 }
 
 function registerIncludedMesh(mesh: Mesh | null | undefined, occluder: boolean): void {
-  // Portal/pad constructors can run before PolishedPostFX. Keep those registrations until the
-  // layer comes up, but never retain anything for Performance/Neutral scenes.
-  if (!mesh || getGraphicsQuality() !== 'polished' || mesh.isDisposed()) return;
+  // Portal/pad constructors can run before PolishedPostFX, and meshes are built in Performance too.
+  // Registrations are retained in EVERY mode and flushed into the GlowLayer whenever one comes up:
+  // a live graphics-preset swap into polished builds the layer long after most of these meshes
+  // exist, and anything not retained here would silently never glow (or never occlude) afterwards.
+  // The sets stay bounded — entries auto-remove on mesh disposal — and are inert without a layer.
+  if (!mesh || mesh.isDisposed()) return;
   if (occluder && emissiveMeshes.has(mesh)) return; // a true emitter always wins
   if (occluder) occluderMeshes.add(mesh);
   else {
@@ -257,7 +259,13 @@ export class PolishedPostFX {
     };
   }
 
-  dispose(): void {
+  /**
+   * Tear down the post stack. `retainRegistrations` keeps the glow allow-list intact for a live
+   * graphics-preset swap, where this scene keeps rendering and a replacement PolishedPostFX may be
+   * built moments later — dropping the list there would permanently un-glow every cove strip and
+   * un-occlude every player. Scene teardown passes nothing and clears the list as before.
+   */
+  dispose(options: { retainRegistrations?: boolean } = {}): void {
     if (activeGlow === this.glow) {
       activeGlow = null;
       activeGlowScene = null;
@@ -265,14 +273,16 @@ export class PolishedPostFX {
     }
     // Registrations are scene-owned. Clearing them here prevents stale meshes carrying into a new
     // ArenaScene even though their normal disposal happens a few lines later in ArenaScene.dispose.
-    for (const mesh of [...includedMeshes]) {
-      if (mesh.getScene() === this.scene) includedMeshes.delete(mesh);
-    }
-    for (const mesh of [...emissiveMeshes]) {
-      if (mesh.getScene() === this.scene) emissiveMeshes.delete(mesh);
-    }
-    for (const mesh of [...occluderMeshes]) {
-      if (mesh.getScene() === this.scene) occluderMeshes.delete(mesh);
+    if (!options.retainRegistrations) {
+      for (const mesh of [...includedMeshes]) {
+        if (mesh.getScene() === this.scene) includedMeshes.delete(mesh);
+      }
+      for (const mesh of [...emissiveMeshes]) {
+        if (mesh.getScene() === this.scene) emissiveMeshes.delete(mesh);
+      }
+      for (const mesh of [...occluderMeshes]) {
+        if (mesh.getScene() === this.scene) occluderMeshes.delete(mesh);
+      }
     }
     for (const camera of [...this.attachedCameras]) this.detachCamera(camera);
     this.glow?.dispose();

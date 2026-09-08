@@ -1,10 +1,15 @@
-import { Color3, Engine, Mesh, MeshBuilder, PBRMaterial, Scene, StandardMaterial, Vector3 } from '@babylonjs/core';
+import { Color3, Engine, Mesh, MeshBuilder, PBRMaterial, Scene, StandardMaterial, Vector3, type Camera } from '@babylonjs/core';
 import { FxaaPostProcess } from '@babylonjs/core/PostProcesses/fxaaPostProcess';
 import { InputManager } from '../input/InputManager';
 import { hostSetupError, localHostConfig } from '../network/hostSession';
 import { PlayerController } from '../player/PlayerController';
 import { GymArena } from '../map/GymArena';
-import { GYM_REFLECTION_TARGETS, getGymEnvironmentDebugInfo } from '../map/GymVisualRevamp';
+import {
+  GYM_REFLECTION_TARGETS,
+  getGymEnvironmentDebugInfo,
+  syncGymEnvironmentForMode,
+  tuneSceneImageProcessing
+} from '../map/GymVisualRevamp';
 import {
   applyCompetitiveLighting,
   createCompetitiveShadowSystem,
@@ -14,22 +19,32 @@ import {
 } from '../map/CompetitiveLighting';
 import {
   clearActiveGymShadowRegistrar,
+  clearRetainedGymShadowCasters,
   registerGymShadowCaster,
   setActiveGymShadowRegistrar
 } from '../map/GymShadowCasters';
 import {
   getGraphicsQuality,
   isNeutralModeEnabled,
+  persistGraphicsPreset,
   resolveGraphicsMode,
-  type GraphicsMode
+  type GraphicsMode,
+  type GraphicsPreset
 } from '../config/graphicsConfig';
 import { resolvePolishedConfig } from '../config/graphicsTuning';
-import { clearPolishedHandles, registerPolishedHandles } from '../effects/PolishedGraphics';
+import {
+  clearPolishedHandles,
+  enterGymWorld,
+  enterSandboxWorld,
+  getPolishedWorld,
+  registerPolishedHandles
+} from '../effects/PolishedGraphics';
 import { GraphicsTuningPanel } from '../ui/GraphicsTuningPanel';
 // Polished (graphics overhaul Phase 1) instantiates the once-dormant reflection probe as its IBL
 // source; Performance/Neutral never construct it. Kill switch: POLISHED_CONFIG.probe.enabled.
 import { createGymReflectionProbe, disposeGymReflectionProbe, getGymReflectionProbeDebugInfo } from '../map/GymReflectionProbe';
 import {
+  clearRetainedGymMirrorMeshes,
   createGymFloorMirror,
   disposeGymFloorMirror,
   getGymFloorMirrorDebugInfo,
@@ -155,19 +170,28 @@ export class ArenaScene {
   private readonly onlineTeamSelector: OnlineTeamSelectorPads;
   // Anti-aliasing route differs by graphics mode: Performance/Neutral use the lightweight standalone
   // FXAA post; Polished runs FXAA inside its DefaultRenderingPipeline, so exactly one is non-null.
-  private readonly fxaaPostProcess: FxaaPostProcess | null;
+  private fxaaPostProcess: FxaaPostProcess | null = null;
   // Polished consolidated post stack (SSAO2 + DefaultRenderingPipeline + GlowLayer). Null outside polished.
-  private readonly polishedPostFx: PolishedPostFX | null;
-  // Resolved once at construction (graphics systems are built once; preset changes reload the page).
+  private polishedPostFx: PolishedPostFX | null = null;
+  // The active graphics mode. Resolved at construction and re-resolved by applyGraphicsPreset(),
+  // which rebuilds every rendering system IN PLACE — the preset switch must never reload the page,
+  // because a reload tears down the MultiplayerClient owned by this scene and dumps a connected
+  // player back to the loading screen mid-match.
   // 'polished' = the overhaul default; 'performance' = the pre-overhaul bright baseline, bit-identical;
   // 'neutral' = the dev-only diagnostic truth baseline.
-  private readonly quality: GraphicsMode = getGraphicsQuality();
+  private quality: GraphicsMode = getGraphicsQuality();
+  // Original emissive colors of the SHARED gym light-source materials, captured before the polished
+  // fixture calm scales them down in place. Restored on teardown — see restoreGlowSourceEmissives.
+  private readonly glowSourceEmissiveOriginals = new Map<string, Color3>();
+  // The camera the post stack renders through (the Creator swaps in its Build camera). Tracked so a
+  // live preset rebuild re-attaches to whatever is actually rendering, not always the player camera.
+  private renderCamera: Camera | null = null;
   // Live polished tuning panel. Hidden by default; enabled by the persisted Settings toggle or the
   // legacy graphics-debug flag used by the screenshot harness.
   private graphicsTuningPanel: GraphicsTuningPanel | null = null;
   // Neutral: the diagnostic truth baseline (one hemi + one directional + one ShadowGenerator + FXAA
   // only, no environment/reflection source, no fake-lighting decal overlays). Dev-only opt-in.
-  private readonly neutralEnabled: boolean = isNeutralModeEnabled();
+  private neutralEnabled: boolean = isNeutralModeEnabled();
   // Backflip landing quick-time event: armed when the local player lands from a backflip holding a
   // ball; resolving it throws (tiered speed). Owned here so it works in both offline and online.
   private readonly backflipQte = new BackflipQteController();
@@ -335,14 +359,7 @@ export class ArenaScene {
     this.scene.clearColor.set(0.04, 0.05, 0.065, 1);
     this.input = new InputManager(canvas);
 
-    // Polished supersampling: render the WebGL buffer at renderScale× the canvas, then downsample
-    // (SSAA) — the AA that actually tames the thin bright light strips / center line. Engine-level,
-    // so it must be set before/independent of the pipeline. Performance/Neutral render at native 1×.
-    if (this.quality === 'polished') {
-      const renderScale = Math.max(1, resolvePolishedConfig().renderScale);
-      engine.setHardwareScalingLevel(1 / renderScale);
-    }
-
+    this.applyRenderScale();
     this.createLighting();
 
     const loader = new ModelLoader(this.scene);
@@ -370,19 +387,7 @@ export class ArenaScene {
     this.effects = new Effects(this.scene, this.sound);
 
     this.player = new PlayerController(this.scene, this.input, this.ballManager, this.gym.collision, this.effects);
-    // Post-processing. Polished (Phases 4+5): the consolidated PolishedPostFX (SSAO2 + Default-
-    // RenderingPipeline FXAA/tonemap + GlowLayer) replaces the standalone FXAA — constructing both
-    // would double-AA. Performance/Neutral: the lightweight standalone FXAA post, exactly as before.
-    if (this.quality === 'polished') {
-      this.polishedPostFx = new PolishedPostFX(this.scene, this.player.camera);
-      registerPolishedHandles({ postFx: this.polishedPostFx });
-      this.fxaaPostProcess = null;
-      this.registerPolishedGlowMeshes();
-      if (isGraphicsDebugEnabled()) this.logPolishedPostGraphicsReport();
-    } else {
-      this.polishedPostFx = null;
-      this.fxaaPostProcess = new FxaaPostProcess('scene_fxaa', 1.0, this.player.camera);
-    }
+    this.buildPostFx();
     this.quickBot = new PracticeBot(this.scene, this.ballManager, 'quick');
     this.chargeBot = new PracticeBot(this.scene, this.ballManager, 'charge');
     this.practiceWall = new PracticeControlWall(this.scene, this.practiceState, this.ballManager, (id) => this.handleButtonPress(id));
@@ -404,7 +409,8 @@ export class ArenaScene {
     this.nametags = new Nametags(hudRoot);
     this.backflipQteHud = new BackflipQteHud(hudRoot);
     this.settingsPanel = new SettingsPanel(document.body, {
-      onDevGraphicsTuningChanged: (enabled) => this.setGraphicsTuningPanelEnabled(enabled)
+      onDevGraphicsTuningChanged: (enabled) => this.setGraphicsTuningPanelEnabled(enabled),
+      onGraphicsPresetChanged: (preset) => this.applyGraphicsPreset(preset)
     });
     this.multiplayerOverlay = new MultiplayerOverlay(this.multiplayer, this.input);
     if (localHostConfig() || hostSetupError()) this.multiplayerOverlay.openMode('1v1');
@@ -433,6 +439,132 @@ export class ArenaScene {
         else stopGymVictoryLighting();
       };
     }
+  }
+
+  /**
+   * Swap the graphics preset LIVE — no page reload. Only the rendering systems are rebuilt; the
+   * scene, the player, the ball manager and above all the MultiplayerClient are untouched, so an
+   * online match survives the change. (Reloading was the old mechanism: it dropped the socket and
+   * dumped anyone connected back to the loading screen mid-game.)
+   */
+  applyGraphicsPreset(preset: GraphicsPreset): void {
+    if (preset === this.quality) return;
+    persistGraphicsPreset(preset);
+    // Captured before teardown: clearPolishedHandles resets the world to 'gym', and the yard's
+    // atmosphere is built by a different system per mode.
+    const previousWorld = getPolishedWorld();
+    const wasPolished = this.quality === 'polished';
+
+    this.teardownGraphics();
+    // Re-resolve rather than trusting the argument: resolveGraphicsMode is the single authority every
+    // construction site reads (and it migrates legacy persisted values).
+    this.quality = getGraphicsQuality();
+    this.neutralEnabled = isNeutralModeEnabled();
+    this.buildGraphics();
+
+    // Restore the world routing (which light/shadow system pays per frame, mirror paused or not).
+    if (previousWorld === 'sandbox') enterSandboxWorld();
+    else enterGymWorld();
+    this.movementSandbox?.applyGraphicsPresetChange(wasPolished);
+    this.setGraphicsTuningPanelEnabled(settings.devGraphicsTuning || isGraphicsDebugEnabled());
+    console.log('[graphics] Live preset swap → ' + this.quality + ' (no reload; session preserved)');
+  }
+
+  /**
+   * Dispose every rendering system the outgoing mode built AND undo the mutations it made to shared
+   * state — engine render scale, the gym fixture emissives, the floor's reflection response — so the
+   * incoming mode starts from the same baseline a fresh page load would hand it. Scene contents
+   * (meshes, materials, players, balls) are deliberately left alone.
+   */
+  private teardownGraphics(): void {
+    this.graphicsTuningPanel?.dispose();
+    this.graphicsTuningPanel = null;
+    // Retain the glow allow-list: nearly every registered mesh outlives the swap, and the next
+    // PolishedPostFX replays the list into its new GlowLayer (cove strips re-register on rebuild).
+    this.polishedPostFx?.dispose({ retainRegistrations: true });
+    this.polishedPostFx = null;
+    this.fxaaPostProcess?.dispose();
+    this.fxaaPostProcess = null;
+    // The victory sweep animates the very cove materials disposed on the next line.
+    stopGymVictoryLighting();
+    disposeGymCoveLighting();
+    // The yard's sun/CSM/sky dome is polished-only and its handles are about to be cleared; disposing
+    // it means the next entry rebuilds and re-registers them (ensureState reuses existing state and
+    // would leave the sun with no handle, permanently disabled). Course shadow registrations are
+    // retained — the geometry survives the swap and is replayed into the rebuilt CSM.
+    disposeSandboxAtmosphere(this.scene, { retainShadowGeometry: true });
+    disposeGymReflectionProbe();
+    disposeGymFloorMirror();
+    disposeCompetitiveShadowSystem();
+    clearActiveGymShadowRegistrar();
+    clearPolishedHandles();
+    this.restoreGlowSourceEmissives();
+    // Polished is the only mode that supersamples — hand the engine back its native scale.
+    this.scene.getEngine().setHardwareScalingLevel(1);
+  }
+
+  /**
+   * Build the rendering systems for the active mode. Mirrors the constructor's ordering, which is
+   * load-bearing: lights/shadows first, then the cove strips (the floor mirror's static prefix scan
+   * has to see them), then the environment/probe/mirror, and finally the post stack — which owns the
+   * GlowLayer that registerPolishedGlowMeshes then fills.
+   */
+  private buildGraphics(): void {
+    this.applyRenderScale();
+    this.createLighting();
+    if (this.quality === 'polished') createGymCoveLighting(this.scene);
+    this.setupGymShadows();
+    // Exposure/contrast and the environment source differ per mode, and both are normally applied
+    // once during the gym build — so a live swap has to re-run them.
+    tuneSceneImageProcessing(this.scene);
+    syncGymEnvironmentForMode(this.scene);
+    this.setupGymEnvironmentResponse();
+    this.buildPostFx();
+  }
+
+  /**
+   * Polished supersampling: render the WebGL buffer at renderScale× the canvas, then downsample
+   * (SSAA) — the AA that actually tames the thin bright light strips / center line. Engine-level, so
+   * it must be set before/independent of the pipeline. Performance/Neutral render at native 1×.
+   */
+  private applyRenderScale(): void {
+    const renderScale = this.quality === 'polished' ? Math.max(1, resolvePolishedConfig().renderScale) : 1;
+    this.scene.getEngine().setHardwareScalingLevel(1 / renderScale);
+  }
+
+  /**
+   * Post-processing. Polished (Phases 4+5): the consolidated PolishedPostFX (SSAO2 + Default-
+   * RenderingPipeline FXAA/tonemap + GlowLayer) replaces the standalone FXAA — constructing both
+   * would double-AA. Performance/Neutral: the lightweight standalone FXAA post, exactly as before.
+   */
+  private buildPostFx(): void {
+    if (this.quality === 'polished') {
+      // The polished stack manages attach/detach, so it binds to whatever is actually rendering
+      // (the Creator swaps in its Build camera and calls setRenderCamera on every mode switch).
+      this.polishedPostFx = new PolishedPostFX(this.scene, this.renderCamera ?? this.player.camera);
+      registerPolishedHandles({ postFx: this.polishedPostFx });
+      this.fxaaPostProcess = null;
+      this.registerPolishedGlowMeshes();
+      if (isGraphicsDebugEnabled()) this.logPolishedPostGraphicsReport();
+    } else {
+      this.polishedPostFx = null;
+      // The standalone FXAA has no reattach path, so it stays on the player camera exactly as it
+      // did before — binding it to a transient Creator camera would strand it there.
+      this.fxaaPostProcess = new FxaaPostProcess('scene_fxaa', 1.0, this.player.camera);
+    }
+  }
+
+  /**
+   * Hand the shared gym light-source materials back the emissive colors the polished fixture calm
+   * scaled down in place (see registerPolishedGlowMeshes). Without this a swap to Competitive would
+   * leave the ceiling lights dimmed by a polished-only factor that mode never asked for.
+   */
+  private restoreGlowSourceEmissives(): void {
+    for (const [name, original] of this.glowSourceEmissiveOriginals) {
+      const material = this.scene.getMaterialByName(name);
+      if (material instanceof StandardMaterial) material.emissiveColor.copyFrom(original);
+    }
+    this.glowSourceEmissiveOriginals.clear();
   }
 
   /** Toggle the live panel without rebuilding the renderer or reloading the page. */
@@ -565,6 +697,10 @@ export class ArenaScene {
     disposeGymReflectionProbe();
     disposeGymFloorMirror();
     clearActiveGymShadowRegistrar();
+    // Retained across a live preset swap (so a rebuilt system keeps its casters/reflections), which
+    // makes scene teardown the one place that must actually forget them.
+    clearRetainedGymShadowCasters();
+    clearRetainedGymMirrorMeshes();
     this.graphicsTuningPanel?.dispose();
     this.graphicsTuningPanel = null;
     clearPolishedHandles(); // registry only — owners above disposed the actual systems
@@ -2362,7 +2498,10 @@ export class ArenaScene {
         }
       },
       setHudVisible: (visible: boolean) => this.hud.setVisible(visible),
-      setRenderCamera: (camera) => this.polishedPostFx?.setActiveCamera(camera),
+      setRenderCamera: (camera) => {
+        this.renderCamera = camera;
+        this.polishedPostFx?.setActiveCamera(camera);
+      },
       setGameSettingsDock: (host) => (host ? this.settingsPanel.dock(host) : this.settingsPanel.undock()),
       // The editor installs its world (and thus its ball world) before firing this, so the balls bind
       // to the course they're about to be played in.
@@ -3311,7 +3450,14 @@ export class ArenaScene {
     const ceilingScale = resolvePolishedConfig().glow.ceilingSourceScale;
     for (const matName of ['ceil_fixture_mat', 'decor_overhead_light_lens_mat']) {
       const mat = this.scene.getMaterialByName(matName);
-      if (mat instanceof StandardMaterial) mat.emissiveColor.scaleInPlace(ceilingScale);
+      if (!(mat instanceof StandardMaterial)) continue;
+      // Snapshot before scaling. scaleInPlace is destructive and these materials are SHARED with the
+      // non-polished modes, so a live swap to Competitive must be able to hand back the original —
+      // and repeated swaps would otherwise compound the 0.72 factor toward black.
+      if (!this.glowSourceEmissiveOriginals.has(matName)) {
+        this.glowSourceEmissiveOriginals.set(matName, mat.emissiveColor.clone());
+      }
+      mat.emissiveColor.scaleInPlace(ceilingScale);
     }
 
     for (const board of this.gym.scoreboards) {

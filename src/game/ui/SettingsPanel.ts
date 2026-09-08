@@ -4,6 +4,12 @@ import { getGraphicsPresets, getGraphicsPreset, persistGraphicsPreset, type Grap
 export interface SettingsPanelOptions {
   /** Called immediately when the production-accessible tuning-panel preference changes. */
   onDevGraphicsTuningChanged?: (enabled: boolean) => void;
+  /**
+   * Called when the player picks a different graphics preset. The handler (ArenaScene) rebuilds the
+   * rendering systems in place and is responsible for persisting the choice. When no handler is
+   * wired the panel falls back to persist-and-reload — see onGraphicsPresetChange.
+   */
+  onGraphicsPresetChanged?: (preset: GraphicsPreset) => void;
 }
 
 /**
@@ -110,8 +116,8 @@ export class SettingsPanel {
     this.scoreboardToggle.addEventListener('keydown', this.preventKeySteal);
     scoreboardLabel.append(scoreboardName, this.scoreboardToggle);
 
-    // Graphics preset selector. Lighting/post are built once at scene construction, so a change is
-    // persisted and applied with a reload (the dropdown swaps Competitive ↔ Showcase High/Ultra).
+    // Graphics preset selector. Applied LIVE by the owning scene — never with a page reload, which
+    // used to drop the multiplayer connection and dump players in a match back to the load screen.
     const graphicsRow = document.createElement('label');
     graphicsRow.className = 'settings-row settings-row--select';
     const graphicsName = document.createElement('span');
@@ -254,9 +260,17 @@ export class SettingsPanel {
   private onGraphicsPresetChange = (): void => {
     const preset = this.graphicsSelect.value as GraphicsPreset;
     if (preset === getGraphicsPreset()) return;
+    const applyLive = this.options.onGraphicsPresetChanged;
+    if (applyLive) {
+      // ArenaScene tears down and rebuilds only the rendering systems (lights, shadows, probe,
+      // mirror, post stack, render scale) and persists the choice itself. The scene, the player and
+      // the live multiplayer room all survive, so switching presets mid-match is safe.
+      applyLive(preset);
+      return;
+    }
+    // Fallback for a panel with no owning scene wired up (nothing can rebuild the renderer here, so
+    // the persisted value has to be picked up by a fresh load).
     persistGraphicsPreset(preset);
-    // Graphics systems (lights, shadows, post-processing, materials) are built once when the scene is
-    // constructed, so the swap takes effect on a fresh scene — reload to apply cleanly.
     window.location.reload();
   };
 

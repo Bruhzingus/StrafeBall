@@ -104,7 +104,11 @@ const CO_OP_PALETTE: PortalPalette = {
  */
 export class MovementSandbox implements MovementWorld {
   public active = false;
-  private readonly polishedAtmosphere = getGraphicsQuality() === 'polished';
+  // Read LIVE (not latched at construction): the graphics preset can be swapped mid-session without
+  // a reload, and the yard's atmosphere must follow. applyGraphicsPresetChange() re-applies it.
+  private get polishedAtmosphere(): boolean {
+    return getGraphicsQuality() === 'polished';
+  }
 
   // MovementWorld bounds (world space).
   public readonly minX: number;
@@ -606,6 +610,25 @@ export class MovementSandbox implements MovementWorld {
   // ---------------------------------------------------------------------------------------------
   // Sky / fog (outdoor look; restored on exit)
   // ---------------------------------------------------------------------------------------------
+
+  /**
+   * Live graphics-preset swap while the yard is active: rebuild the sky/fog for the new mode without
+   * leaving the course. Polished uses the sun/CSM/gradient-sky-dome atmosphere; Competitive and
+   * Neutral use the cheap clear-color + linear-fog stand-in. `previousPolished` says which one is
+   * currently installed and therefore which one has to be torn down first. No-op when the yard is
+   * inactive — enter() applies the right one on its own.
+   */
+  applyGraphicsPresetChange(previousPolished: boolean): void {
+    if (!this.active) return;
+    if (previousPolished) exitSandboxAtmosphere(this.scene);
+    else this.restoreSky();
+    if (this.polishedAtmosphere) {
+      setSandboxSkyPreset(this.scene, this.fullLayout.sky ?? 'clear');
+      enterSandboxAtmosphere(this.scene);
+    } else {
+      this.applyOutdoorSky();
+    }
+  }
 
   private applyOutdoorSky(): void {
     this.savedClearColor = this.scene.clearColor.clone();
