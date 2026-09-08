@@ -293,6 +293,13 @@ const BACKFLIP_QTE_MAX_UPWARD_GRACE_SPEED = 0.5;
 // normalizeInput. Frozen so it can't be mutated by a downstream consumer.
 const ZERO_DASH_DIRECTION: Readonly<Vec3> = Object.freeze(vec3());
 const START_VOTE_TTL_MS = GAME_CONSTANTS.match.startVoteSeconds * 1000;
+/**
+ * How far BACKWARDS a client's input sequence must jump before the server reads it as a restarted
+ * input stream rather than a stale duplicate. Wider than any plausible reordering window (64 ticks
+ * ~= 0.5s at 128Hz) and far below the sequence a live round accumulates.
+ */
+const INPUT_STREAM_RESTART_SEQ_GAP = 64;
+
 const RESET_VOTE_TTL_MS = GAME_CONSTANTS.match.resetVoteSeconds * 1000;
 const END_VOTE_TTL_MS = GAME_CONSTANTS.match.resetVoteSeconds * 1000;
 // How long a between-rounds intermission lingers on the report card before auto-starting the next
@@ -620,6 +627,14 @@ export class ServerGameLoop {
     // a "duplicate" — freezing the player at spawn. A MISSING resetSerial (undefined) means a legacy
     // client that predates the field and is allowed through; a present value (including 0, the
     // pre-first-reset baseline) is gated strictly against the current timeline.
+    //
+    // This gate is BEST-EFFORT and cannot be the only protection: resetSerial rides the wire
+    // delta-compressed (toWireInput emits it only when it CHANGES), so a client sitting on one
+    // timeline omits it from every packet - including the in-flight pre-reset stragglers this gate
+    // exists to stop. Inferring the timeline for those would have to fail CLOSED, which would strand
+    // a player forever if the one packet carrying an explicit serial were ever rate-limited away.
+    // The sequence-restart recovery below is the fail-open backstop that actually guarantees the
+    // stream un-wedges, whatever slips past here.
     if (rawInput.resetSerial !== undefined) {
       const inputResetSerial = Math.max(0, Math.trunc(Number(rawInput.resetSerial) || 0));
       if (inputResetSerial < this.resetSerial) {
@@ -634,8 +649,25 @@ export class ServerGameLoop {
       }
     }
 
-    const lastSeq = this.lastEnqueuedSeqByPlayerId.get(playerId) ?? 0;
+    let lastSeq = this.lastEnqueuedSeqByPlayerId.get(playerId) ?? 0;
     const sequence = Number.isFinite(seq) ? seq : 0;
+    // Recover a wedged input stream. A big BACKWARDS jump in sequence means the client restarted its
+    // counter (resetPrediction, on the reset it just observed) while the server kept a stale-high
+    // cursor from a pre-reset straggler that slipped past the timeline gate above. Left alone the
+    // server drops every fresh input as a "duplicate" AND keeps acking the stale seq, so the client's
+    // reconcile discards all pending inputs and re-snaps it to spawn on every snapshot - the player
+    // is frozen (no movement, no backflip, no stamina drain) until their counter climbs back past the
+    // stale value, which for a long round is minutes. Adopt the restart instead: one tick of
+    // recovery. Clearing the ACK matters as much as the cursor - without it the client's reconcile
+    // keeps filtering every input it replays.
+    if (sequence > 0 && sequence <= lastSeq - INPUT_STREAM_RESTART_SEQ_GAP) {
+      if (this.debug.NET_DEBUG) {
+        this.logger(`input stream restart player=${playerId} seq=${sequence} staleLastSeq=${lastSeq}`);
+      }
+      this.lastEnqueuedSeqByPlayerId.set(playerId, 0);
+      player.lastProcessedInputSeq = 0;
+      lastSeq = 0;
+    }
     if (sequence > 0 && sequence <= lastSeq) {
       this.playerNetWindowStats(playerId).duplicateOrOutOfOrderInputs += 1;
       if ((rawInput.leftCatchAttemptId ?? 0) > 0 || (rawInput.rightCatchAttemptId ?? 0) > 0) {
