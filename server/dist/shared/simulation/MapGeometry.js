@@ -27,12 +27,12 @@ function aabbFromCenter(cx, cy, cz, hx, hy, hz, meta = {}) {
 // Mirrors MAT_DIMENSIONS in the client MatObstacle so server and client agree on mat collision.
 exports.MAT_DIMENSIONS = { width: 2.6, height: 1.75, depth: 0.18 };
 exports.MAT_SPECS = [
-    { id: 'mat_-4.5_-5.5', x: -4.5, y: exports.MAT_DIMENSIONS.height / 2, z: -5.5, yawRadians: 0 },
-    { id: 'mat_4.5_-5.5', x: 4.5, y: exports.MAT_DIMENSIONS.height / 2, z: -5.5, yawRadians: 0 },
-    { id: 'mat_0_-5.5', x: 0, y: exports.MAT_DIMENSIONS.height / 2, z: -5.5, yawRadians: 0 },
-    { id: 'mat_0_5.5', x: 0, y: exports.MAT_DIMENSIONS.height / 2, z: 5.5, yawRadians: 0 },
-    { id: 'mat_-4.5_5.5', x: -4.5, y: exports.MAT_DIMENSIONS.height / 2, z: 5.5, yawRadians: 0 },
-    { id: 'mat_4.5_5.5', x: 4.5, y: exports.MAT_DIMENSIONS.height / 2, z: 5.5, yawRadians: 0 }
+    { id: 'mat_-4.5_-5.5', x: -4.5 / 13 * constants_1.GAME_CONSTANTS.map.halfWidth, y: exports.MAT_DIMENSIONS.height / 2, z: -5.5 / 18 * constants_1.GAME_CONSTANTS.map.halfLength, yawRadians: 0 },
+    { id: 'mat_4.5_-5.5', x: 4.5 / 13 * constants_1.GAME_CONSTANTS.map.halfWidth, y: exports.MAT_DIMENSIONS.height / 2, z: -5.5 / 18 * constants_1.GAME_CONSTANTS.map.halfLength, yawRadians: 0 },
+    { id: 'mat_0_-5.5', x: 0, y: exports.MAT_DIMENSIONS.height / 2, z: -5.5 / 18 * constants_1.GAME_CONSTANTS.map.halfLength, yawRadians: 0 },
+    { id: 'mat_0_5.5', x: 0, y: exports.MAT_DIMENSIONS.height / 2, z: 5.5 / 18 * constants_1.GAME_CONSTANTS.map.halfLength, yawRadians: 0 },
+    { id: 'mat_-4.5_5.5', x: -4.5 / 13 * constants_1.GAME_CONSTANTS.map.halfWidth, y: exports.MAT_DIMENSIONS.height / 2, z: 5.5 / 18 * constants_1.GAME_CONSTANTS.map.halfLength, yawRadians: 0 },
+    { id: 'mat_4.5_5.5', x: 4.5 / 13 * constants_1.GAME_CONSTANTS.map.halfWidth, y: exports.MAT_DIMENSIONS.height / 2, z: 5.5 / 18 * constants_1.GAME_CONSTANTS.map.halfLength, yawRadians: 0 }
 ];
 /**
  * Deterministic mat layouts per host `matPreset` setting. The 2-mat

@@ -34,6 +34,7 @@ function toWireInput(input, previous) {
     copyChangedInputField(wire, input, previous, 'rightHandHeld');
     copyChangedInputField(wire, input, previous, 'resetSerial');
     copyChangedInputField(wire, input, previous, 'interactHeld');
+    copyEdgeInputField(wire, input, previous, 'activatePowerupPressed');
     copyEdgeInputField(wire, input, previous, 'jumpPressed');
     copyEdgeInputField(wire, input, previous, 'dashPressed');
     copyEdgeInputField(wire, input, previous, 'crouchPressed');

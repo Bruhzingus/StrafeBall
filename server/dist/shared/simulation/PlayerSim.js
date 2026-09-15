@@ -11,6 +11,7 @@ exports.grantDashCharge = grantDashCharge;
 exports.calculateDashVelocity = calculateDashVelocity;
 exports.tryDash = tryDash;
 exports.tryUpwardDash = tryUpwardDash;
+exports.grantPlayerDashCharge = grantPlayerDashCharge;
 const constants_1 = require("../constants");
 const HandSim_1 = require("./HandSim");
 const CollisionMath_1 = require("./CollisionMath");
@@ -201,4 +202,10 @@ function tryUpwardDash(dash, currentVelocity, constants = constants_1.GAME_CONST
 }
 function sanitizeMovementScale(scaleValue) {
     return Number.isFinite(scaleValue) ? Math.max(0.05, scaleValue) : 1;
+}
+/** Preserve the active adrenaline capacity for catch/score/QTE rewards too. */
+function grantPlayerDashCharge(player) {
+    const max = (player.movementInternal.buffs?.adrenalineSeconds ?? 0) > 0 ? constants_1.GAME_CONSTANTS.powerup.adrenalineMaxCharges : constants_1.GAME_CONSTANTS.dash.maxCharges;
+    const charges = Math.min(max, player.dash.charges + 1);
+    return { ...player.dash, charges, rechargeTimerSeconds: charges >= max ? 0 : player.dash.rechargeTimerSeconds };
 }

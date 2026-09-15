@@ -175,7 +175,7 @@ function autoParryBall(player, hands, ball, aimForward, parryCooldownSeconds, or
         return { ok: false, reason: 'hands-not-full' };
     if (parryCooldownSeconds > 0)
         return { ok: false, reason: 'parry-cooldown' };
-    if (ball.phase !== 'live')
+    if (ball.phase !== 'live' || ball.kind === 'cannon' || ball.armedAtMs !== undefined)
         return { ok: false, reason: 'not-live' };
     if (!isInParryCone(origin, aimForward, ball, constants))
         return { ok: false, reason: 'outside-parry-cone' };
@@ -215,7 +215,7 @@ function sweptParryFailReason(request, constants = constants_1.GAME_CONSTANTS) {
         return 'no-two-balls';
     if (request.parryCooldownSeconds > 0)
         return 'parry-cooldown';
-    if (request.ball.phase !== 'live')
+    if (request.ball.phase !== 'live' || request.ball.kind === 'cannon' || request.ball.armedAtMs !== undefined)
         return 'ball-not-live';
     if (request.ball.ownerId !== null && request.ball.ownerId === request.defenderPlayerId)
         return 'owner-invalid';

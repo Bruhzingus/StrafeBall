@@ -46,7 +46,7 @@ function createBallState(id, position = (0, CollisionMath_1.vec3)(), overrides =
     };
 }
 function isBallPickupStateEligible(ball, constants = constants_1.GAME_CONSTANTS) {
-    if (ball.phase === 'held')
+    if (ball.phase === 'held' || ball.phase === 'armor' || ball.kind === 'cannon' || ball.kind === 'heal')
         return false;
     if (ball.phase === 'loose' || ball.phase === 'dead')
         return true;
@@ -60,6 +60,8 @@ function isBallPickupStateEligible(ball, constants = constants_1.GAME_CONSTANTS)
  * regardless (see canScorePlayerHit).
  */
 function isBallCatchableInFlight(ball, constants = constants_1.GAME_CONSTANTS) {
+    if (ball.kind === 'cannon' || ball.kind === 'heal' || ball.armedAtMs !== undefined)
+        return false;
     if (ball.phase === 'live' || ball.phase === 'deflected')
         return true;
     if (ball.phase !== 'dead')
@@ -82,6 +84,7 @@ function holdBall(ball, playerId, hand) {
     return {
         ...ball,
         phase: 'held',
+        settledSeconds: 0,
         velocity: (0, CollisionMath_1.vec3)(),
         ownerKind: 'player',
         ownerId: playerId,
@@ -132,6 +135,7 @@ function throwHeldBall(ball, request) {
         ball: {
             ...ball,
             phase: 'live',
+            settledSeconds: 0,
             position: (0, CollisionMath_1.cloneVec3)(request.origin),
             velocity: (0, CollisionMath_1.cloneVec3)(request.velocity),
             ownerKind: request.ownerKind ?? 'player',

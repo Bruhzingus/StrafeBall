@@ -13,6 +13,7 @@ const MatchSim_1 = require("../../../shared/simulation/MatchSim");
 const PlayerSim_1 = require("../../../shared/simulation/PlayerSim");
 const RuleSim_1 = require("../../../shared/simulation/RuleSim");
 const MapGeometry_1 = require("../../../shared/simulation/MapGeometry");
+const PowerupSystem_1 = require("./PowerupSystem");
 const MovementSim_1 = require("../../../shared/simulation/MovementSim");
 const AimMath_1 = require("../../../shared/simulation/AimMath");
 const HandAnchors_1 = require("../../../shared/simulation/HandAnchors");
@@ -23,8 +24,8 @@ const BattleMusic_1 = require("../../../shared/music/BattleMusic");
 const EMPTY_THROW_EVENTS = [];
 const EMPTY_COMBAT_EVENTS = [];
 const SPAWN_BASE_BY_SIDE = {
-    negativeZ: { position: (0, CollisionMath_1.vec3)(0, 0, -12), yawRadians: 0 },
-    positiveZ: { position: (0, CollisionMath_1.vec3)(0, 0, 12), yawRadians: Math.PI }
+    negativeZ: { position: (0, CollisionMath_1.vec3)(0, 0, -12 / 18 * constants_1.GAME_CONSTANTS.map.halfLength), yawRadians: 0 },
+    positiveZ: { position: (0, CollisionMath_1.vec3)(0, 0, 12 / 18 * constants_1.GAME_CONSTANTS.map.halfLength), yawRadians: Math.PI }
 };
 // Max inputs buffered per player before we drop the oldest. Driven by netConfig so the buffer
 // scales with the active tick rate (~1 s of headroom) instead of a hardcoded 30Hz assumption.
@@ -183,6 +184,10 @@ class ServerGameLoop {
     pendingCombatEvents = [];
     // Wall-clock time of the current step, captured once at the top of step() for history timestamps.
     stepNowMs = 0;
+    powerupSystem = new PowerupSystem_1.PowerupSystem();
+    applyingExplosion = false;
+    drainPowerupEvents() { return this.powerupSystem.drain(); }
+    powerupIdentity(playerId) { return this.powerupSystem.identity(this.state, playerId); }
     lastSnapshotBuildMs = 0;
     battleMusicSyncState = (0, BattleMusic_1.createInactiveBattleMusicSyncState)();
     battleMusicSyncDirty = false;
@@ -236,6 +241,7 @@ class ServerGameLoop {
             BALL_PREDICT_DEBUG: options.debug?.BALL_PREDICT_DEBUG ?? netConfig_1.DEBUG_DEFAULTS.BALL_PREDICT_DEBUG
         };
         this.state = this.createFreshRoomState();
+        this.powerupSystem.reset(this.state);
     }
     addPlayer(playerId, rawName) {
         if (this.playerCount() >= this.maxPlayers)
@@ -513,6 +519,10 @@ class ServerGameLoop {
         const ball = this.state.balls[ballId];
         if (!ball)
             return { ok: false, reason: 'missing-ball' };
+        if (ball.kind === 'heal') {
+            return this.powerupSystem.place(this.state, player, request.hand, this.ballCollisionBoxes)
+                ? { ok: true } : { ok: false, reason: 'invalid-placement' };
+        }
         // Charge is taken from the SERVER-tracked hand state, never trusted from the client (#7).
         const handState = player.hands[request.hand];
         const charge01 = handState.mode === 'charging'
@@ -540,7 +550,7 @@ class ServerGameLoop {
         const isDoubleThrow = !!priorThrow && (now - priorThrow.atMs) <= constants_1.GAME_CONSTANTS.ball.doubleThrowWindowSeconds * 1000;
         if (isDoubleThrow && priorThrow) {
             const priorBall = this.state.balls[priorThrow.ballId];
-            if (priorBall && priorBall.phase === 'live' && priorBall.ownerId === playerId) {
+            if (priorBall && priorBall.kind !== 'cannon' && priorBall.phase === 'live' && priorBall.ownerId === playerId) {
                 this.state.balls[priorBall.id] = {
                     ...priorBall,
                     velocity: (0, CollisionMath_1.scale)(priorBall.velocity, constants_1.GAME_CONSTANTS.ball.doubleThrowSpeedPenalty)
@@ -557,8 +567,14 @@ class ServerGameLoop {
             crouching: player.movement.crouching || player.movement.sliding,
             backflipTier: isBackflipThrow ? backflipTier : 0
         });
+        if (ball.kind === 'cannon') {
+            throwCalc.velocity = (0, CollisionMath_1.scale)(forward, constants_1.GAME_CONSTANTS.ball.chargedThrowSpeed);
+            throwCalc.curveAccel = (0, CollisionMath_1.vec3)();
+            throwCalc.dropScale = 1;
+            throwCalc.isSuper = false;
+        }
         const { velocity: rawVelocity, curveAccel, dropScale, isSuper } = throwCalc;
-        const velocity = isDoubleThrow ? (0, CollisionMath_1.scale)(rawVelocity, constants_1.GAME_CONSTANTS.ball.doubleThrowSpeedPenalty) : rawVelocity;
+        const velocity = isDoubleThrow && ball.kind !== 'cannon' ? (0, CollisionMath_1.scale)(rawVelocity, constants_1.GAME_CONSTANTS.ball.doubleThrowSpeedPenalty) : rawVelocity;
         // Fresh throw identity — assigned here so it lands on the live ball AND the throw event together.
         this.throwCounter += 1;
         const throwId = this.throwCounter;
@@ -575,10 +591,11 @@ class ServerGameLoop {
         this.lastThrowByPlayerId.set(playerId, { atMs: now, ballId: ball.id });
         this.adjustPlayerMatchStat(playerId, 'throws', 1); // report card: accuracy = hits / throws
         const dash = isBackflipThrow && backflipTier === constants_1.GAME_CONSTANTS.backflip.qte.tierCount
-            ? (0, PlayerSim_1.grantDashCharge)(player.dash)
+            ? (0, PlayerSim_1.grantPlayerDashCharge)(player)
             : player.dash;
         this.state.players[playerId] = { ...player, hands: result.hands, dash };
         this.state.balls[ball.id] = result.ball;
+        this.powerupSystem.thrown(this.state, result.ball, playerId);
         // Attach backflip tier to the ball state for defensive logic
         this.state.balls[ball.id].backflipTier = isBackflipThrow ? backflipTier : 0;
         // Emit an authoritative throw event so the client can start deterministic visual prediction
@@ -1110,7 +1127,24 @@ class ServerGameLoop {
         // order (parry → catch → hit). Scoring/hit only counts while the match is active; catch/parry
         // need an opponent's live ball, which only exists once opposing teams are present. During the
         // countdown balls are still settled (so loose balls rest) but no combat is resolved.
+        if (active)
+            this.powerupSystem.beforeBalls(this.state, fixedDt, this.matchSettings.livesPerPlayer);
         this.updateBalls(fixedDt, active);
+        if (active) {
+            this.applyingExplosion = true;
+            this.powerupSystem.afterBalls(this.state, fixedDt, (ball, target) => {
+                if (this.powerupSystem.absorb(this.state, target))
+                    return;
+                const throwerId = ball.bombThrowerId ?? ball.lastTouchedByPlayerId ?? target.id;
+                const scorer = this.state.players[throwerId];
+                if (!scorer)
+                    return;
+                this.applyPlayerHit(throwerId, target, { ...scorer.dash }, { direct: false, bounce: true, curve: false, backflip: false });
+                this.pendingCombatEvents.push({ type: 'hit-event', ballId: ball.id, throwerId, targetId: target.id, serverTick: this.state.tick, serverTimeMs: this.stepNowMs });
+            });
+            this.applyingExplosion = false;
+            this.resolveRoundOutcome();
+        }
         if (active) {
             // Lag-compensated catch reclaim: a high-ping defender's well-timed click may only arrive after
             // the server already applied a hit/let the ball pass. Re-evaluate open catch attempts against
@@ -1359,10 +1393,13 @@ class ServerGameLoop {
     updatePlayer(player, dt, input, seq) {
         const prevInput = this.previousInputByPlayerId.get(player.id) ?? defaultInput(player.movement.yawRadians);
         const catchStanceActive = computeCatchStance(player.hands, input);
+        this.powerupSystem.syncLock(this.state, player);
         const preVelocity = player.movement.velocity;
         const preGrounded = player.movement.grounded;
         const result = (0, MovementSim_1.stepMovement)(player.movement, player.movementInternal, player.dash, input, prevInput, dt, this.collisionBoxesForPlayer(player.id), catchStanceActive, constants_1.GAME_CONSTANTS, this.playerMovementScale(player), this.playerCooldownRateScale(player));
         player.movement = result.movement;
+        if (this.state.match.status !== 'playing')
+            result.internal.buffs = player.movementInternal.buffs;
         player.movementInternal = result.internal;
         player.dash = result.dash;
         player.hands = updateHandCharging(player.hands, input, prevInput);
@@ -1386,6 +1423,8 @@ class ServerGameLoop {
                 }
             }
         }
+        if (input.activatePowerupPressed)
+            this.powerupSystem.activate(this.state, player.id);
         this.handleInputThrows(player.id, input);
         this.logInputDebug(player.id, input, preVelocity, preGrounded, player.movement);
         this.previousInputByPlayerId.set(player.id, input);
@@ -1395,6 +1434,11 @@ class ServerGameLoop {
     handleInputThrows(playerId, input) {
         if (input.fakeThrowPressed || input.fakeThrowHeld)
             return;
+        for (const hand of ['left', 'right']) {
+            const ball = this.state.balls[this.state.players[playerId]?.hands[hand].heldBallId ?? ''];
+            if ((ball?.kind === 'cannon' || ball?.kind === 'heal') && (hand === 'left' ? input.leftHandPressed : input.rightHandPressed))
+                this.handleThrow(playerId, { hand });
+        }
         const tier = input.backflipThrowTier;
         if (input.leftHandReleased)
             this.handleInputThrow(playerId, 'left', tier);
@@ -1460,7 +1504,7 @@ class ServerGameLoop {
                     : (0, BallSim_1.markBallDead)(ball);
                 continue;
             }
-            if (ball.phase === 'loose')
+            if (ball.phase === 'loose' || ball.phase === 'armor')
                 continue;
             // Run LIVE_BALL_COMBAT_SUBSTEPS sub-steps per tick. Each sub-step advances the ball by
             // subDt, then runs the full parry→catch→hit pipeline against that sub-tick swept segment.
@@ -1472,7 +1516,14 @@ class ServerGameLoop {
                 const prevPos = (0, CollisionMath_1.cloneVec3)(current.position);
                 const advanced = (0, BallSim_1.advanceBall)(current, subDt);
                 let resolved = advanced;
-                if (combatActive && (0, BallSim_1.isBallCatchableInFlight)(resolved)) {
+                if (combatActive && resolved.kind === 'cannon') {
+                    const hit = this.tryHit(resolved, prevPos, resolved.position);
+                    if (hit) {
+                        resolved = hit;
+                        combatDone = true;
+                    }
+                }
+                else if (combatActive && (0, BallSim_1.isBallCatchableInFlight)(resolved)) {
                     const segPrev = prevPos;
                     const segCurr = resolved.position;
                     const parried = this.tryAutoParry(resolved, segPrev, segCurr, subDt, this.stepNowMs);
@@ -1503,7 +1554,13 @@ class ServerGameLoop {
                 // settings-driven bounce rule decides when a live/deflected ball dies on these contacts.
                 const bounded = resolveBallBounds(resolved, this.bounceRule);
                 const collided = resolveBallStaticBoxes(bounded, this.ballCollisionBoxesWithEliminatedCover(), this.debug.COLLISION_DEBUG ? this.logger : undefined, this.bounceRule);
+                if (collided.bounceCount > current.bounceCount)
+                    this.powerupSystem.contact(this.state, collided, this.stepNowMs);
                 current = (0, BallSim_1.settleBallIfSlow)(collided);
+                if (current.kind === 'cannon' && current.bounceCount > 0) {
+                    current = (0, BallSim_1.markBallDead)(current);
+                    combatDone = true;
+                }
                 if (!combatDone &&
                     (current.phase === 'loose' || (current.phase === 'dead' && !(0, BallSim_1.isBallCatchableInFlight)(current)))) {
                     combatDone = true;
@@ -1528,7 +1585,7 @@ class ServerGameLoop {
         const scorer = this.state.players[ownerId];
         if (!scorer)
             return null;
-        const radius = (0, PlayerHitbox_1.playerBallHitRadius)();
+        const radius = (0, PlayerHitbox_1.playerBallHitRadius)() + (ball.kind === 'cannon' ? constants_1.GAME_CONSTANTS.ball.radius * (constants_1.GAME_CONSTANTS.powerup.cannonFlightScale - 1) : 0);
         const radiusSq = radius * radius;
         for (const targetId in this.state.players) {
             const target = this.state.players[targetId];
@@ -1543,6 +1600,12 @@ class ServerGameLoop {
             const hitbox = (0, PlayerHitbox_1.playerHitCapsule)(target);
             if (!(0, CollisionMath_1.sweptBallHitsBody)(segPrev, segCurr, hitbox.base, hitbox.top, radius))
                 continue;
+            if (ball.kind === 'cannon' && !this.powerupSystem.cannonCanHit(ball, target.id))
+                continue;
+            if (this.powerupSystem.absorb(this.state, target)) {
+                this.powerupSystem.contact(this.state, ball, this.stepNowMs);
+                return (0, BallSim_1.markBallDead)(ball, (0, CollisionMath_1.scale)(ball.velocity, -0.35));
+            }
             const backflipTier = Math.max(0, Math.trunc(ball.backflipTier ?? 0));
             const breaksParryGuard = backflipTier >= 3 && (0, HandSim_1.heldBallCount)(target.hands) >= constants_1.GAME_CONSTANTS.ball.maxHeldBalls;
             if (breaksParryGuard) {
@@ -1568,6 +1631,7 @@ class ServerGameLoop {
                 backflip: ball.isSuper
             };
             const dead = (0, BallSim_1.markBallDead)(ball);
+            this.powerupSystem.contact(this.state, dead, this.stepNowMs);
             const recentHit = scorer && throwerDashBefore
                 ? this.applyPlayerHit(ownerId, target, throwerDashBefore, statBreakdown)
                 : null;
@@ -1575,7 +1639,7 @@ class ServerGameLoop {
             const nextScore = scorer ? this.state.match.scoreByTeamId[scorer.teamId] ?? 0 : previousScore;
             // Remember this hit briefly: a high-ping defender's well-timed catch may arrive after this and
             // legitimately claim the ball (resolveCatchReclaim), reverting the score it superseded.
-            if (recentHit) {
+            if (recentHit && ball.kind !== 'cannon') {
                 this.recentHitByBallId.set(ball.id, {
                     ...recentHit,
                     ballId: ball.id,
@@ -1592,11 +1656,14 @@ class ServerGameLoop {
                 if (!previousWinner && this.state.match.winnerTeamId)
                     this.logger(`match ended winner=${this.state.match.winnerTeamId}`);
             }
-            return dead;
+            if (ball.kind !== 'cannon')
+                return dead;
         }
         return null;
     }
     tryFriendlyDeflect(ball, segPrev, segCurr) {
+        if (ball.kind === 'cannon')
+            return null;
         if (ball.phase !== 'live' || ball.ownerKind !== 'player' || !ball.ownerId)
             return null;
         const owner = this.state.players[ball.ownerId];
@@ -1620,6 +1687,7 @@ class ServerGameLoop {
             const away = (0, CollisionMath_1.normalize)((0, CollisionMath_1.vec3)(segCurr.x - target.movement.position.x, 0.15, segCurr.z - target.movement.position.z), (0, CollisionMath_1.normalize)((0, CollisionMath_1.scale)(ball.velocity, -1), target.movement.facing));
             this.throwCounter += 1;
             const deflected = (0, BallSim_1.deflectBall)(ball, target.id, away, constants_1.GAME_CONSTANTS, this.throwCounter);
+            this.powerupSystem.contact(this.state, deflected, this.stepNowMs);
             this.state.balls[ball.id] = deflected;
             if (this.debug.NET_DEBUG)
                 this.logger(`friendly deflect player=${target.id} ball=${ball.id} owner=${owner.id}`);
@@ -1648,7 +1716,7 @@ class ServerGameLoop {
         const countdownSecondsBefore = this.state.match.countdownSeconds;
         const roundRebuildPendingBefore = this.roundRebuildPending;
         const scoreDelta = this.matchSettings.format === '1v1' ? 1 : 0;
-        this.state.players[throwerId] = { ...scorer, dash: (0, PlayerSim_1.grantDashCharge)(scorer.dash) };
+        scorer.dash = (0, PlayerSim_1.grantPlayerDashCharge)(scorer);
         if (scoreDelta > 0)
             this.bumpTeamHitScore(scorer.teamId, scoreDelta);
         this.adjustPlayerMatchStat(throwerId, 'hits', 1);
@@ -1658,7 +1726,8 @@ class ServerGameLoop {
         if (targetLive.lives <= 0)
             this.eliminatePlayer(targetLive.id);
         this.refreshLastPlayerBuffs(this.stepNowMs);
-        this.resolveRoundOutcome();
+        if (!this.applyingExplosion)
+            this.resolveRoundOutcome();
         return {
             kind: 'life',
             throwerTeamId: scorer.teamId,
@@ -1720,6 +1789,11 @@ class ServerGameLoop {
     resolveRoundOutcome() {
         if (this.state.match.status !== 'playing')
             return;
+        if (Object.values(this.state.players).every(p => !this.isPlayerAlive(p))) {
+            this.state.match = { ...this.state.match, status: 'countdown', countdownSeconds: constants_1.GAME_CONSTANTS.match.countdownSeconds };
+            this.roundRebuildPending = true;
+            return;
+        }
         const losingTeamId = this.state.match.teamIds.find((teamId) => {
             const teamPlayers = Object.values(this.state.players).filter((player) => player.teamId === teamId);
             return this.teamHasNoActiveFighter(teamPlayers);
@@ -1788,6 +1862,7 @@ class ServerGameLoop {
      * and votes are untouched).
      */
     startRoundWorld() {
+        this.powerupSystem.reset(this.state);
         for (const id in this.state.players) {
             const player = this.state.players[id];
             if (player.connected === false)
@@ -2122,6 +2197,8 @@ class ServerGameLoop {
         // Keep history while the ball is catchable in flight OR a hit on it is still inside the catch-undo
         // grace — a lag-comp catch reclaim needs the ball's PRE-hit (live) samples even after the present
         // ball has died/bounced past the defender. Once neither holds, drop the ring (bounded memory).
+        if (ball.kind === 'bomb' && ball.armedAtMs !== undefined && this.stepNowMs - ball.armedAtMs <= this.combatTiming.defenseMaxRewindMs)
+            return;
         if (!(0, BallSim_1.isBallCatchableInFlight)(ball) && !this.recentHitByBallId.has(ball.id)) {
             this.ballHistoryById.delete(ball.id);
             return;
@@ -2215,6 +2292,8 @@ class ServerGameLoop {
      * rewound aim. Returns the deflected ball on success, else null (and logs the reason under PARRY_DEBUG).
      */
     tryAutoParry(ball, segPrev, segCurr, _dt, tickStartMs) {
+        if (ball.kind === 'cannon' || ball.armedAtMs !== undefined)
+            return null;
         const ownerId = ball.ownerId;
         if (ball.phase !== 'live' || ball.ownerKind !== 'player' || !ownerId)
             return null;
@@ -2346,7 +2425,8 @@ class ServerGameLoop {
                     continue;
                 for (const ballId in this.state.balls) {
                     // A ball already in someone's hand can't be reclaimed.
-                    if (this.state.balls[ballId].phase === 'held')
+                    const presentBall = this.state.balls[ballId];
+                    if (presentBall.phase === 'held' || presentBall.phase === 'armor' || presentBall.kind === 'cannon' || (presentBall.armedAtMs !== undefined && evalTime >= presentBall.armedAtMs))
                         continue;
                     const ring = this.ballHistoryById.get(ballId);
                     if (!ring) {
@@ -2405,11 +2485,15 @@ class ServerGameLoop {
         const absorbedSpeed = (0, CollisionMath_1.length)(present.velocity);
         const incomingVelocity = (0, CollisionMath_1.cloneVec3)(present.velocity);
         const caught = (0, BallSim_1.catchBall)(present, defenderId, hand);
+        if (reclaim && caught.kind === 'bomb') {
+            delete caught.armedAtMs;
+            delete caught.fuseSeconds;
+        }
         this.state.balls[ballId] = caught;
         const boostDir = (0, CollisionMath_1.normalize)((0, CollisionMath_1.vec3)(facing.x, 0, facing.z), (0, CollisionMath_1.vec3)(0, 0, 1));
         this.state.players[defenderId] = {
             ...defender,
-            dash: (0, PlayerSim_1.grantDashCharge)(defender.dash),
+            dash: (0, PlayerSim_1.grantPlayerDashCharge)(defender),
             hands: assignCaughtHand(defender.hands, hand, ballId),
             movement: { ...defender.movement, velocity: (0, CollisionMath_1.add)(defender.movement.velocity, (0, CollisionMath_1.scale)(boostDir, constants_1.GAME_CONSTANTS.catch.catchBoostSpeed)) },
             movementInternal: { ...defender.movementInternal, catchBoostTimer: constants_1.GAME_CONSTANTS.catch.catchBoostDuration }
@@ -2703,6 +2787,7 @@ class ServerGameLoop {
         this.clearIntermissionVotes();
         // Preserve the running tick so it stays monotonic across the reset (see createFreshRoomState).
         this.state = this.createFreshRoomState(players, this.state.tick);
+        this.powerupSystem.reset(this.state);
         this.ensureHostAssignment();
         this.teamChoicesByPlayerId.clear();
         for (const player of players) {
@@ -3340,7 +3425,7 @@ function buildPlayerSlots(teamIds, playersPerTeam) {
  * (bleachers/mats, handled in resolveBallStaticBoxes) are unchanged. Dead/loose balls just reflect.
  */
 function resolveBallBounds(ball, bounceRule) {
-    const r = constants_1.GAME_CONSTANTS.ball.radius;
+    const r = constants_1.GAME_CONSTANTS.ball.radius * (ball.kind === 'cannon' && ball.phase !== 'held' ? constants_1.GAME_CONSTANTS.powerup.cannonFlightScale : 1);
     const e = constants_1.GAME_CONSTANTS.ball.bounceRestitution;
     const minX = -constants_1.GAME_CONSTANTS.map.halfWidth + r;
     const maxX = constants_1.GAME_CONSTANTS.map.halfWidth - r;
@@ -3417,7 +3502,7 @@ function applyWallCeilingBounce(ball, bounceRule) {
     return { ...ball, bounceCount };
 }
 function resolveBallStaticBoxes(ball, boxes, logger, bounceRule) {
-    const r = constants_1.GAME_CONSTANTS.ball.radius;
+    const r = constants_1.GAME_CONSTANTS.ball.radius * (ball.kind === 'cannon' && ball.phase !== 'held' ? constants_1.GAME_CONSTANTS.powerup.cannonFlightScale : 1);
     const e = constants_1.GAME_CONSTANTS.ball.bounceRestitution;
     const position = { ...ball.position };
     const velocity = { ...ball.velocity };
@@ -3522,6 +3607,7 @@ function coalesceQueuedInputs(commands) {
         dashPressed: false,
         crouchPressed: false,
         slidePressed: false,
+        activatePowerupPressed: false,
         backflipPressed: false,
         pickupPressed: false,
         dropPressed: false,
@@ -3542,6 +3628,7 @@ function coalesceQueuedInputs(commands) {
         input.dashPressed ||= next.dashPressed;
         input.crouchPressed ||= next.crouchPressed;
         input.slidePressed ||= next.slidePressed;
+        input.activatePowerupPressed ||= next.activatePowerupPressed;
         input.backflipPressed ||= next.backflipPressed;
         input.pickupPressed ||= next.pickupPressed;
         input.dropPressed ||= next.dropPressed;
@@ -3597,6 +3684,7 @@ function defaultInput(yawRadians = 0) {
         crouchHeld: false,
         slidePressed: false,
         slideHeld: false,
+        activatePowerupPressed: false,
         backflipPressed: false,
         pickupPressed: false,
         dropPressed: false,
@@ -3649,6 +3737,7 @@ function normalizeInput(input, fallback = defaultInput()) {
         crouchHeld,
         slidePressed: Boolean(input.slidePressed) || legacyPressed(legacy.slide, fallback.slideHeld),
         slideHeld,
+        activatePowerupPressed: Boolean(input.activatePowerupPressed),
         backflipPressed: Boolean(input.backflipPressed) || Boolean(legacy.backflip),
         pickupPressed: Boolean(input.pickupPressed) || legacyPressed(legacy.interact, false),
         dropPressed: Boolean(input.dropPressed) || legacyPressed(legacy.drop, false),
@@ -3771,6 +3860,7 @@ function clearEdges(input) {
         dashPressed: false,
         slidePressed: false,
         crouchPressed: false,
+        activatePowerupPressed: false,
         backflipPressed: false,
         pickupPressed: false,
         dropPressed: false,

@@ -71,6 +71,7 @@ function teamShapeForFormat(format) {
  */
 function recommendedRoomSettings(format) {
     const shared = {
+        powerupsEnabled: true,
         matPreset: 4, // current map ships 4 standing mats (MAT_SPECS.length)
         maxLiveBallBounces: constants_1.GAME_CONSTANTS.ball.deadAfterBounces, // 1
         halfCourtTimerSeconds: constants_1.GAME_CONSTANTS.match.noBoundariesSeconds, // 120
@@ -126,7 +127,8 @@ function snapMatPreset(value, fallback) {
 }
 /** True when two settings describe the same configuration (ignoring the derived `preset` tag). */
 function roomSettingsEqual(a, b) {
-    return (a.format === b.format &&
+    return ((a.powerupsEnabled !== false) === (b.powerupsEnabled !== false) &&
+        a.format === b.format &&
         a.livesPerPlayer === b.livesPerPlayer &&
         a.dodgeballCount === b.dodgeballCount &&
         a.maxLiveBallBounces === b.maxLiveBallBounces &&
@@ -154,6 +156,7 @@ function canonicalizeRoomSettings(input) {
     const settings = {
         preset: 'custom',
         format,
+        powerupsEnabled: typeof input?.powerupsEnabled === 'boolean' ? input.powerupsEnabled : fallback.powerupsEnabled !== false,
         livesPerPlayer: clampIntField(input?.livesPerPlayer, exports.ROOM_SETTINGS_LIMITS.lives, fallback.livesPerPlayer),
         dodgeballCount: clampIntField(input?.dodgeballCount, exports.ROOM_SETTINGS_LIMITS.dodgeballs, fallback.dodgeballCount),
         maxLiveBallBounces: clampIntField(input?.maxLiveBallBounces, exports.ROOM_SETTINGS_LIMITS.bounces, fallback.maxLiveBallBounces),
@@ -176,6 +179,7 @@ function defaultRoomSettings(format = '1v1') {
 function resolveMatchSettings(settings) {
     const shape = teamShapeForFormat(settings.format);
     return {
+        powerupsEnabled: settings.powerupsEnabled !== false,
         format: settings.format,
         teamSize: shape.teamSize,
         teamCount: shape.teamCount,
@@ -270,6 +274,11 @@ function validateRoomSettingsPatch(current, patch) {
         if (!isStrictlyValidInt(value, NUMERIC_PATCH_FIELDS[field]))
             return { ok: false, reason: 'invalid-field' };
         next = { ...next, [field]: value };
+    }
+    if (patch.powerupsEnabled !== undefined) {
+        if (typeof patch.powerupsEnabled !== 'boolean')
+            return { ok: false, reason: 'invalid-field' };
+        next.powerupsEnabled = patch.powerupsEnabled;
     }
     if (patch.matPreset !== undefined) {
         if (typeof patch.matPreset !== 'number' || !exports.ALLOWED_MAT_PRESETS.includes(patch.matPreset)) {

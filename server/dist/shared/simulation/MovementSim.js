@@ -27,6 +27,11 @@ function isSuperThrowWindow(internal, c = constants_1.GAME_CONSTANTS) {
  * slide, slide-jump, air-strafe, wall-run, wall-jump, backflip, dash) operating on plain data.
  */
 function stepMovement(movementIn, internalIn, dashIn, input, prevInput, dt, boxes, catchStanceActive, c = constants_1.GAME_CONSTANTS, movementScale = 1, cooldownRateScale = 1) {
+    const buffs = internalIn.buffs;
+    const speedBuff = (buffs?.speedSeconds ?? 0) > 0 ? c.powerup.speedMultiplier : 1;
+    const staminaLocked = buffs?.cannonLocked ?? false;
+    if ((buffs?.adrenalineSeconds ?? 0) > 0)
+        c = { ...c, dash: { ...c.dash, maxCharges: c.powerup.adrenalineMaxCharges, rechargeSeconds: c.powerup.adrenalineRechargeSeconds } };
     let vx = movementIn.velocity.x;
     let vy = movementIn.velocity.y;
     let vz = movementIn.velocity.z;
@@ -208,7 +213,7 @@ function stepMovement(movementIn, internalIn, dashIn, input, prevInput, dt, boxe
             const bhopBonus = jumpGraceTimer > 0 ? c.player.bhopSpeedBonus : 1;
             vx *= bhopBonus;
             vz *= bhopBonus;
-            vy = c.player.jumpSpeed;
+            vy = c.player.jumpSpeed * (speedBuff > 1 ? Math.sqrt(c.powerup.jumpHeightMultiplier) : 1);
             grounded = false;
             doubleJumpAvailable = true;
             jumpGraceTimer = 0;
@@ -217,7 +222,7 @@ function stepMovement(movementIn, internalIn, dashIn, input, prevInput, dt, boxe
                 vz += wishZ * 0.45;
             }
         }
-        else if (doubleJumpAvailable) {
+        else if (doubleJumpAvailable && !staminaLocked) {
             const result = (0, PlayerSim_1.tryUpwardDash)(dash, { x: vx, y: vy, z: vz }, c, speedScale);
             if (result.ok) {
                 dash = result.dash;
@@ -232,7 +237,7 @@ function stepMovement(movementIn, internalIn, dashIn, input, prevInput, dt, boxe
     }
     // --- dash (edge-triggered) ---
     const dashPressed = input.dashPressed;
-    if (dashPressed) {
+    if (dashPressed && !staminaLocked) {
         const clientDash = sanitizeDashDirection(input.dashDirection);
         const ddx = clientDash ? clientDash.x : hasWish ? wishX : fwdX;
         const ddz = clientDash ? clientDash.z : hasWish ? wishZ : fwdZ;
@@ -248,7 +253,7 @@ function stepMovement(movementIn, internalIn, dashIn, input, prevInput, dt, boxe
     }
     // --- backflip (edge-triggered) ---
     const backflipPressed = input.backflipPressed;
-    if (backflipPressed && !backflipActive && backflipCooldown <= 0) {
+    if (backflipPressed && !staminaLocked && !backflipActive && backflipCooldown <= 0) {
         backflipActive = true;
         backflipTimer = 0;
         backflipCooldown = c.backflip.cooldownSeconds;
@@ -351,8 +356,8 @@ function stepMovement(movementIn, internalIn, dashIn, input, prevInput, dt, boxe
         // (non-slide) grounded movement accelerates toward the wish dir.
         const groundWishSpeed = crouching
             ? c.player.crouchWalkSpeed * speedScale
-            : c.player.maxGroundSpeed * speedMultiplier * speedScale;
-        const accelerated = accelerate(vx, vz, wishX, wishZ, hasWish, groundWishSpeed, c.player.groundAcceleration, dt);
+            : c.player.maxGroundSpeed * speedMultiplier * speedScale * speedBuff;
+        const accelerated = accelerate(vx, vz, wishX, wishZ, hasWish, groundWishSpeed, c.player.groundAcceleration * speedBuff, dt);
         vx = accelerated.vx;
         vz = accelerated.vz;
     }
@@ -478,6 +483,7 @@ function stepMovement(movementIn, internalIn, dashIn, input, prevInput, dt, boxe
             speed
         },
         internal: {
+            ...(buffs ? { buffs: { ...buffs, speedSeconds: Math.max(0, buffs.speedSeconds - dt), adrenalineSeconds: Math.max(0, buffs.adrenalineSeconds - dt), magnetSeconds: Math.max(0, buffs.magnetSeconds - dt) } } : {}),
             slideTimer,
             slideBufferTimer,
             jumpGraceTimer,

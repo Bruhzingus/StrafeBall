@@ -409,6 +409,7 @@ class DuelRoom extends colyseus_1.Room {
         });
         this.sendNetFlightRecorderConfig(client);
         this.sendBattleMusicSync(client);
+        client.send('powerup-private', this.game.powerupIdentity(client.sessionId));
         this.broadcast('player-joined', { type: 'player-joined', playerId: player.id }, { except: client });
         this.broadcastRosterUpdate();
     }
@@ -432,6 +433,7 @@ class DuelRoom extends colyseus_1.Room {
         this.log(`player reconnected id=${client.sessionId}`);
         this.sendNetFlightRecorderConfig(client);
         this.sendBattleMusicSync(client);
+        client.send('powerup-private', this.game.powerupIdentity(client.sessionId));
         this.broadcastRosterUpdate();
         this.reportServerConnectionEvent('client_reconnect', client.sessionId);
     }
@@ -731,6 +733,11 @@ class DuelRoom extends colyseus_1.Room {
             this.flightRecorderLoopWakeStallsOver500Ms += 1;
     }
     broadcastStepEvents() {
+        const powerups = this.game.drainPowerupEvents();
+        for (const event of powerups.events)
+            this.broadcast('powerup-event', event);
+        for (const { playerId, message } of powerups.privateMessages)
+            this.clients.find(c => c.sessionId === playerId)?.send('powerup-private', message);
         const throwEvents = this.game.drainThrowEvents();
         for (const event of throwEvents)
             this.broadcast('throw-event', event);

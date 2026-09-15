@@ -158,8 +158,8 @@ halfCourtTimerSecondsOverride, constants = constants_1.GAME_CONSTANTS) {
 }
 function isIllegalHalfCourtPosition(legalHalf, position, constants = constants_1.GAME_CONSTANTS) {
     if (legalHalf === 'negativeZ')
-        return position.z > constants.match.halfCourtLineZ;
-    return position.z < -constants.match.halfCourtLineZ;
+        return position.z > constants.match.neutralZoneHalfDepth;
+    return position.z < -constants.match.neutralZoneHalfDepth;
 }
 function applyHalfCourtRule(match, playerId, offenderTeamId, legalHalf, position, dt = 0, constants = constants_1.GAME_CONSTANTS, 
 /**
