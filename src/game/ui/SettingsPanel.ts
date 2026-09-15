@@ -1,5 +1,6 @@
 import { settings, SENSITIVITY_MIN, SENSITIVITY_MAX } from '../config/Settings';
 import { getGraphicsPresets, getGraphicsPreset, persistGraphicsPreset, type GraphicsPreset } from '../config/graphicsConfig';
+import { HowToPlay } from './HowToPlay';
 
 /** GitHub's always-current archive of the main branch — the same snapshot the live site runs. */
 export const GAME_DOWNLOAD_URL = 'https://github.com/Bruhzingus/StrafeBall/archive/refs/heads/main.zip';
@@ -41,6 +42,8 @@ export class SettingsPanel {
   private readonly scoreboardToggle: HTMLInputElement;
   private readonly devGraphicsTuningToggle: HTMLInputElement;
   private readonly graphicsSelect: HTMLSelectElement;
+  private readonly howToPlayButton: HTMLButtonElement;
+  private readonly howToPlay: HowToPlay;
   private readonly preventKeySteal = (event: KeyboardEvent): void => event.preventDefault();
   private expanded = false;
   /** Where the panel floats normally; undock() returns it here. */
@@ -65,6 +68,13 @@ export class SettingsPanel {
     const title = document.createElement('div');
     title.className = 'settings-title';
     title.textContent = 'Settings';
+
+    this.howToPlay = new HowToPlay(parent);
+    this.howToPlayButton = document.createElement('button');
+    this.howToPlayButton.type = 'button';
+    this.howToPlayButton.className = 'settings-link settings-link--howtoplay';
+    this.howToPlayButton.textContent = 'How to Play';
+    this.howToPlayButton.addEventListener('click', () => this.howToPlay.show());
 
     const sensitivityLabel = this.row('Sensitivity');
     this.sensitivityReadout = sensitivityLabel.readout;
@@ -179,6 +189,7 @@ export class SettingsPanel {
 
     this.content.append(
       title,
+      this.howToPlayButton,
       sensitivityLabel.label,
       this.sensitivitySlider,
       sfxLabel.label,
@@ -225,6 +236,7 @@ export class SettingsPanel {
 
   dispose(): void {
     this.disposed = true;
+    this.howToPlay.dispose();
     this.toggleButton.removeEventListener('click', this.toggleExpanded);
     this.sensitivitySlider.removeEventListener('input', this.onSensitivityInput);
     this.sfxSlider.removeEventListener('input', this.onSfxInput);

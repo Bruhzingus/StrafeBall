@@ -19,6 +19,7 @@
  *   --headed  run with a visible browser window
  *   --hud-powerup <empty|waiting|held|active>  preview the ability bar's power-up slot (online-only
  *             in real play) by unhiding it with sample content — DOM-only, no gameplay hooks.
+ *   --how-to-play N  open Settings -> How to Play and land on 0-based tab N (real UI, no hooks).
  *
  * Output: scripts/shots/<tag-><preset>-<view>.png + console summary (FPS, [graphics] lines).
  * The dev tuning panel (#graphics-tuning-panel) is hidden in captures so screenshots stay
@@ -42,6 +43,7 @@ const url = argValue('url', 'http://localhost:5173/');
 const fpsSeconds = Number(argValue('fps', '0'));
 const headed = hasFlag('headed');
 const hudPowerup = argValue('hud-powerup', '');
+const howToPlayPage = argValue('how-to-play', '');
 // Optional POLISHED_CONFIG override JSON injected as the tuning blob (diagnostics — e.g. crank the
 // mirror to max to prove the reflection pipeline renders at all). Omitted = compiled values.
 const tuningJson = argValue('tuning', '');
@@ -201,6 +203,20 @@ if (hudPowerup) {
     text.querySelector('.ability-powerup-hint').textContent = s.hint;
   }, sample);
   await page.waitForTimeout(100);
+}
+
+if (howToPlayPage !== '') {
+  // Open Settings -> How to Play, then land on the requested 0-based tab index. Dispatched clicks
+  // (not page.click) because the full-canvas gameCanvas sits over these fixed-position UI layers
+  // and fails Playwright's actionability check even though real clicks land fine (pointer-events
+  // is set correctly per-element, just not how Playwright's occlusion probe reads it here).
+  await page.evaluate(() => document.querySelector('.settings-toggle')?.click());
+  await page.waitForSelector('.settings-panel--expanded');
+  await page.evaluate(() => document.querySelector('.settings-link--howtoplay')?.click());
+  await page.waitForSelector('.htp-overlay:not([hidden])');
+  const tabIndex = Number(howToPlayPage);
+  await page.evaluate((i) => { document.querySelectorAll('.htp-tab')[i]?.click(); }, tabIndex);
+  await page.waitForTimeout(150);
 }
 
 await page.screenshot({ path: outPath });

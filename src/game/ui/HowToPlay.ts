@@ -1,0 +1,210 @@
+import { GAME_CONSTANTS } from '../../../shared/constants';
+import { CONTROL_KEYS } from '../config/controls';
+
+/**
+ * A quick-reference rulebook, opened from Settings. Built as flip-through pages (like the Quick
+ * Start card, just deeper) instead of one long scroll, so a player mid-lobby can jump straight to
+ * "how does the powerup work" without hunting. Pure reference — reads game constants, doesn't
+ * touch any gameplay state.
+ */
+
+interface Page {
+  title: string;
+  html: string;
+}
+
+const key = (code: string): string => code.replace(/^Key/, '').replace(/^Digit/, '').replace('Left', '').replace('Right', '');
+
+function buildPages(): Page[] {
+  const halfCourtWarnings = GAME_CONSTANTS.match.illegalCrossWarningsBeforePenalty;
+  const dashCharges = GAME_CONSTANTS.dash.maxCharges;
+  const dashRecharge = GAME_CONSTANTS.dash.rechargeSeconds;
+  const backflipCooldown = GAME_CONSTANTS.backflip.cooldownSeconds;
+  const respawn = GAME_CONSTANTS.powerup.respawnSeconds;
+  const buffSeconds = GAME_CONSTANTS.powerup.buffSeconds;
+
+  return [
+    {
+      title: 'Controls',
+      html: `
+        <div class="htp-grid">
+          <div><span class="key">W</span><span class="key">A</span><span class="key">S</span><span class="key">D</span> move</div>
+          <div><span class="key">Space</span> jump</div>
+          <div><span class="key">${key(CONTROL_KEYS.dash)}</span> dash (mid-air = double jump)</div>
+          <div><span class="key">${key(CONTROL_KEYS.crouch)}</span> crouch</div>
+          <div><span class="key">${key(CONTROL_KEYS.slide)}</span> slide (while moving fast)</div>
+          <div><span class="key">${key(CONTROL_KEYS.backflip)}</span> backflip</div>
+          <div><span class="key">M1</span> left hand · <span class="key">M2</span> right hand</div>
+          <div><span class="key">${key(CONTROL_KEYS.interact)}</span> grab a loose ball / stand a mat back up</div>
+          <div><span class="key">${key(CONTROL_KEYS.drop)}</span> drop a held ball</div>
+          <div><span class="key">${key(CONTROL_KEYS.fakeThrow)}</span> pump fake</div>
+          <div><span class="key">${key(CONTROL_KEYS.activatePowerup)}</span> use your powerup</div>
+        </div>
+        <p>Empty hand, click toward a loose ball, and you'll snap it up if it's close enough — you don't have to walk right up to the small drops. Walk near a wall at an angle while airborne to grab on and run it; steer with A/D to climb or drop off the wall.</p>
+      `
+    },
+    {
+      title: 'The Half',
+      html: `
+        <p>The court is split down the middle. Cross into the other team's half and a warning kicks in — get back within a second or two or it starts costing you a life every second you're still over there. You get ${halfCourtWarnings} free warning${halfCourtWarnings === 1 ? '' : 's'} before it starts ticking.</p>
+        <p>The <b>center strip</b> is neutral ground for everyone — stand there, throw from there, get hit there, it's fair game either way. That's also where the powerup spawns, so it's worth fighting over instead of always retreating.</p>
+        <p>Late in a round the boundary drops and the whole court opens up, so a stalled game can't just sit at a standoff forever.</p>
+      `
+    },
+    {
+      title: 'Stamina & Movement',
+      html: `
+        <p>Dashing, wall-jumping off a wall-run, and double-jumping all pull from the same pool of ${dashCharges} charges. They refill on their own — about one every ${dashRecharge}s — so burn them when you need the burst, they'll come back.</p>
+        <p>Sliding keeps your speed instead of dumping it, so the move is chaining a sprint into a slide to carry momentum through a turn, not just ducking under something.</p>
+        <p>Backflip (${key(CONTROL_KEYS.backflip)}) sends you up and back while holding a ball. Land it and a quick timing bar pops up — click closer to the center of the bar for a harder, faster throw. Miss the bar entirely and you just keep the ball, no throw. It's on a ${backflipCooldown}s cooldown.</p>
+      `
+    },
+    {
+      title: 'Catch, Parry, Throw',
+      html: `
+        <p>Aim your hand where the ball's headed and click to catch — the game reads your aim relative to the incoming ball, not a giant hitbox, so actually track it. Hold both hands full and you can also parry: aim at a live ball and it gets batted away instead of caught.</p>
+        <p>Tap a hand for a quick throw, or hold it to charge up — charging trades a beat of wind-up for real extra speed and a straighter line. Throwing twice in a fast burst (the "double-ball" trick) gets both throws penalized, so it's not a free way to double your damage.</p>
+        <p>Getting hit costs a life. Run out and you're eliminated for that round.</p>
+      `
+    },
+    {
+      title: 'Powerups',
+      html: `
+        <p>A mystery box spawns at center court (2v2 gets two, one on each side of the strip) every ${respawn}s after the last one's taken. Walk over it to grab it — only you know what it does until you use it with <span class="key">${key(CONTROL_KEYS.activatePowerup)}</span>. If it's something visible on the field (a giant black ball, someone glowing), everyone else can see that too.</p>
+        <div class="htp-items">
+          <div><b>⚡ Adrenaline</b> — doubles your dash charges and refills them faster for ${buffSeconds}s.</div>
+          <div><b>» Speed</b> — a solid move-speed boost and higher jumps for ${buffSeconds}s.</div>
+          <div><b>● Cannonball</b> — one huge, unstoppable throw. Can't be caught or blocked and punches through more than one player, but you can't dash while you're carrying it.</div>
+          <div><b>+ Heal Station</b> — drop it and stand in the ring for a few seconds straight to earn back a life. Step out and the timer resets.</div>
+          <div><b>∩ Ball Magnet</b> — loose balls drift toward you, and once your hands are full, extras stick to you as armor that'll eat a hit for you.</div>
+          <div><b>✹ Bomb Ball</b> — throw it like normal, but the first bounce arms a short fuse. Three beeps, then it goes off and tags everyone standing close, thrower included.</div>
+        </div>
+      `
+    },
+    {
+      title: 'Match Basics',
+      html: `
+        <p>Every player starts with a set number of lives (the host sets it in the lobby). Get hit, lose one. Last team standing wins the round.</p>
+        <p>Mats scattered around the court are cover — throws can't punch through a standing one. Knock one flat and it stops blocking until someone holds ${key(CONTROL_KEYS.interact)} on it to stand it back up.</p>
+        <p>Hosts can tweak lives, ball count, mat layout, powerups on/off and more from the lobby settings before starting.</p>
+      `
+    }
+  ];
+}
+
+export class HowToPlay {
+  private readonly overlay: HTMLDivElement;
+  private readonly panel: HTMLDivElement;
+  private readonly body: HTMLDivElement;
+  private readonly tabs: HTMLDivElement;
+  private readonly pageLabel: HTMLDivElement;
+  private readonly pages: Page[];
+  private index = 0;
+  private open = false;
+  private readonly tabButtons: HTMLButtonElement[] = [];
+
+  constructor(private readonly parent: HTMLElement = document.body) {
+    this.pages = buildPages();
+
+    this.overlay = document.createElement('div');
+    this.overlay.className = 'htp-overlay';
+    this.overlay.setAttribute('data-no-lock', '');
+    this.overlay.hidden = true;
+    this.overlay.addEventListener('click', (event) => { if (event.target === this.overlay) this.close(); });
+
+    this.panel = document.createElement('div');
+    this.panel.className = 'htp-panel';
+    this.panel.addEventListener('keydown', (event) => event.stopPropagation());
+
+    const header = document.createElement('div');
+    header.className = 'htp-header';
+    const title = document.createElement('div');
+    title.className = 'htp-title';
+    title.textContent = 'How to Play';
+    const closeButton = document.createElement('button');
+    closeButton.type = 'button';
+    closeButton.className = 'htp-close';
+    closeButton.textContent = 'x';
+    closeButton.setAttribute('aria-label', 'Close');
+    closeButton.addEventListener('click', () => this.close());
+    header.append(title, closeButton);
+
+    this.tabs = document.createElement('div');
+    this.tabs.className = 'htp-tabs';
+    this.pages.forEach((page, i) => {
+      const tab = document.createElement('button');
+      tab.type = 'button';
+      tab.className = 'htp-tab';
+      tab.textContent = page.title;
+      tab.addEventListener('click', () => this.goTo(i));
+      this.tabs.appendChild(tab);
+      this.tabButtons.push(tab);
+    });
+
+    this.body = document.createElement('div');
+    this.body.className = 'htp-body';
+
+    const footer = document.createElement('div');
+    footer.className = 'htp-footer';
+    const prev = document.createElement('button');
+    prev.type = 'button';
+    prev.className = 'htp-nav';
+    prev.textContent = '< Prev';
+    prev.addEventListener('click', () => this.goTo(this.index - 1));
+    this.pageLabel = document.createElement('div');
+    this.pageLabel.className = 'htp-page-label';
+    const next = document.createElement('button');
+    next.type = 'button';
+    next.className = 'htp-nav';
+    next.textContent = 'Next >';
+    next.addEventListener('click', () => this.goTo(this.index + 1));
+    footer.append(prev, this.pageLabel, next);
+
+    this.panel.append(header, this.tabs, this.body, footer);
+    this.overlay.appendChild(this.panel);
+    this.parent.appendChild(this.overlay);
+
+    document.addEventListener('keydown', this.onKeydown);
+    this.render();
+  }
+
+  show(): void {
+    this.open = true;
+    this.overlay.hidden = false;
+  }
+
+  close(): void {
+    this.open = false;
+    this.overlay.hidden = true;
+  }
+
+  toggle(): void {
+    if (this.open) this.close();
+    else this.show();
+  }
+
+  dispose(): void {
+    document.removeEventListener('keydown', this.onKeydown);
+    this.overlay.remove();
+  }
+
+  private goTo(index: number): void {
+    this.index = Math.max(0, Math.min(this.pages.length - 1, index));
+    this.render();
+  }
+
+  private render(): void {
+    const page = this.pages[this.index];
+    this.body.innerHTML = page.html;
+    this.pageLabel.textContent = `${this.index + 1} / ${this.pages.length}`;
+    this.tabButtons.forEach((tab, i) => tab.classList.toggle('htp-tab--active', i === this.index));
+  }
+
+  private onKeydown = (event: KeyboardEvent): void => {
+    if (!this.open) return;
+    if (event.code === 'Escape') { this.close(); return; }
+    // Left/right paging so it really is quick to flip through, not just click-only.
+    if (event.code === 'ArrowRight') this.goTo(this.index + 1);
+    else if (event.code === 'ArrowLeft') this.goTo(this.index - 1);
+  };
+}
