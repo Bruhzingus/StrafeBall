@@ -95,6 +95,27 @@ export class SoundManager {
       note(1050, 420, 0.16, 0.12, 0, 'triangle'); note(1510, 690, 0.12, 0.045);
     } else if (effect === 'place') {
       note(160, 85, 0.13, 0.17); note(660, 880, 0.2, 0.07, 0.07);
+    } else if (effect === 'stick') {
+      // Grenade lands: a short metallic clack, then a quiet rising arm tone.
+      note(1200, 300, 0.05, 0.18, 0, 'square'); this.noiseBurst(0.04, 0.1, 3200, destination);
+      note(420, 980, 0.45, 0.06, 0.05, 'triangle');
+    } else if (effect === 'shock') {
+      // Shockwave: a deep whump with a fast upward sweep — big, but no crunch (nobody got hurt).
+      note(70, 30, 0.5, 0.5); note(240, 1400, 0.22, 0.28, 0, 'sine');
+      this.noiseBurst(0.22, 0.22, 900, destination);
+    } else if (effect === 'stun') {
+      // Stun: a piercing crack and a long ringing tail (the concussion "eeeee").
+      this.noiseBurst(0.06, 0.55, 5200, destination);
+      note(2400, 2400, 0.05, 0.4, 0, 'square');
+      note(3100, 2900, 1.6, 0.11, 0.05, 'sine');
+    } else if (effect === 'map-warning') {
+      // Klaxon-ish two-tone: something is about to happen to the whole court.
+      for (let i = 0; i < 3; i++) { note(520, 520, 0.14, 0.2, i * 0.32, 'square'); note(390, 390, 0.14, 0.2, i * 0.32 + 0.16, 'square'); }
+    } else if (effect === 'map-start') {
+      note(180, 90, 0.7, 0.32); note(660, 1320, 0.35, 0.14, 0.05, 'triangle');
+      this.noiseBurst(0.3, 0.16, 600, destination);
+    } else if (effect === 'map-end') {
+      note(880, 440, 0.4, 0.12, 0, 'triangle'); note(440, 220, 0.5, 0.1, 0.12, 'triangle');
     } else if (effect === 'refuse') {
       note(180, 120, 0.12, 0.06, 0, 'triangle');
     }

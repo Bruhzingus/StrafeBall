@@ -352,4 +352,19 @@ export type ServerMessage =
 
 /** Identity is sent on a targeted message, never in RoomState. */
 export interface PowerupPrivateMessage { kind: import('./types').PowerupKind | null; resetSerial: number; reason?: string }
-export interface PowerupEvent { type: 'powerup-event'; effect: 'spawn' | 'pickup' | 'activate' | 'cannon' | 'thud' | 'beep' | 'explode' | 'heal' | 'armor' | 'place'; position: Vec3; playerId?: string; kind?: import('./types').PowerupKind; stage?: number; resetSerial: number }
+export type PowerupEventEffect =
+  | 'spawn' | 'pickup' | 'activate' | 'cannon' | 'thud' | 'beep' | 'explode' | 'heal' | 'armor' | 'place'
+  // Grenades: landed/stuck, and the two detonations.
+  | 'stick' | 'shock' | 'stun'
+  // Map effects: capsule shown + countdown, effect started, effect over.
+  | 'map-warning' | 'map-start' | 'map-end';
+export interface PowerupEvent {
+  type: 'powerup-event';
+  effect: PowerupEventEffect;
+  position: Vec3;
+  playerId?: string;
+  kind?: import('./types').PowerupKind;
+  mapKind?: import('./types').MapEffectKind;
+  stage?: number;
+  resetSerial: number;
+}

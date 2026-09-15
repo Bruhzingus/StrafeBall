@@ -900,7 +900,7 @@ export class Hud {
   }
 
   private networkBallTally(snapshot: ServerSnapshot): string {
-    const counts = { live: 0, held: 0, loose: 0, dead: 0, deflected: 0, armor: 0 };
+    const counts = { live: 0, held: 0, loose: 0, dead: 0, deflected: 0, armor: 0, stuck: 0 };
     for (const ball of Object.values(snapshot.room.balls)) {
       counts[ball.phase] += 1;
     }

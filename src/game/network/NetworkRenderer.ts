@@ -1,4 +1,5 @@
 import { updateSpecialBall } from '../powerups/PowerupPresentation';
+import { ballConstantsForEffect } from '../../../shared/simulation/MapEffectSim';
 import { Color3, Mesh, MeshBuilder, PBRMaterial, Quaternion, Scene, TransformNode, Vector3 } from '@babylonjs/core';
 import type { CatchEvent, ServerSnapshot, ThrowEvent } from '../../../shared/protocol';
 import type { SnapshotLaneInfo } from '../../../shared/snapshotCodec';
@@ -414,6 +415,8 @@ export class NetworkRenderer {
 
   private bufferSnapshot(snapshot: ServerSnapshot, lanes: SnapshotLaneInfo): void {
     const resetSerial = snapshot.room.resetVote.resetSerial;
+    // Keep live-ball prediction on the same gravity the server is using (moon gravity map effect).
+    this.ballPredictor.ballConstants = ballConstantsForEffect(snapshot.room.mapEffect);
     if (resetSerial !== this.lastBufferedResetSerial) {
       if (this.lastBufferedResetSerial !== -1 && isNetworkRenderDebugEnabled()) {
         console.log(`[net/render-buffer] reset serial ${this.lastBufferedResetSerial} -> ${resetSerial}; clearing interpolation buffer`);

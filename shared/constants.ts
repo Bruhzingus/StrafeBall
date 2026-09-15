@@ -384,7 +384,55 @@ export const GAME_CONSTANTS = {
     healRadius: 2.25, healSeconds: 10, stationLifetimeSeconds: 45, placementDistance: 1.5,
     // 2v2 gets two separate spawn points, each this fraction of halfWidth out from center along the
     // neutral line, so there are two contestable objectives instead of one.
-    twoVTwoSpawnOffsetFraction: 0.45
+    twoVTwoSpawnOffsetFraction: 0.45,
+    // Grenades (shock + stun): thrown like a ball but they never bounce — the first thing they touch
+    // (floor, wall, mat, bleacher, or a player) is where they stick, then the fuse runs. A grenade
+    // won't stick to a player until it has flown this far, so you can't accidentally tag yourself
+    // on release. Each activation gives grenadeCharges throws.
+    grenadeCharges: 2,
+    grenadeFuseSeconds: 0.6,
+    grenadeStickMinDistance: 1.0,
+    // Shockwave: pure displacement, no damage. Players and loose balls in range get flung away
+    // from the blast (horizontal + a lift so they leave the ground), standing mats in range are
+    // knocked flat, and anyone mid charge-throw or mid backflip has it cancelled.
+    shockRadius: 5,
+    shockPlayerSpeed: 11,
+    shockPlayerLift: 5.5,
+    shockBallSpeed: 9,
+    shockBallLift: 4,
+    // Stun: COD-style concussion. Slowed look + blurred vision (client-side) and slowed movement
+    // with no dash (shared sim) for stunSeconds. Thrower included if they're in range.
+    stunRadius: 4.5,
+    stunSeconds: 2.2,
+    stunMoveMultiplier: 0.6,
+    stunLookMultiplier: 0.3
+  },
+
+  // Whole-court events rolled from the power-up spawn clock (see shared/types MapEffectState).
+  mapEffect: {
+    // Chance a completed spawn clock produces a map effect instead of an item. Never rolls while
+    // another effect is already running.
+    chance: 0.3,
+    warningSeconds: 3,
+    // Moon gravity: everyone (and every ball) at this fraction of normal gravity.
+    moonSeconds: 12,
+    moonGravityScale: 0.45,
+    // Lava: rises from the floor over lavaRiseSeconds to lavaMaxHeightFraction of the bleacher
+    // height (so only the top tier stays dry), holds, then recedes. Standing in it costs a life
+    // after lavaFirstDamageSeconds and every lavaDamageIntervalSeconds after that. Loose balls
+    // float on the surface and drift toward the bleachers so players up top can grab them.
+    lavaRiseSeconds: 4,
+    lavaHoldSeconds: 14,
+    lavaRecedeSeconds: 2,
+    lavaMaxHeightFraction: 0.85,
+    lavaFirstDamageSeconds: 0.35,
+    lavaDamageIntervalSeconds: 1,
+    lavaBallDriftSpeed: 2.5,
+    // Frenzy: the court fills with frenzyBallMultiplier× the balls, dropped from the ceiling, and
+    // live balls never die on a bounce for frenzySeconds. Extra balls vanish when it ends.
+    frenzySeconds: 20,
+    frenzyBallMultiplier: 3,
+    frenzyDropHeight: 6
   },
 
   map: {

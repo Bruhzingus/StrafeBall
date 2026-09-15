@@ -1891,6 +1891,70 @@ describe('ServerGameLoop', () => {
       expect(catchEvent).toMatchObject({ type: 'catch-event', ballId: 'ball_0', catcherId: 'b', hand: 'right' });
     });
 
+    it('catches your own wall-rebounded throw during pregame warmup (private-match lobby)', () => {
+      // Regression: warmup used to disable ALL catch/parry resolution (only scoring/hits are
+      // supposed to be gated to an active match), so throwing at the wall to warm up and catching
+      // the rebound silently never worked before the match started.
+      const loop = new ServerGameLoop('room');
+      loop.addPlayer('a', 'A');
+      loop.addPlayer('b', 'B');
+      expect(loop.state.match.status).toBe('warmup');
+      loop.state.players.b.movement.position = vec3(0, 0, GAME_CONSTANTS.map.halfLength - 4);
+      let seq = 1;
+      loop.handleInput('b', { lookYawRadians: 0, lookPitchRadians: 0, sequence: seq }, seq);
+      seq += 1;
+      loop.step();
+
+      loop.state.balls.ball_0 = {
+        ...loop.state.balls.ball_0,
+        phase: 'live',
+        ownerKind: 'player',
+        ownerId: 'b',
+        heldByPlayerId: null,
+        heldHand: null,
+        bounceCount: 0,
+        position: vec3(0, eye, GAME_CONSTANTS.map.halfLength - 0.9),
+        velocity: vec3(0, 0, GAME_CONSTANTS.ball.quickThrowSpeed),
+        throwId: 10
+      };
+
+      let reboundSeen = false;
+      for (let i = 0; i < 40; i += 1) {
+        loop.handleInput('b', { lookYawRadians: 0, lookPitchRadians: 0, sequence: seq }, seq);
+        seq += 1;
+        loop.step();
+        loop.drainCombatEvents();
+        expect(loop.state.match.status).toBe('warmup'); // never auto-starts mid-test
+        const ball = loop.state.balls.ball_0;
+        if (ball.bounceCount >= 1 && ball.velocity.z < 0 && isBallCatchableInFlight(ball)) {
+          reboundSeen = true;
+          expect(ball.heldByPlayerId).toBeNull();
+          break;
+        }
+      }
+
+      expect(reboundSeen).toBe(true);
+      loop.handleInput('b', {
+        lookYawRadians: 0,
+        lookPitchRadians: 0,
+        rightCatchAttemptId: 13,
+        sequence: seq,
+        clientTimeMs: 300
+      }, seq);
+
+      let catchEvent = loop.drainCombatEvents().find((event) => event.type === 'catch-event');
+      for (let i = 0; i < 16 && loop.state.balls.ball_0.heldByPlayerId !== 'b'; i += 1) {
+        loop.step();
+        catchEvent ??= loop.drainCombatEvents().find((event) => event.type === 'catch-event');
+      }
+
+      expect(loop.state.balls.ball_0.phase).toBe('held');
+      expect(loop.state.balls.ball_0.heldByPlayerId).toBe('b');
+      expect(loop.state.balls.ball_0.heldHand).toBe('right');
+      expect(loop.state.players.b.hands.right.heldBallId).toBe('ball_0');
+      expect(catchEvent).toMatchObject({ type: 'catch-event', ballId: 'ball_0', catcherId: 'b', hand: 'right' });
+    });
+
     it('advances fast catchable dead balls for a full server tick', () => {
       const loop = defenderFacingIncoming();
       const startZ = -8; // Clear of the scaled mat row.

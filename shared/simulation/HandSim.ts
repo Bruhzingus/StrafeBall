@@ -1,6 +1,6 @@
 import { GAME_CONSTANTS, type GameConstants } from '../constants';
 import type { BallState, HandSide, HandState, PlayerHandsState, PlayerState, Vec3, ValidationResult } from '../types';
-import { catchBall, deflectBall, dropHeldBall, holdBall, isBallCatchableInFlight, isBallPickupEligible, throwHeldBall, type ThrowBallRequest } from './BallSim';
+import { catchBall, deflectBall, dropHeldBall, holdBall, isBallCatchableInFlight, isBallPickupEligible, isGrenadeKind, throwHeldBall, type ThrowBallRequest } from './BallSim';
 import { closestPointOnSegment, distance, cloneVec3, isWithinCone, normalize, sweptSegmentInCone, vec3 } from './CollisionMath';
 
 export type PickupValidationReason = 'hands-full' | 'ball-not-pickup-eligible';
@@ -268,7 +268,7 @@ export function autoParryBall(
 ): AutoParryResult | { ok: false; reason: ParryValidationReason } {
   if (heldBallCount(hands) < constants.ball.maxHeldBalls) return { ok: false, reason: 'hands-not-full' };
   if (parryCooldownSeconds > 0) return { ok: false, reason: 'parry-cooldown' };
-  if (ball.phase !== 'live' || ball.kind === 'cannon' || ball.armedAtMs !== undefined) return { ok: false, reason: 'not-live' };
+  if (ball.phase !== 'live' || ball.kind === 'cannon' || isGrenadeKind(ball.kind) || ball.armedAtMs !== undefined) return { ok: false, reason: 'not-live' };
   if (!isInParryCone(origin, aimForward, ball, constants)) return { ok: false, reason: 'outside-parry-cone' };
 
   return {
@@ -313,7 +313,7 @@ export function sweptParryFailReason(
 ): SweptParryFailReason | null {
   if (request.heldBallCount < constants.ball.maxHeldBalls) return 'no-two-balls';
   if (request.parryCooldownSeconds > 0) return 'parry-cooldown';
-  if (request.ball.phase !== 'live' || request.ball.kind === 'cannon' || request.ball.armedAtMs !== undefined) return 'ball-not-live';
+  if (request.ball.phase !== 'live' || request.ball.kind === 'cannon' || isGrenadeKind(request.ball.kind) || request.ball.armedAtMs !== undefined) return 'ball-not-live';
   if (request.ball.ownerId !== null && request.ball.ownerId === request.defenderPlayerId) return 'owner-invalid';
 
   const coneDegrees = request.ball.isSuper ? constants.catch.superParryConeDegrees : constants.parry.coneDegrees;

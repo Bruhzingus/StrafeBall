@@ -1,5 +1,6 @@
 "use strict";
 Object.defineProperty(exports, "__esModule", { value: true });
+exports.isGrenadeKind = isGrenadeKind;
 exports.createBallState = createBallState;
 exports.isBallPickupStateEligible = isBallPickupStateEligible;
 exports.isBallCatchableInFlight = isBallCatchableInFlight;
@@ -18,6 +19,10 @@ exports.curveRampFactor = curveRampFactor;
 exports.advanceBall = advanceBall;
 const constants_1 = require("../constants");
 const CollisionMath_1 = require("./CollisionMath");
+/** Shock + stun grenades share one flight rule: no bounce, stick to the first thing they touch. */
+function isGrenadeKind(kind) {
+    return kind === 'shock' || kind === 'stun';
+}
 function createBallState(id, position = (0, CollisionMath_1.vec3)(), overrides = {}) {
     const base = {
         id,
@@ -46,7 +51,9 @@ function createBallState(id, position = (0, CollisionMath_1.vec3)(), overrides =
     };
 }
 function isBallPickupStateEligible(ball, constants = constants_1.GAME_CONSTANTS) {
-    if (ball.phase === 'held' || ball.phase === 'armor' || ball.kind === 'cannon' || ball.kind === 'heal')
+    if (ball.phase === 'held' || ball.phase === 'armor' || ball.phase === 'stuck')
+        return false;
+    if (ball.kind === 'cannon' || ball.kind === 'heal' || isGrenadeKind(ball.kind))
         return false;
     if (ball.phase === 'loose' || ball.phase === 'dead')
         return true;
@@ -60,7 +67,7 @@ function isBallPickupStateEligible(ball, constants = constants_1.GAME_CONSTANTS)
  * regardless (see canScorePlayerHit).
  */
 function isBallCatchableInFlight(ball, constants = constants_1.GAME_CONSTANTS) {
-    if (ball.kind === 'cannon' || ball.kind === 'heal' || ball.armedAtMs !== undefined)
+    if (ball.kind === 'cannon' || ball.kind === 'heal' || isGrenadeKind(ball.kind) || ball.armedAtMs !== undefined)
         return false;
     if (ball.phase === 'live' || ball.phase === 'deflected')
         return true;

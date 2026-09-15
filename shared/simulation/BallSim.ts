@@ -26,6 +26,11 @@ export interface ThrowBallRequest {
 
 export type ThrowValidationReason = 'ball-not-held' | 'wrong-player' | 'wrong-hand';
 
+/** Shock + stun grenades share one flight rule: no bounce, stick to the first thing they touch. */
+export function isGrenadeKind(kind: BallState['kind'] | undefined): boolean {
+  return kind === 'shock' || kind === 'stun';
+}
+
 export function createBallState(id: string, position: Vec3 = vec3(), overrides: Partial<BallState> = {}): BallState {
   const base: BallState = {
     id,
@@ -59,7 +64,8 @@ export function isBallPickupStateEligible(
   ball: Pick<BallState, 'phase' | 'velocity' | 'kind'> | { phase: BallPhase | string; velocity: Vec3; kind?: BallState['kind'] },
   constants: GameConstants = GAME_CONSTANTS
 ): boolean {
-  if (ball.phase === 'held' || ball.phase === 'armor' || ball.kind === 'cannon' || ball.kind === 'heal') return false;
+  if (ball.phase === 'held' || ball.phase === 'armor' || ball.phase === 'stuck') return false;
+  if (ball.kind === 'cannon' || ball.kind === 'heal' || isGrenadeKind(ball.kind)) return false;
   if (ball.phase === 'loose' || ball.phase === 'dead') return true;
   return length(ball.velocity) <= constants.ball.slowPickupSpeed;
 }
@@ -75,7 +81,7 @@ export function isBallCatchableInFlight(
   ball: Pick<BallState, 'phase' | 'velocity' | 'bounceCount' | 'kind' | 'armedAtMs'>,
   constants: GameConstants = GAME_CONSTANTS
 ): boolean {
-  if (ball.kind === 'cannon' || ball.kind === 'heal' || ball.armedAtMs !== undefined) return false;
+  if (ball.kind === 'cannon' || ball.kind === 'heal' || isGrenadeKind(ball.kind) || ball.armedAtMs !== undefined) return false;
   if (ball.phase === 'live' || ball.phase === 'deflected') return true;
   if (ball.phase !== 'dead') return false;
   return (

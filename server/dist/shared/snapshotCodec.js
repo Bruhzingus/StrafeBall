@@ -228,7 +228,7 @@ function packPlayer(player) {
         b(player.connected),
         player.reconnectDeadlineAtMs,
         player.lastProcessedInputSeq,
-        [player.hasPowerup ?? false, player.armorBallIds ?? []]
+        [player.hasPowerup ?? false, player.armorBallIds ?? [], player.pendingGrenades ?? 0]
     ];
 }
 function packFastPlayer(player) {
@@ -256,7 +256,7 @@ function packFastPlayer(player) {
         b(player.connected),
         player.reconnectDeadlineAtMs,
         player.lastProcessedInputSeq,
-        [player.hasPowerup ?? false, player.armorBallIds ?? []]
+        [player.hasPowerup ?? false, player.armorBallIds ?? [], player.pendingGrenades ?? 0]
     ];
 }
 function unpackPlayer(packed) {
@@ -433,7 +433,7 @@ function packBall(ball) {
         packVel(ball.curveAccel),
         ball.lastTouchedByPlayerId,
         ball.throwId,
-        [ball.kind ?? "normal", ball.armedAtMs ?? null, ball.fuseSeconds ?? null, ball.armorPlayerId ?? null]
+        [ball.kind ?? "normal", ball.armedAtMs ?? null, ball.fuseSeconds ?? null, ball.armorPlayerId ?? null, ball.stuckAtMs ?? null, ball.stuckToPlayerId ?? null]
     ];
 }
 function unpackBall(packed) {
@@ -596,10 +596,17 @@ function q3(n) {
 function unpackPowerupPlayer(value) {
     if (!Array.isArray(value))
         return {};
-    return { hasPowerup: Boolean(value[0]), armorBallIds: value[1] };
+    return { hasPowerup: Boolean(value[0]), armorBallIds: value[1], ...(value[2] ? { pendingGrenades: value[2] } : {}) };
 }
 function unpackSpecialBall(value) {
     if (!Array.isArray(value))
         return {};
-    return { kind: value[0], ...(value[1] !== null ? { armedAtMs: value[1] } : {}), ...(value[2] !== null ? { fuseSeconds: value[2] } : {}), ...(value[3] !== null ? { armorPlayerId: value[3] } : {}) };
+    return {
+        kind: value[0],
+        ...(value[1] !== null ? { armedAtMs: value[1] } : {}),
+        ...(value[2] !== null ? { fuseSeconds: value[2] } : {}),
+        ...(value[3] !== null ? { armorPlayerId: value[3] } : {}),
+        ...(value[4] !== null && value[4] !== undefined ? { stuckAtMs: value[4] } : {}),
+        ...(value[5] !== null && value[5] !== undefined ? { stuckToPlayerId: value[5] } : {})
+    };
 }

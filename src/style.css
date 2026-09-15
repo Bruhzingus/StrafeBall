@@ -6201,6 +6201,82 @@ html, body {
   animation: powerup-fx-breathe 1.8s ease-in-out infinite;
 }
 
+/* In the lava: a hard red edge that pulses (strength is driven per-frame). */
+.powerup-screen-fx[data-kind='lava-danger'] {
+  background: radial-gradient(ellipse 62% 55% at 50% 52%, transparent 50%, color-mix(in srgb, var(--fx-color), transparent 35%) 100%);
+}
+
+/* Stun grenade: blur + whiteout that fades with the stun timer. --stun-level 0..2. */
+.stun-fx {
+  --stun-level: 0;
+  position: fixed;
+  inset: 0;
+  z-index: 6;
+  pointer-events: none;
+  backdrop-filter: blur(calc(var(--stun-level) * 7px));
+  -webkit-backdrop-filter: blur(calc(var(--stun-level) * 7px));
+  background: radial-gradient(ellipse at center, rgba(255, 250, 220, calc(var(--stun-level) * 0.28)), rgba(255, 250, 220, calc(var(--stun-level) * 0.12)) 70%);
+  transition: backdrop-filter 0.12s ease, background 0.12s ease;
+}
+
+.stun-fx[hidden] {
+  display: none;
+}
+
+/* Map-effect banner: top-center card under the scoreboard. Warning shows the countdown number
+   big; while active it becomes a small "running" tag with seconds left. */
+.map-effect-banner {
+  --banner-color: var(--school-gold);
+  position: fixed;
+  top: 27%;
+  left: 50%;
+  z-index: 31;
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 8px 14px 8px 12px;
+  transform: translateX(-50%);
+  pointer-events: none;
+  color: var(--paper);
+  background: linear-gradient(180deg, rgba(14, 23, 42, 0.86), rgba(5, 10, 20, 0.74));
+  border: 2px solid color-mix(in srgb, var(--banner-color), transparent 25%);
+  border-radius: 12px;
+  box-shadow: 0 8px 22px rgba(0, 0, 0, 0.28), 0 0 18px color-mix(in srgb, var(--banner-color), transparent 70%);
+  font-family: var(--font-display);
+}
+
+.map-effect-banner[hidden] {
+  display: none;
+}
+
+.map-effect-banner b {
+  color: var(--banner-color);
+  font-size: 15px;
+  font-weight: 900;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  white-space: nowrap;
+}
+
+.map-effect-banner span {
+  font-size: 12px;
+  font-weight: 700;
+  opacity: 0.85;
+  white-space: nowrap;
+}
+
+.map-effect-banner i {
+  min-width: 34px;
+  padding: 2px 8px;
+  border-radius: 8px;
+  background: var(--banner-color);
+  color: var(--ink);
+  font-size: 16px;
+  font-style: normal;
+  font-weight: 900;
+  text-align: center;
+}
+
 
 @keyframes powerup-fx-breathe {
   50% { filter: brightness(1.18); }

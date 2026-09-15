@@ -43,11 +43,17 @@ export function stepMovement(
   catchStanceActive: boolean,
   c: GameConstants = GAME_CONSTANTS,
   movementScale = 1,
-  cooldownRateScale = 1
+  cooldownRateScale = 1,
+  /** World gravity multiplier (map effects like moon gravity). 1 = normal. */
+  gravityScale = 1
 ): MovementStepResult {
   const buffs = internalIn.buffs;
   const speedBuff = (buffs?.speedSeconds ?? 0) > 0 ? c.powerup.speedMultiplier : 1;
-  const staminaLocked = buffs?.cannonLocked ?? false;
+  const stunned = (buffs?.stunSeconds ?? 0) > 0;
+  // Stunned: slowed and no stamina moves. Cannon in hand: no stamina moves either.
+  const staminaLocked = (buffs?.cannonLocked ?? false) || stunned;
+  const stunSlow = stunned ? c.powerup.stunMoveMultiplier : 1;
+  if (gravityScale !== 1) c = { ...c, player: { ...c.player, gravity: c.player.gravity * gravityScale } } as unknown as GameConstants;
   if ((buffs?.adrenalineSeconds ?? 0) > 0) c = { ...c, dash: { ...c.dash, maxCharges: c.powerup.adrenalineMaxCharges, rechargeSeconds: c.powerup.adrenalineRechargeSeconds } } as unknown as GameConstants;
   let vx = movementIn.velocity.x;
   let vy = movementIn.velocity.y;
@@ -368,8 +374,8 @@ export function stepMovement(
     // (non-slide) grounded movement accelerates toward the wish dir.
     const groundWishSpeed = crouching
       ? c.player.crouchWalkSpeed * speedScale
-      : c.player.maxGroundSpeed * speedMultiplier * speedScale * speedBuff;
-    const accelerated = accelerate(vx, vz, wishX, wishZ, hasWish, groundWishSpeed, c.player.groundAcceleration * speedBuff, dt);
+      : c.player.maxGroundSpeed * speedMultiplier * speedScale * speedBuff * stunSlow;
+    const accelerated = accelerate(vx, vz, wishX, wishZ, hasWish, groundWishSpeed, c.player.groundAcceleration * speedBuff * stunSlow, dt);
     vx = accelerated.vx;
     vz = accelerated.vz;
   } else if (!grounded && !wallRunClimbing) {
@@ -492,7 +498,7 @@ export function stepMovement(
       speed
     },
     internal: {
-      ...(buffs ? { buffs: { ...buffs, speedSeconds: Math.max(0, buffs.speedSeconds - dt), adrenalineSeconds: Math.max(0, buffs.adrenalineSeconds - dt), magnetSeconds: Math.max(0, buffs.magnetSeconds - dt) } } : {}),
+      ...(buffs ? { buffs: { ...buffs, speedSeconds: Math.max(0, buffs.speedSeconds - dt), adrenalineSeconds: Math.max(0, buffs.adrenalineSeconds - dt), magnetSeconds: Math.max(0, buffs.magnetSeconds - dt), ...(buffs.stunSeconds !== undefined ? { stunSeconds: Math.max(0, buffs.stunSeconds - dt) } : {}) } } : {}),
       slideTimer,
       slideBufferTimer,
       jumpGraceTimer,

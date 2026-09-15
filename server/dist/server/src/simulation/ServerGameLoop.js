@@ -14,6 +14,8 @@ const PlayerSim_1 = require("../../../shared/simulation/PlayerSim");
 const RuleSim_1 = require("../../../shared/simulation/RuleSim");
 const MapGeometry_1 = require("../../../shared/simulation/MapGeometry");
 const PowerupSystem_1 = require("./PowerupSystem");
+const MapEffectSystem_1 = require("./MapEffectSystem");
+const MapEffectSim_1 = require("../../../shared/simulation/MapEffectSim");
 const MovementSim_1 = require("../../../shared/simulation/MovementSim");
 const AimMath_1 = require("../../../shared/simulation/AimMath");
 const HandAnchors_1 = require("../../../shared/simulation/HandAnchors");
@@ -185,8 +187,15 @@ class ServerGameLoop {
     // Wall-clock time of the current step, captured once at the top of step() for history timestamps.
     stepNowMs = 0;
     powerupSystem = new PowerupSystem_1.PowerupSystem();
+    mapEffects = new MapEffectSystem_1.MapEffectSystem();
     applyingExplosion = false;
-    drainPowerupEvents() { return this.powerupSystem.drain(); }
+    drainPowerupEvents() {
+        const drained = this.powerupSystem.drain();
+        // Map-effect banners/sounds ride the same broadcast as power-up cues.
+        return { ...drained, events: [...drained.events, ...this.mapEffects.drain()] };
+    }
+    /** Test hook: the map-effect system (frenzy ball ids, deterministic rolls). */
+    get mapEffectSystem() { return this.mapEffects; }
     powerupIdentity(playerId) { return this.powerupSystem.identity(this.state, playerId); }
     lastSnapshotBuildMs = 0;
     battleMusicSyncState = (0, BattleMusic_1.createInactiveBattleMusicSyncState)();
@@ -242,6 +251,7 @@ class ServerGameLoop {
         };
         this.state = this.createFreshRoomState();
         this.powerupSystem.reset(this.state);
+        this.mapEffects.reset(this.state);
     }
     addPlayer(playerId, rawName) {
         if (this.playerCount() >= this.maxPlayers)
@@ -1103,6 +1113,9 @@ class ServerGameLoop {
         this.advanceCountdown(fixedDt);
         const counting = this.state.match.status === 'countdown';
         const active = this.hasEnoughConnectedTeamsToPlay() && this.state.match.status === 'playing';
+        // Catch/parry must resolve during warmup too — players throw balls at the wall to practice
+        // self-catches before the match starts. Scoring/hits stay gated to an active match via `active`.
+        const defenseActive = active || this.state.match.status === 'warmup';
         for (const playerId in this.state.players) {
             const player = this.state.players[playerId];
             const command = this.nextInputCommand(player);
@@ -1128,13 +1141,20 @@ class ServerGameLoop {
             this.recordDefenseSample(player);
         }
         // Move balls, record their swept positions, and resolve combat per live ball in the correct
-        // order (parry → catch → hit). Scoring/hit only counts while the match is active; catch/parry
-        // need an opponent's live ball, which only exists once opposing teams are present. During the
-        // countdown balls are still settled (so loose balls rest) but no combat is resolved.
-        if (active)
-            this.powerupSystem.beforeBalls(this.state, fixedDt, this.matchSettings.livesPerPlayer);
-        this.updateBalls(fixedDt, active);
-        if (active)
+        // order (parry → catch → hit). Scoring/hit only counts while the match is active (`active`), but
+        // parry/catch also resolve during warmup (`defenseActive`) so players can practice self-catches
+        // off a wall before the match starts. During the countdown balls are still settled (so loose
+        // balls rest) but no combat is resolved — players are frozen then, so no catch attempts queue.
+        if (active) {
+            this.powerupSystem.beforeBalls(this.state, fixedDt, this.matchSettings.livesPerPlayer, (spawnIndex, position) => this.mapEffects.tryStart(this.state, spawnIndex, position));
+            this.mapEffects.step(this.state, fixedDt, {
+                damage: (player) => this.applyEnvironmentDamage(player.id),
+                forgetBall: (ballId) => { this.ballHistoryById.delete(ballId); this.recentHitByBallId.delete(ballId); }
+            }, this.matchSettings.dodgeballCount);
+        }
+        this.updateBalls(fixedDt, active, defenseActive);
+        // Lava herds every loose ball to the bleachers on purpose — don't fight it with the crowd rule.
+        if (active && this.state.mapEffect?.kind !== 'lava')
             this.respawnCrowdedBalls(fixedDt);
         if (active) {
             this.applyingExplosion = true;
@@ -1147,7 +1167,7 @@ class ServerGameLoop {
                     return;
                 this.applyPlayerHit(throwerId, target, { ...scorer.dash }, { direct: false, bounce: true, curve: false, backflip: false });
                 this.pendingCombatEvents.push({ type: 'hit-event', ballId: ball.id, throwerId, targetId: target.id, serverTick: this.state.tick, serverTimeMs: this.stepNowMs });
-            });
+            }, (position, radius) => this.knockOverMatsNear(position, radius));
             this.applyingExplosion = false;
             this.resolveRoundOutcome();
         }
@@ -1402,7 +1422,7 @@ class ServerGameLoop {
         this.powerupSystem.syncLock(this.state, player);
         const preVelocity = player.movement.velocity;
         const preGrounded = player.movement.grounded;
-        const result = (0, MovementSim_1.stepMovement)(player.movement, player.movementInternal, player.dash, input, prevInput, dt, this.collisionBoxesForPlayer(player.id), catchStanceActive, constants_1.GAME_CONSTANTS, this.playerMovementScale(player), this.playerCooldownRateScale(player));
+        const result = (0, MovementSim_1.stepMovement)(player.movement, player.movementInternal, player.dash, input, prevInput, dt, this.collisionBoxesForPlayer(player.id), catchStanceActive, constants_1.GAME_CONSTANTS, this.playerMovementScale(player), this.playerCooldownRateScale(player), (0, MapEffectSim_1.mapEffectGravityScale)(this.state.mapEffect));
         player.movement = result.movement;
         if (this.state.match.status !== 'playing')
             result.internal.buffs = player.movementInternal.buffs;
@@ -1499,8 +1519,12 @@ class ServerGameLoop {
      * Parry/catch/hit each consume the ball — once one fires, later checks skip it that tick, so a
      * valid defense can never be bypassed by hit detection running first.
      */
-    updateBalls(dt, combatActive) {
+    updateBalls(dt, hitActive, defenseActive) {
         const subDt = dt / netConfig_1.LIVE_BALL_COMBAT_SUBSTEPS;
+        // Map effects bend the ball rules for everyone: moon gravity scales the fall, frenzy keeps
+        // every live ball live no matter how many times it bounces.
+        const ballConstants = (0, MapEffectSim_1.ballConstantsForEffect)(this.state.mapEffect);
+        const bounceRule = (0, MapEffectSim_1.mapEffectUnlimitedBounces)(this.state.mapEffect) ? UNLIMITED_BOUNCE_RULE : this.bounceRule;
         for (const ballId in this.state.balls) {
             const ball = this.state.balls[ballId];
             if (ball.phase === 'held' && ball.heldByPlayerId && ball.heldHand) {
@@ -1510,7 +1534,7 @@ class ServerGameLoop {
                     : (0, BallSim_1.markBallDead)(ball);
                 continue;
             }
-            if (ball.phase === 'loose' || ball.phase === 'armor')
+            if (ball.phase === 'loose' || ball.phase === 'armor' || ball.phase === 'stuck')
                 continue;
             // Run LIVE_BALL_COMBAT_SUBSTEPS sub-steps per tick. Each sub-step advances the ball by
             // subDt, then runs the full parry→catch→hit pipeline against that sub-tick swept segment.
@@ -1520,16 +1544,27 @@ class ServerGameLoop {
             let combatDone = false;
             for (let sub = 0; sub < netConfig_1.LIVE_BALL_COMBAT_SUBSTEPS && !combatDone; sub++) {
                 const prevPos = (0, CollisionMath_1.cloneVec3)(current.position);
-                const advanced = (0, BallSim_1.advanceBall)(current, subDt);
+                const advanced = (0, BallSim_1.advanceBall)(current, subDt, ballConstants);
                 let resolved = advanced;
-                if (combatActive && resolved.kind === 'cannon') {
+                if ((0, BallSim_1.isGrenadeKind)(resolved.kind)) {
+                    // Grenades stick to the first player they cross (never the thrower on release).
+                    const target = resolved.curveDistance >= constants_1.GAME_CONSTANTS.powerup.grenadeStickMinDistance
+                        ? this.findGrenadeTarget(resolved, prevPos, resolved.position)
+                        : null;
+                    if (target) {
+                        current = this.powerupSystem.stick(this.state, resolved, this.stepNowMs, target);
+                        combatDone = true;
+                        break;
+                    }
+                }
+                else if (hitActive && resolved.kind === 'cannon') {
                     const hit = this.tryHit(resolved, prevPos, resolved.position);
                     if (hit) {
                         resolved = hit;
                         combatDone = true;
                     }
                 }
-                else if (combatActive && (0, BallSim_1.isBallCatchableInFlight)(resolved)) {
+                else if (defenseActive && (0, BallSim_1.isBallCatchableInFlight)(resolved)) {
                     const segPrev = prevPos;
                     const segCurr = resolved.position;
                     const parried = this.tryAutoParry(resolved, segPrev, segCurr, subDt, this.stepNowMs);
@@ -1548,7 +1583,8 @@ class ServerGameLoop {
                             if (friendlyDeflect) {
                                 resolved = friendlyDeflect;
                             }
-                            const hit = this.tryHit(resolved, segPrev, segCurr);
+                            // Scoring/elimination only counts while the match is actually active (not warmup).
+                            const hit = hitActive ? this.tryHit(resolved, segPrev, segCurr) : null;
                             if (hit) {
                                 resolved = hit;
                                 combatDone = true;
@@ -1558,8 +1594,14 @@ class ServerGameLoop {
                 }
                 // World collision per substep so fast balls bounce correctly at sub-tick positions. The
                 // settings-driven bounce rule decides when a live/deflected ball dies on these contacts.
-                const bounded = resolveBallBounds(resolved, this.bounceRule);
-                const collided = resolveBallStaticBoxes(bounded, this.ballCollisionBoxesWithEliminatedCover(), this.debug.COLLISION_DEBUG ? this.logger : undefined, this.bounceRule);
+                const bounded = resolveBallBounds(resolved, bounceRule);
+                const collided = resolveBallStaticBoxes(bounded, this.ballCollisionBoxesWithEliminatedCover(), this.debug.COLLISION_DEBUG ? this.logger : undefined, bounceRule);
+                if ((0, BallSim_1.isGrenadeKind)(collided.kind) && collided.bounceCount > current.bounceCount) {
+                    // First surface contact: no bounce, it stays right where it landed.
+                    current = this.powerupSystem.stick(this.state, collided, this.stepNowMs, null);
+                    combatDone = true;
+                    break;
+                }
                 if (collided.bounceCount > current.bounceCount)
                     this.powerupSystem.contact(this.state, collided, this.stepNowMs);
                 current = (0, BallSim_1.settleBallIfSlow)(collided);
@@ -1913,6 +1955,7 @@ class ServerGameLoop {
      */
     startRoundWorld() {
         this.powerupSystem.reset(this.state);
+        this.mapEffects.reset(this.state);
         for (const id in this.state.players) {
             const player = this.state.players[id];
             if (player.connected === false)
@@ -2200,6 +2243,46 @@ class ServerGameLoop {
                 this.applyHalfCourtPenalty(player.id, this.state.match.boundary.lastEvent.value);
             }
         }
+    }
+    /** Life loss with no scorer (lava). Same bookkeeping as a boundary penalty. */
+    applyEnvironmentDamage(playerId) {
+        this.applyHalfCourtPenalty(playerId, 1);
+    }
+    /**
+     * Shockwave: any standing mat whose footprint is within `radius` of the blast falls away from it.
+     * Mirrors knockOverMatsForPlayer's bookkeeping (state + id set + collision rebuild).
+     */
+    knockOverMatsNear(position, radius) {
+        let knockedAny = false;
+        for (const spec of this.activeMatSpecs) {
+            if (this.knockedOverMatIds.has(spec.id))
+                continue;
+            const box = (0, MapGeometry_1.matCollisionBox)(spec);
+            const dx = position.x - (0, CollisionMath_1.clamp)(position.x, box.minX, box.maxX);
+            const dz = position.z - (0, CollisionMath_1.clamp)(position.z, box.minZ, box.maxZ);
+            if (dx * dx + dz * dz > radius * radius)
+                continue;
+            const away = (0, CollisionMath_1.normalize)((0, CollisionMath_1.vec3)(spec.x - position.x, 0, spec.z - position.z), (0, CollisionMath_1.vec3)(0, 0, 1));
+            const fallDir = (0, MapGeometry_1.matFallDirection)(away);
+            this.state.mats[spec.id] = { ...this.state.mats[spec.id], knockedOver: true, knockDirection: (0, CollisionMath_1.vec3)(fallDir.x, 0, fallDir.z) };
+            this.knockedOverMatIds.add(spec.id);
+            knockedAny = true;
+        }
+        if (knockedAny)
+            this.rebuildCollisionBoxes();
+    }
+    /** First living player (other than the thrower) whose body the grenade's swept path crosses. */
+    findGrenadeTarget(ball, segPrev, segCurr) {
+        const radius = (0, PlayerHitbox_1.playerBallHitRadius)();
+        for (const id in this.state.players) {
+            const target = this.state.players[id];
+            if (id === ball.ownerId || !this.isPlayerAlive(target))
+                continue;
+            const hitbox = (0, PlayerHitbox_1.playerHitCapsule)(target);
+            if ((0, CollisionMath_1.sweptBallHitsBody)(segPrev, segCurr, hitbox.base, hitbox.top, radius))
+                return target;
+        }
+        return null;
     }
     applyHalfCourtPenalty(playerId, value) {
         // Unified across formats: a half-court penalty costs the offender lives (1v1 + 2v2).
@@ -2838,6 +2921,7 @@ class ServerGameLoop {
         // Preserve the running tick so it stays monotonic across the reset (see createFreshRoomState).
         this.state = this.createFreshRoomState(players, this.state.tick);
         this.powerupSystem.reset(this.state);
+        this.mapEffects.reset(this.state);
         this.ensureHostAssignment();
         this.teamChoicesByPlayerId.clear();
         for (const player of players) {
@@ -3449,6 +3533,11 @@ function resolveConstructorFormat(options) {
  * live and deflected death thresholds — the separate side-wall/ceiling "one bounce" mechanic is left
  * to its dedicated rule (applyWallCeilingBounce) and is intentionally not overridden here.
  */
+/** Frenzy: a live ball never dies on a bounce. */
+const UNLIMITED_BOUNCE_RULE = {
+    deadAfterBounces: Number.MAX_SAFE_INTEGER,
+    deflectedDeadAfterBounces: Number.MAX_SAFE_INTEGER
+};
 function bounceRuleFromSettings(matchSettings) {
     return {
         deadAfterBounces: matchSettings.maxLiveBallBounces,
@@ -3536,13 +3625,16 @@ function resolveBallBounds(ball, bounceRule) {
     // A floor / back-wall contact always wins (kills now). Otherwise it was a side-wall/ceiling-only
     // contact: let the ball survive its first such bounce, die on the second.
     if (hitKillNow)
-        return applySurfaceKillingBounce(resolved);
+        return applySurfaceKillingBounce(resolved, bounceRule);
     return applyWallCeilingBounce(resolved, bounceRule);
 }
-function applySurfaceKillingBounce(ball) {
+function applySurfaceKillingBounce(ball, bounceRule) {
     if (ball.phase !== 'live' && ball.phase !== 'deflected') {
         return { ...ball, bounceCount: ball.bounceCount + 1 };
     }
+    // Frenzy's unlimited rule keeps the ball live even off the floor/back wall.
+    if ((bounceRule?.deadAfterBounces ?? 0) >= Number.MAX_SAFE_INTEGER)
+        return { ...ball, bounceCount: ball.bounceCount + 1 };
     return { ...(0, BallSim_1.markBallDead)(ball), bounceCount: ball.bounceCount + 1 };
 }
 /**

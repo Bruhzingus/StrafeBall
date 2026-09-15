@@ -1,4 +1,5 @@
 import { PowerupPresentation } from '../powerups/PowerupPresentation';
+import { mapEffectGravityScale } from '../../../shared/simulation/MapEffectSim';
 import { Color3, Engine, Mesh, MeshBuilder, PBRMaterial, Scene, StandardMaterial, Vector3, type Camera } from '@babylonjs/core';
 import { FxaaPostProcess } from '@babylonjs/core/PostProcesses/fxaaPostProcess';
 import { InputManager } from '../input/InputManager';
@@ -1099,6 +1100,7 @@ export class ArenaScene {
     const powerupSnapshot = this.multiplayer.latestSnapshot;
     this.powerupPresentation.update(powerupSnapshot?.room ?? null, this.multiplayer.localPlayerId,
       this.player.root.position, this.multiplayer.powerupPrivate, this.multiplayer.drainPowerupEvents(), dt);
+    this.player.lookScale = this.powerupPresentation.localLookScale;
 
     // Offline testing toggle (all offline modes incl. creator playtest): strip cooldowns from
     // catches / stamina / backflip / parry so abilities can be spammed while iterating.
@@ -1225,6 +1227,7 @@ export class ArenaScene {
     const powerupSnapshot = this.multiplayer.latestSnapshot;
     this.powerupPresentation.update(powerupSnapshot?.room ?? null, this.multiplayer.localPlayerId,
       this.player.root.position, this.multiplayer.powerupPrivate, this.multiplayer.drainPowerupEvents(), dt);
+    this.player.lookScale = this.powerupPresentation.localLookScale;
     this.onlineRateLogFrameCount += 1;
     this.perfReportFrameCount += 1;
     this.recordPerfFrame(rawFrameMs);
@@ -1370,7 +1373,8 @@ export class ArenaScene {
         this.deriveCatchStance(local, input),
         undefined,
         this.deriveOnlineMovementScale(local),
-        this.deriveOnlineCooldownRateScale(local)
+        this.deriveOnlineCooldownRateScale(local),
+        this.deriveOnlineGravityScale()
       );
       this.predictedMovement = res.movement;
       this.predictedInternal = res.internal;
@@ -1712,7 +1716,8 @@ export class ArenaScene {
         this.deriveCatchStance(local, entry.input),
         undefined,
         this.deriveOnlineMovementScale(local),
-        this.deriveOnlineCooldownRateScale(local)
+        this.deriveOnlineCooldownRateScale(local),
+        this.deriveOnlineGravityScale()
       );
       movement = res.movement;
       internal = res.internal;
@@ -1793,7 +1798,8 @@ export class ArenaScene {
         this.deriveCatchStance(local, entry.input),
         undefined,
         this.deriveOnlineMovementScale(local),
-        this.deriveOnlineCooldownRateScale(local)
+        this.deriveOnlineCooldownRateScale(local),
+        this.deriveOnlineGravityScale()
       );
       this.predictedMovement = res.movement;
       this.predictedInternal = res.internal;
@@ -1815,6 +1821,11 @@ export class ArenaScene {
     return (local.lastPlayerBuffUntilMs ?? 0) > Date.now()
       ? TUNING.match.lastPlayerBuffMultiplier
       : 1;
+  }
+
+  /** Moon-gravity map effect: prediction must fall at the same rate the server does. */
+  private deriveOnlineGravityScale(): number {
+    return mapEffectGravityScale(this.multiplayer.latestSnapshot?.room.mapEffect);
   }
 
   private deriveOnlineCooldownRateScale(local: PlayerState | null): number {

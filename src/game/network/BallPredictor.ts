@@ -2,6 +2,7 @@ import type { ThrowEvent } from '../../../shared/protocol';
 import type { BallState, Vec3 } from '../../../shared/types';
 import { LIVE_BALL_COMBAT_SUBSTEPS, SERVER_FIXED_DT } from '../../../shared/netConfig';
 import { advanceBall, createBallState } from '../../../shared/simulation/BallSim';
+import { GAME_CONSTANTS, type GameConstants } from '../../../shared/constants';
 
 /**
  * Client-side VISUAL prediction for live thrown balls. Purely cosmetic: it replays the shared ball
@@ -53,6 +54,8 @@ export class BallPredictor {
   // with the same dt the server used. Default = compiled mode; NetworkRenderer passes the room's
   // resolved rate when a tick preset is negotiated.
   private readonly fixedDt: number;
+  /** Ball-sim constants for the running map effect (moon gravity). Set from the latest room state. */
+  ballConstants: GameConstants = GAME_CONSTANTS;
   private readonly balls = new Map<string, PredictedBall>();
   private totalCorrections = 0;
   private maxCorrections = 0;
@@ -227,7 +230,7 @@ export class BallPredictor {
     let remaining = Math.min(renderServerTimeMs - entry.simTimeMs, PREDICTION_MAX_CATCHUP_MS);
     while (remaining > 0) {
       const step = Math.min(this.fixedDt, remaining / 1000);
-      entry.sim = advanceBall(entry.sim, step);
+      entry.sim = advanceBall(entry.sim, step, this.ballConstants);
       remaining -= step * 1000;
     }
     entry.simTimeMs = renderServerTimeMs;

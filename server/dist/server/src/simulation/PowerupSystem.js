@@ -5,10 +5,19 @@ const constants_1 = require("../../../shared/constants");
 const BallSim_1 = require("../../../shared/simulation/BallSim");
 const HandSim_1 = require("../../../shared/simulation/HandSim");
 const MapGeometry_1 = require("../../../shared/simulation/MapGeometry");
-const KINDS = ['adrenaline', 'speed', 'cannon', 'heal', 'magnet', 'bomb'];
+const KINDS = ['adrenaline', 'speed', 'cannon', 'heal', 'magnet', 'bomb', 'shock', 'stun'];
+const HAND_ITEMS = ['cannon', 'bomb', 'heal', 'shock', 'stun'];
 const alive = (p) => p.connected && p.combatState === 'alive' && p.lives > 0;
 const horizontal = (a, b) => Math.hypot(a.x - b.x, a.z - b.z);
 const SPAWN_HEIGHT = 1;
+/** Unit XZ direction from a blast to a target; falls back to the target's facing when on top of it. */
+function normalizeXZ(dx, dz, fallback) {
+    const len = Math.hypot(dx, dz);
+    if (len > 1e-4)
+        return { x: dx / len, z: dz / len };
+    const flen = Math.hypot(fallback.x, fallback.z);
+    return flen > 1e-4 ? { x: -fallback.x / flen, z: -fallback.z / flen } : { x: 0, z: 1 };
+}
 /** 1v1: one spawn at center court. 2v2: two, mirrored across center along the neutral line. */
 function createSpawns(room) {
     const fresh = { spawned: false, waitSeconds: constants_1.GAME_CONSTANTS.powerup.respawnSeconds };
@@ -55,6 +64,7 @@ class PowerupSystem {
         for (const p of Object.values(room.players)) {
             p.hasPowerup = false;
             p.armorBallIds = [];
+            p.pendingGrenades = 0;
             delete p.movementInternal.buffs;
             for (const hand of ['left', 'right']) {
                 const ball = room.balls[p.hands[hand].heldBallId ?? ''];
@@ -76,7 +86,7 @@ class PowerupSystem {
         if (room.settings.powerupsEnabled === false || !p || !alive(p) || room.match.status !== 'playing' || !kind)
             return false;
         const hand = ['left', 'right'].find(h => !p.hands[h].heldBallId);
-        if (['cannon', 'bomb', 'heal'].includes(kind) && !hand) {
+        if (HAND_ITEMS.includes(kind) && !hand) {
             this.notify(room, playerId, 'Free a hand to use this power-up');
             return false;
         }
@@ -96,6 +106,8 @@ class PowerupSystem {
             p.hands[hand] = (0, HandSim_1.createHandState)(hand, { heldBallId: id, mode: 'holding' });
             if (kind === 'cannon')
                 buffs.cannonLocked = true;
+            if ((0, BallSim_1.isGrenadeKind)(kind))
+                p.pendingGrenades = constants_1.GAME_CONSTANTS.powerup.grenadeCharges - 1;
         }
         this.inventory.delete(playerId);
         p.hasPowerup = false;
@@ -123,20 +135,25 @@ class PowerupSystem {
         return true;
     }
     /** Runs only during live play. Timers measure simulated seconds, including under server catch-up. */
-    beforeBalls(room, dt, livesCap) {
+    beforeBalls(room, dt, livesCap, rollMapEffect) {
         if (room.settings.powerupsEnabled === false)
             return;
         const world = room.powerups ??= { spawns: createSpawns(room), stations: [] };
-        for (const spawn of world.spawns) {
+        world.spawns.forEach((spawn, i) => {
             if (spawn.spawned)
-                continue;
+                return;
             spawn.waitSeconds = Math.max(0, spawn.waitSeconds - dt);
-            if (spawn.waitSeconds < 1e-7) {
-                spawn.waitSeconds = 0;
-                spawn.spawned = true;
-                this.emit(room, 'spawn', spawnPosition(spawn));
+            if (spawn.waitSeconds >= 1e-7)
+                return;
+            // A completed clock can become a map effect instead of an item; the spawn then just restarts.
+            if (rollMapEffect?.(i, spawnPosition(spawn))) {
+                spawn.waitSeconds = constants_1.GAME_CONSTANTS.powerup.respawnSeconds;
+                return;
             }
-        }
+            spawn.waitSeconds = 0;
+            spawn.spawned = true;
+            this.emit(room, 'spawn', spawnPosition(spawn));
+        });
         for (const p of Object.values(room.players)) {
             if (!alive(p)) {
                 this.inventory.delete(p.id);
@@ -146,7 +163,7 @@ class PowerupSystem {
                 ? world.spawns.find(s => s.spawned && horizontal(p.movement.position, spawnPosition(s)) <= constants_1.GAME_CONSTANTS.powerup.pickupRadius)
                 : undefined;
             if (spawn) {
-                this.inventory.set(p.id, KINDS[Math.min(5, Math.floor(this.rng() * KINDS.length))]);
+                this.inventory.set(p.id, KINDS[Math.min(KINDS.length - 1, Math.floor(this.rng() * KINDS.length))]);
                 p.hasPowerup = true;
                 spawn.spawned = false;
                 spawn.waitSeconds = constants_1.GAME_CONSTANTS.powerup.respawnSeconds;
@@ -298,10 +315,103 @@ class PowerupSystem {
             ball.bombThrowerId = playerId;
         if (ball.kind === 'cannon')
             this.emit(room, 'cannon', ball.position, { playerId });
-        this.syncLock(room, room.players[playerId]);
+        const p = room.players[playerId];
+        // Grenades come in pairs: the next one lands in the hand that just threw, until the pair is spent.
+        if (p && (0, BallSim_1.isGrenadeKind)(ball.kind) && (p.pendingGrenades ?? 0) > 0) {
+            const hand = ['left', 'right'].find(h => !p.hands[h].heldBallId);
+            if (hand) {
+                const id = `powerball_${++this.serial}`;
+                room.balls[id] = (0, BallSim_1.holdBall)((0, BallSim_1.createBallState)(id, p.movement.position, { kind: ball.kind }), playerId, hand);
+                p.hands[hand] = (0, HandSim_1.createHandState)(hand, { heldBallId: id, mode: 'holding' });
+                p.pendingGrenades = (p.pendingGrenades ?? 1) - 1;
+            }
+        }
+        this.syncLock(room, p);
     }
-    afterBalls(room, dt, damage) {
+    /**
+     * A grenade touched something: freeze it there and start the fuse. `target` is the player it
+     * landed on (it rides them until it pops), or null for floor/wall/mat/bleacher/ceiling.
+     */
+    stick(room, ball, nowMs, target) {
+        const stuck = {
+            ...ball,
+            phase: 'stuck',
+            velocity: { x: 0, y: 0, z: 0 },
+            stuckAtMs: nowMs,
+            fuseSeconds: constants_1.GAME_CONSTANTS.powerup.grenadeFuseSeconds,
+            ...(target ? { stuckToPlayerId: target.id, position: { ...target.movement.position, y: target.movement.position.y + constants_1.GAME_CONSTANTS.player.height * 0.55 } } : {})
+        };
+        this.emit(room, 'stick', stuck.position, { kind: ball.kind, playerId: target?.id });
+        return stuck;
+    }
+    /** The other half of the grenade step, driven by the loop because mats live there. */
+    detonate(room, ball, knockMatsNear) {
+        const pos = ball.position;
+        const dist = (p) => Math.hypot(p.movement.position.x - pos.x, p.movement.position.y + constants_1.GAME_CONSTANTS.player.height / 2 - pos.y, p.movement.position.z - pos.z);
+        if (ball.kind === 'shock') {
+            const radius = constants_1.GAME_CONSTANTS.powerup.shockRadius;
+            for (const p of Object.values(room.players)) {
+                if (!alive(p))
+                    continue;
+                const d = dist(p);
+                if (d > radius)
+                    continue;
+                // Fling away from the blast, stronger up close. Always lift so they leave the ground.
+                const falloff = 1 - 0.5 * (d / radius);
+                const dir = normalizeXZ(p.movement.position.x - pos.x, p.movement.position.z - pos.z, p.movement.facing);
+                p.movement = {
+                    ...p.movement,
+                    velocity: { x: dir.x * constants_1.GAME_CONSTANTS.powerup.shockPlayerSpeed * falloff, y: constants_1.GAME_CONSTANTS.powerup.shockPlayerLift * falloff, z: dir.z * constants_1.GAME_CONSTANTS.powerup.shockPlayerSpeed * falloff },
+                    grounded: false, sliding: false, wallRunning: false
+                };
+                // Interrupt whatever they were winding up.
+                p.movementInternal = { ...p.movementInternal, backflipActive: false, backflipTimer: 0, wallRunTimer: 0 };
+                for (const h of ['left', 'right']) {
+                    if (p.hands[h].mode === 'charging')
+                        p.hands[h] = { ...p.hands[h], mode: 'holding', chargeSeconds: 0 };
+                }
+            }
+            for (const other of Object.values(room.balls)) {
+                if (other.id === ball.id || (other.kind ?? 'normal') !== 'normal')
+                    continue;
+                if (other.phase !== 'loose' && other.phase !== 'dead')
+                    continue;
+                const d = Math.hypot(other.position.x - pos.x, other.position.y - pos.y, other.position.z - pos.z);
+                if (d > radius)
+                    continue;
+                const falloff = 1 - 0.5 * (d / radius);
+                const dir = normalizeXZ(other.position.x - pos.x, other.position.z - pos.z, { x: 0, y: 0, z: 1 });
+                room.balls[other.id] = { ...(0, BallSim_1.markBallDead)(other, { x: dir.x * constants_1.GAME_CONSTANTS.powerup.shockBallSpeed * falloff, y: constants_1.GAME_CONSTANTS.powerup.shockBallLift * falloff, z: dir.z * constants_1.GAME_CONSTANTS.powerup.shockBallSpeed * falloff }), position: { ...other.position, y: other.position.y + 0.05 } };
+            }
+            knockMatsNear(pos, radius);
+            this.emit(room, 'shock', pos);
+        }
+        else if (ball.kind === 'stun') {
+            for (const p of Object.values(room.players)) {
+                if (!alive(p) || dist(p) > constants_1.GAME_CONSTANTS.powerup.stunRadius)
+                    continue;
+                const buffs = p.movementInternal.buffs ??= { speedSeconds: 0, adrenalineSeconds: 0, magnetSeconds: 0, cannonLocked: false };
+                buffs.stunSeconds = Math.max(buffs.stunSeconds ?? 0, constants_1.GAME_CONSTANTS.powerup.stunSeconds);
+            }
+            this.emit(room, 'stun', pos);
+        }
+    }
+    afterBalls(room, dt, damage, knockMatsNear = () => { }) {
         for (const ball of Object.values(room.balls)) {
+            if ((0, BallSim_1.isGrenadeKind)(ball.kind)) {
+                if (ball.phase !== 'stuck')
+                    continue;
+                // Ride the player it landed on; if they're gone, pop where they were.
+                const rider = ball.stuckToPlayerId ? room.players[ball.stuckToPlayerId] : undefined;
+                if (rider)
+                    ball.position = { ...rider.movement.position, y: rider.movement.position.y + constants_1.GAME_CONSTANTS.player.height * 0.55 };
+                ball.fuseSeconds = (ball.fuseSeconds ?? constants_1.GAME_CONSTANTS.powerup.grenadeFuseSeconds) - dt;
+                if (ball.fuseSeconds > 1e-7)
+                    continue;
+                this.detonate(room, ball, knockMatsNear);
+                delete room.balls[ball.id];
+                continue;
+            }
             if (ball.kind === 'cannon' && ball.phase !== 'held' && (ball.bounceCount > 0 || ball.phase === 'dead' || ball.phase === 'loose')) {
                 delete room.balls[ball.id];
                 this.cannonHits.delete(`${ball.id}:${ball.throwId}`);

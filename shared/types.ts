@@ -93,14 +93,31 @@ export interface MatchSettings {
   scoreLimit: number;
 }
 
-export type PowerupKind = 'adrenaline' | 'speed' | 'cannon' | 'heal' | 'magnet' | 'bomb';
-export interface PowerupBuffs { speedSeconds: number; adrenalineSeconds: number; magnetSeconds: number; cannonLocked: boolean }
+export type PowerupKind = 'adrenaline' | 'speed' | 'cannon' | 'heal' | 'magnet' | 'bomb' | 'shock' | 'stun';
+export interface PowerupBuffs { speedSeconds: number; adrenalineSeconds: number; magnetSeconds: number; cannonLocked: boolean; stunSeconds?: number }
 export interface HealStationState { id: string; placerId: string; teamId: string; position: Vec3; remainingSeconds: number; progress: Record<string, number> }
 /** One center-line power-up spawn point. 1v1 has one at (0,0); 2v2 has two, one per side of center. */
 export interface PowerupSpawnState { x: number; z: number; spawned: boolean; waitSeconds: number }
 export interface PowerupWorldState { spawns: PowerupSpawnState[]; stations: HealStationState[] }
 
-export type BallPhase = 'loose' | 'held' | 'live' | 'dead' | 'deflected' | 'armor';
+/**
+ * Map effects: whole-court events rolled from the same spawn clock as power-ups. Instead of an item
+ * to pick up, the spawn shows an effect capsule for `warning` seconds (banner + countdown), then the
+ * effect runs for everyone. Only one can run at a time.
+ */
+export type MapEffectKind = 'moon' | 'lava' | 'frenzy';
+export interface MapEffectState {
+  kind: MapEffectKind;
+  phase: 'warning' | 'active' | 'ending';
+  /** Seconds left in the current phase. */
+  remainingSeconds: number;
+  /** Which power-up spawn point is showing the capsule during the warning. */
+  spawnIndex: number;
+  /** Lava surface height above the floor (m); 0 unless kind is 'lava'. */
+  lavaLevel: number;
+}
+
+export type BallPhase = 'loose' | 'held' | 'live' | 'dead' | 'deflected' | 'armor' | 'stuck';
 export type BallOwnerKind = 'player' | 'launcher' | 'bot' | 'dummy' | null;
 
 export interface PlayerInput {
@@ -244,6 +261,8 @@ export interface MovementInternalState {
 
 export interface PlayerState {
   hasPowerup?: boolean;
+  /** Grenade charges still queued behind the one in hand (shock/stun come in pairs). */
+  pendingGrenades?: number;
   armorBallIds?: string[];
   id: string;
   name: string;
@@ -269,7 +288,11 @@ export interface PlayerState {
 }
 
 export interface BallState {
-  kind?: 'normal' | 'cannon' | 'bomb' | 'heal';
+  kind?: 'normal' | 'cannon' | 'bomb' | 'heal' | 'shock' | 'stun';
+  /** Grenades: wall-clock ms when the grenade stuck to a surface/player and its fuse began. */
+  stuckAtMs?: number;
+  /** Grenades: player this grenade is riding on (stuck to their body), if any. */
+  stuckToPlayerId?: string;
   armedAtMs?: number;
   fuseSeconds?: number;
   bombThrowerId?: string;
@@ -434,6 +457,7 @@ export interface IntermissionVoteState {
 
 export interface RoomState {
   powerups?: PowerupWorldState;
+  mapEffect?: MapEffectState | null;
   id: string;
   tick: number;
   /**

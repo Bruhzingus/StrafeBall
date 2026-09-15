@@ -1,6 +1,8 @@
 import { Color3, DynamicTexture, Mesh, MeshBuilder, Scene, StandardMaterial, TransformNode, Vector3 } from '@babylonjs/core';
 import { GAME_CONSTANTS as C } from '../../../shared/constants';
-import type { BallState, PlayerState, PowerupKind, RoomState, Vec3 } from '../../../shared/types';
+import type { BallState, MapEffectKind, PlayerState, PowerupKind, RoomState, Vec3 } from '../../../shared/types';
+import { isGrenadeKind } from '../../../shared/simulation/BallSim';
+import { lavaMaxHeight } from '../../../shared/simulation/MapEffectSim';
 import type { PowerupEvent, PowerupPrivateMessage } from '../../../shared/protocol';
 import { SoundManager } from '../audio/SoundManager';
 import { settings } from '../config/Settings';
@@ -12,9 +14,17 @@ const ITEMS: Record<PowerupKind, { name: string; icon: string; color: string; hi
   cannon: { name: 'CANNONBALL', icon: '●', color: '#b9c5d8', hint: 'Unblockable · pierces players · locks stamina' },
   heal: { name: 'HEAL STATION', icon: '+', color: '#7fffb2', hint: 'Place with throw · stay 10s to heal' },
   magnet: { name: 'BALL MAGNET', icon: '∩', color: '#ce9aff', hint: 'Pull loose balls · up to 3 armor · 20s' },
-  bomb: { name: 'BOMB BALL', icon: '✹', color: '#ffad73', hint: 'First bounce starts a 2s fuse · hits everyone' }
+  bomb: { name: 'BOMB BALL', icon: '✹', color: '#ffad73', hint: 'First bounce starts a 2s fuse · hits everyone' },
+  shock: { name: 'SHOCKWAVE', icon: '◎', color: '#8ef1ff', hint: 'Sticks where it lands · flings players & balls · ×2' },
+  stun: { name: 'STUN', icon: '✦', color: '#fff29a', hint: 'Sticks where it lands · dazes everyone near it · ×2' }
 };
 const kinds = Object.keys(ITEMS) as PowerupKind[];
+
+const MAP_EFFECTS: Record<MapEffectKind, { name: string; warning: string; color: string; icon: string }> = {
+  moon: { name: 'MOON GRAVITY', warning: 'Gravity is about to drop', color: '#c9d6ff', icon: '☾' },
+  lava: { name: "DON'T TOUCH THE LAVA", warning: 'Lava is rising — get to high ground!', color: '#ff6a2a', icon: '♨' },
+  frenzy: { name: 'BALL FRENZY', warning: 'Triple balls · nothing dies on a bounce', color: '#ffd24a', icon: '※' }
+};
 
 function material(scene: Scene, name: string, hex: string, glow = 0.3): StandardMaterial {
   const existing = scene.getMaterialByName(name) as StandardMaterial | null;
@@ -49,6 +59,21 @@ export function updateSpecialBall(mesh: Mesh, ball: BallState, time: number): vo
     mesh.metadata = { ...mesh.metadata, [key]: true };
     if (ball.kind === 'heal') {
       device(scene, mesh, 0.85);
+    } else if (ball.kind === 'shock') {
+      // Shockwave: a squat cyan puck with a glowing rim — reads as "device", not "ball".
+      const puck = attach(MeshBuilder.CreateCylinder('shock_puck', { diameter: C.ball.radius * 2.3, height: C.ball.radius * 0.9, tessellation: 24 }, scene), mesh, material(scene, 'power_shock_body', '#20344a', 0.08));
+      puck.position.y = 0;
+      attach(MeshBuilder.CreateTorus('shock_rim', { diameter: C.ball.radius * 2.35, thickness: 0.035, tessellation: 32 }, scene), mesh, material(scene, 'power_shock_glow', '#8ef1ff', 1.1));
+      const core = attach(MeshBuilder.CreateSphere('shock_core', { diameter: C.ball.radius * 0.7, segments: 10 }, scene), mesh, material(scene, 'power_shock_glow', '#8ef1ff', 1.1));
+      mesh.metadata.powerCore = core;
+    } else if (ball.kind === 'stun') {
+      // Stun: an upright grey canister with a yellow band and a pin — the flashbang silhouette.
+      const can = attach(MeshBuilder.CreateCylinder('stun_can', { diameter: C.ball.radius * 1.35, height: C.ball.radius * 2.6, tessellation: 16 }, scene), mesh, material(scene, 'power_stun_body', '#6d7480', 0.05));
+      can.position.y = 0;
+      attach(MeshBuilder.CreateCylinder('stun_band', { diameter: C.ball.radius * 1.42, height: C.ball.radius * 0.5, tessellation: 16 }, scene), mesh, material(scene, 'power_stun_glow', '#fff29a', 0.9));
+      const pin = attach(MeshBuilder.CreateTorus('stun_pin', { diameter: C.ball.radius * 0.7, thickness: 0.02, tessellation: 12 }, scene), mesh, material(scene, 'power_steel', '#637083', 0.08), new Vector3(0, C.ball.radius * 1.45, 0));
+      pin.rotation.x = Math.PI / 2;
+      mesh.metadata.powerCore = pin;
     } else {
       const band = MeshBuilder.CreateTorus('power_ball_band', { diameter: C.ball.radius * 2 * 0.97, thickness: 0.018, tessellation: 32 }, scene);
       attach(band, mesh, material(scene, 'power_steel', '#637083', 0.08)); band.rotation.x = Math.PI / 2;
@@ -63,7 +88,21 @@ export function updateSpecialBall(mesh: Mesh, ball: BallState, time: number): vo
   mesh.material = material(scene, ball.kind === 'heal' ? 'power_green' : 'power_ball_black', ball.kind === 'heal' ? '#4deb9b' : '#151b27', ball.kind === 'heal' ? 0.65 : 0.015);
   const size = ball.kind === 'cannon' ? (ball.phase === 'held' ? C.powerup.cannonHeldScale : C.powerup.cannonFlightScale) : 1;
   mesh.scaling.scaleInPlace(size);
-  if (ball.kind === 'heal') mesh.visibility = 0; // children form the deployable; sphere is only its anchor
+  if (ball.kind === 'heal' || isGrenadeKind(ball.kind)) mesh.visibility = 0; // children form the model; sphere is only its anchor
+  if (isGrenadeKind(ball.kind)) {
+    // A stuck grenade blinks faster as the fuse runs out; in flight/hand it just glows.
+    const stuck = ball.phase === 'stuck';
+    const fuse = ball.fuseSeconds ?? C.powerup.grenadeFuseSeconds;
+    const blink = stuck ? (Math.sin(time * (18 + 30 * (1 - fuse / C.powerup.grenadeFuseSeconds))) > 0 ? 1 : 0.15) : 1;
+    for (const child of mesh.getChildMeshes()) {
+      child.renderOverlay = stuck;
+      if (stuck) {
+        child.overlayColor.copyFromFloats(...(ball.kind === 'shock' ? [0.55, 0.95, 1] : [1, 0.95, 0.6]) as [number, number, number]);
+        child.overlayAlpha = 0.6 * blink;
+      }
+    }
+    if (!stuck) mesh.rotation.y = time * 2.2;
+  }
   const ember = mesh.metadata?.powerEmber as Mesh | undefined;
   if (ember) {
     const armed = ball.armedAtMs !== undefined;
@@ -114,11 +153,23 @@ export class PowerupPresentation {
   private lastHealing = 0;
   private healFlashUntil = 0;
   private lastFxKey = '';
+  private mapBanner = document.createElement('div');
+  private stunFx = document.createElement('div');
+  private lastBannerHtml = '';
+  private lava: Mesh | null = null;
+  private effectCapsule: TransformNode | null = null;
+  private effectCapsuleCore: Mesh | null = null;
+  private stunFlashUntil = 0;
+  private wasStunned = false;
+  /** Mouse-look multiplier for the local player (1 = normal; dropped while stunned). */
+  localLookScale = 1;
 
   constructor(private scene: Scene, private sound: SoundManager) {
     this.neutral.className = 'neutral-zone-label'; this.neutral.textContent = 'NEUTRAL';
     this.screenFx.className = 'powerup-screen-fx'; this.screenFx.setAttribute('aria-hidden', 'true');
-    document.body.append(this.neutral, this.screenFx);
+    this.mapBanner.className = 'map-effect-banner'; this.mapBanner.hidden = true;
+    this.stunFx.className = 'stun-fx'; this.stunFx.setAttribute('aria-hidden', 'true');
+    document.body.append(this.neutral, this.screenFx, this.stunFx, this.mapBanner);
   }
 
   /** One mystery capsule + 60-segment respawn clock per spawn point (1 in 1v1, 2 in 2v2). */
@@ -156,7 +207,7 @@ export class PowerupPresentation {
   update(room: RoomState | null, localId: string, localPosition: Vec3, privateMessage: PowerupPrivateMessage | null, events: PowerupEvent[], dt: number): void {
     this.time += dt;
     const active = !!room?.powerups && room.settings.powerupsEnabled !== false;
-    if (!active) { this.hud?.setPowerupSlot(null); this.setScreenFx(null, 0); }
+    if (!active) { this.hud?.setPowerupSlot(null); this.setScreenFx(null, 0); this.setStun(0); this.setBanner(''); }
     this.neutral.hidden = Math.abs(localPosition.z) > C.match.neutralZoneHalfDepth || Math.abs(localPosition.x) > C.map.halfWidth;
     if (room && (this.lastSerial !== room.resetVote.resetSerial || this.lastRound !== room.match.currentRound)) {
       this.clearDynamic(); this.heldKind = null; this.lastPrivate = null;
@@ -164,7 +215,8 @@ export class PowerupPresentation {
       this.lastSerial = room.resetVote.resetSerial; this.lastRound = room.match.currentRound;
     }
     if (!room) {
-      this.hud?.setPowerupSlot(null); this.setScreenFx(null, 0); this.clearDynamic();
+      this.hud?.setPowerupSlot(null); this.setScreenFx(null, 0); this.setStun(0); this.setBanner(''); this.clearDynamic();
+      this.lava?.setEnabled(false); this.effectCapsule?.setEnabled(false);
       for (const node of this.spawnNodes) node.root.setEnabled(false);
       this.heldKind = null; this.lastPrivate = null; this.lastSerial = -1; return;
     }
@@ -177,9 +229,12 @@ export class PowerupPresentation {
     if (local?.combatState === 'eliminated') this.heldKind = null;
     for (const event of events) {
       if (event.resetSerial !== room.resetVote.resetSerial) continue;
-      this.sound.powerup(event.effect, event.position, localPosition, local?.movement.facing, event.stage ?? 0);
+      // Map-effect cues are court-wide announcements, not positional.
+      const spatial = !event.effect.startsWith('map-');
+      this.sound.powerup(event.effect, spatial ? event.position : undefined, spatial ? localPosition : undefined, local?.movement.facing, event.stage ?? 0);
       if (event.effect === 'heal' && event.playerId === localId) this.healFlashUntil = this.time + 0.45;
-      if (event.effect === 'explode' || event.effect === 'heal' || event.effect === 'pickup' || event.effect === 'thud' || event.effect === 'armor' || event.effect === 'activate') this.burst(event);
+      if (event.effect === 'explode' || event.effect === 'heal' || event.effect === 'pickup' || event.effect === 'thud' || event.effect === 'armor' || event.effect === 'activate' || event.effect === 'shock' || event.effect === 'stun') this.burst(event);
+      if (event.effect === 'stun' && local && Math.hypot(local.movement.position.x - event.position.x, local.movement.position.z - event.position.z) <= C.powerup.stunRadius + 1) this.stunFlashUntil = this.time + 0.35;
     }
     const world = room.powerups;
     if (world && active) {
@@ -199,8 +254,10 @@ export class PowerupPresentation {
       });
       for (let i = world.spawns.length; i < this.spawnNodes.length; i++) this.spawnNodes[i].root.setEnabled(false);
       this.updateStations(room);
+      this.updateMapEffect(room);
     } else {
       for (const node of this.spawnNodes) node.root.setEnabled(false);
+      this.lava?.setEnabled(false); this.effectCapsule?.setEnabled(false); this.setBanner('');
     }
     this.updatePlayers(room, localId, dt);
     if (active) { this.updateHud(local, room); this.updateLocalFeedback(local, room, dt); }
@@ -235,10 +292,17 @@ export class PowerupPresentation {
       .concat(armor ? [`Armor ${'●'.repeat(armor)}`] : [], buffs?.cannonLocked ? ['Stamina locked'] : [])
       .join(' · ');
     const world = room.powerups;
+    const heldGrenade = local
+      ? (['left', 'right'] as const).map(h => room.balls[local.hands[h].heldBallId ?? '']).find(b => b && isGrenadeKind(b.kind))
+      : undefined;
 
     let view: PowerupSlotView;
     if (item) {
       view = { glyph: item.icon, color: item.color, name: rolling ? 'Rolling…' : item.name, hint: item.hint, progress: 1, state: 'held', rolling };
+    } else if (heldGrenade) {
+      const item = ITEMS[heldGrenade.kind as PowerupKind];
+      const left = 1 + (local?.pendingGrenades ?? 0);
+      view = { glyph: item.icon, color: item.color, name: item.name, hint: `${left} left · sticks where it lands`, progress: left / C.powerup.grenadeCharges, state: 'held' };
     } else if (local?.hasPowerup) {
       view = { glyph: '?', color: ITEMS.adrenaline.color, name: 'Mystery item', hint: 'Revealing…', progress: 1, state: 'held' };
     } else if (effects.length > 0 || armor > 0 || buffs?.cannonLocked) {
@@ -283,15 +347,104 @@ export class PowerupPresentation {
     else if ((buffs?.speedSeconds ?? 0) > 0) { kind = 'speed'; strength = fade(buffs!.speedSeconds); }
     else if ((buffs?.adrenalineSeconds ?? 0) > 0) { kind = 'adrenaline'; strength = fade(buffs!.adrenalineSeconds); }
     else if ((buffs?.magnetSeconds ?? 0) > 0) { kind = 'magnet'; strength = fade(buffs!.magnetSeconds); }
-    this.setScreenFx(kind, strength);
+
+    // Map effects tint at lower priority than a personal effect — except being IN the lava, which
+    // is a danger cue and always wins.
+    const effect = room.mapEffect;
+    const lavaLevel = effect?.kind === 'lava' ? effect.lavaLevel : 0;
+    const inLava = !!local && lavaLevel > 0.05 && local.movement.position.y < lavaLevel - 0.05 && local.combatState === 'alive';
+    if (inLava) this.setScreenFx('lava-danger', 1.4 + 0.5 * Math.sin(this.time * 9), '#ff3b1a');
+    else if (kind) this.setScreenFx(kind, strength, ITEMS[kind].color);
+    else if (effect?.phase === 'active' && effect.kind === 'moon') this.setScreenFx('moon', 0.7, MAP_EFFECTS.moon.color);
+    else if (effect?.phase === 'active' && effect.kind === 'lava') this.setScreenFx('lava', 0.5, MAP_EFFECTS.lava.color);
+    else this.setScreenFx(null, 0);
+
+    // Stun: blur + slowed look for the local player while their stun timer runs.
+    const stun = buffs?.stunSeconds ?? 0;
+    const stunned = stun > 0 && local?.combatState === 'alive';
+    if (stunned && !this.wasStunned) this.stunFlashUntil = Math.max(this.stunFlashUntil, this.time + 0.35);
+    this.wasStunned = stunned;
+    const flash = Math.max(0, (this.stunFlashUntil - this.time) / 0.35);
+    this.setStun(stunned ? Math.max(0.35, Math.min(1, stun / C.powerup.stunSeconds)) + flash : flash);
+    // Ease the look speed back over the last 0.4 s so the recovery isn't a hard snap.
+    this.localLookScale = stunned ? C.powerup.stunLookMultiplier + (1 - C.powerup.stunLookMultiplier) * Math.max(0, 1 - stun / 0.4) : 1;
   }
 
-  private setScreenFx(kind: PowerupKind | null, strength: number): void {
-    const level = settings.reducedEffects || !kind ? 0 : Math.max(0, Math.min(2, strength));
-    const key = `${kind ?? ''}|${level.toFixed(2)}`;
-    if (key === this.lastFxKey) return;
-    this.lastFxKey = key;
-    if (kind) { this.screenFx.dataset.kind = kind; this.screenFx.style.setProperty('--fx-color', ITEMS[kind].color); }
+  private setStun(level: number): void {
+    const value = settings.reducedEffects ? Math.min(level, 0.5) : Math.max(0, Math.min(2, level));
+    this.stunFx.style.setProperty('--stun-level', value.toFixed(2));
+    this.stunFx.hidden = value <= 0.01;
+  }
+
+  private setBanner(html: string, color = ''): void {
+    if (html === this.lastBannerHtml) return;
+    this.lastBannerHtml = html;
+    this.mapBanner.hidden = html === '';
+    this.mapBanner.innerHTML = html;
+    if (color) this.mapBanner.style.setProperty('--banner-color', color);
+  }
+
+  /** Banner + effect capsule during the warning, lava sheet while it runs. */
+  private updateMapEffect(room: RoomState): void {
+    const effect = room.mapEffect;
+    const spawns = room.powerups?.spawns ?? [];
+    if (!effect) {
+      this.setBanner('');
+      this.effectCapsule?.setEnabled(false);
+      this.lava?.setEnabled(false);
+      return;
+    }
+    const info = MAP_EFFECTS[effect.kind];
+    const secs = Math.max(0, Math.ceil(effect.remainingSeconds));
+    if (effect.phase === 'warning') {
+      this.setBanner(`<b>${info.icon} ${info.name}</b><span>${info.warning}</span><i>${secs}</i>`, info.color);
+      // Show the capsule at the spawn that rolled it, in the effect's color, spinning up.
+      const spawn = spawns[effect.spawnIndex] ?? spawns[0];
+      if (!this.effectCapsule) {
+        this.effectCapsule = new TransformNode('map_effect_capsule', this.scene);
+        this.effectCapsuleCore = attach(MeshBuilder.CreateSphere('map_effect_core', { diameter: 0.7, segments: 16 }, this.scene), this.effectCapsule, material(this.scene, 'map_effect_core', '#ffffff', 0.9));
+        const ring = attach(MeshBuilder.CreateTorus('map_effect_ring', { diameter: 1.25, thickness: 0.05, tessellation: 40 }, this.scene), this.effectCapsule, material(this.scene, 'map_effect_ring', '#ffffff', 0.9));
+        ring.rotation.x = Math.PI / 2;
+      }
+      const c = Color3.FromHexString(info.color);
+      for (const child of this.effectCapsule.getChildMeshes()) {
+        const m = child.material as StandardMaterial | null;
+        if (m) { m.diffuseColor = c; m.emissiveColor = c.scale(0.9); }
+      }
+      this.effectCapsule.setEnabled(true);
+      this.effectCapsule.position.set(spawn?.x ?? 0, 1.05 + Math.sin(this.time * 3) * 0.08, spawn?.z ?? 0);
+      this.effectCapsule.rotation.y = this.time * (2 + 4 * (1 - effect.remainingSeconds / C.mapEffect.warningSeconds));
+      this.effectCapsule.scaling.setAll(1 + 0.12 * Math.sin(this.time * 10));
+    } else {
+      this.effectCapsule?.setEnabled(false);
+      this.setBanner(`<b>${info.icon} ${info.name}</b><i>${effect.phase === 'ending' ? 'clearing' : secs}</i>`, info.color);
+    }
+
+    // Lava sheet.
+    if (effect.kind === 'lava') {
+      if (!this.lava) {
+        this.lava = MeshBuilder.CreateGround('lava_sheet', { width: C.map.halfWidth * 2, height: C.map.halfLength * 2, subdivisions: 1 }, this.scene);
+        const mat = material(this.scene, 'map_lava', '#ff5a1f', 0.9);
+        mat.alpha = 0.9; mat.specularColor = new Color3(0.9, 0.5, 0.2); mat.specularPower = 24;
+        this.lava.material = mat; this.lava.isPickable = false;
+      }
+      const level = Math.min(effect.lavaLevel, lavaMaxHeight());
+      this.lava.setEnabled(level > 0.01);
+      this.lava.position.y = level + 0.01;
+      const mat = this.lava.material as StandardMaterial;
+      const glow = 0.75 + 0.25 * Math.sin(this.time * 2.4);
+      mat.emissiveColor.copyFromFloats(1.0 * glow, 0.36 * glow, 0.1 * glow);
+    } else {
+      this.lava?.setEnabled(false);
+    }
+  }
+
+  private setScreenFx(key: string | null, strength: number, color = ''): void {
+    const level = settings.reducedEffects || !key ? 0 : Math.max(0, Math.min(2, strength));
+    const fxKey = `${key ?? ''}|${level.toFixed(2)}`;
+    if (fxKey === this.lastFxKey) return;
+    this.lastFxKey = fxKey;
+    if (key) { this.screenFx.dataset.kind = key; if (color) this.screenFx.style.setProperty('--fx-color', color); }
     else delete this.screenFx.dataset.kind;
     this.screenFx.style.setProperty('--fx-strength', level.toFixed(2));
   }
@@ -347,11 +500,28 @@ export class PowerupPresentation {
   private burst(event: PowerupEvent): void {
     if (this.bursts.length >= 16) return;
     const explosion = event.effect === 'explode';
-    const mesh = MeshBuilder.CreateTorus('powerup_pulse', { diameter: 2, thickness: explosion ? 0.07 : 0.03, tessellation: 40 }, this.scene);
+    const shock = event.effect === 'shock';
+    const stun = event.effect === 'stun';
+    const mesh = MeshBuilder.CreateTorus('powerup_pulse', { diameter: 2, thickness: explosion || shock ? 0.07 : 0.03, tessellation: 40 }, this.scene);
     mesh.position.set(event.position.x, Math.max(0.04, event.position.y), event.position.z);
-    mesh.material = material(this.scene, explosion ? 'power_explosion' : 'power_green', explosion ? '#ffb06b' : '#4deb9b', 0.65);
+    mesh.material = material(this.scene,
+      explosion ? 'power_explosion' : shock ? 'power_shock_glow' : stun ? 'power_stun_glow' : 'power_green',
+      explosion ? '#ffb06b' : shock ? '#8ef1ff' : stun ? '#fff29a' : '#4deb9b', 0.65);
     mesh.isPickable = false;
-    this.bursts.push({ mesh, duration: explosion ? 0.55 : 0.4, life: explosion ? 0.55 : 0.4, radius: explosion ? C.powerup.blastRadius : 1 });
+    const radius = explosion ? C.powerup.blastRadius : shock ? C.powerup.shockRadius : stun ? C.powerup.stunRadius : 1;
+    const duration = explosion ? 0.55 : shock ? 0.45 : stun ? 0.3 : 0.4;
+    this.bursts.push({ mesh, duration, life: duration, radius });
+    if (shock && !settings.reducedEffects) {
+      // Second, taller ring so the wave reads in 3D, not just on the floor.
+      const dome = MeshBuilder.CreateTorus('shock_wave_2', { diameter: 2, thickness: 0.05, tessellation: 40 }, this.scene);
+      dome.position.copyFrom(mesh.position); dome.position.y += 0.9; dome.material = mesh.material; dome.isPickable = false;
+      this.bursts.push({ mesh: dome, duration: 0.4, life: 0.4, radius: radius * 0.85 });
+    }
+    if (stun && !settings.reducedEffects) {
+      const flash = MeshBuilder.CreateSphere('stun_flash', { diameter: 2, segments: 12 }, this.scene);
+      flash.position.copyFrom(mesh.position); flash.material = material(this.scene, 'power_stun_glow', '#fff29a', 0.9); flash.isPickable = false;
+      this.bursts.push({ mesh: flash, duration: 0.22, life: 0.22, radius: radius * 0.6 });
+    }
     if (explosion && !settings.reducedEffects) {
       const flash = MeshBuilder.CreateSphere('bomb_fireball', { diameter: 2, segments: 12 }, this.scene);
       flash.position.copyFrom(mesh.position); flash.material = material(this.scene, 'power_explosion', '#ffb06b', 0.65); flash.isPickable = false;
@@ -364,8 +534,9 @@ export class PowerupPresentation {
     for (const { mesh } of [...this.trails, ...this.bursts]) mesh.dispose(); this.trails = []; this.bursts = [];
   }
   dispose(): void {
-    this.clearDynamic(); this.hud?.setPowerupSlot(null); this.neutral.remove(); this.screenFx.remove();
+    this.clearDynamic(); this.hud?.setPowerupSlot(null); this.neutral.remove(); this.screenFx.remove(); this.stunFx.remove(); this.mapBanner.remove();
     for (const node of this.spawnNodes) node.root.dispose(); this.spawnNodes = [];
+    this.lava?.dispose(); this.lava = null; this.effectCapsule?.dispose(); this.effectCapsule = null;
   }
 }
 

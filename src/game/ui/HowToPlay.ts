@@ -22,6 +22,9 @@ function buildPages(): Page[] {
   const backflipCooldown = GAME_CONSTANTS.backflip.cooldownSeconds;
   const respawn = GAME_CONSTANTS.powerup.respawnSeconds;
   const buffSeconds = GAME_CONSTANTS.powerup.buffSeconds;
+  const grenades = GAME_CONSTANTS.powerup.grenadeCharges;
+  const frenzyMult = GAME_CONSTANTS.mapEffect.frenzyBallMultiplier;
+  const frenzySeconds = GAME_CONSTANTS.mapEffect.frenzySeconds;
 
   return [
     {
@@ -78,6 +81,19 @@ function buildPages(): Page[] {
           <div><b>+ Heal Station</b> — drop it and stand in the ring for a few seconds straight to earn back a life. Step out and the timer resets.</div>
           <div><b>∩ Ball Magnet</b> — loose balls drift toward you, and once your hands are full, extras stick to you as armor that'll eat a hit for you.</div>
           <div><b>✹ Bomb Ball</b> — throw it like normal, but the first bounce arms a short fuse. Three beeps, then it goes off and tags everyone standing close, thrower included.</div>
+          <div><b>◎ Shockwave</b> — you get ${grenades}. It doesn't bounce; whatever it hits first (floor, wall, mat, a player) is where it sticks, then a beat later it goes off. Nobody loses a life — it just launches everyone and every loose ball near it, flattens mats, and cancels any throw someone was winding up. Shove someone over the line and let the half-court rule do the rest.</div>
+          <div><b>✦ Stun</b> — same throw-and-stick as the shockwave, ${grenades} of them. When it pops, everyone close (you included, if you're standing there) gets dazed for a couple seconds: blurry screen, mouse feels like molasses, slow feet, no dash.</div>
+        </div>
+      `
+    },
+    {
+      title: 'Map Effects',
+      html: `
+        <p>Sometimes the spawn clock doesn't drop an item at all — a glowing capsule appears instead, a banner warns everyone what's coming, and a few seconds later the whole court changes. Nobody picks these up; they hit both teams the same.</p>
+        <div class="htp-items">
+          <div><b>☾ Moon Gravity</b> — gravity goes way down for a bit. Huge floaty jumps, long hang time, balls sail further. Chaos, but the same chaos for everyone.</div>
+          <div><b>♨ Don't Touch the Lava</b> — the floor starts flooding. It rises until only the very top of the bleachers is dry, so get up there or keep moving — wall-runs keep you above it. Standing in it costs a life about every second. Loose balls float on top and drift out to the bleachers so you can still grab ammo from up high.</div>
+          <div><b>※ Ball Frenzy</b> — ${frenzyMult}× the balls rain down from the ceiling for ${frenzySeconds}s, and nothing dies on a bounce: a live throw stays live off the floor, walls, mats, all of it. Watch the ricochets.</div>
         </div>
       `
     },

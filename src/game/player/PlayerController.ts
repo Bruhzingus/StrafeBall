@@ -136,9 +136,12 @@ export class PlayerController {
   // Mouse look runs once per render frame so aiming stays smooth and low-latency regardless of
   // refresh rate. consumeMouseDelta drains all movement since the last frame (no smoothing, so
   // no added input delay). Yaw rotates the body root; pitch tilts the camera (clamped).
+  /** Multiplier on mouse look (1 = normal). Driven by the stun grenade while the local player is dazed. */
+  lookScale = 1;
+
   private updateLook(): void {
     const { dx, dy } = this.input.consumeMouseDelta();
-    const sensitivity = settings.effectiveMouseSensitivity;
+    const sensitivity = settings.effectiveMouseSensitivity * this.lookScale;
     this.yaw += dx * sensitivity;
     this.pitch += dy * sensitivity;
     this.pitch = Math.max(-TUNING.player.lookPitchLimitRadians, Math.min(TUNING.player.lookPitchLimitRadians, this.pitch));

@@ -12,12 +12,12 @@ import { isIllegalHalfCourtPosition } from '../../shared/simulation/RuleSim';
 import { MAT_SPECS, createBleacherTierSpecs } from '../../shared/simulation/MapGeometry';
 import type { PlayerInput, PowerupKind, RoomState } from '../../shared/types';
 
-const kinds: PowerupKind[] = ['adrenaline', 'speed', 'cannon', 'heal', 'magnet', 'bomb'];
+const kinds: PowerupKind[] = ['adrenaline', 'speed', 'cannon', 'heal', 'magnet', 'bomb', 'shock', 'stun'];
 const v = (x = 0, y = 0, z = 0) => ({ x, y, z });
 function setup(kind: PowerupKind = 'speed') {
   const room = createRoomState({ players: [createPlayerState('a', 'blue'), createPlayerState('b', 'red', 'positiveZ')] });
   room.match.status = 'playing'; room.players.b.movement.position = v(0, 0, 10);
-  const system = new PowerupSystem(() => (kinds.indexOf(kind) + 0.1) / 6); system.reset(room); system.drain();
+  const system = new PowerupSystem(() => (kinds.indexOf(kind) + 0.1) / kinds.length); system.reset(room); system.drain();
   return { room, system };
 }
 function take(room: RoomState, system: PowerupSystem) {
