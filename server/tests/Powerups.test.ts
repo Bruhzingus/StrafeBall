@@ -21,7 +21,7 @@ function setup(kind: PowerupKind = 'speed') {
   return { room, system };
 }
 function take(room: RoomState, system: PowerupSystem) {
-  room.powerups!.waitSeconds = 0; system.beforeBalls(room, 0, 3);
+  room.powerups!.spawns[0].waitSeconds = 0; system.beforeBalls(room, 0, 3);
 }
 function input(overrides: Partial<PlayerInput> = {}): PlayerInput {
   return { moveX: 0, moveZ: 0, lookYawRadians: 0, lookPitchRadians: 0, dashDirection: v(), ...overrides } as PlayerInput;
@@ -53,14 +53,14 @@ describe('power-up inventory and replication', () => {
   it('first spawns after exactly 20 simulated seconds; first player wins; next wait starts on pickup', () => {
     const { room, system } = setup();
     room.players.a.movement.position = v(5); system.beforeBalls(room, 19.99, 3);
-    expect(room.powerups!.spawned).toBe(false);
-    system.beforeBalls(room, 0.01, 3); expect(room.powerups!.spawned).toBe(true);
-    system.beforeBalls(room, 50, 3); expect(room.powerups!.spawned).toBe(true);
+    expect(room.powerups!.spawns[0].spawned).toBe(false);
+    system.beforeBalls(room, 0.01, 3); expect(room.powerups!.spawns[0].spawned).toBe(true);
+    system.beforeBalls(room, 50, 3); expect(room.powerups!.spawns[0].spawned).toBe(true);
     room.players.a.movement.position = room.players.b.movement.position = v(); system.beforeBalls(room, 0.01, 3);
     expect(system.identity(room, 'a').kind).toBe('speed'); expect(system.identity(room, 'b').kind).toBeNull();
-    expect(room.powerups!.waitSeconds).toBe(20);
+    expect(room.powerups!.spawns[0].waitSeconds).toBe(20);
     room.players.b.movement.position = v(5); system.beforeBalls(room, 20, 3);
-    expect(room.powerups!.spawned).toBe(true); // existing holder cannot take a second
+    expect(room.powerups!.spawns[0].spawned).toBe(true); // existing holder cannot take a second
   });
   it('broadcast full/compact/tiered snapshots never contain an unused identity; only holder gets it', () => {
     const { room, system } = setup('bomb'); take(room, system);
@@ -100,16 +100,36 @@ describe('power-up inventory and replication', () => {
       expect(state.balls.armor.armorPlayerId).toBe('a'); expect(state.powerups!.stations[0].progress.a).toBe(6);
     }
   });
+  it('2v2 rooms get two independent spawns mirrored across center; 1v1 gets one', () => {
+    const { room } = setup();
+    expect(room.powerups!.spawns).toHaveLength(1);
+    const loop = new ServerGameLoop('two-spawns', { mode: '2v2', playersPerTeam: 2 });
+    for (const id of ['a', 'b', 'c', 'd']) loop.addPlayer(id, id);
+    const spawns = loop.state.powerups!.spawns;
+    expect(spawns).toHaveLength(2);
+    expect(spawns[0].x).toBeCloseTo(-C.map.halfWidth * C.powerup.twoVTwoSpawnOffsetFraction, 5);
+    expect(spawns[1].x).toBeCloseTo(-spawns[0].x, 5);
+    expect(spawns.every(s => s.z === 0)).toBe(true);
+    // Taking one leaves the other up, and only the taken one restarts its 20 s wait.
+    loop.state.match.status = 'playing'; loop.state.match.boundary.noBoundaries = true;
+    for (const s of spawns) { s.spawned = true; s.waitSeconds = 0; }
+    loop.state.players.a.movement.position = v(spawns[1].x, 0, 0);
+    Object.values(loop.state.players).filter(p => p.id !== 'a').forEach(p => { p.movement.position = v(0, 0, -15); });
+    loop.advance();
+    expect(loop.state.players.a.hasPowerup).toBe(true);
+    expect(spawns[0].spawned).toBe(true);
+    expect(spawns[1].spawned).toBe(false); expect(spawns[1].waitSeconds).toBeGreaterThan(19);
+  });
   it('pauses spawn during countdown/intermission and clears every artifact at reset', () => {
     const loop = new ServerGameLoop('paused'); loop.addPlayer('a', 'A'); loop.addPlayer('b', 'B');
-    loop.state.match.status = 'intermission'; loop.state.powerups!.waitSeconds = 12;
-    loop.advance(); expect(loop.state.powerups!.waitSeconds).toBe(12);
+    loop.state.match.status = 'intermission'; loop.state.powerups!.spawns[0].waitSeconds = 12;
+    loop.advance(); expect(loop.state.powerups!.spawns[0].waitSeconds).toBe(12);
     const { room, system } = setup('bomb'); take(room, system); system.activate(room, 'a');
     room.powerups!.stations.push({ id: 's', placerId: 'a', teamId: 'blue', position: v(), progress: {}, remainingSeconds: 20 });
     system.reset(room);
     expect(Object.values(room.balls)).toHaveLength(0); expect(room.powerups!.stations).toHaveLength(0);
     expect(room.players.a.movementInternal.buffs).toBeUndefined(); expect(room.players.a.hands.left.heldBallId).toBeNull();
-    expect(system.identity(room, 'a').kind).toBeNull(); expect(room.powerups!.waitSeconds).toBe(20);
+    expect(system.identity(room, 'a').kind).toBeNull(); expect(room.powerups!.spawns[0].waitSeconds).toBe(20);
   });
 });
 
@@ -198,6 +218,24 @@ describe('magnet and healing', () => {
     room.players.a.movementInternal.buffs!.magnetSeconds = 0; system.beforeBalls(room, 0.1, 3);
     expect(room.players.a.armorBallIds).toHaveLength(0); expect(Object.values(room.balls).filter(b => b.phase === 'armor')).toHaveLength(0);
     expect(system.absorb(room, room.players.a)).toBe(false);
+  });
+  it('pickup while wearing armor takes an armor ball into a free hand before hunting the floor', () => {
+    const loop = new ServerGameLoop('armor-grab'); loop.addPlayer('a', 'A'); loop.addPlayer('b', 'B');
+    loop.state.match.status = 'playing';
+    const a = loop.state.players.a;
+    a.movementInternal.buffs = { speedSeconds: 0, adrenalineSeconds: 0, magnetSeconds: 10, cannonLocked: false };
+    loop.state.balls.armor1 = createBallState('armor1', a.movement.position, { phase: 'armor', armorPlayerId: 'a' });
+    a.armorBallIds = ['armor1'];
+    // Hands full: pickup does nothing to the armor.
+    a.hands.left = createHandState('left', { heldBallId: 'ball_0', mode: 'holding' });
+    a.hands.right = createHandState('right', { heldBallId: 'ball_1', mode: 'holding' });
+    expect(loop.handlePickup('a').ok).toBe(false); expect(a.armorBallIds).toEqual(['armor1']);
+    // Free a hand: E moves the armor ball into it.
+    a.hands.right = createHandState('right');
+    expect(loop.handlePickup('a').ok).toBe(true);
+    expect(loop.state.players.a.hands.right.heldBallId).toBe('armor1');
+    expect(loop.state.balls.armor1.phase).toBe('held'); expect(loop.state.balls.armor1.armorPlayerId).toBeUndefined();
+    expect(loop.state.players.a.armorBallIds).toEqual([]);
   });
   it('distant stationary balls begin a gentle continuous pull after three seconds', () => {
     const { room, system } = setup('magnet'); take(room, system); system.activate(room, 'a');

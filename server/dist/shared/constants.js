@@ -349,7 +349,10 @@ exports.GAME_CONSTANTS = {
         bombFuseSeconds: 2, blastRadius: 3,
         magnetSeconds: 20, magnetRadius: 10, magnetAcceleration: 28, magnetSpeed: 7,
         distantMagnetAcceleration: 5, distantMagnetSpeed: 2, stationarySeconds: 3, armorCap: 3,
-        healRadius: 1.5, healSeconds: 10, stationLifetimeSeconds: 45, placementDistance: 1.5
+        healRadius: 2.25, healSeconds: 10, stationLifetimeSeconds: 45, placementDistance: 1.5,
+        // 2v2 gets two separate spawn points, each this fraction of halfWidth out from center along the
+        // neutral line, so there are two contestable objectives instead of one.
+        twoVTwoSpawnOffsetFraction: 0.45
     },
     map: {
         halfWidth: 14.5,

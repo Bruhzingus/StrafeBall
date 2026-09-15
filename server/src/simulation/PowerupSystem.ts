@@ -1,5 +1,5 @@
 import { GAME_CONSTANTS as C } from '../../../shared/constants';
-import type { BallState, HandSide, PlayerState, PowerupKind, RoomState, Vec3 } from '../../../shared/types';
+import type { BallState, HandSide, PlayerState, PowerupKind, PowerupSpawnState, RoomState, Vec3 } from '../../../shared/types';
 import type { PowerupEvent, PowerupPrivateMessage } from '../../../shared/protocol';
 import { createBallState, holdBall, markBallDead } from '../../../shared/simulation/BallSim';
 import { createHandState, tryPickupBall } from '../../../shared/simulation/HandSim';
@@ -8,7 +8,16 @@ import { createBallCollisionBoxes } from '../../../shared/simulation/MapGeometry
 const KINDS: PowerupKind[] = ['adrenaline', 'speed', 'cannon', 'heal', 'magnet', 'bomb'];
 const alive = (p: PlayerState) => p.connected && p.combatState === 'alive' && p.lives > 0;
 const horizontal = (a: Vec3, b: Vec3) => Math.hypot(a.x - b.x, a.z - b.z);
-const center = { x: 0, y: 1, z: 0 };
+const SPAWN_HEIGHT = 1;
+
+/** 1v1: one spawn at center court. 2v2: two, mirrored across center along the neutral line. */
+function createSpawns(room: RoomState): PowerupSpawnState[] {
+  const fresh = { spawned: false, waitSeconds: C.powerup.respawnSeconds };
+  if (room.settings.format !== '2v2') return [{ x: 0, z: 0, ...fresh }];
+  const offset = C.map.halfWidth * C.powerup.twoVTwoSpawnOffsetFraction;
+  return [{ x: -offset, z: 0, ...fresh }, { x: offset, z: 0, ...fresh }];
+}
+const spawnPosition = (spawn: PowerupSpawnState): Vec3 => ({ x: spawn.x, y: SPAWN_HEIGHT, z: spawn.z });
 
 /** Server-only inventory. No unused identity is ever placed in the public room state. */
 export class PowerupSystem {
@@ -37,7 +46,7 @@ export class PowerupSystem {
   }
   reset(room: RoomState): void {
     this.inventory.clear(); this.cannonHits.clear(); this.distantPulls.clear(); this.events = []; this.privateMessages = [];
-    room.powerups = { spawned: false, waitSeconds: C.powerup.respawnSeconds, stations: [] };
+    room.powerups = { spawns: createSpawns(room), stations: [] };
     for (const p of Object.values(room.players)) {
       p.hasPowerup = false; p.armorBallIds = []; delete p.movementInternal.buffs;
       for (const hand of ['left', 'right'] as const) {
@@ -99,17 +108,21 @@ export class PowerupSystem {
   /** Runs only during live play. Timers measure simulated seconds, including under server catch-up. */
   beforeBalls(room: RoomState, dt: number, livesCap: number): void {
     if (room.settings.powerupsEnabled === false) return;
-    const world = room.powerups ??= { spawned: false, waitSeconds: C.powerup.respawnSeconds, stations: [] };
-    if (!world.spawned) {
-      world.waitSeconds = Math.max(0, world.waitSeconds - dt);
-      if (world.waitSeconds < 1e-7) { world.waitSeconds = 0; world.spawned = true; this.emit(room, 'spawn', center); }
+    const world = room.powerups ??= { spawns: createSpawns(room), stations: [] };
+    for (const spawn of world.spawns) {
+      if (spawn.spawned) continue;
+      spawn.waitSeconds = Math.max(0, spawn.waitSeconds - dt);
+      if (spawn.waitSeconds < 1e-7) { spawn.waitSeconds = 0; spawn.spawned = true; this.emit(room, 'spawn', spawnPosition(spawn)); }
     }
     for (const p of Object.values(room.players)) {
       if (!alive(p)) { this.inventory.delete(p.id); p.hasPowerup = false; }
-      if (alive(p) && world.spawned && !this.inventory.has(p.id) && horizontal(p.movement.position, center) <= C.powerup.pickupRadius) {
+      const spawn = alive(p) && !this.inventory.has(p.id)
+        ? world.spawns.find(s => s.spawned && horizontal(p.movement.position, spawnPosition(s)) <= C.powerup.pickupRadius)
+        : undefined;
+      if (spawn) {
         this.inventory.set(p.id, KINDS[Math.min(5, Math.floor(this.rng() * KINDS.length))]);
-        p.hasPowerup = true; world.spawned = false; world.waitSeconds = C.powerup.respawnSeconds;
-        this.notify(room, p.id); this.emit(room, 'pickup', center, { playerId: p.id });
+        p.hasPowerup = true; spawn.spawned = false; spawn.waitSeconds = C.powerup.respawnSeconds;
+        this.notify(room, p.id); this.emit(room, 'pickup', spawnPosition(spawn), { playerId: p.id });
       }
       this.syncLock(room, p);
       if (!alive(p) || (p.movementInternal.buffs?.magnetSeconds ?? 0) <= 0) this.dropArmor(room, p);
@@ -167,6 +180,24 @@ export class PowerupSystem {
       // Preserve stationary eligibility during the gentle journey from beyond 10m.
       if (!nearby) this.distantPulls.set(ball.id, p.id); else this.distantPulls.delete(ball.id);
     }
+  }
+  /**
+   * Pickup (E) while wearing magnet armor: move the next armor ball into a free hand instead of
+   * hunting the floor. Returns the hand it landed in, or null if there's no armor or no free hand.
+   */
+  takeArmorBall(room: RoomState, p: PlayerState): { hand: HandSide; ballId: string } | null {
+    const hand = (['left', 'right'] as const).find(h => !p.hands[h].heldBallId);
+    if (!hand) return null;
+    while (p.armorBallIds?.length) {
+      const id = p.armorBallIds[0];
+      const ball = room.balls[id];
+      if (!ball || ball.phase !== 'armor') { p.armorBallIds.shift(); continue; }
+      p.armorBallIds.shift();
+      room.balls[id] = { ...holdBall(ball, p.id, hand), armorPlayerId: undefined };
+      p.hands[hand] = createHandState(hand, { heldBallId: id, mode: 'holding' });
+      return { hand, ballId: id };
+    }
+    return null;
   }
   absorb(room: RoomState, p: PlayerState): boolean {
     const id = p.armorBallIds?.shift(); if (!id) return false;

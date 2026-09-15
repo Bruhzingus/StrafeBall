@@ -8,7 +8,16 @@ const MapGeometry_1 = require("../../../shared/simulation/MapGeometry");
 const KINDS = ['adrenaline', 'speed', 'cannon', 'heal', 'magnet', 'bomb'];
 const alive = (p) => p.connected && p.combatState === 'alive' && p.lives > 0;
 const horizontal = (a, b) => Math.hypot(a.x - b.x, a.z - b.z);
-const center = { x: 0, y: 1, z: 0 };
+const SPAWN_HEIGHT = 1;
+/** 1v1: one spawn at center court. 2v2: two, mirrored across center along the neutral line. */
+function createSpawns(room) {
+    const fresh = { spawned: false, waitSeconds: constants_1.GAME_CONSTANTS.powerup.respawnSeconds };
+    if (room.settings.format !== '2v2')
+        return [{ x: 0, z: 0, ...fresh }];
+    const offset = constants_1.GAME_CONSTANTS.map.halfWidth * constants_1.GAME_CONSTANTS.powerup.twoVTwoSpawnOffsetFraction;
+    return [{ x: -offset, z: 0, ...fresh }, { x: offset, z: 0, ...fresh }];
+}
+const spawnPosition = (spawn) => ({ x: spawn.x, y: SPAWN_HEIGHT, z: spawn.z });
 /** Server-only inventory. No unused identity is ever placed in the public room state. */
 class PowerupSystem {
     rng;
@@ -42,7 +51,7 @@ class PowerupSystem {
         this.distantPulls.clear();
         this.events = [];
         this.privateMessages = [];
-        room.powerups = { spawned: false, waitSeconds: constants_1.GAME_CONSTANTS.powerup.respawnSeconds, stations: [] };
+        room.powerups = { spawns: createSpawns(room), stations: [] };
         for (const p of Object.values(room.players)) {
             p.hasPowerup = false;
             p.armorBallIds = [];
@@ -117,13 +126,15 @@ class PowerupSystem {
     beforeBalls(room, dt, livesCap) {
         if (room.settings.powerupsEnabled === false)
             return;
-        const world = room.powerups ??= { spawned: false, waitSeconds: constants_1.GAME_CONSTANTS.powerup.respawnSeconds, stations: [] };
-        if (!world.spawned) {
-            world.waitSeconds = Math.max(0, world.waitSeconds - dt);
-            if (world.waitSeconds < 1e-7) {
-                world.waitSeconds = 0;
-                world.spawned = true;
-                this.emit(room, 'spawn', center);
+        const world = room.powerups ??= { spawns: createSpawns(room), stations: [] };
+        for (const spawn of world.spawns) {
+            if (spawn.spawned)
+                continue;
+            spawn.waitSeconds = Math.max(0, spawn.waitSeconds - dt);
+            if (spawn.waitSeconds < 1e-7) {
+                spawn.waitSeconds = 0;
+                spawn.spawned = true;
+                this.emit(room, 'spawn', spawnPosition(spawn));
             }
         }
         for (const p of Object.values(room.players)) {
@@ -131,13 +142,16 @@ class PowerupSystem {
                 this.inventory.delete(p.id);
                 p.hasPowerup = false;
             }
-            if (alive(p) && world.spawned && !this.inventory.has(p.id) && horizontal(p.movement.position, center) <= constants_1.GAME_CONSTANTS.powerup.pickupRadius) {
+            const spawn = alive(p) && !this.inventory.has(p.id)
+                ? world.spawns.find(s => s.spawned && horizontal(p.movement.position, spawnPosition(s)) <= constants_1.GAME_CONSTANTS.powerup.pickupRadius)
+                : undefined;
+            if (spawn) {
                 this.inventory.set(p.id, KINDS[Math.min(5, Math.floor(this.rng() * KINDS.length))]);
                 p.hasPowerup = true;
-                world.spawned = false;
-                world.waitSeconds = constants_1.GAME_CONSTANTS.powerup.respawnSeconds;
+                spawn.spawned = false;
+                spawn.waitSeconds = constants_1.GAME_CONSTANTS.powerup.respawnSeconds;
                 this.notify(room, p.id);
-                this.emit(room, 'pickup', center, { playerId: p.id });
+                this.emit(room, 'pickup', spawnPosition(spawn), { playerId: p.id });
             }
             this.syncLock(room, p);
             if (!alive(p) || (p.movementInternal.buffs?.magnetSeconds ?? 0) <= 0)
@@ -218,6 +232,28 @@ class PowerupSystem {
             else
                 this.distantPulls.delete(ball.id);
         }
+    }
+    /**
+     * Pickup (E) while wearing magnet armor: move the next armor ball into a free hand instead of
+     * hunting the floor. Returns the hand it landed in, or null if there's no armor or no free hand.
+     */
+    takeArmorBall(room, p) {
+        const hand = ['left', 'right'].find(h => !p.hands[h].heldBallId);
+        if (!hand)
+            return null;
+        while (p.armorBallIds?.length) {
+            const id = p.armorBallIds[0];
+            const ball = room.balls[id];
+            if (!ball || ball.phase !== 'armor') {
+                p.armorBallIds.shift();
+                continue;
+            }
+            p.armorBallIds.shift();
+            room.balls[id] = { ...(0, BallSim_1.holdBall)(ball, p.id, hand), armorPlayerId: undefined };
+            p.hands[hand] = (0, HandSim_1.createHandState)(hand, { heldBallId: id, mode: 'holding' });
+            return { hand, ballId: id };
+        }
+        return null;
     }
     absorb(room, p) {
         const id = p.armorBallIds?.shift();

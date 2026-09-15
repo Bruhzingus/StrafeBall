@@ -6009,3 +6009,27 @@ html, body {
 }
 
 .neutral-zone-label { position: fixed; top: 22%; left: 50%; transform: translateX(-50%); z-index: 30; pointer-events: none; color: #adede7; font: 700 10px system-ui; letter-spacing: .24em; padding: 5px 10px; background: #0b2b3080; border: 1px solid #9ee9e82b; border-radius: 4px; }
+
+/* Full-screen tint for a running power-up effect: a faint edge vignette in the effect's color, one
+   at a time, capped low so it reads as ambience. --fx-strength 0..2 (Hud sets it; >1 only for the
+   brief heal-complete pulse). Sits under every HUD layer. */
+.powerup-screen-fx {
+  --fx-color: #7fffb2;
+  --fx-strength: 0;
+  position: fixed;
+  inset: 0;
+  z-index: 5;
+  pointer-events: none;
+  opacity: calc(var(--fx-strength) * 0.22);
+  background: radial-gradient(ellipse 70% 62% at 50% 52%, transparent 62%, color-mix(in srgb, var(--fx-color), transparent 55%) 100%);
+  transition: opacity 0.28s ease;
+}
+
+.powerup-screen-fx[data-kind='heal'] {
+  animation: powerup-fx-breathe 1.8s ease-in-out infinite;
+}
+
+
+@keyframes powerup-fx-breathe {
+  50% { filter: brightness(1.18); }
+}

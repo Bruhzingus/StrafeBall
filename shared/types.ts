@@ -96,7 +96,9 @@ export interface MatchSettings {
 export type PowerupKind = 'adrenaline' | 'speed' | 'cannon' | 'heal' | 'magnet' | 'bomb';
 export interface PowerupBuffs { speedSeconds: number; adrenalineSeconds: number; magnetSeconds: number; cannonLocked: boolean }
 export interface HealStationState { id: string; placerId: string; teamId: string; position: Vec3; remainingSeconds: number; progress: Record<string, number> }
-export interface PowerupWorldState { spawned: boolean; waitSeconds: number; stations: HealStationState[] }
+/** One center-line power-up spawn point. 1v1 has one at (0,0); 2v2 has two, one per side of center. */
+export interface PowerupSpawnState { x: number; z: number; spawned: boolean; waitSeconds: number }
+export interface PowerupWorldState { spawns: PowerupSpawnState[]; stations: HealStationState[] }
 
 export type BallPhase = 'loose' | 'held' | 'live' | 'dead' | 'deflected' | 'armor';
 export type BallOwnerKind = 'player' | 'launcher' | 'bot' | 'dummy' | null;

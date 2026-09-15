@@ -73,8 +73,15 @@ export class SoundManager {
       this.noiseBurst(0.35, 0.28, 750, destination);
       note(56, 30, 0.65, 0.12, 0.12);
     } else if (effect === 'beep') {
-      note(660 + stage * 260, 660 + stage * 260, 0.15 - stage * 0.025, 0.19, 0, 'triangle');
-      note(1320 + stage * 520, 1320 + stage * 520, 0.07, 0.045);
+      // Loud and escalating: this is the one cue a player near an armed bomb must not miss.
+      note(660 + stage * 260, 660 + stage * 260, 0.16 - stage * 0.02, 0.5 + stage * 0.12, 0, 'square');
+      note(660 + stage * 260, 660 + stage * 260, 0.16 - stage * 0.02, 0.3, 0, 'triangle');
+      note(1320 + stage * 520, 1320 + stage * 520, 0.08, 0.14);
+    } else if (effect === 'healtick') {
+      // One soft chime per second of heal dwell, stepping up so the player hears progress.
+      const step = Math.max(0, Math.min(9, stage - 1));
+      note(523 * Math.pow(2, step / 12), 523 * Math.pow(2, step / 12) * 1.003, 0.16, 0.085, 0, 'triangle');
+      note(1046 * Math.pow(2, step / 12), 1046 * Math.pow(2, step / 12), 0.09, 0.03, 0.01);
     } else if (effect === 'pickup' || effect === 'spawn' || effect === 'heal') {
       const melody = effect === 'heal' ? [523, 659, 784, 1047] : effect === 'pickup' ? [440, 659, 880, 1320] : [392, 587, 784];
       melody.forEach((f, i) => note(f, f * 1.002, 0.22, effect === 'spawn' ? 0.055 : 0.095, i * 0.065, 'triangle'));

@@ -460,6 +460,10 @@ class ServerGameLoop {
             return { ok: false, reason: 'unknown-player' };
         if (!this.isPlayerAlive(player))
             return { ok: false, reason: 'eliminated' };
+        // Magnet armor is worn on the body, so it's the nearest "ball" there is — take from it first.
+        const armor = this.powerupSystem.takeArmorBall(this.state, player);
+        if (armor)
+            return { ok: true, log: `pickup accepted player=${playerId} ball=${armor.ballId} hand=${armor.hand} (armor)` };
         const pp = player.movement.position;
         const allBalls = Object.values(this.state.balls);
         const candidates = allBalls

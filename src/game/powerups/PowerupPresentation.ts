@@ -71,19 +71,37 @@ export function updateSpecialBall(mesh: Mesh, ball: BallState, time: number): vo
     const pulse = armed ? 1 + Math.sin(time * (16 + 10 * (1 - (ball.fuseSeconds ?? 2) / 2))) * 0.5 : 1;
     ember.scaling.setAll(pulse);
     ember.position.y = 0.27 + Math.max(0, (ball.fuseSeconds ?? 2) / 2) * 0.085;
+    // Red flash on each beep. The server beeps at fuse = 2.0, 1.33, 0.67 s remaining, so the flash is
+    // derived from the replicated fuse clock (no event plumbing, identical for every viewer).
+    const flash = armed ? bombBeepFlash(ball.fuseSeconds ?? C.powerup.bombFuseSeconds) : 0;
+    mesh.renderOverlay = flash > 0.01;
+    if (mesh.renderOverlay) { mesh.overlayColor.set(1, 0.16, 0.1); mesh.overlayAlpha = 0.85 * flash; }
+    for (const child of mesh.getChildMeshes()) {
+      child.renderOverlay = mesh.renderOverlay;
+      if (mesh.renderOverlay) { child.overlayColor.copyFrom(mesh.overlayColor); child.overlayAlpha = mesh.overlayAlpha; }
+    }
   }
 }
 
+/** 0..1 flash intensity for a bomb with `fuseSeconds` left: 1 at each beep, decaying over ~0.18 s. */
+export function bombBeepFlash(fuseSeconds: number): number {
+  const interval = C.powerup.bombFuseSeconds / 3;
+  const elapsed = Math.max(0, C.powerup.bombFuseSeconds - fuseSeconds);
+  const sinceBeep = elapsed - Math.floor(elapsed / interval) * interval;
+  return Math.max(0, 1 - sinceBeep / 0.18);
+}
+
+interface SpawnNode { root: TransformNode; box: TransformNode; ring: Mesh[]; waitEstimate: number; lastWait: number }
+
 export class PowerupPresentation {
-  private root: TransformNode;
-  private box: TransformNode;
-  private ring: Mesh[] = [];
+  private spawnNodes: SpawnNode[] = [];
   private stations = new Map<string, TransformNode>();
   private markers = new Map<string, Mesh>();
   private trails: { mesh: Mesh; life: number }[] = [];
   private bursts: { mesh: Mesh; life: number; duration: number; radius: number }[] = [];
   private hud: Hud | null = null;
   private neutral = document.createElement('div');
+  private screenFx = document.createElement('div');
   private heldKind: PowerupKind | null = null;
   private rouletteUntil = 0;
   private nudgeUntil = 0;
@@ -92,46 +110,64 @@ export class PowerupPresentation {
   private lastRound = -1;
   private time = 0;
   private trailTick = 0;
-  private waitEstimate = C.powerup.respawnSeconds as number;
-  private lastWait = -1;
+  private healTicked = 0;
+  private lastHealing = 0;
+  private healFlashUntil = 0;
+  private lastFxKey = '';
 
   constructor(private scene: Scene, private sound: SoundManager) {
-    this.root = new TransformNode('powerup_center', scene);
-    this.box = new TransformNode('mystery_capsule', scene); this.box.parent = this.root;
+    this.neutral.className = 'neutral-zone-label'; this.neutral.textContent = 'NEUTRAL';
+    this.screenFx.className = 'powerup-screen-fx'; this.screenFx.setAttribute('aria-hidden', 'true');
+    document.body.append(this.neutral, this.screenFx);
+  }
+
+  /** One mystery capsule + 60-segment respawn clock per spawn point (1 in 1v1, 2 in 2v2). */
+  private createSpawnNode(index: number): SpawnNode {
+    const scene = this.scene;
+    const root = new TransformNode(`powerup_spawn_${index}`, scene);
+    const box = new TransformNode('mystery_capsule', scene); box.parent = root;
     const gold = material(scene, 'power_gold', '#ffcc62', 0.55);
     const dark = material(scene, 'power_box_dark', '#182c46', 0.1);
-    const shell = attach(MeshBuilder.CreateBox('mystery_shell', { size: 0.62 }, scene), this.box, dark);
+    const shell = attach(MeshBuilder.CreateBox('mystery_shell', { size: 0.62 }, scene), box, dark);
     shell.enableEdgesRendering(); shell.edgesWidth = 2; shell.edgesColor.set(1, 0.8, 0.35, 1);
-    for (const y of [-0.31, 0.31]) attach(MeshBuilder.CreateBox('mystery_trim', { width: 0.68, height: 0.045, depth: 0.68 }, scene), this.box, gold, new Vector3(0, y, 0));
-    const tex = new DynamicTexture('mystery_question', { width: 128, height: 128 }, scene, false);
-    tex.drawText('?', null, 102, 'bold 110px sans-serif', '#ffdc87', '#182c46', true);
-    const faceMat = material(scene, 'power_question', '#ffffff', 0.8); faceMat.diffuseTexture = tex; faceMat.emissiveTexture = tex;
+    for (const y of [-0.31, 0.31]) attach(MeshBuilder.CreateBox('mystery_trim', { width: 0.68, height: 0.045, depth: 0.68 }, scene), box, gold, new Vector3(0, y, 0));
+    const faceMat = material(scene, 'power_question', '#ffffff', 0.8);
+    if (!faceMat.diffuseTexture) {
+      const tex = new DynamicTexture('mystery_question', { width: 128, height: 128 }, scene, false);
+      tex.drawText('?', null, 102, 'bold 110px sans-serif', '#ffdc87', '#182c46', true);
+      faceMat.diffuseTexture = tex; faceMat.emissiveTexture = tex;
+    }
     for (let i = 0; i < 4; i++) {
-      const face = attach(MeshBuilder.CreatePlane('mystery_face', { size: 0.48 }, scene), this.box, faceMat);
+      const face = attach(MeshBuilder.CreatePlane('mystery_face', { size: 0.48 }, scene), box, faceMat);
       face.position.set(Math.sin(i * Math.PI / 2) * 0.315, 0, Math.cos(i * Math.PI / 2) * 0.315);
       face.rotation.y = i * Math.PI / 2 + Math.PI;
     }
     const grey = material(scene, 'power_ring_wait', '#566171', 0.1);
+    const ring: Mesh[] = [];
     for (let i = 0; i < 60; i++) {
       const angle = i / 60 * Math.PI * 2;
-      const segment = attach(MeshBuilder.CreateBox('powerup_clock_segment', { width: 0.075, height: 0.025, depth: 0.18 }, scene), this.root, grey, new Vector3(Math.sin(angle) * 0.84, 0.025, Math.cos(angle) * 0.84));
-      segment.rotation.y = angle; this.ring.push(segment);
+      const segment = attach(MeshBuilder.CreateBox('powerup_clock_segment', { width: 0.075, height: 0.025, depth: 0.18 }, scene), root, grey, new Vector3(Math.sin(angle) * 0.84, 0.025, Math.cos(angle) * 0.84));
+      segment.rotation.y = angle; ring.push(segment);
     }
-    this.neutral.className = 'neutral-zone-label'; this.neutral.textContent = 'NEUTRAL';
-    document.body.append(this.neutral); this.root.setEnabled(false);
+    root.setEnabled(false);
+    return { root, box, ring, waitEstimate: C.powerup.respawnSeconds, lastWait: -1 };
   }
 
   update(room: RoomState | null, localId: string, localPosition: Vec3, privateMessage: PowerupPrivateMessage | null, events: PowerupEvent[], dt: number): void {
     this.time += dt;
     const active = !!room?.powerups && room.settings.powerupsEnabled !== false;
-    this.root.setEnabled(active);
-    if (!active) this.hud?.setPowerupSlot(null);
+    if (!active) { this.hud?.setPowerupSlot(null); this.setScreenFx(null, 0); }
     this.neutral.hidden = Math.abs(localPosition.z) > C.match.neutralZoneHalfDepth || Math.abs(localPosition.x) > C.map.halfWidth;
     if (room && (this.lastSerial !== room.resetVote.resetSerial || this.lastRound !== room.match.currentRound)) {
-      this.clearDynamic(); this.heldKind = null; this.lastPrivate = null; this.lastWait = -1;
+      this.clearDynamic(); this.heldKind = null; this.lastPrivate = null;
+      for (const node of this.spawnNodes) node.lastWait = -1;
       this.lastSerial = room.resetVote.resetSerial; this.lastRound = room.match.currentRound;
     }
-    if (!room) { this.hud?.setPowerupSlot(null); this.clearDynamic(); this.heldKind = null; this.lastPrivate = null; this.lastSerial = -1; return; }
+    if (!room) {
+      this.hud?.setPowerupSlot(null); this.setScreenFx(null, 0); this.clearDynamic();
+      for (const node of this.spawnNodes) node.root.setEnabled(false);
+      this.heldKind = null; this.lastPrivate = null; this.lastSerial = -1; return;
+    }
     const local = room.players[localId];
     if (privateMessage && privateMessage !== this.lastPrivate && privateMessage.resetSerial === room.resetVote.resetSerial) {
       if (privateMessage.kind && privateMessage.kind !== this.heldKind) this.rouletteUntil = this.time + 1;
@@ -142,21 +178,32 @@ export class PowerupPresentation {
     for (const event of events) {
       if (event.resetSerial !== room.resetVote.resetSerial) continue;
       this.sound.powerup(event.effect, event.position, localPosition, local?.movement.facing, event.stage ?? 0);
+      if (event.effect === 'heal' && event.playerId === localId) this.healFlashUntil = this.time + 0.45;
       if (event.effect === 'explode' || event.effect === 'heal' || event.effect === 'pickup' || event.effect === 'thud' || event.effect === 'armor' || event.effect === 'activate') this.burst(event);
     }
     const world = room.powerups;
-    if (world) {
-      if (world.waitSeconds !== this.lastWait) { this.waitEstimate = world.waitSeconds; this.lastWait = world.waitSeconds; }
-      else if (room.match.status === 'playing') this.waitEstimate = Math.max(0, this.waitEstimate - dt);
-      this.box.setEnabled(world.spawned);
-      this.box.position.y = 1.05 + (settings.reducedEffects ? 0 : Math.sin(this.time * 2.7) * 0.1);
-      this.box.rotation.set(0.09, this.time * 0.65, settings.reducedEffects ? 0 : Math.sin(this.time * 1.8) * 0.06);
-      const filled = world.spawned ? 60 : Math.floor((1 - this.waitEstimate / C.powerup.respawnSeconds) * 60);
-      this.ring.forEach((m, i) => { m.material = material(this.scene, i < filled ? 'power_gold' : 'power_ring_wait', i < filled ? '#ffcc62' : '#566171', i < filled ? 0.55 : 0.1); });
+    if (world && active) {
+      // The world lane arrives at ~24 Hz; between updates run each spawn's clock locally so the ring
+      // and HUD countdown stay smooth, re-anchoring whenever the server value changes.
+      world.spawns.forEach((spawn, i) => {
+        const node = this.spawnNodes[i] ??= this.createSpawnNode(i);
+        node.root.setEnabled(true);
+        node.root.position.set(spawn.x, 0, spawn.z);
+        if (spawn.waitSeconds !== node.lastWait) { node.waitEstimate = spawn.waitSeconds; node.lastWait = spawn.waitSeconds; }
+        else if (room.match.status === 'playing' && !spawn.spawned) node.waitEstimate = Math.max(0, node.waitEstimate - dt);
+        node.box.setEnabled(spawn.spawned);
+        node.box.position.y = 1.05 + (settings.reducedEffects ? 0 : Math.sin(this.time * 2.7) * 0.1);
+        node.box.rotation.set(0.09, this.time * 0.65, settings.reducedEffects ? 0 : Math.sin(this.time * 1.8) * 0.06);
+        const filled = spawn.spawned ? 60 : Math.floor((1 - node.waitEstimate / C.powerup.respawnSeconds) * 60);
+        node.ring.forEach((m, j) => { m.material = material(this.scene, j < filled ? 'power_gold' : 'power_ring_wait', j < filled ? '#ffcc62' : '#566171', j < filled ? 0.55 : 0.1); });
+      });
+      for (let i = world.spawns.length; i < this.spawnNodes.length; i++) this.spawnNodes[i].root.setEnabled(false);
       this.updateStations(room);
+    } else {
+      for (const node of this.spawnNodes) node.root.setEnabled(false);
     }
     this.updatePlayers(room, localId, dt);
-    if (active) this.updateHud(local, room);
+    if (active) { this.updateHud(local, room); this.updateLocalFeedback(local, room, dt); }
     for (const fx of this.bursts) {
       fx.life -= dt; const t = 1 - Math.max(0, fx.life) / fx.duration;
       fx.mesh.scaling.setAll(0.1 + fx.radius * (1 - Math.pow(1 - t, 3)));
@@ -199,10 +246,11 @@ export class PowerupPresentation {
       view = { glyph: lead ? ITEMS[lead.kind].icon : armor ? ITEMS.magnet.icon : ITEMS.cannon.icon, color: lead?.color ?? (armor ? ITEMS.magnet.color : ITEMS.cannon.color), name: 'Active', hint: effectText, progress: lead ? lead.seconds / lead.max : 1, state: 'active' };
     } else if (healing > 0) {
       view = { glyph: ITEMS.heal.icon, color: ITEMS.heal.color, name: 'Healing', hint: `Stay put · ${Math.min(C.powerup.healSeconds, Math.floor(healing))}/${C.powerup.healSeconds}s`, progress: healing / C.powerup.healSeconds, state: 'active' };
-    } else if (world?.spawned) {
+    } else if (world?.spawns.some(s => s.spawned)) {
       view = { glyph: '?', color: ITEMS.adrenaline.color, name: 'Power-up', hint: 'Up for grabs at center', progress: 1, state: 'empty' };
     } else {
-      view = { glyph: '?', color: ITEMS.adrenaline.color, name: 'Power-up', hint: `Next at center in ${Math.ceil(this.waitEstimate)}s`, progress: 1 - this.waitEstimate / C.powerup.respawnSeconds, state: 'waiting' };
+      const soonest = Math.min(C.powerup.respawnSeconds, ...this.spawnNodes.filter((n, i) => world?.spawns[i]).map(n => n.waitEstimate));
+      view = { glyph: '?', color: ITEMS.adrenaline.color, name: 'Power-up', hint: `Next at center in ${Math.ceil(soonest)}s`, progress: 1 - soonest / C.powerup.respawnSeconds, state: 'waiting' };
     }
     // A refusal ("free a hand") overrides the hint line briefly.
     if (this.nudgeUntil > this.time && this.lastPrivate?.reason) view = { ...view, hint: this.lastPrivate.reason };
@@ -210,6 +258,44 @@ export class PowerupPresentation {
     else if (item && effectText) view = { ...view, hint: effectText };
     this.hud.setPowerupSlot(view);
   }
+  /**
+   * Local-only feedback: a soft tick for each second of heal dwell, and a faint edge tint in the
+   * running effect's color (fades out over the last 1.5 s so you feel it ending). One tint at a
+   * time, low opacity, no flashing — polish, not noise. Heal completion gets a short brighter pulse.
+   */
+  private updateLocalFeedback(local: PlayerState | undefined, room: RoomState, dt: number): void {
+    void dt;
+    const buffs = local?.movementInternal.buffs;
+    const healing = local ? Math.max(0, ...(room.powerups?.stations ?? []).map(s => s.progress[local.id] ?? 0)) : 0;
+    if (healing <= 0 || healing < this.lastHealing - 0.5) this.healTicked = 0;
+    const whole = Math.floor(healing);
+    if (whole >= 1 && whole < C.powerup.healSeconds && whole > this.healTicked) {
+      this.healTicked = whole;
+      this.sound.powerup('healtick', undefined, undefined, undefined, whole);
+    }
+    this.lastHealing = healing;
+
+    const fade = (seconds: number) => Math.min(1, seconds / 1.5);
+    let kind: PowerupKind | null = null;
+    let strength = 0;
+    if (this.time < this.healFlashUntil) { kind = 'heal'; strength = 1.8 * ((this.healFlashUntil - this.time) / 0.45); }
+    else if (healing > 0) { kind = 'heal'; strength = 0.5 + 0.5 * (healing / C.powerup.healSeconds); }
+    else if ((buffs?.speedSeconds ?? 0) > 0) { kind = 'speed'; strength = fade(buffs!.speedSeconds); }
+    else if ((buffs?.adrenalineSeconds ?? 0) > 0) { kind = 'adrenaline'; strength = fade(buffs!.adrenalineSeconds); }
+    else if ((buffs?.magnetSeconds ?? 0) > 0) { kind = 'magnet'; strength = fade(buffs!.magnetSeconds); }
+    this.setScreenFx(kind, strength);
+  }
+
+  private setScreenFx(kind: PowerupKind | null, strength: number): void {
+    const level = settings.reducedEffects || !kind ? 0 : Math.max(0, Math.min(2, strength));
+    const key = `${kind ?? ''}|${level.toFixed(2)}`;
+    if (key === this.lastFxKey) return;
+    this.lastFxKey = key;
+    if (kind) { this.screenFx.dataset.kind = kind; this.screenFx.style.setProperty('--fx-color', ITEMS[kind].color); }
+    else delete this.screenFx.dataset.kind;
+    this.screenFx.style.setProperty('--fx-strength', level.toFixed(2));
+  }
+
   private updateStations(room: RoomState): void {
     const seen = new Set<string>();
     for (const station of room.powerups?.stations ?? []) {
@@ -222,7 +308,7 @@ export class PowerupPresentation {
         attach(MeshBuilder.CreateTorus('heal_boundary', { diameter: C.powerup.healRadius * 2, thickness: 0.028, tessellation: 48 }, this.scene), root, material(this.scene, 'power_green', '#4deb9b', 0.65), new Vector3(0, 0.025, 0));
         for (let i = 0; i < 40; i++) {
           const angle = i / 40 * Math.PI * 2;
-          const tick = attach(MeshBuilder.CreateBox('heal_progress_tick', { width: 0.1, height: 0.025, depth: 0.07 }, this.scene), root, material(this.scene, 'power_green', '#4deb9b', 0.65), new Vector3(Math.sin(angle) * 1.36, 0.027, Math.cos(angle) * 1.36));
+          const tick = attach(MeshBuilder.CreateBox('heal_progress_tick', { width: 0.1, height: 0.025, depth: 0.07 }, this.scene), root, material(this.scene, 'power_green', '#4deb9b', 0.65), new Vector3(Math.sin(angle) * C.powerup.healRadius * 0.9, 0.027, Math.cos(angle) * C.powerup.healRadius * 0.9));
           tick.rotation.y = angle; tick.metadata = { healProgressIndex: i };
         }
         this.stations.set(station.id, root);
@@ -277,6 +363,9 @@ export class PowerupPresentation {
     for (const mesh of this.markers.values()) mesh.dispose(); this.markers.clear();
     for (const { mesh } of [...this.trails, ...this.bursts]) mesh.dispose(); this.trails = []; this.bursts = [];
   }
-  dispose(): void { this.clearDynamic(); this.root.dispose(); this.hud?.setPowerupSlot(null); this.neutral.remove(); }
+  dispose(): void {
+    this.clearDynamic(); this.hud?.setPowerupSlot(null); this.neutral.remove(); this.screenFx.remove();
+    for (const node of this.spawnNodes) node.root.dispose(); this.spawnNodes = [];
+  }
 }
 
