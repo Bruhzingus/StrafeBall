@@ -217,7 +217,13 @@ exports.GAME_CONSTANTS = {
         hitRadius: 0.7,
         liveHitMinSpeed: 2.5,
         looseFriction: 3.5,
-        pickupVerticalTolerance: 1.2
+        pickupVerticalTolerance: 1.2,
+        // Anti-hoarding: a loose/dead ball that sits within crowdRadius (m, horizontal) of another
+        // loose/dead ball for crowdRespawnSeconds is teleported back to its spawn slot on the center
+        // line. Slots are 2 m apart (createInitialBalls), so crowdRadius must stay below that or the
+        // respawned row would immediately count as crowded again.
+        crowdRadius: 1.5,
+        crowdRespawnSeconds: 7
     },
     mat: {
         // Hold E this long to stand a knocked-over mat back up.

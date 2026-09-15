@@ -1130,6 +1130,8 @@ class ServerGameLoop {
         if (active)
             this.powerupSystem.beforeBalls(this.state, fixedDt, this.matchSettings.livesPerPlayer);
         this.updateBalls(fixedDt, active);
+        if (active)
+            this.respawnCrowdedBalls(fixedDt);
         if (active) {
             this.applyingExplosion = true;
             this.powerupSystem.afterBalls(this.state, fixedDt, (ball, target) => {
@@ -1576,6 +1578,50 @@ class ServerGameLoop {
      * ticks. Returns the dead ball on a hit (and registers the score), else null. Catch/parry already
      * had their chance this tick before this runs, so a valid defense is never bypassed.
      */
+    /**
+     * Anti-hoarding: loose/dead balls that pile up together (a corner stash, or two balls dropped at a
+     * camper's feet) are sent back to their spawn slots on the center line once they've been within
+     * ball.crowdRadius of another loose/dead ball for ball.crowdRespawnSeconds. Only ordinary balls
+     * count — held/live/armor balls and cannon/bomb/heal items are never crowded or respawned.
+     */
+    respawnCrowdedBalls(dt) {
+        const balls = Object.values(this.state.balls);
+        const idle = balls.filter(isCrowdableBall);
+        const radiusSq = constants_1.GAME_CONSTANTS.ball.crowdRadius ** 2;
+        const ballCount = this.matchSettings.dodgeballCount;
+        for (const ball of balls) {
+            if (!isCrowdableBall(ball)) {
+                if (ball.crowdedSeconds)
+                    this.state.balls[ball.id] = { ...ball, crowdedSeconds: 0 };
+                continue;
+            }
+            const crowded = idle.some((other) => {
+                if (other.id === ball.id)
+                    return false;
+                const dx = other.position.x - ball.position.x;
+                const dz = other.position.z - ball.position.z;
+                return dx * dx + dz * dz <= radiusSq
+                    && Math.abs(other.position.y - ball.position.y) <= constants_1.GAME_CONSTANTS.ball.pickupVerticalTolerance;
+            });
+            const crowdedSeconds = crowded ? (ball.crowdedSeconds ?? 0) + dt : 0;
+            if (crowdedSeconds < constants_1.GAME_CONSTANTS.ball.crowdRespawnSeconds) {
+                if (crowdedSeconds !== (ball.crowdedSeconds ?? 0))
+                    this.state.balls[ball.id] = { ...ball, crowdedSeconds };
+                continue;
+            }
+            const index = ballSpawnIndex(ball.id);
+            if (index === null) {
+                this.state.balls[ball.id] = { ...ball, crowdedSeconds: 0 };
+                continue;
+            }
+            // Fresh state at the slot; keep throwId monotonic so the client never mistakes this for a re-throw.
+            this.state.balls[ball.id] = { ...(0, BallSim_1.createBallState)(ball.id, ballSpawnPosition(index, ballCount)), throwId: ball.throwId };
+            this.ballHistoryById.delete(ball.id);
+            this.recentHitByBallId.delete(ball.id);
+            if (this.debug.NET_DEBUG)
+                this.logger(`crowded ball respawned id=${ball.id} slot=${index}`);
+        }
+    }
     tryHit(ball, segPrev, segCurr) {
         if (!canScorePlayerHit(ball))
             return null;
@@ -3355,14 +3401,26 @@ class ServerGameLoop {
     }
 }
 exports.ServerGameLoop = ServerGameLoop;
+const BALL_SPAWN_SPACING = 2;
+/** Spawn slot for ball index `i` of `ballCount`: a row along the center line, 2 m apart. */
+function ballSpawnPosition(index, ballCount) {
+    const start = -((ballCount - 1) * BALL_SPAWN_SPACING) / 2;
+    return (0, CollisionMath_1.vec3)(start + index * BALL_SPAWN_SPACING, constants_1.GAME_CONSTANTS.ball.radius + 0.05, 0);
+}
 function createInitialBalls(ballCount = constants_1.GAME_CONSTANTS.map.ballCount) {
-    const spacing = 2;
-    const start = -((ballCount - 1) * spacing) / 2;
     const balls = [];
     for (let i = 0; i < ballCount; i += 1) {
-        balls.push((0, BallSim_1.createBallState)(`ball_${i}`, (0, CollisionMath_1.vec3)(start + i * spacing, constants_1.GAME_CONSTANTS.ball.radius + 0.05, 0)));
+        balls.push((0, BallSim_1.createBallState)(`ball_${i}`, ballSpawnPosition(i, ballCount)));
     }
     return balls;
+}
+function isCrowdableBall(ball) {
+    return (ball.kind ?? 'normal') === 'normal' && (ball.phase === 'loose' || ball.phase === 'dead');
+}
+/** Index encoded in a spawn ball id (`ball_3` → 3); null for power-up balls and anything else. */
+function ballSpawnIndex(ballId) {
+    const match = /^ball_(\d+)$/.exec(ballId);
+    return match ? Number(match[1]) : null;
 }
 function horizontalDistanceSqToSegment(point, a, b) {
     const abX = b.x - a.x;

@@ -272,6 +272,8 @@ export interface BallState {
   fuseSeconds?: number;
   bombThrowerId?: string;
   settledSeconds?: number;
+  /** Server-only: seconds this loose/dead ball has spent within ball.crowdRadius of another one. */
+  crowdedSeconds?: number;
   armorPlayerId?: string;
   id: string;
   phase: BallPhase;
