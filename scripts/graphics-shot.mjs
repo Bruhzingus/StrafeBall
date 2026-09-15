@@ -17,6 +17,8 @@
  *   --fps N   ALSO sample average FPS over N seconds (rAF-based). Use --headed for real numbers —
  *             headless Chromium may fall back to SwiftShader and report meaningless FPS.
  *   --headed  run with a visible browser window
+ *   --hud-powerup <empty|waiting|held|active>  preview the ability bar's power-up slot (online-only
+ *             in real play) by unhiding it with sample content — DOM-only, no gameplay hooks.
  *
  * Output: scripts/shots/<tag-><preset>-<view>.png + console summary (FPS, [graphics] lines).
  * The dev tuning panel (#graphics-tuning-panel) is hidden in captures so screenshots stay
@@ -39,6 +41,7 @@ const tag = argValue('tag', '');
 const url = argValue('url', 'http://localhost:5173/');
 const fpsSeconds = Number(argValue('fps', '0'));
 const headed = hasFlag('headed');
+const hudPowerup = argValue('hud-powerup', '');
 // Optional POLISHED_CONFIG override JSON injected as the tuning blob (diagnostics — e.g. crank the
 // mirror to max to prove the reflection pipeline renders at all). Omitted = compiled values.
 const tuningJson = argValue('tuning', '');
@@ -172,6 +175,32 @@ if (fpsSeconds > 0) {
       }),
     fpsSeconds
   );
+}
+
+if (hudPowerup) {
+  // Sample states mirror what PowerupPresentation.updateHud feeds Hud.setPowerupSlot.
+  const samples = {
+    empty: { glyph: '?', color: '#ffce65', name: 'Power-up', hint: 'Up for grabs at center', progress: 1, cls: 'ability-hud-card--powerup-empty' },
+    waiting: { glyph: '?', color: '#ffce65', name: 'Power-up', hint: 'Next at center in 12s', progress: 0.4, cls: 'ability-hud-card--cooldown' },
+    held: { glyph: '✹', color: '#ffad73', name: 'Bomb ball', hint: 'First bounce starts a 2s fuse · hits everyone', progress: 1, cls: 'ability-hud-card--ready' },
+    active: { glyph: '»', color: '#75e6ff', name: 'Active', hint: 'Speed 9s · Armor ●●', progress: 0.6, cls: '' }
+  };
+  const sample = samples[hudPowerup];
+  if (!sample) throw new Error(`--hud-powerup must be one of ${Object.keys(samples).join('|')}`);
+  await page.evaluate((s) => {
+    const card = document.querySelector('[data-ability="powerup"]');
+    const text = document.querySelector('.ability-powerup-text');
+    if (!card || !text) throw new Error('power-up slot markup not found');
+    card.hidden = false; text.hidden = false;
+    if (s.cls) card.classList.add(s.cls);
+    card.style.setProperty('--ability-progress', `${s.progress * 360}deg`);
+    card.style.setProperty('--power-color', s.color);
+    card.querySelector('.ability-powerup-glyph').textContent = s.glyph;
+    const name = text.querySelector('.ability-powerup-name');
+    name.textContent = s.name; if (s.cls === 'ability-hud-card--ready') name.style.color = s.color;
+    text.querySelector('.ability-powerup-hint').textContent = s.hint;
+  }, sample);
+  await page.waitForTimeout(100);
 }
 
 await page.screenshot({ path: outPath });

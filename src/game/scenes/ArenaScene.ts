@@ -410,6 +410,7 @@ export class ArenaScene {
     const hudRoot = document.getElementById('hud-root');
     if (!hudRoot) throw new Error('Missing HUD root.');
     this.hud = new Hud(hudRoot);
+    this.powerupPresentation.attachHud(this.hud);
     this.nametags = new Nametags(hudRoot);
     this.backflipQteHud = new BackflipQteHud(hudRoot);
     this.settingsPanel = new SettingsPanel(document.body, {

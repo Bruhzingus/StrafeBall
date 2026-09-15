@@ -11,6 +11,25 @@ import type { ServerSnapshot } from '../../../shared/protocol';
 import type { HalfCourtViolationState, PlayerState, RoomState } from '../../../shared/types';
 import { SERVER_TICK_RATE, SNAPSHOT_RATE, netModeConfig } from '../../../shared/netConfig';
 import type { MusicHudState } from '../audio/MusicManager';
+import { CONTROL_KEYS } from '../config/controls';
+
+/** What the ability bar's power-up slot shows. See Hud.setPowerupSlot. */
+export interface PowerupSlotView {
+  /** Icon glyph (unicode). */
+  glyph: string;
+  /** Accent color for the ring/icon/name. */
+  color: string;
+  /** Top text line (item name, or a generic label). */
+  name: string;
+  /** Second text line: a short explanation or the current status. */
+  hint: string;
+  /** Ring fill, 0..1. */
+  progress: number;
+  /** empty = nothing held and nothing spawned; waiting = spawn countdown; held = item ready; active = effect running. */
+  state: 'empty' | 'waiting' | 'held' | 'active';
+  /** Mario-Kart roulette flicker right after pickup. */
+  rolling?: boolean;
+}
 
 export class Hud {
   private readonly root: HTMLDivElement;
@@ -32,6 +51,12 @@ export class Hud {
   private readonly rightCatchStatus: HTMLDivElement;
   private readonly backflipCard: HTMLDivElement;
   private readonly backflipStatus: HTMLDivElement;
+  private readonly powerupCard: HTMLDivElement;
+  private readonly powerupGlyph: HTMLSpanElement;
+  private readonly powerupText: HTMLDivElement;
+  private readonly powerupName: HTMLDivElement;
+  private readonly powerupHint: HTMLDivElement;
+  private lastPowerupSlotKey = '';
   private readonly leftPowerBar: HTMLDivElement;
   private readonly rightPowerBar: HTMLDivElement;
   private readonly speedValue: HTMLDivElement;
@@ -155,6 +180,20 @@ export class Hud {
         <div class="ability-label">Backflip</div>
         <div class="ability-status">READY</div>
       </div>
+      <div class="ability-hud-card ability-hud-card--powerup" data-ability="powerup" hidden>
+        <div class="ability-ring">
+          <div class="ability-icon ability-icon--powerup" aria-label="Power-up">
+            <span class="ability-powerup-glyph">?</span>
+          </div>
+        </div>
+        <div class="ability-keybind">${CONTROL_KEYS.activatePowerup.replace(/^Key/, '')}</div>
+        <div class="ability-label">Power-up</div>
+        <div class="ability-status">READY</div>
+      </div>
+      <div class="ability-powerup-text" hidden>
+        <div class="ability-powerup-name">Power-up</div>
+        <div class="ability-powerup-hint"></div>
+      </div>
       <div class="ability-speed">
         <div class="ability-speed-label">Speed</div>
         <div class="ability-speed-value">0.0</div>
@@ -171,6 +210,11 @@ export class Hud {
     this.rightCatchStatus = this.mustHudElement<HTMLDivElement>('[data-ability="right-catch"] .ability-status');
     this.backflipCard = this.mustHudElement<HTMLDivElement>('[data-ability="backflip"]');
     this.backflipStatus = this.mustHudElement<HTMLDivElement>('[data-ability="backflip"] .ability-status');
+    this.powerupCard = this.mustHudElement<HTMLDivElement>('[data-ability="powerup"]');
+    this.powerupGlyph = this.mustHudElement<HTMLSpanElement>('.ability-powerup-glyph');
+    this.powerupText = this.mustHudElement<HTMLDivElement>('.ability-powerup-text');
+    this.powerupName = this.mustHudElement<HTMLDivElement>('.ability-powerup-name');
+    this.powerupHint = this.mustHudElement<HTMLDivElement>('.ability-powerup-hint');
     this.leftPowerBar = this.mustHudElement<HTMLDivElement>('.ability-power-bar--left .ability-power-bar__fill');
     this.rightPowerBar = this.mustHudElement<HTMLDivElement>('.ability-power-bar--right .ability-power-bar__fill');
     this.speedValue = this.mustHudElement<HTMLDivElement>('.ability-speed-value');
@@ -778,6 +822,38 @@ export class Hud {
       this.smoothedSpeed += (speed - this.smoothedSpeed) * alpha;
     }
     this.speedValue.textContent = this.smoothedSpeed.toFixed(1);
+  }
+
+  /**
+   * Power-up slot in the ability bar (online only). `null` hides the card and its text column.
+   * The ring doubles as a timer: fill while the next spawn counts down, full while an item is held,
+   * draining while a timed effect runs.
+   */
+  setPowerupSlot(view: PowerupSlotView | null): void {
+    if (!view) {
+      if (this.lastPowerupSlotKey !== '') {
+        this.powerupCard.hidden = true;
+        this.powerupText.hidden = true;
+        this.lastPowerupSlotKey = '';
+      }
+      return;
+    }
+    const progress = Math.max(0, Math.min(1, Number.isFinite(view.progress) ? view.progress : 0));
+    const key = `${view.state}|${view.glyph}|${view.color}|${view.name}|${view.hint}|${progress.toFixed(3)}|${view.rolling ? 1 : 0}`;
+    if (key === this.lastPowerupSlotKey) return;
+    this.lastPowerupSlotKey = key;
+    this.powerupCard.hidden = false;
+    this.powerupText.hidden = false;
+    this.powerupCard.style.setProperty('--ability-progress', `${(progress * 360).toFixed(1)}deg`);
+    this.powerupCard.style.setProperty('--power-color', view.color);
+    this.powerupCard.classList.toggle('ability-hud-card--ready', view.state === 'held');
+    this.powerupCard.classList.toggle('ability-hud-card--cooldown', view.state === 'waiting');
+    this.powerupCard.classList.toggle('ability-hud-card--powerup-empty', view.state === 'empty');
+    this.powerupCard.classList.toggle('ability-hud-card--powerup-rolling', !!view.rolling);
+    this.powerupGlyph.textContent = view.glyph;
+    this.powerupName.textContent = view.name;
+    this.powerupName.style.color = view.state === 'held' || view.state === 'active' ? view.color : '';
+    this.powerupHint.textContent = view.hint;
   }
 
   private updateAbilityCard(card: HTMLDivElement, status: HTMLDivElement, cooldown: number, maxCooldown: number): void {

@@ -4,6 +4,7 @@ import type { BallState, PlayerState, PowerupKind, RoomState, Vec3 } from '../..
 import type { PowerupEvent, PowerupPrivateMessage } from '../../../shared/protocol';
 import { SoundManager } from '../audio/SoundManager';
 import { settings } from '../config/Settings';
+import type { Hud, PowerupSlotView } from '../ui/Hud';
 
 const ITEMS: Record<PowerupKind, { name: string; icon: string; color: string; hint: string }> = {
   adrenaline: { name: 'ADRENALINE', icon: 'ϟ', color: '#ffce65', hint: '6 dash charges · faster recharge · 15s' },
@@ -81,7 +82,7 @@ export class PowerupPresentation {
   private markers = new Map<string, Mesh>();
   private trails: { mesh: Mesh; life: number }[] = [];
   private bursts: { mesh: Mesh; life: number; duration: number; radius: number }[] = [];
-  private hud = document.createElement('div');
+  private hud: Hud | null = null;
   private neutral = document.createElement('div');
   private heldKind: PowerupKind | null = null;
   private rouletteUntil = 0;
@@ -91,7 +92,6 @@ export class PowerupPresentation {
   private lastRound = -1;
   private time = 0;
   private trailTick = 0;
-  private lastHtml = '';
   private waitEstimate = C.powerup.respawnSeconds as number;
   private lastWait = -1;
 
@@ -117,21 +117,21 @@ export class PowerupPresentation {
       const segment = attach(MeshBuilder.CreateBox('powerup_clock_segment', { width: 0.075, height: 0.025, depth: 0.18 }, scene), this.root, grey, new Vector3(Math.sin(angle) * 0.84, 0.025, Math.cos(angle) * 0.84));
       segment.rotation.y = angle; this.ring.push(segment);
     }
-    this.hud.className = 'powerup-hud'; this.neutral.className = 'neutral-zone-label'; this.neutral.textContent = 'NEUTRAL';
-    document.body.append(this.hud, this.neutral); this.root.setEnabled(false);
+    this.neutral.className = 'neutral-zone-label'; this.neutral.textContent = 'NEUTRAL';
+    document.body.append(this.neutral); this.root.setEnabled(false);
   }
 
   update(room: RoomState | null, localId: string, localPosition: Vec3, privateMessage: PowerupPrivateMessage | null, events: PowerupEvent[], dt: number): void {
     this.time += dt;
     const active = !!room?.powerups && room.settings.powerupsEnabled !== false;
     this.root.setEnabled(active);
-    this.hud.hidden = !active;
+    if (!active) this.hud?.setPowerupSlot(null);
     this.neutral.hidden = Math.abs(localPosition.z) > C.match.neutralZoneHalfDepth || Math.abs(localPosition.x) > C.map.halfWidth;
     if (room && (this.lastSerial !== room.resetVote.resetSerial || this.lastRound !== room.match.currentRound)) {
       this.clearDynamic(); this.heldKind = null; this.lastPrivate = null; this.lastWait = -1;
       this.lastSerial = room.resetVote.resetSerial; this.lastRound = room.match.currentRound;
     }
-    if (!room) { this.clearDynamic(); this.heldKind = null; this.lastPrivate = null; this.lastSerial = -1; return; }
+    if (!room) { this.hud?.setPowerupSlot(null); this.clearDynamic(); this.heldKind = null; this.lastPrivate = null; this.lastSerial = -1; return; }
     const local = room.players[localId];
     if (privateMessage && privateMessage !== this.lastPrivate && privateMessage.resetSerial === room.resetVote.resetSerial) {
       if (privateMessage.kind && privateMessage.kind !== this.heldKind) this.rouletteUntil = this.time + 1;
@@ -156,7 +156,7 @@ export class PowerupPresentation {
       this.updateStations(room);
     }
     this.updatePlayers(room, localId, dt);
-    this.updateHud(local, room);
+    if (active) this.updateHud(local, room);
     for (const fx of this.bursts) {
       fx.life -= dt; const t = 1 - Math.max(0, fx.life) / fx.duration;
       fx.mesh.scaling.setAll(0.1 + fx.radius * (1 - Math.pow(1 - t, 3)));
@@ -165,19 +165,50 @@ export class PowerupPresentation {
     }
     this.bursts = this.bursts.filter(f => f.life > 0);
   }
+  /** Give the presentation the gameplay HUD so it can drive the ability bar's power-up slot. */
+  attachHud(hud: Hud): void { this.hud = hud; }
+
+  /**
+   * One card + two text lines, in priority order: a refusal nudge, then the held item (what G does),
+   * then a running effect, then the spawn state. The ring shows whichever timer matters right now.
+   */
   private updateHud(local: PlayerState | undefined, room: RoomState): void {
-    const rolling = this.heldKind && this.time < this.rouletteUntil && !settings.reducedEffects;
+    if (!this.hud) return;
+    const rolling = !!this.heldKind && this.time < this.rouletteUntil && !settings.reducedEffects;
     const kind = rolling ? kinds[Math.floor(this.time * 16) % kinds.length] : this.heldKind;
     const item = kind ? ITEMS[kind] : null;
     const buffs = local?.movementInternal.buffs;
-    const labels = [['SPEED', buffs?.speedSeconds], ['ADRENALINE', buffs?.adrenalineSeconds], ['MAGNET', buffs?.magnetSeconds]] as const;
     const healing = Math.max(0, ...(room.powerups?.stations ?? []).map(s => s.progress[local?.id ?? ''] ?? 0));
     const armor = local?.armorBallIds?.length ?? 0;
-    const hint = this.nudgeUntil > this.time ? this.lastPrivate?.reason : item?.hint;
-    const html = `<div class="powerup-card ${rolling ? 'rolling' : ''}" style="--power-color:${item?.color ?? '#7c91aa'}"><div class="powerup-icon">${item?.icon ?? '?'}</div><div><b>${item?.name ?? (local?.hasPowerup ? 'MYSTERY ITEM' : 'CONTEST THE CENTER')}</b><small>${escapeHtml(hint ?? 'A mystery power-up spawns every 20s')}</small></div><kbd>G</kbd></div>` +
-      `<div class="powerup-buffs">${labels.filter(([, seconds]) => (seconds ?? 0) > 0).map(([label, seconds]) => `<span>${label} <b>${Math.ceil(seconds!)}s</b></span>`).join('')}${armor ? `<span>ARMOR <b>${'●'.repeat(armor)}</b></span>` : ''}${buffs?.cannonLocked ? '<span>STAMINA LOCKED</span>' : ''}</div>` +
-      (healing > 0 ? `<div class="heal-progress"><span>HEALING ${Math.min(10, Math.floor(healing))}/10s</span><i style="width:${Math.min(100, healing / C.powerup.healSeconds * 100)}%"></i></div>` : '');
-    if (html !== this.lastHtml) { this.hud.innerHTML = html; this.lastHtml = html; }
+    const effects: { kind: PowerupKind; label: string; seconds: number; max: number; color: string }[] = [];
+    if ((buffs?.speedSeconds ?? 0) > 0) effects.push({ kind: 'speed', label: 'Speed', seconds: buffs!.speedSeconds, max: C.powerup.buffSeconds, color: ITEMS.speed.color });
+    if ((buffs?.adrenalineSeconds ?? 0) > 0) effects.push({ kind: 'adrenaline', label: 'Adrenaline', seconds: buffs!.adrenalineSeconds, max: C.powerup.buffSeconds, color: ITEMS.adrenaline.color });
+    if ((buffs?.magnetSeconds ?? 0) > 0) effects.push({ kind: 'magnet', label: 'Magnet', seconds: buffs!.magnetSeconds, max: C.powerup.magnetSeconds, color: ITEMS.magnet.color });
+    const effectText = effects.map(e => `${e.label} ${Math.ceil(e.seconds)}s`)
+      .concat(armor ? [`Armor ${'●'.repeat(armor)}`] : [], buffs?.cannonLocked ? ['Stamina locked'] : [])
+      .join(' · ');
+    const world = room.powerups;
+
+    let view: PowerupSlotView;
+    if (item) {
+      view = { glyph: item.icon, color: item.color, name: rolling ? 'Rolling…' : item.name, hint: item.hint, progress: 1, state: 'held', rolling };
+    } else if (local?.hasPowerup) {
+      view = { glyph: '?', color: ITEMS.adrenaline.color, name: 'Mystery item', hint: 'Revealing…', progress: 1, state: 'held' };
+    } else if (effects.length > 0 || armor > 0 || buffs?.cannonLocked) {
+      const lead = effects[0];
+      view = { glyph: lead ? ITEMS[lead.kind].icon : armor ? ITEMS.magnet.icon : ITEMS.cannon.icon, color: lead?.color ?? (armor ? ITEMS.magnet.color : ITEMS.cannon.color), name: 'Active', hint: effectText, progress: lead ? lead.seconds / lead.max : 1, state: 'active' };
+    } else if (healing > 0) {
+      view = { glyph: ITEMS.heal.icon, color: ITEMS.heal.color, name: 'Healing', hint: `Stay put · ${Math.min(C.powerup.healSeconds, Math.floor(healing))}/${C.powerup.healSeconds}s`, progress: healing / C.powerup.healSeconds, state: 'active' };
+    } else if (world?.spawned) {
+      view = { glyph: '?', color: ITEMS.adrenaline.color, name: 'Power-up', hint: 'Up for grabs at center', progress: 1, state: 'empty' };
+    } else {
+      view = { glyph: '?', color: ITEMS.adrenaline.color, name: 'Power-up', hint: `Next at center in ${Math.ceil(this.waitEstimate)}s`, progress: 1 - this.waitEstimate / C.powerup.respawnSeconds, state: 'waiting' };
+    }
+    // A refusal ("free a hand") overrides the hint line briefly.
+    if (this.nudgeUntil > this.time && this.lastPrivate?.reason) view = { ...view, hint: this.lastPrivate.reason };
+    // Keep the running effect visible in the hint even while an item is held (it's the shorter-lived info).
+    else if (item && effectText) view = { ...view, hint: effectText };
+    this.hud.setPowerupSlot(view);
   }
   private updateStations(room: RoomState): void {
     const seen = new Set<string>();
@@ -246,7 +277,6 @@ export class PowerupPresentation {
     for (const mesh of this.markers.values()) mesh.dispose(); this.markers.clear();
     for (const { mesh } of [...this.trails, ...this.bursts]) mesh.dispose(); this.trails = []; this.bursts = [];
   }
-  dispose(): void { this.clearDynamic(); this.root.dispose(); this.hud.remove(); this.neutral.remove(); }
+  dispose(): void { this.clearDynamic(); this.root.dispose(); this.hud?.setPowerupSlot(null); this.neutral.remove(); }
 }
 
-function escapeHtml(value: string): string { return value.replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]!)); }
