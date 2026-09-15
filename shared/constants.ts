@@ -206,8 +206,9 @@ export const GAME_CONSTANTS = {
     pickupRadius: 1.9,
     slowPickupSpeed: 2.25,
     gravity: 9.8,
-    quickThrowSpeed: 24,
-    chargedThrowSpeed: 35,
+    // All throw speeds +20% (quick 24 -> 28.8, charged 35 -> 42); backflip QTE tiers scale off quick.
+    quickThrowSpeed: 28.8,
+    chargedThrowSpeed: 42,
     maxChargeSeconds: 0.85,
     chargeMinMultiplier: 0.65,
     chargedDropScale: 0,
@@ -267,10 +268,10 @@ export const GAME_CONSTANTS = {
     cooldownSeconds: 0.47,
     catchBoostSpeed: 3,
     catchBoostDuration: 0.25,
-    // Cosmetic catch knockback is reserved for hard throws. A normal quick throw is 24 m/s, so the
-    // old 14 m/s cutoff incorrectly recoiled on every catch. Full charge is 35 m/s.
-    momentumRecoilMinSpeed: 30,
-    momentumRecoilMaxSpeed: 35,
+    // Cosmetic catch knockback is reserved for hard throws. A normal quick throw is 28.8 m/s, so the
+    // old 14 m/s cutoff incorrectly recoiled on every catch. Full charge is 42 m/s.
+    momentumRecoilMinSpeed: 36,
+    momentumRecoilMaxSpeed: 42,
     momentumRecoilMinDistance: 0.035,
     momentumRecoilMaxDistance: 0.14,
     momentumRecoilDuration: 0.2,

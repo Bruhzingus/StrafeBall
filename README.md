@@ -41,6 +41,12 @@ The project is still a prototype, but it is playable locally and has a shared cl
 
 ## Run Locally
 
+Want to run the whole game on your own machine, including online duels? Follow
+[LOCALHOST_SETUP.md](LOCALHOST_SETUP.md) — it covers installing Node, the no-build
+`npm run play:local` path using the committed prebuilt output, the dev path, LAN play, ports and
+troubleshooting. The in-game **Settings → Run it yourself** section links to a zip of this repo
+(`main` branch archive) that always matches the live site.
+
 Install client dependencies:
 
 ```bash

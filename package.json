@@ -7,6 +7,7 @@
     "predev": "npm run music:manifest",
     "dev": "vite",
     "dev:online": "node scripts/dev-online.mjs",
+    "play:local": "node scripts/play-local.mjs",
     "host:private": "npm --prefix server run host:private",
     "spike:p2p:host": "npm --prefix server run spike:p2p",
     "spike:p2p:client": "vite --config spikes/direct-p2p/vite.config.ts",

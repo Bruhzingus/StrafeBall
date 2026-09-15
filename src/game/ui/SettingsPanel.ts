@@ -1,6 +1,11 @@
 import { settings, SENSITIVITY_MIN, SENSITIVITY_MAX } from '../config/Settings';
 import { getGraphicsPresets, getGraphicsPreset, persistGraphicsPreset, type GraphicsPreset } from '../config/graphicsConfig';
 
+/** GitHub's always-current archive of the main branch — the same snapshot the live site runs. */
+export const GAME_DOWNLOAD_URL = 'https://github.com/Bruhzingus/StrafeBall/archive/refs/heads/main.zip';
+/** Rendered copy of the LOCALHOST_SETUP.md that ships at the root of the download. */
+export const LOCALHOST_GUIDE_URL = 'https://github.com/Bruhzingus/StrafeBall/blob/main/LOCALHOST_SETUP.md';
+
 export interface SettingsPanelOptions {
   /** Called immediately when the production-accessible tuning-panel preference changes. */
   onDevGraphicsTuningChanged?: (enabled: boolean) => void;
@@ -151,6 +156,27 @@ export class SettingsPanel {
     graphicsHint.className = 'settings-hint';
     graphicsHint.textContent = 'Changing graphics reloads the page.';
 
+    // Self-host section. The zip is GitHub's archive of `main`, so it is always the version that
+    // is live right now (dist/ + server/dist/ are committed) and needs no per-release upload.
+    // The setup guide ships at the root of that zip and is linked here in its rendered form.
+    const downloadTitle = document.createElement('div');
+    downloadTitle.className = 'settings-subtitle';
+    downloadTitle.textContent = 'Run it yourself';
+    const downloadLink = document.createElement('a');
+    downloadLink.className = 'settings-link';
+    downloadLink.href = GAME_DOWNLOAD_URL;
+    downloadLink.textContent = 'Download game (.zip)';
+    downloadLink.title = 'Full game source + prebuilt client and server, current as of the latest update (~530 MB)';
+    const guideLink = document.createElement('a');
+    guideLink.className = 'settings-link settings-link--secondary';
+    guideLink.href = LOCALHOST_GUIDE_URL;
+    guideLink.target = '_blank';
+    guideLink.rel = 'noopener';
+    guideLink.textContent = 'Localhost setup guide';
+    const downloadHint = document.createElement('div');
+    downloadHint.className = 'settings-hint';
+    downloadHint.textContent = 'The guide is also inside the zip as LOCALHOST_SETUP.md.';
+
     this.content.append(
       title,
       sensitivityLabel.label,
@@ -166,7 +192,11 @@ export class SettingsPanel {
       scoreboardLabel,
       graphicsRow,
       devGraphicsLabel,
-      graphicsHint
+      graphicsHint,
+      downloadTitle,
+      downloadLink,
+      guideLink,
+      downloadHint
     );
     this.root.append(this.toggleButton, this.content);
     parent.appendChild(this.root);

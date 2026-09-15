@@ -32,6 +32,12 @@ git commit -m "your change"
 git push
 ```
 
+> **Downloads come from the same commit.** The in-game *Settings → Run it yourself* button links
+> to GitHub's `archive/refs/heads/main.zip`, so every push to `main` IS the new download — there is
+> no separate release artifact to build or upload. Because `dist/` + `server/dist/` are committed,
+> that zip is playable with `npm run play:local` and no build (see `LOCALHOST_SETUP.md`). That is
+> one more reason the prebuild rule below matters.
+
 > **The one rule:** never commit a code change without rerunning `npm run deploy:prebuild` in the same
 > commit. If you commit source without rebuilding, the droplet pulls new source but STALE `dist/` and
 > serves old code. `deploy:prebuild` is the guardrail — make it muscle memory.

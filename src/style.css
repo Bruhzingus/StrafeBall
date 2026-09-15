@@ -2044,6 +2044,43 @@ html, body {
   opacity: 0.7;
 }
 
+/* "Run it yourself" download block at the bottom of the panel. */
+.settings-subtitle {
+  margin-top: 12px;
+  padding-top: 8px;
+  border-top: 2px solid rgba(255, 255, 255, 0.14);
+  font-size: 11px;
+  font-weight: 900;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  opacity: 0.85;
+}
+
+.settings-link {
+  display: block;
+  margin-top: 6px;
+  padding: 6px 10px;
+  border: 2px solid var(--ink);
+  border-radius: 8px;
+  background: linear-gradient(180deg, #5ce8ff 0%, var(--school-blue) 100%);
+  box-shadow: 2px 2px 0 var(--ink);
+  color: var(--ink);
+  font: inherit;
+  font-weight: 900;
+  text-align: center;
+  text-decoration: none;
+  cursor: pointer;
+}
+
+.settings-link:hover {
+  filter: brightness(1.08);
+}
+
+.settings-link--secondary {
+  background: rgba(13, 18, 32, 0.85);
+  color: var(--paper);
+}
+
 .multiplayer-panel {
   top: 18px;
   left: 18px;
