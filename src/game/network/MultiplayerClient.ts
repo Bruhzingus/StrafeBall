@@ -1,3 +1,4 @@
+import type { PowerupPrivateMessage, PowerupEvent } from '../../../shared/protocol';
 import { Client, Room } from '@colyseus/sdk';
 import { isHostCode, RELAY_ERRORS, relayErrorMessage } from '../../../shared/relayTunnel';
 import { HostSessionClient, localHostConfig, localHostRoomId, publishHostRoom, hostSetupError } from './hostSession';
@@ -88,6 +89,9 @@ export class MultiplayerClient {
   public localPlayerId = '';
   public pingMs: number | null = null;
   public latestSnapshot: ServerSnapshot | null = null;
+  public powerupPrivate: PowerupPrivateMessage | null = null;
+  private powerupEvents: PowerupEvent[] = [];
+  drainPowerupEvents(): PowerupEvent[] { const events = this.powerupEvents; this.powerupEvents = []; return events; }
   public latestSnapshotLanes: SnapshotLaneInfo | null = null;
   public snapshotTierMode: SnapshotLaneInfo['mode'] = 'baseline';
   // The room's creation-time net mode, captured from `joined-room` (see resolvedNetConfig getter).
@@ -323,6 +327,7 @@ export class MultiplayerClient {
     this.roomId = '';
     this.localPlayerId = '';
     this.latestSnapshot = null;
+    this.powerupPrivate = null; this.powerupEvents = [];
     this.latestSnapshotLanes = null;
     this.snapshotTierMode = 'baseline';
     this.joinedRoomNetMode = null;
@@ -566,6 +571,8 @@ export class MultiplayerClient {
   }
 
   private bindRoom(room: Room): void {
+    room.onMessage('powerup-private', (message: PowerupPrivateMessage) => { this.powerupPrivate = message; });
+    room.onMessage('powerup-event', (message: PowerupEvent) => { if (this.powerupEvents.length < 64) this.powerupEvents.push(message); });
     room.onMessage('snapshot', (message: SnapshotPayload) => {
       if (this.room !== room) return;
       const decoded = isTieredCompactSnapshot(message)
@@ -717,6 +724,7 @@ export class MultiplayerClient {
       this.roomId = '';
       this.localPlayerId = '';
       this.latestSnapshot = null;
+    this.powerupPrivate = null; this.powerupEvents = [];
       this.latestSnapshotLanes = null;
       this.snapshotTierMode = 'baseline';
       this.joinedRoomNetMode = null;

@@ -52,12 +52,12 @@ export interface MatSpec {
 }
 
 export const MAT_SPECS: readonly MatSpec[] = [
-  { id: 'mat_-4.5_-5.5', x: -4.5, y: MAT_DIMENSIONS.height / 2, z: -5.5, yawRadians: 0 },
-  { id: 'mat_4.5_-5.5', x: 4.5, y: MAT_DIMENSIONS.height / 2, z: -5.5, yawRadians: 0 },
-  { id: 'mat_0_-5.5', x: 0, y: MAT_DIMENSIONS.height / 2, z: -5.5, yawRadians: 0 },
-  { id: 'mat_0_5.5', x: 0, y: MAT_DIMENSIONS.height / 2, z: 5.5, yawRadians: 0 },
-  { id: 'mat_-4.5_5.5', x: -4.5, y: MAT_DIMENSIONS.height / 2, z: 5.5, yawRadians: 0 },
-  { id: 'mat_4.5_5.5', x: 4.5, y: MAT_DIMENSIONS.height / 2, z: 5.5, yawRadians: 0 }
+  { id: 'mat_-4.5_-5.5', x: -4.5 / 13 * GAME_CONSTANTS.map.halfWidth, y: MAT_DIMENSIONS.height / 2, z: -5.5 / 18 * GAME_CONSTANTS.map.halfLength, yawRadians: 0 },
+  { id: 'mat_4.5_-5.5', x: 4.5 / 13 * GAME_CONSTANTS.map.halfWidth, y: MAT_DIMENSIONS.height / 2, z: -5.5 / 18 * GAME_CONSTANTS.map.halfLength, yawRadians: 0 },
+  { id: 'mat_0_-5.5', x: 0, y: MAT_DIMENSIONS.height / 2, z: -5.5 / 18 * GAME_CONSTANTS.map.halfLength, yawRadians: 0 },
+  { id: 'mat_0_5.5', x: 0, y: MAT_DIMENSIONS.height / 2, z: 5.5 / 18 * GAME_CONSTANTS.map.halfLength, yawRadians: 0 },
+  { id: 'mat_-4.5_5.5', x: -4.5 / 13 * GAME_CONSTANTS.map.halfWidth, y: MAT_DIMENSIONS.height / 2, z: 5.5 / 18 * GAME_CONSTANTS.map.halfLength, yawRadians: 0 },
+  { id: 'mat_4.5_5.5', x: 4.5 / 13 * GAME_CONSTANTS.map.halfWidth, y: MAT_DIMENSIONS.height / 2, z: 5.5 / 18 * GAME_CONSTANTS.map.halfLength, yawRadians: 0 }
 ];
 
 /**

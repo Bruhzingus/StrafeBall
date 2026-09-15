@@ -1,0 +1,228 @@
+import { describe, expect, it } from 'vitest';
+import { GAME_CONSTANTS as C } from '../../shared/constants';
+import { PowerupSystem } from '../src/simulation/PowerupSystem';
+import { ServerGameLoop } from '../src/simulation/ServerGameLoop';
+import { createRoomState } from '../../shared/simulation/MatchSim';
+import { createPlayerState } from '../../shared/simulation/PlayerSim';
+import { createBallState, holdBall, isBallCatchableInFlight, isBallPickupEligible } from '../../shared/simulation/BallSim';
+import { createHandState, autoParryBall } from '../../shared/simulation/HandSim';
+import { inflateCompactSnapshot, makeCompactSnapshot, makeTieredCompactSnapshot, mergeTieredCompactSnapshot } from '../../shared/snapshotCodec';
+import { stepMovement } from '../../shared/simulation/MovementSim';
+import { isIllegalHalfCourtPosition } from '../../shared/simulation/RuleSim';
+import { MAT_SPECS, createBleacherTierSpecs } from '../../shared/simulation/MapGeometry';
+import type { PlayerInput, PowerupKind, RoomState } from '../../shared/types';
+
+const kinds: PowerupKind[] = ['adrenaline', 'speed', 'cannon', 'heal', 'magnet', 'bomb'];
+const v = (x = 0, y = 0, z = 0) => ({ x, y, z });
+function setup(kind: PowerupKind = 'speed') {
+  const room = createRoomState({ players: [createPlayerState('a', 'blue'), createPlayerState('b', 'red', 'positiveZ')] });
+  room.match.status = 'playing'; room.players.b.movement.position = v(0, 0, 10);
+  const system = new PowerupSystem(() => (kinds.indexOf(kind) + 0.1) / 6); system.reset(room); system.drain();
+  return { room, system };
+}
+function take(room: RoomState, system: PowerupSystem) {
+  room.powerups!.waitSeconds = 0; system.beforeBalls(room, 0, 3);
+}
+function input(overrides: Partial<PlayerInput> = {}): PlayerInput {
+  return { moveX: 0, moveZ: 0, lookYawRadians: 0, lookPitchRadians: 0, dashDirection: v(), ...overrides } as PlayerInput;
+}
+function stepPlayer(room: RoomState, dt: number, overrides: Partial<PlayerInput> = {}) {
+  const p = room.players.a;
+  const result = stepMovement(p.movement, p.movementInternal, p.dash, input(overrides), input(), dt, [], false);
+  p.movement = result.movement; p.movementInternal = result.internal; p.dash = result.dash;
+  return result;
+}
+
+describe('neutral zone and expanded gym', () => {
+  it('keeps both teams legal through the full strip and penalizes beyond the opposing edge', () => {
+    for (const side of ['negativeZ', 'positiveZ'] as const) for (const z of [-3, -2.9, 0, 2.9, 3]) expect(isIllegalHalfCourtPosition(side, v(0, 0, z))).toBe(false);
+    expect(isIllegalHalfCourtPosition('negativeZ', v(0, 0, 3.1))).toBe(true);
+    expect(isIllegalHalfCourtPosition('positiveZ', v(0, 0, -3.1))).toBe(true);
+    expect(MAT_SPECS[0].x).toBe(-4.5 / 13 * C.map.halfWidth);
+    expect(MAT_SPECS[0].z).toBe(-5.5 / 18 * C.map.halfLength);
+    expect(createBleacherTierSpecs()[0].size.depth).toBe(C.map.halfLength * 1.45);
+    const loop = new ServerGameLoop('bounds'); loop.addPlayer('a', 'A');
+    expect(Math.abs(loop.state.players.a.movement.position.z)).toBeCloseTo(12 / 18 * C.map.halfLength);
+    const { room } = setup(); room.players.a.movement.position = v(100, 0, 100); stepPlayer(room, 1 / 60);
+    expect(room.players.a.movement.position.x).toBe(C.map.halfWidth - C.player.radius);
+    expect(room.players.a.movement.position.z).toBe(C.map.halfLength - C.player.radius);
+  });
+});
+
+describe('power-up inventory and replication', () => {
+  it('first spawns after exactly 20 simulated seconds; first player wins; next wait starts on pickup', () => {
+    const { room, system } = setup();
+    room.players.a.movement.position = v(5); system.beforeBalls(room, 19.99, 3);
+    expect(room.powerups!.spawned).toBe(false);
+    system.beforeBalls(room, 0.01, 3); expect(room.powerups!.spawned).toBe(true);
+    system.beforeBalls(room, 50, 3); expect(room.powerups!.spawned).toBe(true);
+    room.players.a.movement.position = room.players.b.movement.position = v(); system.beforeBalls(room, 0.01, 3);
+    expect(system.identity(room, 'a').kind).toBe('speed'); expect(system.identity(room, 'b').kind).toBeNull();
+    expect(room.powerups!.waitSeconds).toBe(20);
+    room.players.b.movement.position = v(5); system.beforeBalls(room, 20, 3);
+    expect(room.powerups!.spawned).toBe(true); // existing holder cannot take a second
+  });
+  it('broadcast full/compact/tiered snapshots never contain an unused identity; only holder gets it', () => {
+    const { room, system } = setup('bomb'); take(room, system);
+    const snap = { type: 'snapshot' as const, tick: 1, serverTimeMs: 1000, room };
+    for (const payload of [snap, makeCompactSnapshot(snap), makeTieredCompactSnapshot(snap, { includePlayerLane: true, includeWorldLane: true })]) {
+      expect(JSON.stringify(payload)).not.toContain('bomb');
+    }
+    expect(system.drain().privateMessages).toEqual([{ playerId: 'a', message: { kind: 'bomb', resetSerial: 0, reason: undefined } }]);
+    expect(system.identity(room, 'b').kind).toBeNull();
+    expect(inflateCompactSnapshot(makeCompactSnapshot(snap)).room.players.a.hasPowerup).toBe(true);
+  });
+  it.each(kinds)('activates %s and refuses dead/missing inventory', kind => {
+    const { room, system } = setup(kind);
+    expect(system.activate(room, 'a')).toBe(false); take(room, system);
+    room.players.a.combatState = 'eliminated'; expect(system.activate(room, 'a')).toBe(false);
+    room.players.a.combatState = 'alive'; expect(system.activate(room, 'a')).toBe(true);
+    expect(room.players.a.hasPowerup).toBe(false); expect(system.activate(room, 'a')).toBe(false);
+  });
+  it.each(['cannon', 'heal', 'bomb'] as const)('retains %s when both hands are full', kind => {
+    const { room, system } = setup(kind); take(room, system);
+    room.players.a.hands.left.heldBallId = 'one'; room.players.a.hands.right.heldBallId = 'two';
+    expect(system.activate(room, 'a')).toBe(false); expect(system.identity(room, 'a').kind).toBe(kind);
+    expect(system.drain().privateMessages.at(-1)?.message.reason).toContain('Free a hand');
+  });
+  it('all new public state survives compact, fast-only and full resync lanes', () => {
+    const { room, system } = setup('speed'); take(room, system); system.activate(room, 'a');
+    room.players.a.armorBallIds = ['armor'];
+    room.balls.bomb = createBallState('bomb', v(), { kind: 'bomb', armedAtMs: 200, fuseSeconds: 1.3 });
+    room.balls.armor = createBallState('armor', v(), { phase: 'armor', armorPlayerId: 'a' });
+    room.powerups!.stations.push({ id: 'station', placerId: 'a', teamId: 'blue', position: v(), remainingSeconds: 35, progress: { a: 6 } });
+    const snap = { type: 'snapshot' as const, tick: 2, serverTimeMs: 500, room };
+    const full = inflateCompactSnapshot(makeCompactSnapshot(snap));
+    const tiered = mergeTieredCompactSnapshot(makeTieredCompactSnapshot(snap, { includePlayerLane: false, includeWorldLane: false }), full, 'a')!.snapshot;
+    for (const state of [full.room, tiered.room]) {
+      expect(state.players.a.movementInternal.buffs?.speedSeconds).toBe(15);
+      expect(state.players.a.armorBallIds).toEqual(['armor']); expect(state.balls.bomb.fuseSeconds).toBe(1.3);
+      expect(state.balls.armor.armorPlayerId).toBe('a'); expect(state.powerups!.stations[0].progress.a).toBe(6);
+    }
+  });
+  it('pauses spawn during countdown/intermission and clears every artifact at reset', () => {
+    const loop = new ServerGameLoop('paused'); loop.addPlayer('a', 'A'); loop.addPlayer('b', 'B');
+    loop.state.match.status = 'intermission'; loop.state.powerups!.waitSeconds = 12;
+    loop.advance(); expect(loop.state.powerups!.waitSeconds).toBe(12);
+    const { room, system } = setup('bomb'); take(room, system); system.activate(room, 'a');
+    room.powerups!.stations.push({ id: 's', placerId: 'a', teamId: 'blue', position: v(), progress: {}, remainingSeconds: 20 });
+    system.reset(room);
+    expect(Object.values(room.balls)).toHaveLength(0); expect(room.powerups!.stations).toHaveLength(0);
+    expect(room.players.a.movementInternal.buffs).toBeUndefined(); expect(room.players.a.hands.left.heldBallId).toBeNull();
+    expect(system.identity(room, 'a').kind).toBeNull(); expect(room.powerups!.waitSeconds).toBe(20);
+  });
+});
+
+describe('shared movement buffs', () => {
+  it('adrenaline grants six, recharges in two seconds, and clamps back to three at expiry', () => {
+    const { room, system } = setup('adrenaline'); take(room, system); system.activate(room, 'a');
+    expect(room.players.a.dash.charges).toBe(6); room.players.a.dash.charges = 5;
+    stepPlayer(room, 1); expect(room.players.a.dash.charges).toBe(5);
+    stepPlayer(room, 1); expect(room.players.a.dash.charges).toBe(6);
+    room.players.a.movementInternal.buffs!.adrenalineSeconds = 0; stepPlayer(room, 0.01);
+    expect(room.players.a.dash.charges).toBe(3);
+  });
+  it('speed scales ground speed/acceleration and jump height, with identical replay results', () => {
+    const { room, system } = setup('speed'); take(room, system); system.activate(room, 'a');
+    const p = room.players.a, copy = structuredClone(p);
+    const result = stepPlayer(room, 1 / 60, { moveZ: 1 });
+    const replay = stepMovement(copy.movement, copy.movementInternal, copy.dash, input({ moveZ: 1 }), input(), 1 / 60, [], false);
+    expect(replay).toEqual(result);
+    const jump = stepPlayer(room, 0, { jumpPressed: true });
+    expect(jump.movement.velocity.y).toBeCloseTo(C.player.jumpSpeed * Math.sqrt(1.25));
+  });
+  it('cannon refuses dash, airborne double-jump and backflip but permits ordinary jump', () => {
+    const { room, system } = setup('cannon'); take(room, system); system.activate(room, 'a');
+    expect(stepPlayer(room, 0.01, { dashPressed: true, backflipPressed: true }).internal.backflipActive).toBe(false);
+    expect(room.players.a.dash.charges).toBe(3);
+    expect(stepPlayer(room, 0, { jumpPressed: true }).movement.velocity.y).toBe(C.player.jumpSpeed);
+    room.players.a.movement.position.y = 1;
+    stepPlayer(room, 0.01, { jumpPressed: true }); expect(room.players.a.dash.charges).toBe(3);
+  });
+});
+
+describe('special ball combat', () => {
+  it('cannon is never catchable/parryable or floor-pickup eligible', () => {
+    const { room } = setup(); const p = room.players.a;
+    p.hands.left.heldBallId = 'one'; p.hands.right.heldBallId = 'two';
+    const ball = createBallState('c', v(0, 1, 1), { kind: 'cannon', phase: 'live', velocity: v(0, 0, -42) });
+    expect(isBallCatchableInFlight(ball)).toBe(false);
+    expect(autoParryBall(p, p.hands, ball, v(0, 0, 1), 0).ok).toBe(false);
+    ball.phase = 'dead'; expect(isBallPickupEligible(ball, v())).toBe(false);
+  });
+  it('cannon hits two opponents once each, through their two-ball guards, then is removed on bounce', () => {
+    const loop = new ServerGameLoop('cannon', { mode: '2v2', playersPerTeam: 2 });
+    for (const id of ['a', 'b', 'c', 'd']) loop.addPlayer(id, id);
+    loop.state.match.status = 'playing'; loop.state.match.boundary.noBoundaries = true;
+    const p = loop.state.players.a; const targets = Object.values(loop.state.players).filter(t => t.teamId !== p.teamId);
+    Object.values(loop.state.players).forEach(t => { t.movement.position = v(9, 0, -10); });
+    targets.forEach((t, i) => { t.movement.position = v(0, 0, i * 2); });
+    loop.state.balls.cannon = createBallState('cannon', v(0, 1.4, -2), { kind: 'cannon', phase: 'live', ownerKind: 'player', ownerId: p.id, velocity: v(0, 0, 42), throwId: 10 });
+    for (let i = 0; i < 18; i++) loop.advance();
+    expect(targets.map(t => loop.state.players[t.id].lives)).toEqual([2, 2]);
+    for (let i = 0; i < 120; i++) loop.advance();
+    expect(loop.state.balls.cannon).toBeUndefined();
+  });
+  it('bomb arms once with three beeps; re-holding preserves fuse; held explosion removes ball', () => {
+    const { room, system } = setup('bomb'); take(room, system); system.activate(room, 'a');
+    const id = room.players.a.hands.left.heldBallId!; const ball = room.balls[id];
+    system.drain(); system.contact(room, ball, 100); system.contact(room, ball, 500);
+    expect(ball.armedAtMs).toBe(100); expect(isBallCatchableInFlight(ball)).toBe(false);
+    system.afterBalls(room, 0.7, () => {}); room.balls[id] = holdBall(ball, 'a', 'left');
+    expect(room.balls[id].fuseSeconds).toBeCloseTo(1.3);
+    system.afterBalls(room, 0.7, () => {}); const hits: string[] = [];
+    system.afterBalls(room, 0.6, (_, p) => hits.push(p.id));
+    expect(hits).toContain('a'); expect(room.balls[id]).toBeUndefined(); expect(room.players.a.hands.left.heldBallId).toBeNull();
+    expect(system.drain().events.filter(e => e.effect === 'beep').map(e => e.stage)).toEqual([0, 1, 2]);
+  });
+  it('explosion damages both teams and thrower through life/stats path', () => {
+    const loop = new ServerGameLoop('bomb'); loop.addPlayer('a', 'A'); loop.addPlayer('b', 'B'); loop.state.match.status = 'playing';
+    loop.state.players.a.movement.position = v(-1); loop.state.players.b.movement.position = v(1);
+    loop.state.balls.bomb = createBallState('bomb', v(0, 0.8, 0), { kind: 'bomb', phase: 'dead', armedAtMs: 0, fuseSeconds: 0.001, bombThrowerId: 'a' });
+    loop.advance(); expect(loop.state.players.a.lives).toBe(2); expect(loop.state.players.b.lives).toBe(2);
+    expect(loop.state.players.a.matchStats.hits).toBe(2); expect(loop.state.balls.bomb).toBeUndefined();
+  });
+});
+
+describe('magnet and healing', () => {
+  it('never pulls live/held balls, fills hands then three armor, absorbs once and drops on expiry', () => {
+    const { room, system } = setup('magnet'); take(room, system); system.activate(room, 'a');
+    room.balls.live = createBallState('live', v(2, 1), { phase: 'live', velocity: v(0, 0, 20) });
+    room.balls.held = holdBall(createBallState('held', v(2, 1)), 'b', 'left');
+    for (let i = 0; i < 6; i++) room.balls[`loose${i}`] = createBallState(`loose${i}`, v(0.2, C.ball.radius));
+    system.beforeBalls(room, 0.1, 3);
+    expect(room.balls.live.velocity).toEqual(v(0, 0, 20)); expect(room.balls.held.phase).toBe('held');
+    expect(room.players.a.hands.left.heldBallId).toBeTruthy(); expect(room.players.a.hands.right.heldBallId).toBeTruthy();
+    expect(room.players.a.armorBallIds).toHaveLength(3); expect(room.balls.loose5.phase).toBe('loose');
+    expect(system.absorb(room, room.players.a)).toBe(true); expect(room.players.a.armorBallIds).toHaveLength(2);
+    room.players.a.movementInternal.buffs!.magnetSeconds = 0; system.beforeBalls(room, 0.1, 3);
+    expect(room.players.a.armorBallIds).toHaveLength(0); expect(Object.values(room.balls).filter(b => b.phase === 'armor')).toHaveLength(0);
+    expect(system.absorb(room, room.players.a)).toBe(false);
+  });
+  it('distant stationary balls begin a gentle continuous pull after three seconds', () => {
+    const { room, system } = setup('magnet'); take(room, system); system.activate(room, 'a');
+    room.balls.far = createBallState('far', v(0, 0.22, 15)); system.beforeBalls(room, 3, 3);
+    expect(room.balls.far.velocity.z).toBe(0); system.beforeBalls(room, 0.1, 3); expect(room.balls.far.velocity.z).toBeLessThan(0);
+    system.beforeBalls(room, 0.1, 3); expect(room.balls.far.velocity.z).toBeLessThan(-0.5);
+    expect(Math.abs(room.balls.far.velocity.z)).toBeLessThanOrEqual(C.powerup.distantMagnetSpeed);
+  });
+  it('heals teammates after continuous dwell; leaving resets, hits do not, enemies ignored, one use', () => {
+    const { room, system } = setup('heal'); take(room, system); system.activate(room, 'a');
+    expect(system.place(room, room.players.a, 'left', [])).toBe(true);
+    const s = room.powerups!.stations[0]; room.players.a.movement.position = v(0, 0, 1.5); room.players.a.lives = 2;
+    room.players.b.movement.position = v(0, 0, 1.5); room.players.b.lives = 1;
+    system.beforeBalls(room, 6, 3); expect(s.progress.a).toBe(6); expect(s.progress.b).toBe(0);
+    room.players.a.movement.position = v(4); system.beforeBalls(room, 0.1, 3); expect(s.progress.a).toBe(0);
+    room.players.a.movement.position = v(0, 0, 1.5); system.beforeBalls(room, 6, 3); room.players.a.lives = 1;
+    system.beforeBalls(room, 4, 3); expect(room.players.a.lives).toBe(2); expect(room.players.b.lives).toBe(1);
+    expect(room.powerups!.stations).toHaveLength(0);
+  });
+  it('refuses out-of-court deployment, caps lives, and expires unused stations', () => {
+    const { room, system } = setup('heal'); take(room, system); system.activate(room, 'a');
+    room.players.a.movement.position = v(0, 0, C.map.halfLength - 0.1);
+    expect(system.place(room, room.players.a, 'left', [])).toBe(false); expect(room.players.a.hands.left.heldBallId).toBeTruthy();
+    room.players.a.movement.position = v(); expect(system.place(room, room.players.a, 'left', [])).toBe(true);
+    room.players.a.movement.position.z = 1.5; system.beforeBalls(room, 11, 3); expect(room.players.a.lives).toBe(3);
+    system.beforeBalls(room, 35, 3); expect(room.powerups!.stations).toHaveLength(0);
+  });
+});

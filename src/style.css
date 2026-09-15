@@ -5934,3 +5934,19 @@ html, body {
   letter-spacing: 0;
   white-space: nowrap;
 }
+/* Center-court power-ups: compact, readable at speed and below the aiming area. */
+.powerup-hud { position: fixed; left: 50%; bottom: 105px; transform: translateX(-50%); z-index: 35; width: min(430px, 92vw); color: #edf5ff; font-family: system-ui, sans-serif; pointer-events: none; }
+.powerup-hud[hidden], .neutral-zone-label[hidden] { display: none; }
+.powerup-card { display: flex; align-items: center; gap: 12px; padding: 10px 14px 10px 10px; border: 1px solid color-mix(in srgb, var(--power-color), transparent 45%); border-radius: 12px; background: linear-gradient(115deg, #101d2df2, #101722e8); box-shadow: 0 5px 24px #0005, inset 0 1px #ffffff0c; }
+.powerup-icon { flex: 0 0 43px; height: 43px; display: grid; place-items: center; border-radius: 9px; background: #ffffff08; color: var(--power-color); font-size: 32px; font-weight: 900; text-shadow: 0 0 15px color-mix(in srgb, var(--power-color), transparent 50%); }
+.powerup-card b { display: block; font-size: 12px; letter-spacing: .13em; color: var(--power-color); }
+.powerup-card small { display: block; font-size: 10px; line-height: 1.5; color: #b7c6d9; margin-top: 3px; }
+.powerup-card kbd { margin-left: auto; border: 1px solid #ffffff35; border-bottom-width: 3px; padding: 4px 8px; border-radius: 5px; font: 700 13px system-ui; color: #e7f2ff; }
+.powerup-buffs { display: flex; flex-wrap: wrap; gap: 5px; justify-content: center; margin-top: 7px; }
+.powerup-buffs span { padding: 4px 7px; background: #101d2ded; border: 1px solid #8ad7ff33; border-radius: 5px; font-size: 9px; letter-spacing: .06em; color: #c1eaff; }
+.powerup-buffs b { margin-left: 4px; color: white; }
+.neutral-zone-label { position: fixed; top: 22%; left: 50%; transform: translateX(-50%); z-index: 30; pointer-events: none; color: #adede7; font: 700 10px system-ui; letter-spacing: .24em; padding: 5px 10px; background: #0b2b3080; border: 1px solid #9ee9e82b; border-radius: 4px; }
+.heal-progress { position: relative; overflow: hidden; height: 21px; border: 1px solid #75ffb277; border-radius: 5px; margin-top: 7px; background: #102b24eb; text-align: center; }
+.heal-progress span { position: relative; z-index: 1; font: 700 10px/20px system-ui; letter-spacing: .08em; }
+.heal-progress i { position: absolute; inset: 0 auto 0 0; background: #4cf29855; transition: width .1s linear; }
+@media (max-height: 700px) { .powerup-hud { bottom: 80px; } .powerup-card { padding: 6px; } .powerup-icon { height: 32px; font-size: 25px; } }

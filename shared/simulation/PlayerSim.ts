@@ -232,3 +232,10 @@ export function tryUpwardDash(
 function sanitizeMovementScale(scaleValue: number): number {
   return Number.isFinite(scaleValue) ? Math.max(0.05, scaleValue) : 1;
 }
+
+/** Preserve the active adrenaline capacity for catch/score/QTE rewards too. */
+export function grantPlayerDashCharge(player: PlayerState): DashState {
+  const max = (player.movementInternal.buffs?.adrenalineSeconds ?? 0) > 0 ? GAME_CONSTANTS.powerup.adrenalineMaxCharges : GAME_CONSTANTS.dash.maxCharges;
+  const charges = Math.min(max, player.dash.charges + 1);
+  return { ...player.dash, charges, rechargeTimerSeconds: charges >= max ? 0 : player.dash.rechargeTimerSeconds };
+}

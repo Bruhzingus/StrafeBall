@@ -58,6 +58,7 @@ export function toWireInput(input: PlayerInput, previous?: PlayerInput): WireInp
   copyChangedInputField(wire, input, previous, 'resetSerial');
   copyChangedInputField(wire, input, previous, 'interactHeld');
 
+  copyEdgeInputField(wire, input, previous, 'activatePowerupPressed');
   copyEdgeInputField(wire, input, previous, 'jumpPressed');
   copyEdgeInputField(wire, input, previous, 'dashPressed');
   copyEdgeInputField(wire, input, previous, 'crouchPressed');
@@ -348,3 +349,7 @@ export type ServerMessage =
       outBufferedB?: number;
       loopP95Ms?: number;
     };
+
+/** Identity is sent on a targeted message, never in RoomState. */
+export interface PowerupPrivateMessage { kind: import('./types').PowerupKind | null; resetSerial: number; reason?: string }
+export interface PowerupEvent { type: 'powerup-event'; effect: 'spawn' | 'pickup' | 'activate' | 'cannon' | 'thud' | 'beep' | 'explode' | 'heal' | 'armor' | 'place'; position: Vec3; playerId?: string; kind?: import('./types').PowerupKind; stage?: number; resetSerial: number }

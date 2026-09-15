@@ -1,3 +1,4 @@
+import { PowerupPresentation } from '../powerups/PowerupPresentation';
 import { Color3, Engine, Mesh, MeshBuilder, PBRMaterial, Scene, StandardMaterial, Vector3, type Camera } from '@babylonjs/core';
 import { FxaaPostProcess } from '@babylonjs/core/PostProcesses/fxaaPostProcess';
 import { InputManager } from '../input/InputManager';
@@ -134,6 +135,7 @@ export class ArenaScene {
   private readonly rules = new MatchRules();
   private readonly targetDummies: Mesh[] = [];
   private readonly sound: SoundManager;
+  private readonly powerupPresentation: PowerupPresentation;
   private readonly music: MusicManager;
   private readonly ballVisualEffects: BallVisualEffects;
   private readonly effects: Effects;
@@ -345,6 +347,7 @@ export class ArenaScene {
   private latchDashPressed = false;
   private latchSlidePressed = false;
   private latchBackflipPressed = false;
+  private latchPowerupPressed = false;
   private latchPickupPressed = false;
   private latchDropPressed = false;
   private latchCrouchPressed = false;
@@ -374,6 +377,7 @@ export class ArenaScene {
     // All meshes with targetDummy metadata — includes both static and the moving dummy.
     this.targetDummies = this.scene.meshes.filter((mesh): mesh is Mesh => mesh instanceof Mesh && !!mesh.metadata?.targetDummy);
     this.sound = new SoundManager();
+    this.powerupPresentation = new PowerupPresentation(this.scene, this.sound);
     this.music = new MusicManager(() => this.multiplayer.estimateServerTimeMs());
     this.ballVisualEffects = new BallVisualEffects(this.scene);
 
@@ -706,6 +710,7 @@ export class ArenaScene {
     clearPolishedHandles(); // registry only — owners above disposed the actual systems
     this.gym.dispose();
     this.music.dispose();
+    this.powerupPresentation.dispose();
     this.sound.dispose();
   }
 
@@ -1090,6 +1095,9 @@ export class ArenaScene {
 
   private step(dt: number): void {
     this.elapsed += dt;
+    const powerupSnapshot = this.multiplayer.latestSnapshot;
+    this.powerupPresentation.update(powerupSnapshot?.room ?? null, this.multiplayer.localPlayerId,
+      this.player.root.position, this.multiplayer.powerupPrivate, this.multiplayer.drainPowerupEvents(), dt);
 
     // Offline testing toggle (all offline modes incl. creator playtest): strip cooldowns from
     // catches / stamina / backflip / parry so abilities can be spammed while iterating.
@@ -1213,6 +1221,9 @@ export class ArenaScene {
 
   private stepOnline(dt: number, rawFrameMs: number): void {
     this.elapsed += dt;
+    const powerupSnapshot = this.multiplayer.latestSnapshot;
+    this.powerupPresentation.update(powerupSnapshot?.room ?? null, this.multiplayer.localPlayerId,
+      this.player.root.position, this.multiplayer.powerupPrivate, this.multiplayer.drainPowerupEvents(), dt);
     this.onlineRateLogFrameCount += 1;
     this.perfReportFrameCount += 1;
     this.recordPerfFrame(rawFrameMs);
@@ -1222,6 +1233,7 @@ export class ArenaScene {
     this.latchJumpPressed ||= this.input.wasKeyPressed(CONTROL_KEYS.jump);
     this.latchDashPressed ||= this.input.wasKeyPressed(CONTROL_KEYS.dash);
     this.latchSlidePressed ||= this.input.wasKeyPressed(CONTROL_KEYS.slide);
+    this.latchPowerupPressed ||= this.input.wasKeyPressed(CONTROL_KEYS.activatePowerup);
     this.latchBackflipPressed ||= this.input.wasKeyPressed(CONTROL_KEYS.backflip);
     this.latchPickupPressed ||= this.input.wasKeyPressed(CONTROL_KEYS.interact);
     this.latchDropPressed ||= this.input.wasKeyPressed(CONTROL_KEYS.drop);
@@ -1374,6 +1386,7 @@ export class ArenaScene {
       this.latchDashPressed = false;
       this.latchSlidePressed = false;
       this.latchBackflipPressed = false;
+    this.latchPowerupPressed = false;
       this.latchPickupPressed = false;
       this.latchDropPressed = false;
       this.latchCrouchPressed = false;
@@ -2224,6 +2237,7 @@ export class ArenaScene {
     this.latchDashPressed = false;
     this.latchSlidePressed = false;
     this.latchBackflipPressed = false;
+    this.latchPowerupPressed = false;
     this.latchPickupPressed = false;
     this.latchDropPressed = false;
     this.latchCrouchPressed = false;
@@ -2898,6 +2912,7 @@ export class ArenaScene {
       crouchHeld: crouchDown,
       slidePressed: this.latchSlidePressed,
       slideHeld: this.input.isKeyDown(CONTROL_KEYS.slide),
+      activatePowerupPressed: this.latchPowerupPressed,
       backflipPressed: this.latchBackflipPressed,
       pickupPressed: this.latchPickupPressed,
       dropPressed: this.latchDropPressed,
@@ -3785,6 +3800,7 @@ function networkInputStateEquals(a: PlayerInput, b: PlayerInput): boolean {
     a.crouchHeld === b.crouchHeld &&
     a.slidePressed === b.slidePressed &&
     a.slideHeld === b.slideHeld &&
+    a.activatePowerupPressed === b.activatePowerupPressed &&
     a.backflipPressed === b.backflipPressed &&
     a.pickupPressed === b.pickupPressed &&
     a.dropPressed === b.dropPressed &&

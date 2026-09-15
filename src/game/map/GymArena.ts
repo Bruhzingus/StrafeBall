@@ -1,4 +1,5 @@
 import { Color3, Material, Mesh, MeshBuilder, PBRMaterial, Scene, StandardMaterial, Vector3 } from '@babylonjs/core';
+import { GAME_CONSTANTS } from '../../../shared/constants';
 import { TUNING } from '../config/tuning';
 import { MatObstacle, MAT_DIMENSIONS } from './MatObstacle';
 import { AABB, CollisionWorld } from './Collider';
@@ -28,7 +29,7 @@ export const CEILING_FIXTURE_POSITIONS: readonly (readonly [number, number])[] =
   [-5, -8], [5, -8],
   [-5, 0], [5, 0],
   [-5, 8], [5, 8]
-];
+].map(([x, z]) => [x / 13 * TUNING.map.halfWidth, z / 18 * TUNING.map.halfLength] as const);
 
 /**
  * Builds the gym. Each piece is split into two independent concerns:
@@ -46,7 +47,7 @@ export class GymArena {
   public movingDummy: Mesh | null = null;
   /** Live 3D scoreboards (one per end wall). Driven from match state; buzz on score change. */
   public readonly scoreboards: Scoreboard3D[] = [];
-  private readonly movingDummyAmplitude = 4.5; // meters from center
+  private readonly movingDummyAmplitude = 4.5 / 13 * TUNING.map.halfWidth; // meters from center
   private readonly movingDummyPeriod = 3.8;    // seconds per full oscillation
   private courtLineCenterMat: StandardMaterial | null = null;
   private courtLineState = {
@@ -233,14 +234,20 @@ export class GymArena {
     const lineY = 0.012;
     this.courtLineCenterMat = this.createCourtLineMaterial('court_line_center_mat', new Color3(1.0, 0.98, 0.92), new Color3(0.045, 0.03, 0.01));
 
-    // Bold center stripe — the only court line kept; the rest (attack/warning/side lines) read as
-    // visual clutter on the floor and were removed.
-    const centerLine = this.loader.createVisual('line', {
-      name: 'center_line',
-      size: { width: halfW * 2, height: 0.018, depth: 0.20 },
-      position: new Vector3(0, lineY, 0)
-    });
-    centerLine.material = this.courtLineCenterMat;
+    const depth = GAME_CONSTANTS.match.neutralZoneHalfDepth;
+    for (const sign of [-1, 1]) {
+      const line = this.loader.createVisual('line', {
+        name: `neutral_edge_${sign}`,
+        size: { width: halfW * 2, height: 0.018, depth: 0.16 },
+        position: new Vector3(0, lineY, sign * depth)
+      });
+      line.material = this.courtLineCenterMat;
+    }
+    const band = MeshBuilder.CreateGround('neutral_zone_band', { width: halfW * 2, height: depth * 2 }, this.scene);
+    band.position.y = 0.006; band.isPickable = false;
+    const mat = new StandardMaterial('neutral_band_mat', this.scene);
+    mat.diffuseColor = new Color3(0.14, 0.65, 0.68); mat.emissiveColor = new Color3(0.015, 0.06, 0.065);
+    mat.alpha = 0.16; mat.specularColor = Color3.Black(); band.material = mat;
   }
 
   /**
@@ -258,8 +265,8 @@ export class GymArena {
     coneRed.emissiveColor = new Color3(0.12, 0.04, 0.02);
     coneRed.specularColor = new Color3(0.16, 0.12, 0.1);
 
-    const coneXs = [-11.2, -8.4, -5.6, -2.8, 0, 2.8, 5.6, 8.4, 11.2];
-    const rowZ = 0.62;
+    const coneXs = [-11.2, -8.4, -5.6, -2.8, 0, 2.8, 5.6, 8.4, 11.2].map(x => x / 13 * TUNING.map.halfWidth);
+    const rowZ = GAME_CONSTANTS.match.neutralZoneHalfDepth + 0.25;
     const baseY = 0.14;
 
     for (const side of [-1, 1] as const) {
@@ -409,7 +416,7 @@ export class GymArena {
   }
 
   private createTargetDummies(): void {
-    const positions = [new Vector3(-3, 0.9, 8), new Vector3(0, 0.9, 9.5), new Vector3(3, 0.9, 8)];
+    const positions = [new Vector3(-3, 0.9, 8), new Vector3(0, 0.9, 9.5), new Vector3(3, 0.9, 8)].map(p => new Vector3(p.x / 13 * TUNING.map.halfWidth, p.y, p.z / 18 * TUNING.map.halfLength));
     const dummyMat = this.loader.material('dummy');
     const dummyTrimMat = createPbrMaterial(this.scene, 'dummy_trim_mat', new Color3(0.09, 0.11, 0.16), {
       metallic: 0.12,
@@ -434,7 +441,7 @@ export class GymArena {
       roughness: 0.32,
       emissive: new Color3(0, 0.02, 0.025)
     });
-    const movingMesh = this.loader.createVisual('dummy', { name: 'moving_dummy', position: new Vector3(0, 0.9, 7.5) });
+    const movingMesh = this.loader.createVisual('dummy', { name: 'moving_dummy', position: new Vector3(0, 0.9, 7.5 / 18 * TUNING.map.halfLength) });
     movingMesh.material = movingMat;
     movingMesh.metadata = { targetDummy: true, hitCount: 0 };
     this.buildTargetDummyDetails(movingMesh, movingMat, movingTrimMat, 'moving');

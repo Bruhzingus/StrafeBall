@@ -180,8 +180,8 @@ export function isIllegalHalfCourtPosition(
   position: Vec3,
   constants: GameConstants = GAME_CONSTANTS
 ): boolean {
-  if (legalHalf === 'negativeZ') return position.z > constants.match.halfCourtLineZ;
-  return position.z < -constants.match.halfCourtLineZ;
+  if (legalHalf === 'negativeZ') return position.z > constants.match.neutralZoneHalfDepth;
+  return position.z < -constants.match.neutralZoneHalfDepth;
 }
 
 export function applyHalfCourtRule(

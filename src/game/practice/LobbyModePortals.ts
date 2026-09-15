@@ -1,3 +1,4 @@
+import { TUNING } from '../config/tuning';
 import { Color3, Scene, Vector3 } from '@babylonjs/core';
 import { PortalArch, type PortalPalette } from './PortalArch';
 
@@ -51,7 +52,7 @@ const ZONES: ModeZoneDef[] = [
     eyebrow: 'Match Lobby',
     title: 'PRIVATE MATCH',
     subtitle: 'Create or join with a code',
-    position: new Vector3(0, 0, -11.15),
+    position: new Vector3(0, 0, -11.15 / 18 * TUNING.map.halfLength),
     palette: PRIVATE_MATCH_ENERGY
   },
   {
@@ -60,7 +61,7 @@ const ZONES: ModeZoneDef[] = [
     eyebrow: 'Training',
     title: 'MOVEMENT COURSE',
     subtitle: 'Enter the local movement course',
-    position: new Vector3(3.35, 0, -11.15),
+    position: new Vector3(3.35 / 13 * TUNING.map.halfWidth, 0, -11.15 / 18 * TUNING.map.halfLength),
     palette: MOVEMENT_COURSE_ENERGY
   }
 ];

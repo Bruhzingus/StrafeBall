@@ -1493,7 +1493,7 @@ function createCeilingConduits(scene: Scene): void {
     markDecorative(conduit);
   }
 
-  for (const z of [-12, -4, 4, 12]) {
+  for (const z of [-12, -4, 4, 12].map(z => z / 18 * TUNING.map.halfLength)) {
     const cross = MeshBuilder.CreateBox(`decor_ceiling_cross_conduit_${z}`, {
       width: TUNING.map.halfWidth * 2 - 3.2,
       height: 0.032,
@@ -1506,7 +1506,7 @@ function createCeilingConduits(scene: Scene): void {
 
   let index = 0;
   for (const x of [-7.2, -2.4, 2.4, 7.2]) {
-    for (const z of [-12, -4, 4, 12]) {
+    for (const z of [-12, -4, 4, 12].map(z => z / 18 * TUNING.map.halfLength)) {
       const box = MeshBuilder.CreateBox(`decor_ceiling_junction_box_${index}`, {
         width: 0.24,
         height: 0.055,

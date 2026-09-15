@@ -84,6 +84,7 @@ export function teamShapeForFormat(format: MatchFormat): TeamShape {
  */
 export function recommendedRoomSettings(format: MatchFormat): RoomSettings {
   const shared = {
+    powerupsEnabled: true,
     matPreset: 4, // current map ships 4 standing mats (MAT_SPECS.length)
     maxLiveBallBounces: GAME_CONSTANTS.ball.deadAfterBounces, // 1
     halfCourtTimerSeconds: GAME_CONSTANTS.match.noBoundariesSeconds, // 120
@@ -143,6 +144,7 @@ function snapMatPreset(value: unknown, fallback: number): number {
 /** True when two settings describe the same configuration (ignoring the derived `preset` tag). */
 export function roomSettingsEqual(a: RoomSettings, b: RoomSettings): boolean {
   return (
+    (a.powerupsEnabled !== false) === (b.powerupsEnabled !== false) &&
     a.format === b.format &&
     a.livesPerPlayer === b.livesPerPlayer &&
     a.dodgeballCount === b.dodgeballCount &&
@@ -174,6 +176,7 @@ export function canonicalizeRoomSettings(input: Partial<RoomSettings> | undefine
   const settings: RoomSettings = {
     preset: 'custom',
     format,
+    powerupsEnabled: typeof input?.powerupsEnabled === 'boolean' ? input.powerupsEnabled : fallback.powerupsEnabled !== false,
     livesPerPlayer: clampIntField(input?.livesPerPlayer, ROOM_SETTINGS_LIMITS.lives, fallback.livesPerPlayer),
     dodgeballCount: clampIntField(input?.dodgeballCount, ROOM_SETTINGS_LIMITS.dodgeballs, fallback.dodgeballCount),
     maxLiveBallBounces: clampIntField(input?.maxLiveBallBounces, ROOM_SETTINGS_LIMITS.bounces, fallback.maxLiveBallBounces),
@@ -198,6 +201,7 @@ export function defaultRoomSettings(format: MatchFormat = '1v1'): RoomSettings {
 export function resolveMatchSettings(settings: RoomSettings): MatchSettings {
   const shape = teamShapeForFormat(settings.format);
   return {
+    powerupsEnabled: settings.powerupsEnabled !== false,
     format: settings.format,
     teamSize: shape.teamSize,
     teamCount: shape.teamCount,
@@ -258,6 +262,7 @@ export interface RoomSettingsPatch {
   matPreset?: number;
   roundCount?: number;
   halfCourtTimerSeconds?: number;
+  powerupsEnabled?: boolean;
 }
 
 export type RoomSettingsRejectReason =
@@ -329,6 +334,10 @@ export function validateRoomSettingsPatch(current: RoomSettings, patch: RoomSett
     next = { ...next, [field]: value };
   }
 
+  if (patch.powerupsEnabled !== undefined) {
+    if (typeof patch.powerupsEnabled !== 'boolean') return { ok: false, reason: 'invalid-field' };
+    next.powerupsEnabled = patch.powerupsEnabled;
+  }
   if (patch.matPreset !== undefined) {
     if (typeof patch.matPreset !== 'number' || !(ALLOWED_MAT_PRESETS as readonly number[]).includes(patch.matPreset)) {
       return { ok: false, reason: 'invalid-field' };

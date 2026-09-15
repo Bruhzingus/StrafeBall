@@ -1836,7 +1836,7 @@ describe('ServerGameLoop', () => {
       loop.addPlayer('a', 'A');
       loop.addPlayer('b', 'B');
       playNow(loop);
-      loop.state.players.b.movement.position = vec3(0, 0, 14);
+      loop.state.players.b.movement.position = vec3(0, 0, GAME_CONSTANTS.map.halfLength - 4);
       let seq = 1;
       loop.handleInput('b', { lookYawRadians: 0, lookPitchRadians: 0, sequence: seq }, seq);
       seq += 1;
@@ -1893,7 +1893,7 @@ describe('ServerGameLoop', () => {
 
     it('advances fast catchable dead balls for a full server tick', () => {
       const loop = defenderFacingIncoming();
-      const startZ = -6;
+      const startZ = -8; // Clear of the scaled mat row.
       const speed = GAME_CONSTANTS.catch.bouncedCatchMinSpeed + 5;
       loop.state.balls.ball_0 = {
         ...loop.state.balls.ball_0,

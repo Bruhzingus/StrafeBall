@@ -682,6 +682,7 @@ export class MultiplayerOverlay {
     const room = this.client.latestSnapshot?.room;
     if (!room) return;
 
+    if (action === 'powerups') { this.client.requestRoomSettings({ powerupsEnabled: room.settings.powerupsEnabled === false }); return; }
     if (action === 'set') {
       const field = control.dataset.field as StepField | undefined;
       const delta = Number(control.dataset.delta ?? 0);
@@ -871,6 +872,7 @@ function roomSummaryKey(room: RoomState | null, localPlayerId: string): string {
     s.matPreset,
     s.roundCount,
     s.halfCourtTimerSeconds,
+    s.powerupsEnabled,
     room.endVote.active ? 1 : 0,
     room.endVote.voteCount,
     room.endVote.requiredVotes,
@@ -1136,6 +1138,7 @@ function buildControlsHtml(room: RoomState, localPlayerId: string): string {
     stepRow(SETTING_FIELDS.maxLiveBallBounces.label, s.maxLiveBallBounces, 'maxLiveBallBounces', editable, ''),
     stepRow(SETTING_FIELDS.roundCount.label, s.roundCount, 'roundCount', editable, ''),
     stepRow(SETTING_FIELDS.halfCourtTimerSeconds.label, s.halfCourtTimerSeconds, 'halfCourtTimerSeconds', editable, 's'),
+    textRow('Power-ups', editable ? `<button class="multiplayer-control" data-action="powerups" type="button">${s.powerupsEnabled === false ? 'Off' : 'On'}</button>` : (s.powerupsEnabled === false ? 'Off' : 'On')),
     matRow(s.matPreset, editable)
   ].join('');
 
@@ -1205,6 +1208,7 @@ function buildSettingsHtml(room: RoomState, localPlayerId: string): string {
     stepRow(SETTING_FIELDS.maxLiveBallBounces.label, s.maxLiveBallBounces, 'maxLiveBallBounces', editable, ''),
     stepRow(SETTING_FIELDS.roundCount.label, s.roundCount, 'roundCount', editable, ''),
     stepRow(SETTING_FIELDS.halfCourtTimerSeconds.label, s.halfCourtTimerSeconds, 'halfCourtTimerSeconds', editable, 's'),
+    textRow('Power-ups', editable ? `<button class="multiplayer-control" data-action="powerups" type="button">${s.powerupsEnabled === false ? 'Off' : 'On'}</button>` : (s.powerupsEnabled === false ? 'Off' : 'On')),
     matRow(s.matPreset, editable)
   ].join('');
   const presetId: MatchPresetId = s.format === '2v2' ? '2v2-recommended' : '1v1-recommended';

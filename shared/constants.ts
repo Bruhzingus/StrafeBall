@@ -359,16 +359,28 @@ export const GAME_CONSTANTS = {
     resetVoteSeconds: 20,
     illegalCrossWarningsBeforePenalty: 1,
     penaltyHitValue: 1,
-    halfCourtLineZ: 0.25,
+    neutralZoneHalfDepth: 3,
+    halfCourtLineZ: 3, // Legacy alias for rules consumers.
     // Pre-round countdown: players are pinned to spawn (look only) for this long when a match starts
     // and after every reset, then play begins. Also the deterministic post-reset state that fixes
     // the old "everyone stuck after a 1v1 reset" bug.
     countdownSeconds: 5
   },
 
+  powerup: {
+    respawnSeconds: 20, pickupRadius: 1.2, buffSeconds: 15,
+    speedMultiplier: 1.3, jumpHeightMultiplier: 1.25,
+    adrenalineMaxCharges: 6, adrenalineRechargeSeconds: 2,
+    cannonHeldScale: 2, cannonFlightScale: 5,
+    bombFuseSeconds: 2, blastRadius: 3,
+    magnetSeconds: 20, magnetRadius: 10, magnetAcceleration: 28, magnetSpeed: 7,
+    distantMagnetAcceleration: 5, distantMagnetSpeed: 2, stationarySeconds: 3, armorCap: 3,
+    healRadius: 1.5, healSeconds: 10, stationLifetimeSeconds: 45, placementDistance: 1.5
+  },
+
   map: {
-    halfWidth: 13,
-    halfLength: 18,
+    halfWidth: 14.5,
+    halfLength: 20,
     // Ceiling height (meters). Used by the ball ceiling clamp + the side-wall/ceiling 1-bounce rule.
     // Mirrored by the client TUNING.map.wallHeight so server and client agree on the bounce surface.
     // Raised by one player height (6.75 -> 8.5) so wall-runs have more overhead freedom.

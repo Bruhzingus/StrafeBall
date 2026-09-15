@@ -1,3 +1,4 @@
+import { GAME_CONSTANTS } from '../../../shared/constants';
 import { TUNING } from '../config/tuning';
 import { MatchRules } from '../rules/MatchRules';
 import { PlayerController } from '../player/PlayerController';
@@ -189,7 +190,7 @@ export class Hud {
     // Center stamina segments — one block + inner fill per charge, pre-built, no per-frame allocations.
     this.staminaWidget = document.createElement('div');
     this.staminaWidget.className = 'stamina-widget';
-    for (let i = 0; i < TUNING.dash.maxCharges; i++) {
+    for (let i = 0; i < GAME_CONSTANTS.powerup.adrenalineMaxCharges; i++) {
       const seg = document.createElement('div');
       seg.className = 'stamina-widget-seg';
       const fill = document.createElement('div');
@@ -666,10 +667,10 @@ export class Hud {
       speed: local?.movement.speed ?? 0,
       dt: Math.max(0, frameMs / 1000)
     });
-    this.updateStaminaWidget(
-      local ? this.staminaWidgetValue(local.dash.charges, local.dash.rechargeTimerSeconds) : 0,
-      TUNING.dash.maxCharges
-    );
+    const adrenaline = (local?.movementInternal.buffs?.adrenalineSeconds ?? 0) > 0;
+    const maxCharges = adrenaline ? GAME_CONSTANTS.powerup.adrenalineMaxCharges : TUNING.dash.maxCharges;
+    this.updateStaminaWidget(local ? this.staminaWidgetValue(local.dash.charges, local.dash.rechargeTimerSeconds,
+      maxCharges, adrenaline ? GAME_CONSTANTS.powerup.adrenalineRechargeSeconds : TUNING.dash.rechargeSeconds) : 0, maxCharges);
     this.updateCrosshairMode({
       holding: !!left?.heldBallId || !!right?.heldBallId,
       charging: left?.mode === 'charging' || right?.mode === 'charging',
@@ -823,7 +824,7 @@ export class Hud {
   }
 
   private networkBallTally(snapshot: ServerSnapshot): string {
-    const counts = { live: 0, held: 0, loose: 0, dead: 0, deflected: 0 };
+    const counts = { live: 0, held: 0, loose: 0, dead: 0, deflected: 0, armor: 0 };
     for (const ball of Object.values(snapshot.room.balls)) {
       counts[ball.phase] += 1;
     }
@@ -946,6 +947,7 @@ export class Hud {
 
     for (let i = 0; i < this.staminaWidgetSegs.length; i++) {
       const seg = this.staminaWidgetSegs[i];
+      seg.style.display = i < maxCharges ? '' : 'none';
       const fill = this.staminaWidgetFills[i];
       const prev = this.lastSegState[i];
 
@@ -979,10 +981,10 @@ export class Hud {
     }
   }
 
-  private staminaWidgetValue(charges: number, rechargeTimerSeconds: number): number {
-    const clampedCharges = Math.min(TUNING.dash.maxCharges, Math.max(0, Math.floor(charges)));
-    if (clampedCharges >= TUNING.dash.maxCharges) return TUNING.dash.maxCharges;
-    const recharge01 = Math.max(0, Math.min(1, rechargeTimerSeconds / TUNING.dash.rechargeSeconds));
+  private staminaWidgetValue(charges: number, rechargeTimerSeconds: number, maxCharges: number = TUNING.dash.maxCharges, rechargeSeconds: number = TUNING.dash.rechargeSeconds): number {
+    const clampedCharges = Math.min(maxCharges, Math.max(0, Math.floor(charges)));
+    if (clampedCharges >= maxCharges) return maxCharges;
+    const recharge01 = Math.max(0, Math.min(1, rechargeTimerSeconds / rechargeSeconds));
     return clampedCharges + recharge01;
   }
 

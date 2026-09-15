@@ -297,7 +297,8 @@ function packPlayer(player: PlayerState): unknown[] {
     player.lastPlayerBuffUntilMs,
     b(player.connected),
     player.reconnectDeadlineAtMs,
-    player.lastProcessedInputSeq
+    player.lastProcessedInputSeq,
+    [player.hasPowerup ?? false, player.armorBallIds ?? []]
   ];
 }
 
@@ -325,7 +326,8 @@ function packFastPlayer(player: PlayerState): unknown[] {
     player.lastPlayerBuffUntilMs,
     b(player.connected),
     player.reconnectDeadlineAtMs,
-    player.lastProcessedInputSeq
+    player.lastProcessedInputSeq,
+    [player.hasPowerup ?? false, player.armorBallIds ?? []]
   ];
 }
 
@@ -386,7 +388,8 @@ function unpackPlayer(packed: unknown[]): PlayerState {
     lastPlayerBuffUntilMs: packed[24] as number | null,
     connected: Boolean(packed[25]),
     reconnectDeadlineAtMs: packed[26] as number | null,
-    lastProcessedInputSeq: packed[27] as number
+    lastProcessedInputSeq: packed[27] as number,
+    ...unpackPowerupPlayer(packed[28])
   };
 }
 
@@ -425,7 +428,8 @@ function mergeFastPlayer(base: PlayerState, packed: unknown[]): PlayerState {
     lastPlayerBuffUntilMs: packed[18] as number | null,
     connected: Boolean(packed[19]),
     reconnectDeadlineAtMs: packed[20] as number | null,
-    lastProcessedInputSeq: packed[21] as number
+    lastProcessedInputSeq: packed[21] as number,
+    ...unpackPowerupPlayer(packed[22])
   };
 }
 
@@ -444,12 +448,14 @@ function packMovementInternal(movementInternal: PlayerState['movementInternal'])
     pq4(movementInternal.lastWallNormalZ),
     b(movementInternal.backflipActive),
     pq3(movementInternal.backflipTimer),
-    pq3(movementInternal.backflipCooldown)
+    pq3(movementInternal.backflipCooldown),
+    movementInternal.buffs ?? null
   ];
 }
 
 function unpackMovementInternal(movementInternal: unknown[]): PlayerState['movementInternal'] {
   return {
+    ...(movementInternal[14] ? { buffs: movementInternal[14] as PlayerState['movementInternal']['buffs'] } : {}),
     slideTimer: uq3(movementInternal[0]),
     slideBufferTimer: movementInternal.length > 13 ? uq3(movementInternal[1]) : 0,
     jumpGraceTimer: uq3(movementInternal[movementInternal.length > 13 ? 2 : 1]),
@@ -504,7 +510,8 @@ function packBall(ball: BallState): unknown[] {
     pq3(ball.dropScale),
     packVel(ball.curveAccel),
     ball.lastTouchedByPlayerId,
-    ball.throwId
+    ball.throwId,
+    [ball.kind ?? "normal", ball.armedAtMs ?? null, ball.fuseSeconds ?? null, ball.armorPlayerId ?? null]
   ];
 }
 
@@ -526,7 +533,8 @@ function unpackBall(packed: unknown[]): BallState {
     // locally from the throw, so a decoded snapshot ball doesn't need this to drive curve replay.
     curveDistance: 0,
     lastTouchedByPlayerId: packed[12] as string | null,
-    throwId: packed[13] as number
+    throwId: packed[13] as number,
+    ...unpackSpecialBall(packed[14])
   };
 }
 
@@ -683,4 +691,13 @@ function q0(n: number): number {
 
 function q3(n: number): number {
   return Math.round(n * 1000) / 1000;
+}
+
+function unpackPowerupPlayer(value: unknown): Partial<PlayerState> {
+  if (!Array.isArray(value)) return {};
+  return { hasPowerup: Boolean(value[0]), armorBallIds: value[1] as string[] };
+}
+function unpackSpecialBall(value: unknown): Partial<BallState> {
+  if (!Array.isArray(value)) return {};
+  return { kind: value[0] as BallState['kind'], ...(value[1] !== null ? {armedAtMs: value[1]} : {}), ...(value[2] !== null ? {fuseSeconds: value[2]} : {}), ...(value[3] !== null ? {armorPlayerId: value[3]} : {}) };
 }

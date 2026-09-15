@@ -47,6 +47,7 @@ export type PlayerCombatState = 'waiting' | 'alive' | 'eliminated';
  * but the model already supports it. Numeric bounds live in ROOM_SETTINGS_LIMITS (roomSettings.ts).
  */
 export interface RoomSettings {
+  powerupsEnabled?: boolean;
   /** Recommended-preset identity this config came from, or 'custom' once any field diverges. */
   preset: MatchPresetId;
   /** Team format. Drives the derived team shape (teamSize/teamCount/maxPlayers). */
@@ -73,6 +74,7 @@ export interface RoomSettings {
  * legacy 1v1 scoreLimit) live only here.
  */
 export interface MatchSettings {
+  powerupsEnabled?: boolean;
   format: MatchFormat;
   teamSize: number;
   teamCount: number;
@@ -91,10 +93,16 @@ export interface MatchSettings {
   scoreLimit: number;
 }
 
-export type BallPhase = 'loose' | 'held' | 'live' | 'dead' | 'deflected';
+export type PowerupKind = 'adrenaline' | 'speed' | 'cannon' | 'heal' | 'magnet' | 'bomb';
+export interface PowerupBuffs { speedSeconds: number; adrenalineSeconds: number; magnetSeconds: number; cannonLocked: boolean }
+export interface HealStationState { id: string; placerId: string; teamId: string; position: Vec3; remainingSeconds: number; progress: Record<string, number> }
+export interface PowerupWorldState { spawned: boolean; waitSeconds: number; stations: HealStationState[] }
+
+export type BallPhase = 'loose' | 'held' | 'live' | 'dead' | 'deflected' | 'armor';
 export type BallOwnerKind = 'player' | 'launcher' | 'bot' | 'dummy' | null;
 
 export interface PlayerInput {
+  activatePowerupPressed?: boolean;
   sequence: number;
   clientTimeMs: number;
   moveX: number;
@@ -215,6 +223,7 @@ export interface PlayerMatchStats {
  * offline MovementController so the shared MovementSim reproduces identical feel.
  */
 export interface MovementInternalState {
+  buffs?: PowerupBuffs;
   slideTimer: number;
   slideBufferTimer: number;
   jumpGraceTimer: number;
@@ -232,6 +241,8 @@ export interface MovementInternalState {
 }
 
 export interface PlayerState {
+  hasPowerup?: boolean;
+  armorBallIds?: string[];
   id: string;
   name: string;
   teamId: string;
@@ -256,6 +267,12 @@ export interface PlayerState {
 }
 
 export interface BallState {
+  kind?: 'normal' | 'cannon' | 'bomb' | 'heal';
+  armedAtMs?: number;
+  fuseSeconds?: number;
+  bombThrowerId?: string;
+  settledSeconds?: number;
+  armorPlayerId?: string;
   id: string;
   phase: BallPhase;
   position: Vec3;
@@ -412,6 +429,7 @@ export interface IntermissionVoteState {
 }
 
 export interface RoomState {
+  powerups?: PowerupWorldState;
   id: string;
   tick: number;
   /**

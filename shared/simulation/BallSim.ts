@@ -56,10 +56,10 @@ export function createBallState(id: string, position: Vec3 = vec3(), overrides: 
 }
 
 export function isBallPickupStateEligible(
-  ball: Pick<BallState, 'phase' | 'velocity'> | { phase: BallPhase | string; velocity: Vec3 },
+  ball: Pick<BallState, 'phase' | 'velocity' | 'kind'> | { phase: BallPhase | string; velocity: Vec3; kind?: BallState['kind'] },
   constants: GameConstants = GAME_CONSTANTS
 ): boolean {
-  if (ball.phase === 'held') return false;
+  if (ball.phase === 'held' || ball.phase === 'armor' || ball.kind === 'cannon' || ball.kind === 'heal') return false;
   if (ball.phase === 'loose' || ball.phase === 'dead') return true;
   return length(ball.velocity) <= constants.ball.slowPickupSpeed;
 }
@@ -72,9 +72,10 @@ export function isBallPickupStateEligible(
  * regardless (see canScorePlayerHit).
  */
 export function isBallCatchableInFlight(
-  ball: Pick<BallState, 'phase' | 'velocity' | 'bounceCount'>,
+  ball: Pick<BallState, 'phase' | 'velocity' | 'bounceCount' | 'kind' | 'armedAtMs'>,
   constants: GameConstants = GAME_CONSTANTS
 ): boolean {
+  if (ball.kind === 'cannon' || ball.kind === 'heal' || ball.armedAtMs !== undefined) return false;
   if (ball.phase === 'live' || ball.phase === 'deflected') return true;
   if (ball.phase !== 'dead') return false;
   return (
@@ -83,7 +84,7 @@ export function isBallCatchableInFlight(
 }
 
 export function isBallPickupEligible(
-  ball: Pick<BallState, 'phase' | 'position' | 'velocity'>,
+  ball: Pick<BallState, 'phase' | 'position' | 'velocity' | 'kind'>,
   playerPosition: Vec3,
   constants: GameConstants = GAME_CONSTANTS
 ): boolean {
@@ -100,6 +101,7 @@ export function holdBall(ball: BallState, playerId: string, hand: HandSide): Bal
   return {
     ...ball,
     phase: 'held',
+    settledSeconds: 0,
     velocity: vec3(),
     ownerKind: 'player',
     ownerId: playerId,
@@ -151,6 +153,7 @@ export function throwHeldBall(ball: BallState, request: ThrowBallRequest): { ok:
     ball: {
       ...ball,
       phase: 'live',
+      settledSeconds: 0,
       position: cloneVec3(request.origin),
       velocity: cloneVec3(request.velocity),
       ownerKind: request.ownerKind ?? 'player',

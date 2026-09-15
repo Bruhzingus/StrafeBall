@@ -1,3 +1,4 @@
+import { updateSpecialBall } from '../powerups/PowerupPresentation';
 import { Color3, Mesh, MeshBuilder, PBRMaterial, Quaternion, Scene, TransformNode, Vector3 } from '@babylonjs/core';
 import type { CatchEvent, ServerSnapshot, ThrowEvent } from '../../../shared/protocol';
 import type { SnapshotLaneInfo } from '../../../shared/snapshotCodec';
@@ -977,6 +978,16 @@ export class NetworkRenderer {
       if (visual.mesh.material !== desiredMaterial) visual.mesh.material = desiredMaterial;
       visual.mesh.setEnabled(true);
       this.updateBallEffects(visual, ball, dt);
+      updateSpecialBall(visual.mesh, ball, performance.now() / 1000);
+      if (ball.phase === 'armor' && ball.armorPlayerId) {
+        const player = players.find(p => p.id === ball.armorPlayerId);
+        if (player) {
+          const index = player.armorBallIds?.indexOf(ball.id) ?? 0;
+          const angle = performance.now() / 1000 * 1.6 + index * Math.PI * 2 / 3;
+          visual.mesh.position.set(player.movement.position.x + Math.sin(angle) * 0.67,
+            player.movement.position.y + 0.85 + Math.sin(angle * 2) * 0.12, player.movement.position.z + Math.cos(angle) * 0.67);
+        }
+      }
       // Update the stored continuity in place (allocate one only the first time we see this ball).
       if (previous) {
         copyBallContinuity(previous, ball);

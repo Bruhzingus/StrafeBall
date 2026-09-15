@@ -527,6 +527,7 @@ export class DuelRoom extends Room {
     } satisfies ServerMessage);
     this.sendNetFlightRecorderConfig(client);
     this.sendBattleMusicSync(client);
+    client.send('powerup-private', this.game.powerupIdentity(client.sessionId));
 
     this.broadcast('player-joined', { type: 'player-joined', playerId: player.id } satisfies ServerMessage, { except: client });
     this.broadcastRosterUpdate();
@@ -552,6 +553,7 @@ export class DuelRoom extends Room {
     this.log(`player reconnected id=${client.sessionId}`);
     this.sendNetFlightRecorderConfig(client);
     this.sendBattleMusicSync(client);
+    client.send('powerup-private', this.game.powerupIdentity(client.sessionId));
     this.broadcastRosterUpdate();
     this.reportServerConnectionEvent('client_reconnect', client.sessionId);
   }
@@ -878,6 +880,9 @@ export class DuelRoom extends Room {
   }
 
   private broadcastStepEvents(): void {
+    const powerups = this.game.drainPowerupEvents();
+    for (const event of powerups.events) this.broadcast('powerup-event', event);
+    for (const { playerId, message } of powerups.privateMessages) this.clients.find(c => c.sessionId === playerId)?.send('powerup-private', message);
     const throwEvents = this.game.drainThrowEvents();
     for (const event of throwEvents) this.broadcast('throw-event', event);
 

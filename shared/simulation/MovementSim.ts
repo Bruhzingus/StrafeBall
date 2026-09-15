@@ -45,6 +45,10 @@ export function stepMovement(
   movementScale = 1,
   cooldownRateScale = 1
 ): MovementStepResult {
+  const buffs = internalIn.buffs;
+  const speedBuff = (buffs?.speedSeconds ?? 0) > 0 ? c.powerup.speedMultiplier : 1;
+  const staminaLocked = buffs?.cannonLocked ?? false;
+  if ((buffs?.adrenalineSeconds ?? 0) > 0) c = { ...c, dash: { ...c.dash, maxCharges: c.powerup.adrenalineMaxCharges, rechargeSeconds: c.powerup.adrenalineRechargeSeconds } } as unknown as GameConstants;
   let vx = movementIn.velocity.x;
   let vy = movementIn.velocity.y;
   let vz = movementIn.velocity.z;
@@ -225,7 +229,7 @@ export function stepMovement(
       const bhopBonus = jumpGraceTimer > 0 ? c.player.bhopSpeedBonus : 1;
       vx *= bhopBonus;
       vz *= bhopBonus;
-      vy = c.player.jumpSpeed;
+      vy = c.player.jumpSpeed * (speedBuff > 1 ? Math.sqrt(c.powerup.jumpHeightMultiplier) : 1);
       grounded = false;
       doubleJumpAvailable = true;
       jumpGraceTimer = 0;
@@ -233,7 +237,7 @@ export function stepMovement(
         vx += wishX * 0.45;
         vz += wishZ * 0.45;
       }
-    } else if (doubleJumpAvailable) {
+    } else if (doubleJumpAvailable && !staminaLocked) {
       const result = tryUpwardDash(dash, { x: vx, y: vy, z: vz }, c, speedScale);
       if (result.ok) {
         dash = result.dash;
@@ -249,7 +253,7 @@ export function stepMovement(
 
   // --- dash (edge-triggered) ---
   const dashPressed = input.dashPressed;
-  if (dashPressed) {
+  if (dashPressed && !staminaLocked) {
     const clientDash = sanitizeDashDirection(input.dashDirection);
     const ddx = clientDash ? clientDash.x : hasWish ? wishX : fwdX;
     const ddz = clientDash ? clientDash.z : hasWish ? wishZ : fwdZ;
@@ -266,7 +270,7 @@ export function stepMovement(
 
   // --- backflip (edge-triggered) ---
   const backflipPressed = input.backflipPressed;
-  if (backflipPressed && !backflipActive && backflipCooldown <= 0) {
+  if (backflipPressed && !staminaLocked && !backflipActive && backflipCooldown <= 0) {
     backflipActive = true;
     backflipTimer = 0;
     backflipCooldown = c.backflip.cooldownSeconds;
@@ -364,8 +368,8 @@ export function stepMovement(
     // (non-slide) grounded movement accelerates toward the wish dir.
     const groundWishSpeed = crouching
       ? c.player.crouchWalkSpeed * speedScale
-      : c.player.maxGroundSpeed * speedMultiplier * speedScale;
-    const accelerated = accelerate(vx, vz, wishX, wishZ, hasWish, groundWishSpeed, c.player.groundAcceleration, dt);
+      : c.player.maxGroundSpeed * speedMultiplier * speedScale * speedBuff;
+    const accelerated = accelerate(vx, vz, wishX, wishZ, hasWish, groundWishSpeed, c.player.groundAcceleration * speedBuff, dt);
     vx = accelerated.vx;
     vz = accelerated.vz;
   } else if (!grounded && !wallRunClimbing) {
@@ -488,6 +492,7 @@ export function stepMovement(
       speed
     },
     internal: {
+      ...(buffs ? { buffs: { ...buffs, speedSeconds: Math.max(0, buffs.speedSeconds - dt), adrenalineSeconds: Math.max(0, buffs.adrenalineSeconds - dt), magnetSeconds: Math.max(0, buffs.magnetSeconds - dt) } } : {}),
       slideTimer,
       slideBufferTimer,
       jumpGraceTimer,

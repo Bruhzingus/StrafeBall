@@ -30,7 +30,7 @@ export interface SweptCatchRequest {
   handCooldownSeconds?: number;
   dashing: boolean;
   defenderPlayerId?: string | null;
-  ball: Pick<BallState, 'phase' | 'velocity' | 'bounceCount' | 'ownerId'>;
+  ball: Pick<BallState, 'phase' | 'velocity' | 'bounceCount' | 'ownerId' | 'kind' | 'armedAtMs'>;
   origin: Vec3;
   forward: Vec3;
   segmentStart: Vec3;
@@ -47,7 +47,7 @@ export interface SweptParryRequest {
   heldBallCount: number;
   parryCooldownSeconds: number;
   defenderPlayerId?: string | null;
-  ball: Pick<BallState, 'phase' | 'isSuper' | 'ownerId'>;
+  ball: Pick<BallState, 'phase' | 'isSuper' | 'ownerId' | 'kind' | 'armedAtMs'>;
   origin: Vec3;
   forward: Vec3;
   segmentStart: Vec3;
@@ -268,7 +268,7 @@ export function autoParryBall(
 ): AutoParryResult | { ok: false; reason: ParryValidationReason } {
   if (heldBallCount(hands) < constants.ball.maxHeldBalls) return { ok: false, reason: 'hands-not-full' };
   if (parryCooldownSeconds > 0) return { ok: false, reason: 'parry-cooldown' };
-  if (ball.phase !== 'live') return { ok: false, reason: 'not-live' };
+  if (ball.phase !== 'live' || ball.kind === 'cannon' || ball.armedAtMs !== undefined) return { ok: false, reason: 'not-live' };
   if (!isInParryCone(origin, aimForward, ball, constants)) return { ok: false, reason: 'outside-parry-cone' };
 
   return {
@@ -313,7 +313,7 @@ export function sweptParryFailReason(
 ): SweptParryFailReason | null {
   if (request.heldBallCount < constants.ball.maxHeldBalls) return 'no-two-balls';
   if (request.parryCooldownSeconds > 0) return 'parry-cooldown';
-  if (request.ball.phase !== 'live') return 'ball-not-live';
+  if (request.ball.phase !== 'live' || request.ball.kind === 'cannon' || request.ball.armedAtMs !== undefined) return 'ball-not-live';
   if (request.ball.ownerId !== null && request.ball.ownerId === request.defenderPlayerId) return 'owner-invalid';
 
   const coneDegrees = request.ball.isSuper ? constants.catch.superParryConeDegrees : constants.parry.coneDegrees;

@@ -30,12 +30,12 @@ export class PlayerController {
   private wallLean = 0;
   // Where the K "reset" sends the player. Defaults to the gym spawn; the Movement Sandbox points it
   // at the sandbox spawn while active so a reset stays inside the sandbox (restored on exit).
-  private readonly respawnPosition = new Vector3(0, 0, -16);
+  private readonly respawnPosition = new Vector3(0, 0, -16 / 18 * TUNING.map.halfLength);
   private respawnYaw: number | undefined = undefined;
 
   constructor(scene: Scene, private readonly input: InputManager, ballManager: BallManager, collision: CollisionWorld, effects: Effects) {
     this.root = new TransformNode('playerRoot', scene);
-    this.root.position = new Vector3(0, 0, -16);
+    this.root.position = new Vector3(0, 0, -16 / 18 * TUNING.map.halfLength);
 
     this.camera = new FreeCamera('playerCamera', new Vector3(0, 1.58, 0), scene);
     this.camera.parent = this.root;
@@ -99,7 +99,7 @@ export class PlayerController {
   }
 
   /** Set where the K reset teleports to (used by the Movement Sandbox; pass no args to restore gym). */
-  setRespawn(position = new Vector3(0, 0, -16), yaw?: number): void {
+  setRespawn(position = new Vector3(0, 0, -16 / 18 * TUNING.map.halfLength), yaw?: number): void {
     this.respawnPosition.copyFrom(position);
     this.respawnYaw = yaw;
   }
