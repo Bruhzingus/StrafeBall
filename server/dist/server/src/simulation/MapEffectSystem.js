@@ -48,7 +48,9 @@ class MapEffectSystem {
             return false;
         if (this.rng() >= constants_1.GAME_CONSTANTS.mapEffect.chance)
             return false;
-        const kind = KINDS[Math.min(KINDS.length - 1, Math.floor(this.rng() * KINDS.length))];
+        // The lobby is for messing around, not dying: lava never rolls before the match starts.
+        const pool = room.match.status === 'warmup' ? KINDS.filter((k) => k !== 'lava') : KINDS;
+        const kind = pool[Math.min(pool.length - 1, Math.floor(this.rng() * pool.length))];
         room.mapEffect = { kind, phase: 'warning', remainingSeconds: constants_1.GAME_CONSTANTS.mapEffect.warningSeconds, spawnIndex, lavaLevel: 0 };
         this.emit(room, 'map-warning', spawnPosition, kind);
         return true;

@@ -245,7 +245,7 @@ export class PowerupPresentation {
         node.root.setEnabled(true);
         node.root.position.set(spawn.x, 0, spawn.z);
         if (spawn.waitSeconds !== node.lastWait) { node.waitEstimate = spawn.waitSeconds; node.lastWait = spawn.waitSeconds; }
-        else if (room.match.status === 'playing' && !spawn.spawned) node.waitEstimate = Math.max(0, node.waitEstimate - dt);
+        else if ((room.match.status === 'playing' || room.match.status === 'warmup') && !spawn.spawned) node.waitEstimate = Math.max(0, node.waitEstimate - dt);
         node.box.setEnabled(spawn.spawned);
         node.box.position.y = 1.05 + (settings.reducedEffects ? 0 : Math.sin(this.time * 2.7) * 0.1);
         node.box.rotation.set(0.09, this.time * 0.65, settings.reducedEffects ? 0 : Math.sin(this.time * 1.8) * 0.06);

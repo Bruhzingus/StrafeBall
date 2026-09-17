@@ -83,7 +83,8 @@ class PowerupSystem {
     activate(room, playerId) {
         const p = room.players[playerId];
         const kind = this.inventory.get(playerId);
-        if (room.settings.powerupsEnabled === false || !p || !alive(p) || room.match.status !== 'playing' || !kind)
+        const running = room.match.status === 'playing' || room.match.status === 'warmup';
+        if (room.settings.powerupsEnabled === false || !p || !alive(p) || !running || !kind)
             return false;
         const hand = ['left', 'right'].find(h => !p.hands[h].heldBallId);
         if (HAND_ITEMS.includes(kind) && !hand) {

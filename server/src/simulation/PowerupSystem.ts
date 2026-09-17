@@ -72,7 +72,8 @@ export class PowerupSystem {
   activate(room: RoomState, playerId: string): boolean {
     const p = room.players[playerId];
     const kind = this.inventory.get(playerId);
-    if (room.settings.powerupsEnabled === false || !p || !alive(p) || room.match.status !== 'playing' || !kind) return false;
+    const running = room.match.status === 'playing' || room.match.status === 'warmup';
+    if (room.settings.powerupsEnabled === false || !p || !alive(p) || !running || !kind) return false;
     const hand = (['left', 'right'] as const).find(h => !p.hands[h].heldBallId);
     if (HAND_ITEMS.includes(kind) && !hand) {
       this.notify(room, playerId, 'Free a hand to use this power-up'); return false;

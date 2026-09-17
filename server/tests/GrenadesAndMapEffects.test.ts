@@ -275,6 +275,45 @@ describe('map effects', () => {
     expect(Object.keys(loop.state.balls).length).toBe(before);
   });
 
+  it('lobby (warmup): power-ups spawn and can be used, bombs never cost lives, lava never rolls', () => {
+    const loop = new ServerGameLoop('lobby'); loop.addPlayer('a', 'A'); loop.addPlayer('b', 'B');
+    expect(loop.state.match.status).toBe('warmup');
+    (loop as unknown as { powerupSystem: PowerupSystem }).powerupSystem = new PowerupSystem(() => (kinds.indexOf('bomb') + 0.1) / kinds.length);
+    loop.state.players.a.movement.position = v(0, 0, 0);
+    loop.state.players.b.movement.position = v(0, 0, 8);
+    // The spawn clock runs in the lobby and the item can be picked up + activated.
+    advanceSeconds(loop, C.powerup.respawnSeconds + 0.2);
+    expect(loop.state.players.a.hasPowerup).toBe(true);
+    expect(powerups(loop).activate(loop.state, 'a')).toBe(true);
+    const bombId = loop.state.players.a.hands.left.heldBallId ?? loop.state.players.a.hands.right.heldBallId;
+    expect(loop.state.balls[bombId!].kind).toBe('bomb');
+    // Explode it at b's feet: fireworks only.
+    const livesB = loop.state.players.b.lives;
+    loop.state.balls[bombId!] = createBallState(bombId!, v(0, 0.3, 8), { kind: 'bomb', armedAtMs: 0, fuseSeconds: 0.01, bombThrowerId: 'a', phase: 'dead' });
+    loop.state.players.a.hands.left = createHandState('left'); loop.state.players.a.hands.right = createHandState('right');
+    loop.advance(); loop.advance();
+    expect(loop.state.balls[bombId!]).toBeUndefined();
+    expect(loop.state.players.b.lives).toBe(livesB);
+
+    // Map effects roll in the lobby too, but a roll that would be lava lands on something else.
+    const effects = loop.mapEffectSystem;
+    for (let i = 0; i < 3; i++) {
+      (effects as unknown as { rng: () => number }).rng = rollEffect(i);
+      expect(effects.tryStart(loop.state, 0, v())).toBe(true);
+      expect(loop.state.mapEffect!.kind).not.toBe('lava');
+      effects.reset(loop.state);
+    }
+  });
+
+  it('intermission: nothing spawns and nothing can be used', () => {
+    const loop = new ServerGameLoop('paused'); loop.addPlayer('a', 'A'); loop.addPlayer('b', 'B');
+    loop.state.match.status = 'intermission';
+    loop.state.players.a.movement.position = v(0, 0, 0);
+    advanceSeconds(loop, C.powerup.respawnSeconds + 1);
+    expect(loop.state.powerups!.spawns[0].spawned).toBe(false);
+    expect(loop.state.players.a.hasPowerup).toBeFalsy();
+  });
+
   it('a room reset clears a running effect', () => {
     const loop = new ServerGameLoop('reset'); loop.addPlayer('a', 'A'); loop.addPlayer('b', 'B');
     loop.state.match.status = 'playing';

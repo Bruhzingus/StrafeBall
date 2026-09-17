@@ -1409,6 +1409,10 @@ export class ServerGameLoop {
     // Catch/parry must resolve during warmup too — players throw balls at the wall to practice
     // self-catches before the match starts. Scoring/hits stay gated to an active match via `active`.
     const defenseActive = active || this.state.match.status === 'warmup';
+    // Power-ups (and the non-lethal map effects) also run in the pre-match lobby so there's
+    // something to mess with while waiting. Nothing there can cost a life: hits are still gated
+    // by `active`, and the damage callbacks below no-op outside a live round.
+    const powerupsActive = active || this.state.match.status === 'warmup';
 
     for (const playerId in this.state.players) {
       const player = this.state.players[playerId];
@@ -1440,21 +1444,22 @@ export class ServerGameLoop {
     // parry/catch also resolve during warmup (`defenseActive`) so players can practice self-catches
     // off a wall before the match starts. During the countdown balls are still settled (so loose
     // balls rest) but no combat is resolved — players are frozen then, so no catch attempts queue.
-    if (active) {
+    if (powerupsActive) {
       this.powerupSystem.beforeBalls(this.state, fixedDt, this.matchSettings.livesPerPlayer,
         (spawnIndex, position) => this.mapEffects.tryStart(this.state, spawnIndex, position));
       this.mapEffects.step(this.state, fixedDt, {
-        damage: (player) => this.applyEnvironmentDamage(player.id),
+        damage: (player) => { if (active) this.applyEnvironmentDamage(player.id); },
         forgetBall: (ballId) => { this.ballHistoryById.delete(ballId); this.recentHitByBallId.delete(ballId); }
       }, this.matchSettings.dodgeballCount);
     }
     this.updateBalls(fixedDt, active, defenseActive);
     // Lava herds every loose ball to the bleachers on purpose — don't fight it with the crowd rule.
     if (active && this.state.mapEffect?.kind !== 'lava') this.respawnCrowdedBalls(fixedDt);
-    if (active) {
+    if (powerupsActive) {
       this.applyingExplosion = true;
       this.powerupSystem.afterBalls(this.state, fixedDt, (ball, target) => {
         if (this.powerupSystem.absorb(this.state, target)) return;
+        if (!active) return; // lobby bombs are fireworks, not damage
         const throwerId = ball.bombThrowerId ?? ball.lastTouchedByPlayerId ?? target.id;
         const scorer = this.state.players[throwerId];
         if (!scorer) return;
@@ -1762,7 +1767,7 @@ export class ServerGameLoop {
       mapEffectGravityScale(this.state.mapEffect)
     );
     player.movement = result.movement;
-    if (this.state.match.status !== 'playing') result.internal.buffs = player.movementInternal.buffs;
+    if (this.state.match.status !== 'playing' && this.state.match.status !== 'warmup') result.internal.buffs = player.movementInternal.buffs;
     player.movementInternal = result.internal;
     player.dash = result.dash;
 
