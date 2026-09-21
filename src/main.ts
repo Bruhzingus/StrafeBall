@@ -1,4 +1,5 @@
 import './style.css';
+import './game/ui/competitive.css';
 import { Game } from './game/Game';
 import { LoadingScreen } from './game/ui/LoadingScreen';
 import {

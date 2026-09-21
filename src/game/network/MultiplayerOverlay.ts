@@ -12,6 +12,7 @@ import {
 import type { InputManager } from '../input/InputManager';
 import { MultiplayerClient } from './MultiplayerClient';
 import { hostSetupError, localHostConfig } from './hostSession';
+import '../ui/menus.css';
 
 type PendingAction = (() => Promise<void>) | null;
 
@@ -31,6 +32,9 @@ const ROUND_REPORT_HOLD_MS = 1200;
 export class MultiplayerOverlay {
   private readonly root: HTMLDivElement;
   private readonly panel: HTMLDivElement;
+  private readonly networkStatus: HTMLDivElement;
+  private readonly networkReadout: HTMLSpanElement;
+  private readonly roomMenuButton: HTMLButtonElement;
   private readonly nameInput: HTMLInputElement;
   private readonly joinInput: HTMLInputElement;
   private readonly roomValue: HTMLSpanElement;
@@ -77,6 +81,8 @@ export class MultiplayerOverlay {
     status: '',
     roomId: '',
     pingMs: undefined as number | null | undefined,
+    connectionPath: '',
+    pointerLocked: false,
     errorMessage: '',
     selectedMode: null as LobbyMode | null,
     selectedTickPresetId: null as TickPresetId | null,
@@ -91,6 +97,7 @@ export class MultiplayerOverlay {
     this.root = document.createElement('div');
     this.root.className = 'multiplayer-modal multiplayer-modal--hidden';
     this.root.setAttribute('data-no-lock', 'true');
+    this.root.setAttribute('aria-label', 'Private match');
     this.root.innerHTML = `
       <div class="multiplayer-modal__shade"></div>
       <div class="multiplayer-panel multiplayer-panel--lobby">
@@ -179,16 +186,16 @@ export class MultiplayerOverlay {
           <button class="multiplayer-copy" type="button">Copy</button>
         </div>
 
-        <div class="multiplayer-actions multiplayer-actions--leave">
-          <button class="multiplayer-leave">Leave</button>
-        </div>
         <div class="multiplayer-line multiplayer-line--ping">Ping <span class="multiplayer-ping">-</span></div>
+        <div class="multiplayer-room-summary"></div>
         <div class="multiplayer-settings-entry"></div>
         <div class="multiplayer-controls"></div>
-        <div class="multiplayer-room-summary"></div>
         <div class="multiplayer-pregame"></div>
         <div class="multiplayer-reset"></div>
         <div class="multiplayer-room-notice"></div>
+        <div class="multiplayer-actions multiplayer-actions--leave">
+          <button class="multiplayer-leave">Leave room</button>
+        </div>
         <div class="multiplayer-error"></div>
       </div>
 
@@ -239,6 +246,23 @@ export class MultiplayerOverlay {
     this.fullscreenRequest = this.mustQuery<HTMLButtonElement>('.fullscreen-request');
     this.fullscreenCancel = this.mustQuery<HTMLButtonElement>('.fullscreen-cancel');
 
+    // Connection telemetry survives the lobby panel collapsing. Room controls become available
+    // again with the released cursor, without bringing a lobby dashboard into the rally.
+    this.networkStatus = document.createElement('div');
+    this.networkStatus.className = 'network-status';
+    this.networkStatus.setAttribute('data-no-lock', '');
+    this.networkStatus.hidden = true;
+    this.networkReadout = document.createElement('span');
+    this.networkReadout.className = 'network-status__readout';
+    this.roomMenuButton = document.createElement('button');
+    this.roomMenuButton.type = 'button';
+    this.roomMenuButton.className = 'network-status__room';
+    this.roomMenuButton.textContent = 'Room';
+    this.roomMenuButton.setAttribute('aria-label', 'Open room controls');
+    this.roomMenuButton.addEventListener('click', this.openRoomMenu);
+    this.networkStatus.append(this.networkReadout, this.roomMenuButton);
+    document.body.appendChild(this.networkStatus);
+
     this.createButton.addEventListener('click', this.createRoom);
     this.joinButton.addEventListener('click', this.joinRoom);
     this.leaveButton.addEventListener('click', this.leaveRoom);
@@ -254,6 +278,7 @@ export class MultiplayerOverlay {
     for (const button of this.tickPresetButtons) button.addEventListener('click', this.onTickPresetClick);
     window.addEventListener('keyup', this.onPortalFocusKeyUp);
     window.addEventListener('keydown', this.onPortalKeyDown);
+    document.addEventListener('pointerlockchange', this.onPointerLockChange);
     document.body.appendChild(this.root);
     this.mustQuery<HTMLDetailsElement>('.multiplayer-host-help').open = Boolean(hostSetupError());
     this.update();
@@ -281,6 +306,9 @@ export class MultiplayerOverlay {
     for (const button of this.tickPresetButtons) button.removeEventListener('click', this.onTickPresetClick);
     window.removeEventListener('keyup', this.onPortalFocusKeyUp);
     window.removeEventListener('keydown', this.onPortalKeyDown);
+    document.removeEventListener('pointerlockchange', this.onPointerLockChange);
+    this.roomMenuButton.removeEventListener('click', this.openRoomMenu);
+    this.networkStatus.remove();
     this.root.remove();
   }
 
@@ -344,6 +372,7 @@ export class MultiplayerOverlay {
     this.wasLiveMatch = liveMatch;
     this.wasReportOpen = reportOpen;
     const connected = this.client.connected;
+    const pointerLocked = document.pointerLockElement !== null;
     const busy = this.client.status === 'connecting';
     const nameReady = this.nameInput.value.trim().length > 0;
     // Cheap change-key FIRST: update() runs every frame (144Hz), so the expensive part — building
@@ -357,6 +386,8 @@ export class MultiplayerOverlay {
       this.lastRendered.status === this.client.status &&
       this.lastRendered.roomId === this.client.roomId &&
       this.lastRendered.pingMs === this.client.pingMs &&
+      this.lastRendered.connectionPath === this.client.connectionPath &&
+      this.lastRendered.pointerLocked === pointerLocked &&
       this.lastRendered.errorMessage === this.client.errorMessage &&
       this.lastRendered.selectedMode === this.selectedMode &&
       this.lastRendered.selectedTickPresetId === this.selectedTickPresetId &&
@@ -374,6 +405,8 @@ export class MultiplayerOverlay {
       status: this.client.status,
       roomId: this.client.roomId,
       pingMs: this.client.pingMs,
+      connectionPath: this.client.connectionPath,
+      pointerLocked,
       errorMessage: this.client.errorMessage,
       selectedMode: this.selectedMode,
       selectedTickPresetId: this.selectedTickPresetId,
@@ -392,6 +425,12 @@ export class MultiplayerOverlay {
     this.roomValue.textContent = this.client.roomId || 'Practice';
     const path = { direct: 'Direct', relay: 'Relay', local: 'Local host', public: 'Server' }[this.client.connectionPath];
     this.pingValue.textContent = this.client.pingMs === null ? '-' : `${this.client.pingMs} ms · ${path}`;
+    this.networkStatus.hidden = !connected;
+    this.networkReadout.textContent = this.client.pingMs === null ? `${path} · measuring` : `${this.client.pingMs} ms · ${path}`;
+    this.networkStatus.dataset.latency = this.client.pingMs !== null && this.client.pingMs >= 150 ? 'high' : 'normal';
+    this.networkStatus.title = this.client.pingMs === null ? 'Waiting for a latency measurement' : `Round-trip latency: ${this.client.pingMs} milliseconds via ${path.toLowerCase()}`;
+    this.roomMenuButton.hidden = pointerLocked || this.modalOpen || reportOpen;
+    this.roomMenuButton.setAttribute('aria-expanded', String(this.modalOpen));
     this.rosterValue.innerHTML = roomSummary.rosterHtml;
     this.settingsEntryValue.innerHTML = roomSummary.settingsEntryHtml;
     this.controlsValue.innerHTML = roomSummary.controlsHtml;
@@ -444,10 +483,19 @@ export class MultiplayerOverlay {
     this.root.classList.toggle('multiplayer-modal--settings-open', this.settingsOpen);
     // During the celebration hold the whole overlay stays hidden — the gym (victory lighting,
     // HUD banner) IS the end-of-match screen until the card fades in.
-    const shouldShow = (!liveMatch && !celebrationHold && (this.settingsOpen || this.modalOpen || connected)) || busy || this.client.status === 'error' || reportVisible;
+    const shouldShow = (!celebrationHold && (this.settingsOpen || this.modalOpen || (connected && !liveMatch))) || busy || this.client.status === 'error' || reportVisible;
     this.root.classList.toggle('multiplayer-modal--hidden', !shouldShow);
     this.syncLockOverlaySuppression();
   }
+
+  private onPointerLockChange = (): void => {
+    this.update();
+  };
+
+  private openRoomMenu = (): void => {
+    this.modalOpen = true;
+    this.update();
+  };
 
   private createRoom = (): void => {
     if (!this.modeSupported(this.selectedMode)) return;

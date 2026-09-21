@@ -18,7 +18,6 @@ const ITEMS: Record<PowerupKind, { name: string; icon: string; color: string; hi
   shock: { name: 'SHOCKWAVE', icon: '◎', color: '#8ef1ff', hint: 'Sticks where it lands · flings players & balls · ×2' },
   stun: { name: 'STUN', icon: '✦', color: '#fff29a', hint: 'Sticks where it lands · dazes everyone near it · ×2' }
 };
-const kinds = Object.keys(ITEMS) as PowerupKind[];
 
 const MAP_EFFECTS: Record<MapEffectKind, { name: string; warning: string; color: string; icon: string }> = {
   moon: { name: 'MOON GRAVITY', warning: 'Gravity is about to drop', color: '#c9d6ff', icon: '☾' },
@@ -222,7 +221,7 @@ export class PowerupPresentation {
     }
     const local = room.players[localId];
     if (privateMessage && privateMessage !== this.lastPrivate && privateMessage.resetSerial === room.resetVote.resetSerial) {
-      if (privateMessage.kind && privateMessage.kind !== this.heldKind) this.rouletteUntil = this.time + 1;
+      if (privateMessage.kind && privateMessage.kind !== this.heldKind) this.rouletteUntil = this.time + 3.5;
       this.heldKind = privateMessage.kind; this.lastPrivate = privateMessage;
       if (privateMessage.reason) { this.nudgeUntil = this.time + 2.5; this.sound.powerup('refuse'); }
     }
@@ -278,8 +277,9 @@ export class PowerupPresentation {
    */
   private updateHud(local: PlayerState | undefined, room: RoomState): void {
     if (!this.hud) return;
-    const rolling = !!this.heldKind && this.time < this.rouletteUntil && !settings.reducedEffects;
-    const kind = rolling ? kinds[Math.floor(this.time * 16) % kinds.length] : this.heldKind;
+    // Reveal the real item immediately. The brief acquisition treatment never conceals information.
+    const rolling = !!this.heldKind && this.time < this.rouletteUntil;
+    const kind = this.heldKind;
     const item = kind ? ITEMS[kind] : null;
     const buffs = local?.movementInternal.buffs;
     const healing = Math.max(0, ...(room.powerups?.stations ?? []).map(s => s.progress[local?.id ?? ''] ?? 0));
@@ -298,23 +298,25 @@ export class PowerupPresentation {
 
     let view: PowerupSlotView;
     if (item) {
-      view = { glyph: item.icon, color: item.color, name: rolling ? 'Rolling…' : item.name, hint: item.hint, progress: 1, state: 'held', rolling };
+      view = { glyph: item.icon, color: item.color, name: item.name, hint: rolling ? item.hint : 'Ready to activate', progress: 1, state: 'held', rolling, keybind: 'G' };
     } else if (heldGrenade) {
       const item = ITEMS[heldGrenade.kind as PowerupKind];
       const left = 1 + (local?.pendingGrenades ?? 0);
-      view = { glyph: item.icon, color: item.color, name: item.name, hint: `${left} left · sticks where it lands`, progress: left / C.powerup.grenadeCharges, state: 'held' };
+      const handKey = local?.hands.left.heldBallId === heldGrenade.id ? 'M1' : 'M2';
+      view = { glyph: item.icon, color: item.color, name: item.name, hint: `${left} throw${left === 1 ? '' : 's'} left`, progress: left / C.powerup.grenadeCharges, state: 'held', keybind: handKey };
     } else if (local?.hasPowerup) {
       view = { glyph: '?', color: ITEMS.adrenaline.color, name: 'Mystery item', hint: 'Revealing…', progress: 1, state: 'held' };
     } else if (effects.length > 0 || armor > 0 || buffs?.cannonLocked) {
       const lead = effects[0];
-      view = { glyph: lead ? ITEMS[lead.kind].icon : armor ? ITEMS.magnet.icon : ITEMS.cannon.icon, color: lead?.color ?? (armor ? ITEMS.magnet.color : ITEMS.cannon.color), name: 'Active', hint: effectText, progress: lead ? lead.seconds / lead.max : 1, state: 'active' };
+      view = { glyph: lead ? ITEMS[lead.kind].icon : armor ? ITEMS.magnet.icon : ITEMS.cannon.icon, color: lead?.color ?? (armor ? ITEMS.magnet.color : ITEMS.cannon.color), name: 'Active effects', hint: effectText, progress: lead ? lead.seconds / lead.max : 1, state: 'active', expiring: effects.some(e => e.seconds <= 3) };
     } else if (healing > 0) {
       view = { glyph: ITEMS.heal.icon, color: ITEMS.heal.color, name: 'Healing', hint: `Stay put · ${Math.min(C.powerup.healSeconds, Math.floor(healing))}/${C.powerup.healSeconds}s`, progress: healing / C.powerup.healSeconds, state: 'active' };
     } else if (world?.spawns.some(s => s.spawned)) {
-      view = { glyph: '?', color: ITEMS.adrenaline.color, name: 'Power-up', hint: 'Up for grabs at center', progress: 1, state: 'empty' };
+      view = { glyph: '?', color: ITEMS.adrenaline.color, name: 'Center court', hint: 'Power-up available', progress: 1, state: 'empty' };
     } else {
       const soonest = Math.min(C.powerup.respawnSeconds, ...this.spawnNodes.filter((n, i) => world?.spawns[i]).map(n => n.waitEstimate));
-      view = { glyph: '?', color: ITEMS.adrenaline.color, name: 'Power-up', hint: `Next at center in ${Math.ceil(soonest)}s`, progress: 1 - soonest / C.powerup.respawnSeconds, state: 'waiting' };
+      if (soonest > 10) { this.hud.setPowerupSlot(null); return; }
+      view = { glyph: '?', color: ITEMS.adrenaline.color, name: 'Center court', hint: `Power-up in ${Math.ceil(soonest)}s`, progress: 1 - soonest / C.powerup.respawnSeconds, state: 'waiting' };
     }
     // A refusal ("free a hand") overrides the hint line briefly.
     if (this.nudgeUntil > this.time && this.lastPrivate?.reason) view = { ...view, hint: this.lastPrivate.reason };
@@ -539,4 +541,3 @@ export class PowerupPresentation {
     this.lava?.dispose(); this.lava = null; this.effectCapsule?.dispose(); this.effectCapsule = null;
   }
 }
-

@@ -1,19 +1,5 @@
-/**
- * TeamScoreboard — a top-center "classroom whiteboard" scoreboard HUD.
- *
- * Built entirely from HTML/CSS (see `.team-scoreboard*` rules in style.css) — never a baked PNG.
- * All labels, scores, names and the timer are real text so they stay crisp and can update live.
- * The three decorative classroom assets (blue marker, red marker, eraser) are optional <img>
- * slots on the bottom tray; if the files are missing they simply hide themselves and the board
- * still looks complete.
- *
- * Data-driven: feed it a `MatchScoreboardData` and it renders 1v1 or 2v2 from the same markup,
- * driven by the per-team `players[]` array (no hardcoded second row). In 1v1 the board hides the
- * empty second row and stays compact via a mode class on the root.
- *
- * Like the rest of the HUD, it diffs its markup and only touches the DOM when something actually
- * changed, so calling `update()` every frame is cheap.
- */
+import type { MatchStatus } from '../../../shared/types';
+import './scoreboard.css';
 
 export type TeamColor = 'blue' | 'red';
 
@@ -21,20 +7,25 @@ export type TeamScoreboardData = {
   name: string;
   color: TeamColor;
   score: number;
-  /** One entry per player. 1 entry → 1v1 row, 2 entries → 2v2 rows. */
   players: string[];
+  /** The series score is separate from the remaining lives shown by the large number. */
+  roundsWon?: number;
 };
 
 export type MatchScoreboardData = {
   mode: '1v1' | '2v2';
-  /** Seconds until the half drops; rendered as M:SS. */
+  /** This is the half-court boundary clock, not a match-duration clock. */
   halfDropSecondsRemaining: number;
   noBoundaries: boolean;
+  phase?: MatchStatus | 'practice';
+  currentRound?: number;
+  roundCount?: number;
+  countdownSeconds?: number;
+  scoreLabel?: string;
   blueTeam: TeamScoreboardData;
   redTeam: TeamScoreboardData;
 };
 
-/** Paths to the optional decorative tray assets. Swap these if you relocate the images. */
 export type ScoreboardAssetPaths = {
   blueMarker: string;
   redMarker: string;
@@ -47,197 +38,167 @@ const DEFAULT_ASSETS: ScoreboardAssetPaths = {
   eraser: '/assets/ui/scoreboard/eraser.png'
 };
 
+type TeamElements = {
+  name: HTMLElement;
+  score: HTMLElement;
+  scoreLabel: HTMLElement;
+  roster: HTMLElement;
+  rounds: HTMLElement;
+  lastRoster: string;
+  lastScore: string | null;
+};
+
+/**
+ * Compact physical whiteboard. Scores and timer share a baseline; names and series state are
+ * secondary. The DOM stays mounted, so a timer tick never restarts a score-change animation or
+ * recreates the decorative images. No work is done for unchanged text/rosters.
+ */
 export class TeamScoreboard {
   private readonly root: HTMLDivElement;
-  private readonly assets: ScoreboardAssetPaths;
-  private lastMarkup = '';
+  private readonly blue: TeamElements;
+  private readonly red: TeamElements;
+  private readonly mode: HTMLElement;
+  private readonly timer: HTMLElement;
+  private readonly timerLabel: HTMLElement;
+  private readonly timerValue: HTMLElement;
   private wasNoBoundaries = false;
-  private noBoundariesDisplayUntilMs = 0;
+  private boundaryNoticeUntil = 0;
 
   constructor(parent: HTMLElement, assets: Partial<ScoreboardAssetPaths> = {}) {
-    this.assets = { ...DEFAULT_ASSETS, ...assets };
+    const trayAssets = { ...DEFAULT_ASSETS, ...assets };
     this.root = document.createElement('div');
-    this.root.className = 'team-scoreboard';
+    this.root.className = 'team-scoreboard team-scoreboard--compact';
+    this.root.setAttribute('role', 'group');
+    this.root.setAttribute('aria-label', 'Match scoreboard');
     this.root.style.display = 'none';
+    this.root.innerHTML = `
+      <div class="team-scoreboard__frame">
+        <span class="ts-corner ts-corner--tl" aria-hidden="true"></span>
+        <span class="ts-corner ts-corner--tr" aria-hidden="true"></span>
+        <span class="ts-corner ts-corner--bl" aria-hidden="true"></span>
+        <span class="ts-corner ts-corner--br" aria-hidden="true"></span>
+        <div class="team-scoreboard__surface">
+          ${teamMarkup('blue', 'left')}
+          <div class="team-scoreboard__center">
+            <div class="ts-mode"></div>
+            <div class="ts-timer-card">
+              <div class="ts-timer-value"></div>
+              <div class="ts-timer-label"></div>
+            </div>
+          </div>
+          ${teamMarkup('red', 'right')}
+        </div>
+        <div class="team-scoreboard__tray" aria-hidden="true">
+          <img class="ts-tray-item ts-tray-item--marker-blue" src="${escapeHtml(trayAssets.blueMarker)}" alt="" />
+          <span class="ts-tray-clip"></span>
+          <img class="ts-tray-item ts-tray-item--eraser" src="${escapeHtml(trayAssets.eraser)}" alt="" />
+          <img class="ts-tray-item ts-tray-item--marker-red" src="${escapeHtml(trayAssets.redMarker)}" alt="" />
+        </div>
+      </div>`;
+    for (const image of this.root.querySelectorAll('img')) {
+      image.addEventListener('error', () => { image.style.display = 'none'; }, { once: true });
+    }
+    this.blue = this.teamElements('blue');
+    this.red = this.teamElements('red');
+    this.mode = this.root.querySelector('.ts-mode')!;
+    this.timer = this.root.querySelector('.ts-timer-card')!;
+    this.timerLabel = this.root.querySelector('.ts-timer-label')!;
+    this.timerValue = this.root.querySelector('.ts-timer-value')!;
     parent.appendChild(this.root);
   }
 
-  /** Show/hide without losing state — handy for menus, replays, etc. */
   setVisible(visible: boolean): void {
-    this.root.style.display = visible ? '' : 'none';
+    const display = visible ? '' : 'none';
+    if (this.root.style.display !== display) this.root.style.display = display;
   }
 
-  /**
-   * Render the scoreboard from match data. Cheap to call every frame: markup is diffed and the
-   * DOM is only rewritten when the rendered string changes.
-   */
   update(data: MatchScoreboardData): void {
-    if (data.noBoundaries && !this.wasNoBoundaries) {
-      this.noBoundariesDisplayUntilMs = performance.now() + 2800;
-    } else if (!data.noBoundaries) {
-      this.noBoundariesDisplayUntilMs = 0;
-    }
+    const now = performance.now();
+    if (data.noBoundaries && !this.wasNoBoundaries) this.boundaryNoticeUntil = now + 2800;
+    if (!data.noBoundaries) this.boundaryNoticeUntil = 0;
     this.wasNoBoundaries = data.noBoundaries;
 
-    const markup = this.render(data);
-    if (markup === this.lastMarkup) return;
-    this.lastMarkup = markup;
-    this.root.innerHTML = markup;
-    // Mode class drives the compact 1v1 layout (shorter roster, centered single row).
     this.root.classList.toggle('team-scoreboard--1v1', data.mode === '1v1');
     this.root.classList.toggle('team-scoreboard--2v2', data.mode === '2v2');
-    if (this.root.style.display === 'none') this.root.style.display = '';
-  }
+    const phase = data.phase ?? 'playing';
+    if (this.root.dataset.phase !== phase) this.root.dataset.phase = phase;
+    const round = data.roundCount && data.roundCount > 1
+      ? ` · RD ${data.currentRound ?? 1}/${data.roundCount}`
+      : '';
+    setText(this.mode, phase === 'practice' ? 'PRACTICE' : `${data.mode}${round}`);
+    this.updateTeam(this.blue, data.blueTeam, data);
+    this.updateTeam(this.red, data.redTeam, data);
 
-  private render(data: MatchScoreboardData): string {
-    const modeLabel = `${data.mode} TEAM MATCH`;
-    const timerState = this.timerState(data);
-    return `
-      <!-- ===== Outer aluminium frame: dark rounded corner brackets + a real pen tray ===== -->
-      <div class="team-scoreboard__frame">
-        <span class="ts-corner ts-corner--tl"></span>
-        <span class="ts-corner ts-corner--tr"></span>
-        <span class="ts-corner ts-corner--bl"></span>
-        <span class="ts-corner ts-corner--br"></span>
-
-        <!-- ===== Off-white board surface ===== -->
-        <div class="team-scoreboard__surface">
-
-          <!-- ===== LEFT: Blue team (header, score box, roster) ===== -->
-          ${this.teamSection(data.blueTeam, 'left')}
-
-          <!-- hand-drawn marker divider between left team and center -->
-          <span class="ts-divider ts-divider--blue">${MARKER_DIVIDER}</span>
-
-          <!-- ===== CENTER: mode title + half-drop timer ===== -->
-          <div class="team-scoreboard__center">
-            <div class="ts-mode">${escapeHtml(modeLabel)}</div>
-            ${this.timerCard(timerState)}
-          </div>
-
-          <!-- hand-drawn marker divider between center and right team -->
-          <span class="ts-divider ts-divider--red">${MARKER_DIVIDER}</span>
-
-          <!-- ===== RIGHT: Red team (header, score box, roster) ===== -->
-          ${this.teamSection(data.redTeam, 'right')}
-
-        </div>
-
-        <!-- ===== Pen tray ledge: center clip + decorative markers / eraser ===== -->
-        ${this.tray()}
-      </div>
-    `;
-  }
-
-  private timerState(data: MatchScoreboardData): {
-    className: string;
-    boxColor: string;
-    label: string;
-    value: string;
-    open: boolean;
-  } {
-    const displayedSecond = Math.max(0, Math.floor(data.halfDropSecondsRemaining));
-    const warning = !data.noBoundaries && displayedSecond >= 1 && displayedSecond <= 10;
-    const urgent = warning && displayedSecond <= 5;
-    const open = data.noBoundaries && performance.now() < this.noBoundariesDisplayUntilMs;
-    if (open) {
-      return {
-        className: 'ts-timer-card ts-timer-card--open',
-        boxColor: 'rgba(226, 31, 31, 0.95)',
-        label: '',
-        value: 'NO BOUNDARIES',
-        open: true
-      };
+    let value = formatClock(data.halfDropSecondsRemaining);
+    let label = 'HALF DROPS IN';
+    let word = false;
+    if (phase === 'warmup') {
+      value = 'WARMUP';
+      label = 'PRE-MATCH';
+      word = true;
+    } else if (phase === 'countdown') {
+      value = String(Math.max(0, Math.ceil(data.countdownSeconds ?? 0)));
+      label = 'STARTS IN';
+    } else if (phase === 'intermission' || phase === 'complete') {
+      value = phase === 'complete' ? 'FINAL' : 'BREAK';
+      label = phase === 'complete' ? 'MATCH COMPLETE' : 'ROUND COMPLETE';
+      word = true;
+    } else if (data.noBoundaries) {
+      value = 'OPEN';
+      label = 'NO BOUNDARIES';
+      word = true;
     }
+    const active = phase === 'playing' || phase === 'practice';
+    const warning = active && !data.noBoundaries && data.halfDropSecondsRemaining <= 10;
+    this.timer.classList.toggle('ts-timer-card--warning', warning);
+    this.timer.classList.toggle('ts-timer-card--urgent', warning && data.halfDropSecondsRemaining <= 5);
+    this.timer.classList.toggle('ts-timer-card--word', word);
+    this.timer.classList.toggle('ts-timer-card--open', active && data.noBoundaries);
+    this.timer.classList.toggle('ts-timer-card--notice', active && data.noBoundaries && now < this.boundaryNoticeUntil);
+    setText(this.timerLabel, label);
+    setText(this.timerValue, value);
+    this.setVisible(true);
+  }
+
+  private teamElements(color: TeamColor): TeamElements {
+    const root = this.root.querySelector<HTMLElement>(`.ts-team--${color}`)!;
     return {
-      className: [
-        'ts-timer-card',
-        warning ? 'ts-timer-card--warning ts-timer-card--shake' : '',
-        urgent ? 'ts-timer-card--urgent' : ''
-      ].filter(Boolean).join(' '),
-      boxColor: warning ? 'rgba(226, 31, 31, 0.92)' : 'rgba(28,32,38,0.85)',
-      label: 'HALF DROPS IN',
-      value: formatClock(data.halfDropSecondsRemaining),
-      open: false
+      name: root.querySelector('.ts-team-name')!,
+      score: root.querySelector('.ts-score')!,
+      scoreLabel: root.querySelector('.ts-score-label')!,
+      roster: root.querySelector('.ts-roster')!,
+      rounds: root.querySelector('.ts-rounds')!,
+      lastRoster: '',
+      lastScore: null
     };
   }
 
-  private timerCard(state: ReturnType<TeamScoreboard['timerState']>): string {
-    if (state.open) {
-      return `
-            <div class="${state.className}">
-              <span class="ts-timer-box">${markerBox(state.boxColor)}</span>
-              <div class="ts-timer-open">${escapeHtml(state.value)}</div>
-            </div>
-      `;
+  private updateTeam(elements: TeamElements, team: TeamScoreboardData, data: MatchScoreboardData): void {
+    const score = formatScore(team.score);
+    setText(elements.name, team.name);
+    setText(elements.scoreLabel, data.scoreLabel ?? 'SCORE');
+    if (elements.lastScore !== score) {
+      setText(elements.score, score);
+      if (elements.lastScore !== null && !window.matchMedia('(prefers-reduced-motion: reduce)').matches) {
+        elements.score.animate(
+          [{ transform: 'scale(1)' }, { transform: 'scale(1.16)', offset: 0.35 }, { transform: 'scale(1)' }],
+          { duration: 260, easing: 'ease-out' }
+        );
+      }
+      elements.lastScore = score;
     }
-    return `
-            <div class="${state.className}">
-              <!-- hand-drawn marker box around the timer -->
-              <span class="ts-timer-box">${markerBox(state.boxColor)}</span>
-              <div class="ts-timer-label">
-                ${escapeHtml(state.label)}
-                <span class="ts-underline ts-underline--ink">${MARKER_UNDERLINE}</span>
-              </div>
-              <div class="ts-timer-value">${escapeHtml(state.value)}</div>
-            </div>
-    `;
-  }
-
-  /** One team column. `side` flips the score-box / roster order so colors hug their edge. */
-  private teamSection(team: TeamScoreboardData, side: 'left' | 'right'): string {
-    const accent = `ts-team--${team.color}`;
-    const strokeColor = team.color === 'blue' ? 'var(--ts-blue)' : 'var(--ts-red)';
-    const header = `
-      <div class="ts-team-header">
-        ${escapeHtml(team.name)}
-        <span class="ts-underline">${MARKER_UNDERLINE}</span>
-      </div>
-    `;
-    const scoreBox = `
-      <div class="ts-score-box">
-        <span class="ts-score-box__draw">${markerBox(strokeColor)}</span>
-        <span class="ts-score">${formatScore(team.score)}</span>
-      </div>
-    `;
-    const roster = `
-      <div class="ts-roster">
-        ${team.players
-          .map(
-            (player) => `
-              <div class="ts-player">
-                <span class="ts-player-dot"></span>
-                <span class="ts-player-name">${escapeHtml(player)}</span>
-                <span class="ts-rule">${MARKER_RULE}</span>
-              </div>`
-          )
-          .join('')}
-      </div>
-    `;
-    // Blue: score box sits inside (toward center), roster outside. Red mirrors it.
-    const body = side === 'left' ? `${roster}${scoreBox}` : `${scoreBox}${roster}`;
-    return `
-      <div class="team-scoreboard__team ${accent} ts-team--${side}">
-        ${header}
-        <div class="ts-team-body">${body}</div>
-      </div>
-    `;
-  }
-
-  /**
-   * The pen-tray ledge along the bottom: a blue marker on the left, the eraser + a center clip in
-   * the middle, a red marker on the right. Each <img> hides itself (onerror) if its file is missing,
-   * so the tray still reads as a tray. Purely decorative.
-   */
-  private tray(): string {
-    return `
-      <div class="team-scoreboard__tray" aria-hidden="true">
-        <img class="ts-tray-item ts-tray-item--marker-blue" src="${escapeHtml(this.assets.blueMarker)}" alt="" onerror="this.style.display='none'" />
-        <span class="ts-tray-clip"></span>
-        <img class="ts-tray-item ts-tray-item--eraser" src="${escapeHtml(this.assets.eraser)}" alt="" onerror="this.style.display='none'" />
-        <img class="ts-tray-item ts-tray-item--marker-red" src="${escapeHtml(this.assets.redMarker)}" alt="" onerror="this.style.display='none'" />
-      </div>
-    `;
+    const roster = team.players.length
+      ? team.players.map((name) => `<div class="ts-player"><span class="ts-player-dot" aria-hidden="true"></span><span class="ts-player-name">${escapeHtml(name)}</span></div>`).join('')
+      : '<div class="ts-player ts-player--empty"><span class="ts-player-name">Waiting for player</span></div>';
+    if (roster !== elements.lastRoster) {
+      elements.roster.innerHTML = roster;
+      elements.lastRoster = roster;
+    }
+    const rounds = data.roundCount && data.roundCount > 1 && team.roundsWon !== undefined
+      ? `${formatScore(team.roundsWon)} ${team.roundsWon === 1 ? 'round' : 'rounds'} won`
+      : '';
+    setText(elements.rounds, rounds);
+    elements.rounds.hidden = !rounds;
   }
 
   dispose(): void {
@@ -245,52 +206,30 @@ export class TeamScoreboard {
   }
 }
 
-/* ----------------------------------------------------------------------------------------------
- * Hand-drawn marker accents.
- * These are tiny inline SVGs with round linecaps and intentionally imperfect (wobbly, tapered)
- * paths so the underlines / boxes / dividers read as dry-erase strokes rather than crisp CSS
- * borders. They scale to their container via viewBox + preserveAspectRatio="none" where needed,
- * and inherit color from `stroke="currentColor"` so the team accent drives them.
- * They're static markup (built once per render), so there's no per-frame cost.
- * -------------------------------------------------------------------------------------------- */
-
-// A thick underline that tapers and dips like a single marker stroke. Stretches to fill width.
-const MARKER_UNDERLINE = `<svg class="ts-stroke" viewBox="0 0 300 12" preserveAspectRatio="none" aria-hidden="true"><path d="M4 7 C 60 3, 110 9, 165 6 S 250 4, 296 7" fill="none" stroke="currentColor" stroke-width="5" stroke-linecap="round"/></svg>`;
-
-// A faint thin ruled line under each player name (the whiteboard "row").
-const MARKER_RULE = `<svg class="ts-stroke" viewBox="0 0 300 8" preserveAspectRatio="none" aria-hidden="true"><path d="M3 5 C 70 3, 150 6, 230 4 S 285 5, 297 5" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round"/></svg>`;
-
-// A vertical marker divider, hand-drawn with a slight lean and tapered ends.
-const MARKER_DIVIDER = `<svg class="ts-stroke" viewBox="0 0 12 120" preserveAspectRatio="none" aria-hidden="true"><path d="M6 4 C 4 32, 8 60, 5 88 S 7 110, 6 116" fill="none" stroke="currentColor" stroke-width="4" stroke-linecap="round"/></svg>`;
-
-/** A wobbly rounded-rectangle outline drawn like a marker box. `color` sets the stroke. */
-function markerBox(color: string): string {
-  // Two slightly offset passes give the "drawn twice / pressed harder at corners" marker feel.
-  return `<svg class="ts-stroke ts-stroke--box" viewBox="0 0 120 100" preserveAspectRatio="none" aria-hidden="true">
-    <path d="M14 8 C 40 5, 84 6, 108 9 C 113 30, 112 64, 109 90 C 80 94, 38 93, 12 91 C 7 64, 8 34, 14 8 Z"
-      fill="none" stroke="${color}" stroke-width="3.4" stroke-linecap="round" stroke-linejoin="round"/>
-  </svg>`;
+function teamMarkup(color: TeamColor, side: 'left' | 'right'): string {
+  return `<div class="team-scoreboard__team ts-team--${color} ts-team--${side}">
+    <div class="ts-team-info">
+      <div class="ts-team-header"><span class="ts-team-name"></span><span class="ts-underline" aria-hidden="true"><svg class="ts-stroke" viewBox="0 0 200 8" preserveAspectRatio="none"><path d="M3 4 Q65 2 105 4 T197 3" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" /></svg></span></div>
+      <div class="ts-roster"></div>
+      <div class="ts-rounds" hidden></div>
+    </div>
+    <div class="ts-score-box"><span class="ts-score"></span><span class="ts-score-label"></span></div>
+  </div>`;
 }
 
-/** Seconds → "M:SS". Clamps negatives to 0:00 so a finished timer never shows garbage. */
+function setText(element: HTMLElement, value: string): void {
+  if (element.textContent !== value) element.textContent = value;
+}
+
 function formatClock(secondsRemaining: number): string {
-  const total = Math.max(0, Math.floor(secondsRemaining));
-  const minutes = Math.floor(total / 60);
-  const seconds = total % 60;
-  return `${minutes}:${seconds.toString().padStart(2, '0')}`;
+  const total = Number.isFinite(secondsRemaining) ? Math.max(0, Math.floor(secondsRemaining)) : 0;
+  return `${Math.floor(total / 60)}:${(total % 60).toString().padStart(2, '0')}`;
 }
 
-/** Scores are non-negative integers; guard against NaN/floats so the big digit stays clean. */
 function formatScore(score: number): string {
-  const n = Number.isFinite(score) ? Math.max(0, Math.round(score)) : 0;
-  return String(n);
+  return String(Number.isFinite(score) ? Math.max(0, Math.round(score)) : 0);
 }
 
 function escapeHtml(value: string): string {
-  return value
-    .replace(/&/g, '&amp;')
-    .replace(/</g, '&lt;')
-    .replace(/>/g, '&gt;')
-    .replace(/"/g, '&quot;')
-    .replace(/'/g, '&#039;');
+  return value.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;').replace(/'/g, '&#039;');
 }

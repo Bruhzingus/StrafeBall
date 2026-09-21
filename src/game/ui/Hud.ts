@@ -12,6 +12,7 @@ import type { HalfCourtViolationState, PlayerState, RoomState } from '../../../s
 import { SERVER_TICK_RATE, SNAPSHOT_RATE, netModeConfig } from '../../../shared/netConfig';
 import type { MusicHudState } from '../audio/MusicManager';
 import { CONTROL_KEYS } from '../config/controls';
+import { settings } from '../config/Settings';
 
 /** What the ability bar's power-up slot shows. See Hud.setPowerupSlot. */
 export interface PowerupSlotView {
@@ -29,6 +30,9 @@ export interface PowerupSlotView {
   state: 'empty' | 'waiting' | 'held' | 'active';
   /** Mario-Kart roulette flicker right after pickup. */
   rolling?: boolean;
+  /** Actual action for the item: inventory activation or a hand throw. */
+  keybind?: string;
+  expiring?: boolean;
 }
 
 export class Hud {
@@ -56,6 +60,7 @@ export class Hud {
   private readonly powerupText: HTMLDivElement;
   private readonly powerupName: HTMLDivElement;
   private readonly powerupHint: HTMLDivElement;
+  private readonly powerupDock: HTMLDivElement;
   private lastPowerupSlotKey = '';
   private readonly leftPowerBar: HTMLDivElement;
   private readonly rightPowerBar: HTMLDivElement;
@@ -84,6 +89,8 @@ export class Hud {
   private readonly staminaWidgetSegs: HTMLDivElement[] = [];
   private readonly staminaWidgetFills: HTMLDivElement[] = [];
   private readonly lastSegState: Array<'empty' | 'charging' | 'full'> = [];
+  private readonly renderedValues = new WeakMap<HTMLElement, string>();
+  private presentationMode = '';
 
   constructor(parent: HTMLElement) {
     this.root = document.createElement('div');
@@ -152,7 +159,7 @@ export class Hud {
           </div>
         </div>
         <div class="ability-keybind">M1</div>
-        <div class="ability-label">Catch</div>
+        <div class="ability-label">Left hand</div>
         <div class="ability-status">READY</div>
       </div>
       <div class="ability-hud-card ability-hud-card--catch" data-ability="right-catch">
@@ -167,7 +174,7 @@ export class Hud {
           </div>
         </div>
         <div class="ability-keybind">M2</div>
-        <div class="ability-label">Catch</div>
+        <div class="ability-label">Right hand</div>
         <div class="ability-status">READY</div>
       </div>
       <div class="ability-hud-card ability-hud-card--flip" data-ability="backflip">
@@ -218,6 +225,14 @@ export class Hud {
     this.leftPowerBar = this.mustHudElement<HTMLDivElement>('.ability-power-bar--left .ability-power-bar__fill');
     this.rightPowerBar = this.mustHudElement<HTMLDivElement>('.ability-power-bar--right .ability-power-bar__fill');
     this.speedValue = this.mustHudElement<HTMLDivElement>('.ability-speed-value');
+    // Temporary items have their own stable anchor; acquiring one never shifts the hands.
+    this.powerupDock = document.createElement('div');
+    this.powerupDock.className = 'powerup-dock';
+    this.powerupDock.hidden = true;
+    this.powerupDock.append(this.powerupCard, this.powerupText);
+    this.root.append(this.powerupDock, this.speedValue.parentElement!);
+    this.leftCatchCard.append(this.leftPowerBar.parentElement!);
+    this.rightCatchCard.append(this.rightPowerBar.parentElement!);
 
     this.countdown = document.createElement('div');
     this.countdown.className = 'countdown';
@@ -234,6 +249,11 @@ export class Hud {
     // Center stamina segments — one block + inner fill per charge, pre-built, no per-frame allocations.
     this.staminaWidget = document.createElement('div');
     this.staminaWidget.className = 'stamina-widget';
+    this.staminaWidget.setAttribute('aria-label', 'Dash stamina');
+    const dashLabel = document.createElement('span');
+    dashLabel.className = 'stamina-widget-label';
+    dashLabel.innerHTML = '<span class="key">SHIFT</span> DASH';
+    this.staminaWidget.append(dashLabel);
     for (let i = 0; i < GAME_CONSTANTS.powerup.adrenalineMaxCharges; i++) {
       const seg = document.createElement('div');
       seg.className = 'stamina-widget-seg';
@@ -252,9 +272,24 @@ export class Hud {
       <div class="hud-title">Quick Start</div>
       <div><span class="key">M1</span><span class="key">M2</span> hands / catch / throw</div>
       <div><span class="key">E</span> pickup ball / hold reset mat <span class="key">R</span> drop</div>
-      <div><span class="key">Shift</span> dash <span class="key">Ctrl</span> slide / crouch <span class="key">Q</span> backflip</div>
+      <div><span class="key">Shift</span> dash <span class="key">C</span> slide <span class="key">Ctrl</span> crouch <span class="key">Q</span> backflip</div>
       <div><span class="key">F</span> fake <span class="key">K</span> reset <span class="key">Tab</span> debug</div>
     `;
+    this.setPresentation('practice');
+    document.addEventListener('pointerlockchange', this.onPointerLockChange);
+  }
+
+  private onPointerLockChange = (): void => {
+    document.body.dataset.playing = document.pointerLockElement ? 'true' : 'false';
+  };
+
+  private setPresentation(mode: string): void {
+    if (this.presentationMode !== mode) {
+      this.presentationMode = mode;
+      document.body.dataset.hudMode = mode;
+    }
+    const reduced = settings.reducedEffects ? 'true' : 'false';
+    if (document.body.dataset.reducedEffects !== reduced) document.body.dataset.reducedEffects = reduced;
   }
 
   toggleDebug(): void {
@@ -425,6 +460,7 @@ export class Hud {
   }
 
   update(player: PlayerController, rules: MatchRules, ballManager: BallManager, fps: number, frameMs: number, showPracticeScoreboard = true): void {
+    this.setPresentation(showPracticeScoreboard ? 'practice' : 'sandbox');
     // No countdown in offline practice.
     this.updateCountdown('playing', 0);
     this.hearts.style.display = 'none';
@@ -447,6 +483,9 @@ export class Hud {
       leftCatchCooldown: hands.left.cooldown,
       rightCatchCooldown: hands.right.cooldown,
       backflipCooldown: player.backflip.cooldown,
+      leftMode: hands.left.charging ? 'charging' : hands.left.catchStance ? 'catching' : hands.left.ball ? 'holding' : 'empty',
+      rightMode: hands.right.charging ? 'charging' : hands.right.catchStance ? 'catching' : hands.right.ball ? 'holding' : 'empty',
+      backflipActive: player.backflip.active,
       leftCharge: hands.left.ball && hands.left.charging ? this.charge01(hands.left) : 0,
       rightCharge: hands.right.ball && hands.right.charging ? this.charge01(hands.right) : 0,
       speed: movement.speed,
@@ -496,6 +535,8 @@ export class Hud {
       this.teamScoreboard.setVisible(true);
       this.teamScoreboard.update({
         mode: '1v1',
+        phase: 'practice',
+        scoreLabel: 'HITS',
         halfDropSecondsRemaining: rules.boundary.noBoundaries ? 0 : noBoundariesTime,
         noBoundaries: rules.boundary.noBoundaries,
         blueTeam: { name: 'BLUE TEAM', color: 'blue', score: rules.scoring.playerHits, players: ['You'] },
@@ -567,6 +608,7 @@ export class Hud {
     this.bottomLeft.style.display = 'none';
     const players = Object.values(room.players).sort(compareHudPlayers);
     const local = room.players[localPlayerId];
+    this.setPresentation(local?.combatState === 'eliminated' && room.match.status === 'playing' ? 'spectating' : room.match.status);
     this.updateHalfCourtWarning(local ? room.match.boundary.illegalCrossByPlayerId[localPlayerId] : undefined);
     const localTeamId = local?.teamId ?? room.match.teamIds[0] ?? 'blue';
     const isTeamElimination = room.match.mode === '2v2';
@@ -574,7 +616,6 @@ export class Hud {
     const disconnectStatus = onlineDisconnectStatus(players);
     // Half-court drop clock counts down the HOST-CONFIGURED timer, not the fixed constant.
     const noBoundariesTime = Math.max(0, room.settings.halfCourtTimerSeconds - room.match.boundary.elapsedSeconds);
-    const roundLabel = room.match.roundCount > 1 ? `Round ${room.match.currentRound}/${room.match.roundCount}` : '';
     const resetVoteText = room.resetVote.voteCount > 0
       ? `<div class="scoreboard-msg hud-warn">${room.resetVote.mode === 'reset-teams' ? 'Reset teams' : 'Reset match'}: ${room.resetVote.voteCount}/${room.resetVote.requiredVotes} (${votersLabel(room, room.resetVote.votesByPlayerId)})</div>`
       : '';
@@ -644,18 +685,25 @@ export class Hud {
         .map((player) => `${player.name}${player.id === localPlayerId ? ' (You)' : ''}`);
     const scoreboardData: MatchScoreboardData = {
       mode: room.match.mode === '2v2' ? '2v2' : '1v1',
+      phase: room.match.status,
+      currentRound: room.match.currentRound,
+      roundCount: room.match.roundCount,
+      countdownSeconds: room.match.countdownSeconds,
+      scoreLabel: 'LIVES',
       halfDropSecondsRemaining: room.match.boundary.noBoundaries ? 0 : noBoundariesTime,
       noBoundaries: room.match.boundary.noBoundaries,
       blueTeam: {
         name: 'BLUE TEAM',
         color: 'blue',
         score: teamLivesForHud(room, blueTeamId),
+        roundsWon: room.match.roundsWonByTeamId[blueTeamId] ?? 0,
         players: teamPlayers(blueTeamId)
       },
       redTeam: {
         name: 'RED TEAM',
         color: 'red',
         score: teamLivesForHud(room, redTeamId),
+        roundsWon: room.match.roundsWonByTeamId[redTeamId] ?? 0,
         players: teamPlayers(redTeamId)
       }
     };
@@ -682,11 +730,7 @@ export class Hud {
     } else {
       // Private duel: scores/timer live on the whiteboard now. Only surface the strip when there's
       // actual status (room state, disconnects, vote, winner); otherwise hide it completely.
-      const roundStatus = roundLabel && (room.match.status === 'playing' || room.match.status === 'countdown')
-        ? `<div class="scoreboard-msg hud-good">${roundLabel}</div>`
-        : '';
       const duelStatus = [
-        roundStatus,
         roomStatus ? `<div class="scoreboard-msg hud-warn">${escapeHtml(roomStatus)}</div>` : '',
         disconnectStatus ? `<div class="scoreboard-msg hud-bad">${escapeHtml(disconnectStatus)}</div>` : '',
         resetVoteText,
@@ -706,6 +750,10 @@ export class Hud {
       leftCatchCooldown: left?.cooldownSeconds ?? 0,
       rightCatchCooldown: right?.cooldownSeconds ?? 0,
       backflipCooldown: local?.movementInternal.backflipCooldown ?? 0,
+      leftMode: left?.mode === 'charging' ? 'charging' : left?.mode === 'catching' ? 'catching' : left?.heldBallId ? 'holding' : 'empty',
+      rightMode: right?.mode === 'charging' ? 'charging' : right?.mode === 'catching' ? 'catching' : right?.heldBallId ? 'holding' : 'empty',
+      backflipActive: local?.movementInternal.backflipActive ?? false,
+      unavailable: !local || local.combatState === 'eliminated',
       leftCharge: left?.heldBallId && left.mode === 'charging' ? this.chargeSeconds01(left.chargeSeconds) : 0,
       rightCharge: right?.heldBallId && right.mode === 'charging' ? this.chargeSeconds01(right.chargeSeconds) : 0,
       speed: local?.movement.speed ?? 0,
@@ -773,7 +821,7 @@ export class Hud {
         'half-court-warning--urgent',
         'half-court-warning--practice'
       );
-      this.halfCourtWarning.innerHTML = '';
+      this.setHtml(this.halfCourtWarning, '');
       return;
     }
 
@@ -782,12 +830,12 @@ export class Hud {
     const danger = !!violation?.deathCountdownActive && violation.countdownSeconds > 0;
     const seconds = Math.max(1, Math.ceil(violation.countdownSeconds));
     this.halfCourtWarning.classList.toggle('half-court-warning--urgent', danger);
-    this.halfCourtWarning.innerHTML = `
+    this.setHtml(this.halfCourtWarning, `
       <div class="half-court-warning__stamp">${danger ? 'DANGER' : 'WARNING'}</div>
       <div class="half-court-warning__title">GET BACK TO YOUR SIDE</div>
       <div class="half-court-warning__body">${danger ? 'Taking 1 hit/life per second' : 'Wait until half court drops'}</div>
       <div class="half-court-warning__timer">${danger ? `NEXT HIT IN <strong>${seconds}</strong>` : 'WARNING USED'}</div>
-    `;
+    `);
     this.halfCourtWarning.classList.add('half-court-warning--visible');
   }
 
@@ -802,14 +850,18 @@ export class Hud {
     leftCatchCooldown: number;
     rightCatchCooldown: number;
     backflipCooldown: number;
+    leftMode: 'empty' | 'holding' | 'charging' | 'catching';
+    rightMode: 'empty' | 'holding' | 'charging' | 'catching';
+    backflipActive: boolean;
+    unavailable?: boolean;
     leftCharge: number;
     rightCharge: number;
     speed: number;
     dt: number;
   }): void {
-    this.updateAbilityCard(this.leftCatchCard, this.leftCatchStatus, state.leftCatchCooldown, TUNING.catch.cooldownSeconds);
-    this.updateAbilityCard(this.rightCatchCard, this.rightCatchStatus, state.rightCatchCooldown, TUNING.catch.cooldownSeconds);
-    this.updateAbilityCard(this.backflipCard, this.backflipStatus, state.backflipCooldown, TUNING.backflip.cooldownSeconds);
+    this.updateAbilityCard(this.leftCatchCard, this.leftCatchStatus, state.leftCatchCooldown, TUNING.catch.cooldownSeconds, state.unavailable ? 'unavailable' : state.leftMode);
+    this.updateAbilityCard(this.rightCatchCard, this.rightCatchStatus, state.rightCatchCooldown, TUNING.catch.cooldownSeconds, state.unavailable ? 'unavailable' : state.rightMode);
+    this.updateAbilityCard(this.backflipCard, this.backflipStatus, state.backflipCooldown, TUNING.backflip.cooldownSeconds, state.unavailable ? 'unavailable' : state.backflipActive ? 'active' : 'empty');
     this.updatePowerBar(this.leftPowerBar, state.leftCharge);
     this.updatePowerBar(this.rightPowerBar, state.rightCharge);
 
@@ -821,7 +873,8 @@ export class Hud {
       const alpha = 1 - Math.exp(-Math.max(0, state.dt) / 0.12);
       this.smoothedSpeed += (speed - this.smoothedSpeed) * alpha;
     }
-    this.speedValue.textContent = this.smoothedSpeed.toFixed(1);
+    const speedLabel = this.smoothedSpeed.toFixed(1);
+    if (this.speedValue.textContent !== speedLabel) this.speedValue.textContent = speedLabel;
   }
 
   /**
@@ -834,41 +887,57 @@ export class Hud {
       if (this.lastPowerupSlotKey !== '') {
         this.powerupCard.hidden = true;
         this.powerupText.hidden = true;
+        this.powerupDock.hidden = true;
         this.lastPowerupSlotKey = '';
       }
       return;
     }
     const progress = Math.max(0, Math.min(1, Number.isFinite(view.progress) ? view.progress : 0));
-    const key = `${view.state}|${view.glyph}|${view.color}|${view.name}|${view.hint}|${progress.toFixed(3)}|${view.rolling ? 1 : 0}`;
+    const key = `${view.state}|${view.glyph}|${view.name}|${view.hint}|${progress.toFixed(2)}|${view.rolling ? 1 : 0}|${view.keybind ?? ''}|${!!view.expiring}`;
     if (key === this.lastPowerupSlotKey) return;
     this.lastPowerupSlotKey = key;
     this.powerupCard.hidden = false;
     this.powerupText.hidden = false;
+    this.powerupDock.hidden = false;
+    this.powerupDock.dataset.state = view.state;
+    this.powerupDock.classList.toggle('powerup-dock--acquired', !!view.rolling);
+    this.powerupDock.classList.toggle('powerup-dock--expiring', !!view.expiring);
     this.powerupCard.style.setProperty('--ability-progress', `${(progress * 360).toFixed(1)}deg`);
-    this.powerupCard.style.setProperty('--power-color', view.color);
+    this.powerupCard.style.setProperty('--power-color', 'var(--sb-gold)');
     this.powerupCard.classList.toggle('ability-hud-card--ready', view.state === 'held');
     this.powerupCard.classList.toggle('ability-hud-card--cooldown', view.state === 'waiting');
     this.powerupCard.classList.toggle('ability-hud-card--powerup-empty', view.state === 'empty');
     this.powerupCard.classList.toggle('ability-hud-card--powerup-rolling', !!view.rolling);
     this.powerupGlyph.textContent = view.glyph;
     this.powerupName.textContent = view.name;
-    this.powerupName.style.color = view.state === 'held' || view.state === 'active' ? view.color : '';
+    this.powerupName.style.color = '';
     this.powerupHint.textContent = view.hint;
+    this.powerupCard.querySelector('.ability-keybind')!.textContent = view.keybind ?? (view.state === 'held' ? 'G' : '');
+    this.powerupCard.querySelector('.ability-status')!.textContent = view.state === 'held' ? 'HELD' : view.state === 'active' ? 'ACTIVE' : '';
   }
 
-  private updateAbilityCard(card: HTMLDivElement, status: HTMLDivElement, cooldown: number, maxCooldown: number): void {
+  private updateAbilityCard(card: HTMLDivElement, status: HTMLDivElement, cooldown: number, maxCooldown: number, mode: string): void {
     const remaining = Math.max(0, Number.isFinite(cooldown) ? cooldown : 0);
     const max = Math.max(0.001, maxCooldown);
-    const progress = remaining <= 0 ? 1 : Math.max(0, Math.min(1, 1 - remaining / max));
-    card.style.setProperty('--ability-progress', `${(progress * 360).toFixed(1)}deg`);
-    card.classList.toggle('ability-hud-card--ready', remaining <= 0);
-    card.classList.toggle('ability-hud-card--cooldown', remaining > 0);
-    status.textContent = remaining <= 0 ? 'READY' : `${remaining.toFixed(1)}s`;
+    const occupied = mode === 'holding' || mode === 'charging' || mode === 'catching' || mode === 'active';
+    const progress = mode === 'unavailable' ? 0 : occupied || remaining <= 0 ? 1 : Math.max(0, Math.min(1, 1 - remaining / max));
+    const label = mode === 'unavailable' ? 'OUT' : mode === 'catching' ? 'CATCH' : mode === 'charging' ? 'CHARGE' : mode === 'holding' ? 'THROW' : mode === 'active' ? 'ACTIVE' : remaining <= 0 ? 'READY' : `${remaining.toFixed(1)}s`;
+    const key = `${mode}|${label}|${progress.toFixed(2)}`;
+    if (this.renderedValues.get(card) === key) return;
+    this.renderedValues.set(card, key);
+    card.dataset.state = mode;
+    card.style.setProperty('--ability-fill', progress.toFixed(2));
+    card.classList.toggle('ability-hud-card--ready', remaining <= 0 || occupied);
+    card.classList.toggle('ability-hud-card--cooldown', remaining > 0 && !occupied);
+    status.textContent = label;
   }
 
   private updatePowerBar(fill: HTMLDivElement, charge01: number): void {
     const clamped = Math.max(0, Math.min(1, Number.isFinite(charge01) ? charge01 : 0));
-    fill.style.transform = `scaleY(${clamped.toFixed(3)})`;
+    const key = clamped.toFixed(2);
+    if (this.renderedValues.get(fill) === key) return;
+    this.renderedValues.set(fill, key);
+    fill.style.transform = `scaleX(${key})`;
     fill.parentElement?.classList.toggle('ability-power-bar--active', clamped > 0.001);
     fill.parentElement?.classList.toggle('ability-power-bar--full', clamped >= 0.995);
   }
@@ -918,6 +987,9 @@ export class Hud {
   }
 
   dispose(): void {
+    document.removeEventListener('pointerlockchange', this.onPointerLockChange);
+    if (this.roundSplashTimer !== null) window.clearTimeout(this.roundSplashTimer);
+    this.topLeft.remove();
     if (this.scoreEventTimer !== null) {
       window.clearTimeout(this.scoreEventTimer);
       this.scoreEventTimer = null;
@@ -962,7 +1034,7 @@ export class Hud {
     const buffSeconds = Math.max(0, Math.ceil(((local.lastPlayerBuffUntilMs ?? 0) - Date.now()) / 1000));
     const buffActive = buffSeconds > 0;
     const buffLine = buffActive
-      ? `<div class="hearts-warning">Last player alive, finish the mission <span>${buffSeconds}s</span></div>`
+      ? `<div class="hearts-warning">CLUTCH <span>${buffSeconds}s</span></div>`
       : '';
 
     if (buffActive && !this.clutchBuffWasActive) this.showClutchBuffEvent();
@@ -970,6 +1042,7 @@ export class Hud {
 
     this.setHtml(this.hearts, `
       <div class="hearts-row hearts-row--local">
+        <span class="lives-label">LIVES</span>
         ${formatHearts(local.lives, room.settings.livesPerPlayer)}
       </div>
       ${buffLine}
@@ -1018,6 +1091,7 @@ export class Hud {
     const clamped = Math.min(maxCharges, Math.max(0, charges));
     const full = Math.floor(clamped);
     const partial = clamped - full;
+    this.staminaWidget.setAttribute('aria-label', `Dash stamina: ${full} of ${maxCharges}`);
     this.staminaWidget.classList.toggle('stamina-widget--ready', full > 0);
     this.staminaWidget.classList.toggle('stamina-widget--empty', full <= 0);
 

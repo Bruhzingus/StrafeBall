@@ -233,9 +233,15 @@ export class GymArena {
     const halfW = TUNING.map.halfWidth;
     const lineY = 0.012;
     this.courtLineCenterMat = this.createCourtLineMaterial('court_line_center_mat', new Color3(1.0, 0.98, 0.92), new Color3(0.045, 0.03, 0.01));
+    const edgeMat = this.createCourtLineMaterial('court_line_keyline_mat', new Color3(0.035, 0.09, 0.16), Color3.Black());
 
     const depth = GAME_CONSTANTS.match.neutralZoneHalfDepth;
+    const keylines: Mesh[] = [];
     for (const sign of [-1, 1]) {
+      // A narrow navy keyline keeps the actual crossing limits readable on bright maple.
+      const keyline = MeshBuilder.CreateGround(`neutral_edge_keyline_${sign}`, { width: halfW * 2, height: 0.27 }, this.scene);
+      keyline.position.set(0, 0.01, sign * depth);
+      keylines.push(keyline);
       const line = this.loader.createVisual('line', {
         name: `neutral_edge_${sign}`,
         size: { width: halfW * 2, height: 0.018, depth: 0.16 },
@@ -243,11 +249,15 @@ export class GymArena {
       });
       line.material = this.courtLineCenterMat;
     }
+    const edges = Mesh.MergeMeshes(keylines, true, true, undefined, false, false) ?? keylines[0];
+    edges.name = 'neutral_edge_keylines';
+    edges.material = edgeMat;
+    edges.isPickable = false;
     const band = MeshBuilder.CreateGround('neutral_zone_band', { width: halfW * 2, height: depth * 2 }, this.scene);
     band.position.y = 0.006; band.isPickable = false;
     const mat = new StandardMaterial('neutral_band_mat', this.scene);
-    mat.diffuseColor = new Color3(0.14, 0.65, 0.68); mat.emissiveColor = new Color3(0.015, 0.06, 0.065);
-    mat.alpha = 0.16; mat.specularColor = Color3.Black(); band.material = mat;
+    mat.diffuseColor = new Color3(0.93, 0.91, 0.85); mat.emissiveColor = Color3.Black();
+    mat.alpha = 0.12; mat.specularColor = Color3.Black(); band.material = mat;
   }
 
   /**
@@ -593,13 +603,7 @@ export class GymArena {
       }
     }
 
-    if (!this.conesReleased) {
-      for (const cone of this.halfCourtCones) {
-        cone.mesh.position.y = cone.basePosition.y + Math.sin(elapsed * 2.1 + cone.phase) * 0.018;
-        cone.mesh.rotation.y = cone.baseRotationY + Math.sin(elapsed * 1.4 + cone.phase) * 0.035;
-      }
-      return;
-    }
+    if (!this.conesReleased) return;
 
     this.coneReleaseSeconds = Math.max(0, elapsed - this.coneReleaseStartedAt);
     for (const cone of this.halfCourtCones) {

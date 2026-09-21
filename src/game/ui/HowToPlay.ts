@@ -1,5 +1,6 @@
 import { GAME_CONSTANTS } from '../../../shared/constants';
 import { CONTROL_KEYS } from '../config/controls';
+import './menus.css';
 
 /**
  * A quick-reference rulebook, opened from Settings. Built as flip-through pages (like the Quick
@@ -117,6 +118,7 @@ export class HowToPlay {
   private readonly pages: Page[];
   private index = 0;
   private open = false;
+  private previousFocus: HTMLElement | null = null;
   private readonly tabButtons: HTMLButtonElement[] = [];
 
   constructor(private readonly parent: HTMLElement = document.body) {
@@ -130,13 +132,19 @@ export class HowToPlay {
 
     this.panel = document.createElement('div');
     this.panel.className = 'htp-panel';
-    this.panel.addEventListener('keydown', (event) => event.stopPropagation());
+    this.panel.setAttribute('role', 'dialog');
+    this.panel.setAttribute('aria-modal', 'true');
+    this.panel.setAttribute('aria-label', 'StrafeBall rulebook');
+    this.panel.addEventListener('keydown', (event) => {
+      this.onKeydown(event);
+      event.stopPropagation();
+    });
 
     const header = document.createElement('div');
     header.className = 'htp-header';
     const title = document.createElement('div');
     title.className = 'htp-title';
-    title.textContent = 'How to Play';
+    title.textContent = 'StrafeBall Rulebook';
     const closeButton = document.createElement('button');
     closeButton.type = 'button';
     closeButton.className = 'htp-close';
@@ -147,6 +155,7 @@ export class HowToPlay {
 
     this.tabs = document.createElement('div');
     this.tabs.className = 'htp-tabs';
+    this.tabs.setAttribute('aria-label', 'Rulebook sections');
     this.pages.forEach((page, i) => {
       const tab = document.createElement('button');
       tab.type = 'button';
@@ -185,13 +194,18 @@ export class HowToPlay {
   }
 
   show(): void {
+    this.previousFocus = document.activeElement instanceof HTMLElement ? document.activeElement : null;
     this.open = true;
     this.overlay.hidden = false;
+    this.tabButtons[this.index].focus();
   }
 
   close(): void {
+    if (!this.open) return;
     this.open = false;
     this.overlay.hidden = true;
+    if (!document.pointerLockElement) this.previousFocus?.focus();
+    this.previousFocus = null;
   }
 
   toggle(): void {
@@ -212,15 +226,31 @@ export class HowToPlay {
   private render(): void {
     const page = this.pages[this.index];
     this.body.innerHTML = page.html;
+    this.body.scrollTop = 0;
     this.pageLabel.textContent = `${this.index + 1} / ${this.pages.length}`;
-    this.tabButtons.forEach((tab, i) => tab.classList.toggle('htp-tab--active', i === this.index));
+    this.tabButtons.forEach((tab, i) => {
+      tab.classList.toggle('htp-tab--active', i === this.index);
+      tab.setAttribute('aria-pressed', String(i === this.index));
+    });
   }
 
   private onKeydown = (event: KeyboardEvent): void => {
     if (!this.open) return;
-    if (event.code === 'Escape') { this.close(); return; }
+    if (event.code === 'Escape') { event.preventDefault(); this.close(); return; }
+    if (event.code === 'Tab') {
+      const buttons = this.panel.querySelectorAll<HTMLButtonElement>('button:not(:disabled)');
+      const first = buttons[0];
+      const last = buttons[buttons.length - 1];
+      if (event.shiftKey && document.activeElement === first) {
+        event.preventDefault();
+        last.focus();
+      } else if (!event.shiftKey && document.activeElement === last) {
+        event.preventDefault();
+        first.focus();
+      }
+    }
     // Left/right paging so it really is quick to flip through, not just click-only.
-    if (event.code === 'ArrowRight') this.goTo(this.index + 1);
-    else if (event.code === 'ArrowLeft') this.goTo(this.index - 1);
+    if (event.code === 'ArrowRight') { event.preventDefault(); this.goTo(this.index + 1); }
+    else if (event.code === 'ArrowLeft') { event.preventDefault(); this.goTo(this.index - 1); }
   };
 }

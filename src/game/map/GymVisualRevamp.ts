@@ -9,10 +9,11 @@ import {
   PBRMaterial,
   Scene,
   StandardMaterial,
-  Texture
+  Texture,
+  VertexBuffer
 } from '@babylonjs/core';
 import { TUNING } from '../config/tuning';
-import { createBleacherTierSpecs } from '../../../shared/simulation/MapGeometry';
+import { BLEACHER_LAYOUT, createBleacherTierSpecs } from '../../../shared/simulation/MapGeometry';
 import { getGraphicsQuality, isNeutralModeEnabled } from '../config/graphicsConfig';
 import { resolvePolishedConfig } from '../config/graphicsTuning';
 
@@ -346,6 +347,7 @@ export function applyGymVisualRevamp(scene: Scene): void {
   // full-court overdraw. They are REMOVED in every mode: light on surfaces must come from lights.
   applyGymEnvironment(scene);
   enhanceExistingMaterials(scene);
+  createCourtAprons(scene);
   tuneSceneImageProcessing(scene);
   createWallColorBlocking(scene);
   createWallPaddingDetails(scene);
@@ -1376,12 +1378,45 @@ function createBleacherUnderframes(scene: Scene): void {
   }
 }
 
-/**
- * Painted court markings — the ONLY floor "line" besides the centre stripe: a navy centre circle.
- * Opaque paint (no alpha blending, no emissive) like a real varnished-over game line. A perimeter
- * boundary rectangle was tried and CUT: against the navy end-wall pads it read as a stray dark seam,
- * and the side runs would sit under the bleachers. Purely visual; no gameplay system reads this mesh.
- */
+/** A restrained wood finish separates the main playing lane from the bleacher apron. */
+function createCourtAprons(scene: Scene): void {
+  const floor = scene.getMaterialByName('floor_material');
+  if (!(floor instanceof PBRMaterial)) return;
+  // The bleacher apron is darker, matte wood. The central playing lane stays bright maple.
+  // This is a finish change, not a new out-of-bounds line: the full gym remains playable.
+  const apronMaterial = floor.clone('decor_court_apron_mat');
+  apronMaterial.albedoColor = new Color3(0.73, 0.76, 0.75);
+  apronMaterial.roughness = 0.76;
+  apronMaterial.environmentIntensity = 0.035;
+  apronMaterial.specularIntensity = 0.12;
+  const halfW = TUNING.map.halfWidth;
+  const halfL = TUNING.map.halfLength;
+  const apronWidth = BLEACHER_LAYOUT.wallInset + BLEACHER_LAYOUT.tierCount * BLEACHER_LAYOUT.tierRun + 0.45;
+  const parts: Mesh[] = [];
+  for (const sign of [-1, 1]) {
+    const apron = MeshBuilder.CreateGround(`decor_court_apron_${sign}`, {
+      width: apronWidth,
+      height: halfL * 2
+    }, scene);
+    apron.position.set(sign * (halfW - apronWidth / 2), 0.002, 0);
+    // Match the original box's top-face UVs so the same planks continue across the finish edge.
+    const positions = apron.getVerticesData(VertexBuffer.PositionKind)!;
+    const uvs: number[] = [];
+    for (let index = 0; index < positions.length; index += 3) {
+      uvs.push((positions[index] + apron.position.x + halfW) / (halfW * 2));
+      uvs.push((halfL - positions[index + 2]) / (halfL * 2));
+    }
+    apron.setVerticesData(VertexBuffer.UVKind, uvs);
+    parts.push(apron);
+  }
+  const aprons = Mesh.MergeMeshes(parts, true, true, undefined, false, false) ?? parts[0];
+  aprons.name = 'decor_court_aprons';
+  aprons.material = apronMaterial;
+  aprons.receiveShadows = true;
+  markDecorative(aprons);
+}
+
+/** Opaque painted center circle. The walls, not an invented perimeter stripe, bound play. */
 function createCourtPaint(scene: Scene): void {
   const paint = solidMaterial(scene, 'decor_court_paint_navy_mat', new Color3(0.085, 0.125, 0.24), {
     specular: new Color3(0.05, 0.05, 0.06)

@@ -1,6 +1,7 @@
 import { settings, SENSITIVITY_MIN, SENSITIVITY_MAX } from '../config/Settings';
 import { getGraphicsPresets, getGraphicsPreset, persistGraphicsPreset, type GraphicsPreset } from '../config/graphicsConfig';
 import { HowToPlay } from './HowToPlay';
+import './menus.css';
 
 /** GitHub's always-current archive of the main branch — the same snapshot the live site runs. */
 export const GAME_DOWNLOAD_URL = 'https://github.com/Bruhzingus/StrafeBall/archive/refs/heads/main.zip';
@@ -19,7 +20,7 @@ export interface SettingsPanelOptions {
 }
 
 /**
- * A tiny always-visible settings panel (top-right) with a mouse-sensitivity slider. Marked
+ * A settings panel available while the cursor is free. Marked
  * [data-no-lock] so clicking/dragging it doesn't grab pointer lock (see InputManager). Usable
  * while the cursor is free (before play, or after Esc); changes apply live and persist.
  *
@@ -44,7 +45,11 @@ export class SettingsPanel {
   private readonly graphicsSelect: HTMLSelectElement;
   private readonly howToPlayButton: HTMLButtonElement;
   private readonly howToPlay: HowToPlay;
-  private readonly preventKeySteal = (event: KeyboardEvent): void => event.preventDefault();
+  private readonly preventKeySteal = (event: KeyboardEvent): void => {
+    // Preserve the browser's keyboard controls for sliders, checkboxes and selects.
+    if (event.code === 'Escape') this.closeExpanded();
+    event.stopPropagation();
+  };
   private expanded = false;
   /** Where the panel floats normally; undock() returns it here. */
   private readonly homeParent: HTMLElement;
@@ -60,6 +65,7 @@ export class SettingsPanel {
     this.toggleButton.type = 'button';
     this.toggleButton.className = 'settings-toggle';
     this.toggleButton.textContent = 'Settings';
+    this.toggleButton.setAttribute('aria-label', 'Open settings and controls');
     this.toggleButton.addEventListener('click', this.toggleExpanded);
 
     this.content = document.createElement('div');
@@ -164,7 +170,9 @@ export class SettingsPanel {
 
     const graphicsHint = document.createElement('div');
     graphicsHint.className = 'settings-hint';
-    graphicsHint.textContent = 'Changing graphics reloads the page.';
+    graphicsHint.textContent = this.options.onGraphicsPresetChanged
+      ? 'Graphics changes apply immediately.'
+      : 'Changing graphics reloads the page.';
 
     // Self-host section. The zip is GitHub's archive of `main`, so it is always the version that
     // is live right now (dist/ + server/dist/ are committed) and needs no per-release upload.
@@ -187,6 +195,12 @@ export class SettingsPanel {
     downloadHint.className = 'settings-hint';
     downloadHint.textContent = 'The guide is also inside the zip as LOCALHOST_SETUP.md.';
 
+    const advanced = document.createElement('details');
+    advanced.className = 'settings-advanced';
+    const advancedSummary = document.createElement('summary');
+    advancedSummary.textContent = 'Developer & local hosting';
+    advanced.append(advancedSummary, devGraphicsLabel, downloadTitle, downloadLink, guideLink, downloadHint);
+
     this.content.append(
       title,
       this.howToPlayButton,
@@ -202,16 +216,15 @@ export class SettingsPanel {
       effectsLabel,
       scoreboardLabel,
       graphicsRow,
-      devGraphicsLabel,
       graphicsHint,
-      downloadTitle,
-      downloadLink,
-      guideLink,
-      downloadHint
+      advanced
     );
     this.root.append(this.toggleButton, this.content);
     parent.appendChild(this.root);
+    document.addEventListener('pointerlockchange', this.onPointerLockChange);
+    document.addEventListener('keydown', this.onKeyDown);
 
+    this.onPointerLockChange();
     this.syncExpanded();
     this.updateReadout();
   }
@@ -256,6 +269,8 @@ export class SettingsPanel {
     this.lobbyMusicSlider.removeEventListener('keydown', this.preventKeySteal);
     this.battleMusicSlider.removeEventListener('keydown', this.preventKeySteal);
     this.reducedEffectsToggle.removeEventListener('keydown', this.preventKeySteal);
+    document.removeEventListener('pointerlockchange', this.onPointerLockChange);
+    document.removeEventListener('keydown', this.onKeyDown);
     this.root.remove();
   }
 
@@ -319,6 +334,24 @@ export class SettingsPanel {
   private toggleExpanded = (): void => {
     this.expanded = !this.expanded;
     this.syncExpanded();
+  };
+
+  private closeExpanded(): void {
+    this.expanded = false;
+    this.syncExpanded();
+  }
+
+  private onKeyDown = (event: KeyboardEvent): void => {
+    if (event.code === 'Escape' && this.expanded) this.closeExpanded();
+  };
+
+  private onPointerLockChange = (): void => {
+    const playing = document.pointerLockElement !== null;
+    this.root.classList.toggle('settings-panel--playing', playing);
+    if (playing) {
+      this.closeExpanded();
+      this.howToPlay.close();
+    }
   };
 
   private syncExpanded(): void {
