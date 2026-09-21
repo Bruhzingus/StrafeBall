@@ -73,6 +73,7 @@ export class Hud {
   private readonly musicHud: MusicHud;
   private readonly teamScoreboard: TeamScoreboard;
   private lastCountdownLabel = '';
+  private countdownGoUntilMs = 0;
   private readonly crosshair: Crosshair;
   // Last rendered markup per panel — we only touch the DOM when the text actually changes,
   // so the HUD doesn't thrash innerHTML 60+ times a second while values are static.
@@ -451,12 +452,12 @@ export class Hud {
     this.practiceHalfCourtHintUntilMs = performance.now() + 5200;
     this.halfCourtWarning.classList.remove('half-court-warning--urgent');
     this.halfCourtWarning.classList.add('half-court-warning--practice', 'half-court-warning--visible');
-    this.halfCourtWarning.innerHTML = `
+    this.setHtml(this.halfCourtWarning, `
       <div class="half-court-warning__stamp">PRACTICE RULE</div>
       <div class="half-court-warning__title">HALF COURT IS LOCKED IN MATCHES</div>
       <div class="half-court-warning__body">In a real game, crossing before the timer ends costs a life.</div>
       <div class="half-court-warning__timer">PRACTICE LOBBY — CROSS FREELY</div>
-    `;
+    `);
   }
 
   update(player: PlayerController, rules: MatchRules, ballManager: BallManager, fps: number, frameMs: number, showPracticeScoreboard = true): void {
@@ -779,10 +780,15 @@ export class Hud {
   private updateCountdown(status: string, countdownSeconds: number): void {
     let label = '';
     if (status === 'countdown') {
+      this.countdownGoUntilMs = 0;
       label = String(Math.max(1, Math.ceil(countdownSeconds)));
-    } else if (this.lastCountdownLabel !== '' && this.lastCountdownLabel !== 'GO!' && status === 'playing') {
-      // Just transitioned out of the countdown → flash GO! once.
-      label = 'GO!';
+    } else if (status === 'playing') {
+      if (this.lastCountdownLabel !== '' && this.lastCountdownLabel !== 'GO!') {
+        this.countdownGoUntilMs = performance.now() + 700;
+      }
+      if (performance.now() < this.countdownGoUntilMs) label = 'GO!';
+    } else {
+      this.countdownGoUntilMs = 0;
     }
 
     if (label === this.lastCountdownLabel) return;
@@ -800,16 +806,6 @@ export class Hud {
     void this.countdown.offsetWidth;
     this.countdown.classList.add('countdown--visible');
     this.lastCountdownLabel = label;
-
-    if (label === 'GO!') {
-      // Auto-hide GO! shortly after.
-      window.setTimeout(() => {
-        if (this.lastCountdownLabel === 'GO!') {
-          this.countdown.classList.remove('countdown--visible');
-          this.lastCountdownLabel = '';
-        }
-      }, 700);
-    }
   }
 
   private updateHalfCourtWarning(violation: HalfCourtViolationState | undefined): void {

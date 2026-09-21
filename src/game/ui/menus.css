@@ -179,7 +179,20 @@
 .multiplayer-modal .multiplayer-leave { flex: none; border: 0; padding: 4px 0; background: transparent; color: #536074; text-transform: none; font-size: 11px; font-weight: 600; }
 .multiplayer-modal .multiplayer-room-notice { font-size: 12px; line-height: 1.45; color: #536074; }
 .multiplayer-modal .multiplayer-pregame-card,
-.multiplayer-modal .multiplayer-reset-card { border: 1px solid var(--menu-line); border-radius: 4px; background: transparent; box-shadow: none; }
+.multiplayer-modal .multiplayer-reset-card { border: 1px solid var(--menu-line); border-radius: 4px; background: transparent; color: var(--menu-navy); box-shadow: none; }
+.multiplayer-modal .multiplayer-pregame-title { color: var(--menu-navy); font-size: 11px; }
+.multiplayer-modal :is(.multiplayer-slot-row span, .multiplayer-reset-status, .multiplayer-pregame-footer, .multiplayer-start-vote-hint) { color: #536074; font-weight: 500; line-height: 1.45; }
+.multiplayer-modal .multiplayer-slot-row { border-radius: 3px; gap: 6px; }
+.multiplayer-modal .multiplayer-slot-row > div { min-width: 0; }
+.multiplayer-modal .multiplayer-slot-row span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.multiplayer-modal .multiplayer-slot-row strong { color: var(--menu-navy); font-size: 11px; }
+.multiplayer-modal .multiplayer-slot-row--chosen { background: #e4dfd2; box-shadow: inset 2px 0 0 var(--menu-navy); }
+.multiplayer-modal :is(.multiplayer-switch, .multiplayer-reset-action) { flex-shrink: 0; border-width: 1px; background: #fffdf7; color: var(--menu-navy); font-size: 11px; }
+.multiplayer-modal .multiplayer-start-vote { border-width: 1px; background: var(--menu-gold); color: var(--menu-navy); font-size: 12px; }
+.multiplayer-modal .multiplayer-launch-option__title { color: var(--menu-navy); }
+.multiplayer-modal .fullscreen-prompt__card { border-width: 1px; border-top-width: 5px; border-radius: 6px; background: var(--menu-cream); color: var(--menu-navy); box-shadow: 0 5px 0 rgba(7, 23, 46, .3); }
+.multiplayer-modal .fullscreen-prompt__actions button { border-width: 1px; background: var(--menu-cream); color: var(--menu-navy); }
+.multiplayer-modal .fullscreen-request { background: var(--menu-navy) !important; color: var(--menu-cream) !important; }
 .multiplayer-modal .multiplayer-settings-menu__panel { border-width: 1px; border-top-width: 5px; border-radius: 6px; background: var(--menu-cream); box-shadow: 0 6px 0 rgba(7, 23, 46, .3); }
 .multiplayer-modal .multiplayer-settings-menu__header { border-bottom-width: 1px; }
 .multiplayer-modal .multiplayer-settings-menu__grid .multiplayer-controls__row { border-width: 1px; border-radius: 4px; }

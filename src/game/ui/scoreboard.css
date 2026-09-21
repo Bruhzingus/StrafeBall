@@ -1,5 +1,6 @@
 /* Physical court equipment, kept distinct from the digital player HUD. */
-:root { --sb-scoreboard-bottom: 127px; }
+/* Reserve the tallest 2v2 roster with the series score, including the physical frame. */
+:root { --sb-scoreboard-bottom: 136px; }
 .team-scoreboard--compact, .team-scoreboard--compact * { box-sizing: border-box; }
 .team-scoreboard.team-scoreboard--compact {
   --ts-blue: #1765c4;
@@ -11,6 +12,7 @@
   width: min(590px, calc(100vw - 40px));
   transform: translateX(-50%);
   font-synthesis: none;
+  color: var(--ts-ink);
 }
 
 .team-scoreboard--compact .team-scoreboard__frame {
@@ -90,7 +92,7 @@
   line-height: 1;
   letter-spacing: -.055em;
 }
-.team-scoreboard--compact .ts-score-label { font: 700 8px/1 var(--ts-ui-font); letter-spacing: .1em; opacity: .85; }
+.team-scoreboard--compact .ts-score-label { font: 700 8px/1 var(--ts-ui-font); letter-spacing: .1em; color: #5a6470; }
 
 .team-scoreboard--compact .team-scoreboard__center {
   min-width: 0;
@@ -149,7 +151,7 @@
 .team-scoreboard--compact .ts-tray-clip { width: 22px; height: 3px; }
 
 @media (max-width: 700px) {
-  :root { --sb-scoreboard-bottom: 117px; }
+  :root { --sb-scoreboard-bottom: 130px; }
   .team-scoreboard.team-scoreboard--compact { top: 8px; width: min(550px, calc(100vw - 24px)); }
   .team-scoreboard--compact .team-scoreboard__surface { grid-template-columns: minmax(0, 1fr) 104px minmax(0, 1fr); gap: 8px; padding: 9px 10px; min-height: 87px; }
   .team-scoreboard--compact .team-scoreboard__team { gap: 6px; grid-template-columns: minmax(0, 1fr) 44px; }
@@ -158,7 +160,7 @@
 }
 
 @media (max-width: 480px) {
-  :root { --sb-scoreboard-bottom: 145px; }
+  :root { --sb-scoreboard-bottom: 140px; }
   .team-scoreboard.team-scoreboard--compact { width: calc(100vw - 16px); }
   .team-scoreboard--compact .team-scoreboard__surface { grid-template-columns: minmax(0, 1fr) 88px minmax(0, 1fr); gap: 6px; padding: 9px 7px; }
   .team-scoreboard--compact .team-scoreboard__team { display: flex; flex-direction: column-reverse; gap: 4px; align-items: stretch; }
@@ -180,7 +182,7 @@
 }
 
 @media (max-height: 600px) and (min-width: 481px) {
-  :root { --sb-scoreboard-bottom: 94px; }
+  :root { --sb-scoreboard-bottom: 114px; }
   .team-scoreboard.team-scoreboard--compact { top: 7px; }
   .team-scoreboard--compact .team-scoreboard__surface { min-height: 76px; padding-top: 7px; padding-bottom: 7px; }
   .team-scoreboard--compact .team-scoreboard__tray { display: none; }

@@ -1,4 +1,4 @@
-import { Color3, DynamicTexture, Material, Mesh, MeshBuilder, PBRMaterial, Scene, StandardMaterial, Texture, Vector3 } from '@babylonjs/core';
+import { Color3, Material, Mesh, MeshBuilder, PBRMaterial, Scene, StandardMaterial, Vector3 } from '@babylonjs/core';
 import { applyGymProbeToBallMaterial } from '../map/GymReflectionProbe';
 import { registerGymMirrorMesh } from '../map/GymFloorMirror';
 import { addPolishedGlowOccluder } from '../effects/PolishedPostFX';
@@ -8,7 +8,6 @@ export type BallVisualVariant = 'normal' | 'live' | 'dead' | 'highlight';
 
 const materialsByScene = new WeakMap<Scene, Map<BallVisualVariant, PBRMaterial>>();
 const shadowMaterialsByScene = new WeakMap<Scene, StandardMaterial>();
-const panelTexturesByScene = new WeakMap<Scene, DynamicTexture>();
 
 export function createBallMesh(scene: Scene, name: string, position: Vector3, variant: BallVisualVariant = 'normal'): Mesh {
   const mesh = MeshBuilder.CreateSphere(
@@ -46,7 +45,6 @@ export function getBallMaterial(scene: Scene, variant: BallVisualVariant = 'norm
 
   const material = new PBRMaterial(`ball_${variant}_material`, scene);
   applyBallMaterial(material, variant);
-  material.albedoTexture = getBallPanelTexture(scene);
   // Polished mode: balls reflect the gym's own reflection probe (no-op when no probe is active —
   // Performance/Neutral keep the gradient-environment sheen applyBallMaterial already set up).
   applyGymProbeToBallMaterial(material);
@@ -70,37 +68,6 @@ export function updateBallBlobShadow(mesh: Mesh): void {
   shadow.position.set(mesh.position.x, 0.012, mesh.position.z);
   shadow.scaling.set(scale, 1, scale);
   shadow.setEnabled(mesh.isEnabled() && mesh.position.y >= TUNING.ball.radius * 0.45);
-}
-
-/** Rubber panel seams give the ball a recognizable surface against both wood and player jerseys.
- * One small, static, mipmapped texture is shared by every state and every online/offline ball. */
-function getBallPanelTexture(scene: Scene): DynamicTexture {
-  const existing = panelTexturesByScene.get(scene);
-  if (existing) return existing;
-
-  const texture = new DynamicTexture('ball_rubber_panel_texture', { width: 512, height: 256 }, scene, true);
-  texture.hasAlpha = false;
-  texture.anisotropicFilteringLevel = 4;
-  texture.updateSamplingMode(Texture.TRILINEAR_SAMPLINGMODE);
-  const ctx = texture.getContext();
-  ctx.fillStyle = '#ffffff';
-  ctx.fillRect(0, 0, 512, 256);
-  // Longitudinal seams wrap continuously at the UV join. No extra geometry or outline pass.
-  ctx.strokeStyle = '#39414b';
-  ctx.lineWidth = 7;
-  for (let x = 0; x <= 512; x += 128) {
-    ctx.beginPath();
-    ctx.moveTo(x, 0);
-    ctx.lineTo(x, 256);
-    ctx.stroke();
-  }
-  ctx.beginPath();
-  ctx.moveTo(0, 128);
-  ctx.lineTo(512, 128);
-  ctx.stroke();
-  texture.update(false);
-  panelTexturesByScene.set(scene, texture);
-  return texture;
 }
 
 function applyBallMaterial(material: PBRMaterial, variant: BallVisualVariant): void {
