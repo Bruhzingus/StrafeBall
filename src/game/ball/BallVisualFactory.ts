@@ -1,7 +1,7 @@
 import { Color3, Material, Mesh, MeshBuilder, PBRMaterial, Scene, StandardMaterial, Vector3 } from '@babylonjs/core';
 import { applyGymProbeToBallMaterial } from '../map/GymReflectionProbe';
 import { registerGymMirrorMesh } from '../map/GymFloorMirror';
-import { addPolishedGlowOccluder } from '../effects/PolishedPostFX';
+import { addPolishedGlowOccluder, registerPostGlowBallMesh } from '../effects/PolishedPostFX';
 import { TUNING } from '../config/tuning';
 
 export type BallVisualVariant = 'normal' | 'live' | 'dead' | 'highlight';
@@ -17,13 +17,19 @@ export function createBallMesh(scene: Scene, name: string, position: Vector3, va
   );
   mesh.position.copyFrom(position);
   mesh.material = getBallMaterial(scene, variant);
+  // Polished glow is a blurred full-screen composite, so it cannot be permanently masked just by
+  // writing a black ball silhouette into its source RTT: the blur would bleed back over the ball.
+  // The registry moves this ball into a later depth-preserving group only while polished glow is
+  // active; Performance and Neutral retain their normal render ordering.
+  registerPostGlowBallMesh(mesh);
   mesh.isPickable = false;
   // Polished Phase 3: balls reflect in the floor mirror (the mesh only — the blob shadow below is
   // excluded by the mirror facade). Safe no-op when no mirror exists (Performance/Neutral).
   registerGymMirrorMesh(mesh);
-  // Glow occluder: EVERY ball instance (held in first person, thrown, idle — offline BallManager
-  // and online networkBall_* all build here) must punch a hole in the glow map, or wall/portal
-  // light halos bleed straight through the ball as bright bands. Auto-unregisters on dispose.
+  // This source-RTT hole reduces the glow before blur; group ordering above is the final,
+  // post-blur mask that makes the ball fully opaque against light bars.
+  // Register every offline and online ball as a source-RTT occluder too. Auto-unregisters on
+  // dispose; the later opaque group is still the reliable block after the source has been blurred.
   addPolishedGlowOccluder(mesh);
   const shadow = createBallBlobShadow(scene, `${name}_blobShadow`, position);
   mesh.metadata = { ...(mesh.metadata ?? {}), ballBlobShadow: shadow };

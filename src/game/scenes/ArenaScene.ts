@@ -1,4 +1,4 @@
-import { PowerupPresentation } from '../powerups/PowerupPresentation';
+import { PowerupPresentation, type PowerupPresentationRoom } from '../powerups/PowerupPresentation';
 import { mapEffectGravityScale } from '../../../shared/simulation/MapEffectSim';
 import { Color3, Engine, Mesh, MeshBuilder, PBRMaterial, Scene, StandardMaterial, Vector3, type Camera } from '@babylonjs/core';
 import { FxaaPostProcess } from '@babylonjs/core/PostProcesses/fxaaPostProcess';
@@ -88,6 +88,7 @@ import type { CreatorLayout } from '../practice/creator/CreatorLayout';
 import { CreatorEditor, CREATOR_ENTRY_RADIUS, CREATOR_ENTRY_HOLD_SECONDS, type CreatorSpawnerMarkers } from '../practice/creator/CreatorEditor';
 import { createPracticeState } from '../practice/PracticeState';
 import type { PracticeState } from '../practice/PracticeState';
+import { PracticePowerupSpawner } from '../practice/PracticePowerupSpawner';
 import { MultiplayerClient } from '../network/MultiplayerClient';
 import { NetFlightRecorder, defaultFlightRecorderGraphicsPreset } from '../network/NetFlightRecorder';
 import { MultiplayerOverlay } from '../network/MultiplayerOverlay';
@@ -99,7 +100,7 @@ import {
   type PendingOnlineThrowRelease
 } from '../network/OnlineHandIntent';
 import type { CatchEvent, HitEvent, HitRevertEvent, ParryEvent, ServerSnapshot } from '../../../shared/protocol';
-import type { DashState, MatchStatus, MovementInternalState, PlayerInput, PlayerMovementState, PlayerState, Vec3 } from '../../../shared/types';
+import type { DashState, MatchStatus, MovementInternalState, PlayerInput, PlayerMovementState, PlayerState, PowerupKind, Vec3 } from '../../../shared/types';
 import { stepMovement, facingFromAngles } from '../../../shared/simulation/MovementSim';
 import { grantDashCharge } from '../../../shared/simulation/PlayerSim';
 import { backflipPitchOffset } from '../../../shared/simulation/AimMath';
@@ -165,6 +166,18 @@ export class ArenaScene {
   private readonly creatorBots: PracticeBot[] = [];
   private readonly creatorDummies: Mesh[] = [];
   private readonly practiceState: PracticeState = createPracticeState();
+  private readonly practicePowerups = new PracticePowerupSpawner();
+  private readonly practicePowerupRoom: PowerupPresentationRoom = {
+    practiceBuffs: this.practicePowerups.buffs,
+    practicePlayerId: 'practice',
+    settings: { powerupsEnabled: true },
+    powerups: this.practicePowerups.world,
+    resetVote: { resetSerial: 0 },
+    match: { status: 'warmup', currentRound: 1 },
+    players: {},
+    balls: {},
+    mapEffect: null
+  };
   private readonly settingsPanel: SettingsPanel;
   private readonly gym: GymArena;
   private readonly multiplayer = new MultiplayerClient();
@@ -1097,9 +1110,24 @@ export class ArenaScene {
 
   private step(dt: number): void {
     this.elapsed += dt;
-    const powerupSnapshot = this.multiplayer.latestSnapshot;
-    this.powerupPresentation.update(powerupSnapshot?.room ?? null, this.multiplayer.localPlayerId,
-      this.player.root.position, this.multiplayer.powerupPrivate, this.multiplayer.drainPowerupEvents(), dt);
+    const inPracticeLobby = !this.creator?.isActive() && !this.movementSandbox?.active;
+    if (inPracticeLobby) {
+      this.practicePowerups.update(
+        dt,
+        vector3ToVec3(this.player.root.position),
+        this.practicePowerupRoom.resetVote.resetSerial
+      );
+      if (this.input.wasKeyPressed(CONTROL_KEYS.activatePowerup)) {
+        const activation = this.practicePowerups.activate(
+          this.player.hands.heldBallCount() < 2,
+          vector3ToVec3(this.player.root.position),
+          this.practicePowerupRoom.resetVote.resetSerial
+        );
+        if (activation.ok) this.materializePracticePowerup(activation.kind);
+      }
+    }
+    this.powerupPresentation.update(inPracticeLobby ? this.practicePowerupRoom : null, 'practice',
+      this.player.root.position, this.practicePowerups.identity, this.practicePowerups.drainEvents(), dt);
     this.player.lookScale = this.powerupPresentation.localLookScale;
 
     // Offline testing toggle (all offline modes incl. creator playtest): strip cooldowns from
@@ -1130,6 +1158,16 @@ export class ArenaScene {
     // (jump pending after `active` clears mid-air), until the landing QTE resolves. The backflip
     // throw is released only by the QTE click.
     const throwsSuppressed = this.player.backflip.active || this.backflipJumpPending || this.backflipQte.isActive();
+    const practiceBuffs = this.practicePowerups.buffs;
+    const cannonHeld = [this.player.hands.left.ball, this.player.hands.right.ball]
+      .some(ball => ball?.powerupKind === 'cannon');
+    practiceBuffs.cannonLocked = cannonHeld;
+    this.player.dash.setAdrenalineActive(inPracticeLobby && practiceBuffs.adrenalineSeconds > 0);
+    this.player.movement.setPracticePowerups(
+      inPracticeLobby && practiceBuffs.speedSeconds > 0,
+      inPracticeLobby && (practiceBuffs.stunSeconds ?? 0) > 0,
+      inPracticeLobby && (cannonHeld || (practiceBuffs.stunSeconds ?? 0) > 0)
+    );
     // Moving platforms advance (and carry their rider) BEFORE movement resolves against them.
     if (this.movementSandbox?.active) this.movementSandbox.preMovementUpdate(dt, this.player);
     this.player.update(dt, throwsSuppressed);
@@ -1170,6 +1208,8 @@ export class ArenaScene {
       this.ballManager.findPickupLookCandidate(this.player.camera.globalPosition, cameraForward(this.player.camera))
     );
     this.ballManager.update(dt);
+    this.updatePracticeMagnet(dt);
+    this.updatePracticePowerupBalls(dt);
     this.checkBotHitsPlayer(dt);
     this.ballVisualEffects.update(dt);
     this.updateOfflineMats(dt);
@@ -3393,6 +3433,131 @@ export class ArenaScene {
     }
   }
 
+  private materializePracticePowerup(kind: PowerupKind): void {
+    if (kind === 'adrenaline' || kind === 'speed' || kind === 'magnet') return;
+    const side = !this.player.hands.left.ball ? 'left' : !this.player.hands.right.ball ? 'right' : null;
+    if (!side) return;
+    const position = this.player.root.position.add(new Vector3(side === 'left' ? -0.4 : 0.4, 1.2, 0.3));
+    const ball = this.ballManager.createPowerupBall(`practice_${kind}_${Date.now()}`, position, kind);
+    this.ballManager.attachHeldBall(ball, side, position);
+    this.player.hands.forceCatchBall(side, ball);
+  }
+
+  private updatePracticeMagnet(dt: number): void {
+    if (this.practicePowerups.buffs.magnetSeconds <= 0) return;
+    const target = this.player.root.position.add(new Vector3(0, 0.9, 0));
+    for (const ball of this.ballManager.balls) {
+      if (ball.powerupKind || (ball.state !== BallState.Loose && ball.state !== BallState.Dead)) continue;
+      const dx = target.x - ball.mesh.position.x;
+      const dy = target.y - ball.mesh.position.y;
+      const dz = target.z - ball.mesh.position.z;
+      const distance = Math.hypot(dx, dy, dz);
+      if (distance < 0.01) continue;
+      const nearby = distance <= GAME_CONSTANTS.powerup.magnetRadius;
+      const acceleration = nearby ? GAME_CONSTANTS.powerup.magnetAcceleration : GAME_CONSTANTS.powerup.distantMagnetAcceleration;
+      const maxSpeed = nearby ? GAME_CONSTANTS.powerup.magnetSpeed : GAME_CONSTANTS.powerup.distantMagnetSpeed;
+      ball.velocity.x += dx / distance * acceleration * dt;
+      ball.velocity.y += dy / distance * acceleration * dt;
+      ball.velocity.z += dz / distance * acceleration * dt;
+      const speed = ball.velocity.length();
+      if (speed > maxSpeed) ball.velocity.scaleInPlace(maxSpeed / speed);
+    }
+  }
+
+  private updatePracticePowerupBalls(dt: number): void {
+    const resetSerial = this.practicePowerupRoom.resetVote.resetSerial;
+    for (const ball of [...this.ballManager.balls]) {
+      const kind = ball.powerupKind;
+      if (!kind) continue;
+
+      if (kind === 'heal' && ball.state !== BallState.Held) {
+        this.practicePowerups.placeHeal(vector3ToVec3(ball.mesh.position), resetSerial);
+        this.player.hands.removeBall(ball);
+        this.ballManager.removeBall(ball);
+        continue;
+      }
+
+      if (kind === 'cannon') {
+        if (ball.state === BallState.Dead || (ball.state !== BallState.Held && ball.bounceCount > 0)) {
+          this.practicePowerups.emit('thud', vector3ToVec3(ball.mesh.position), resetSerial);
+          this.player.hands.removeBall(ball);
+          this.ballManager.removeBall(ball);
+        }
+        continue;
+      }
+
+      const grenade = kind === 'shock' || kind === 'stun';
+      const shouldArm = ball.state !== BallState.Held && ball.fuseSeconds === undefined
+        && (ball.bounceCount > ball.powerupBounceCount || ball.state === BallState.Dead);
+      if (shouldArm && (kind === 'bomb' || grenade)) {
+        ball.fuseSeconds = grenade ? GAME_CONSTANTS.powerup.grenadeFuseSeconds : GAME_CONSTANTS.powerup.bombFuseSeconds;
+        ball.armedAtMs = performance.now();
+        ball.velocity.setAll(0);
+        ball.makeDead();
+        this.practicePowerups.emit(grenade ? 'stick' : 'beep', vector3ToVec3(ball.mesh.position), resetSerial, 0);
+      }
+      ball.powerupBounceCount = ball.bounceCount;
+      if (ball.fuseSeconds === undefined) continue;
+      if (grenade) ball.velocity.setAll(0);
+
+      const before = ball.fuseSeconds;
+      ball.fuseSeconds = Math.max(0, ball.fuseSeconds - dt);
+      if (kind === 'bomb') {
+        const interval = GAME_CONSTANTS.powerup.bombFuseSeconds / 3;
+        while (ball.powerupBeepStage < 2) {
+          const nextStage = ball.powerupBeepStage + 1;
+          const threshold = GAME_CONSTANTS.powerup.bombFuseSeconds - nextStage * interval;
+          if (before > threshold && ball.fuseSeconds <= threshold) {
+            ball.powerupBeepStage = nextStage;
+            this.practicePowerups.emit('beep', vector3ToVec3(ball.mesh.position), resetSerial, nextStage);
+          } else break;
+        }
+      }
+      if (ball.fuseSeconds > 0) continue;
+      this.detonatePracticePowerupBall(ball, kind, resetSerial);
+    }
+  }
+
+  private detonatePracticePowerupBall(ball: Ball, kind: PowerupKind, resetSerial: number): void {
+    const position = ball.mesh.position.clone();
+    if (kind === 'shock') {
+      for (const other of this.ballManager.balls) {
+        if (other === ball || other.state === BallState.Held) continue;
+        const away = other.mesh.position.subtract(position);
+        const distance = away.length();
+        if (distance > GAME_CONSTANTS.powerup.shockRadius || distance < 0.01) continue;
+        away.scaleInPlace(1 / distance);
+        other.velocity.set(
+          away.x * GAME_CONSTANTS.powerup.shockBallSpeed,
+          GAME_CONSTANTS.powerup.shockBallLift,
+          away.z * GAME_CONSTANTS.powerup.shockBallSpeed
+        );
+        other.state = BallState.Dead;
+      }
+      const playerDelta = this.player.root.position.subtract(position);
+      if (playerDelta.length() <= GAME_CONSTANTS.powerup.shockRadius) {
+        playerDelta.y = 0;
+        if (playerDelta.lengthSquared() < 0.001) playerDelta.set(0, 0, 1);
+        playerDelta.normalize();
+        this.player.movement.velocity.set(
+          playerDelta.x * GAME_CONSTANTS.powerup.shockPlayerSpeed,
+          GAME_CONSTANTS.powerup.shockPlayerLift,
+          playerDelta.z * GAME_CONSTANTS.powerup.shockPlayerSpeed
+        );
+      }
+      this.practicePowerups.emit('shock', vector3ToVec3(position), resetSerial);
+    } else if (kind === 'stun') {
+      if (Vector3.Distance(this.player.root.position, position) <= GAME_CONSTANTS.powerup.stunRadius) {
+        this.practicePowerups.applyStun();
+      }
+      this.practicePowerups.emit('stun', vector3ToVec3(position), resetSerial);
+    } else {
+      this.practicePowerups.emit('explode', vector3ToVec3(position), resetSerial);
+    }
+    this.player.hands.removeBall(ball);
+    this.ballManager.removeBall(ball);
+  }
+
   /** Full practice room reset: balls, bots, score, prediction buffers. Guide/control wall stays. */
   private practiceReset(): void {
     this.player.hands.clearHands();
@@ -3402,6 +3567,8 @@ export class ArenaScene {
     this.ballManager.spawnCenterLineBalls();
     this.practiceState.spawnedExtraBalls = 0;
     this.practiceState.practiceScore = 0;
+    this.practicePowerups.reset();
+    this.practicePowerupRoom.resetVote.resetSerial += 1;
     this.rules.reset();
     for (const dummy of this.targetDummies) {
       if (dummy.metadata) dummy.metadata.hitCount = 0;

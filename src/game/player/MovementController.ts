@@ -9,6 +9,7 @@ import { BackflipController } from './BackflipController';
 import { CollisionWorld, type RampCollider } from '../map/Collider';
 import { catchRecoilForVelocity } from '../../../shared/simulation/CatchFeedback';
 import { wallBounceAllowed, wallBounceVelocity } from '../../../shared/simulation/WallBounce';
+import { GAME_CONSTANTS } from '../../../shared/constants';
 
 export type FrictionMode = 'air' | 'normal' | 'slide' | 'dashSuppressed';
 
@@ -55,6 +56,15 @@ export class MovementController {
   public crouching = false;
   public wallRunning = false;
   public dashingThisFrame = false;
+  private practiceSpeedBuff = false;
+  private practiceStunned = false;
+  private practiceStaminaLocked = false;
+
+  setPracticePowerups(speedBuff: boolean, stunned: boolean, staminaLocked: boolean): void {
+    this.practiceSpeedBuff = speedBuff;
+    this.practiceStunned = stunned;
+    this.practiceStaminaLocked = staminaLocked;
+  }
 
   private slideTimer = 0;
   private slideBufferTimer = 0;
@@ -237,6 +247,8 @@ export class MovementController {
 
     const speedMultiplier =
       (catchStanceActive ? TUNING.player.catchStanceSpeedMultiplier : 1) + (this.catchBoostTimer > 0 ? 0.1 : 0);
+    const powerupSpeed = this.practiceSpeedBuff ? GAME_CONSTANTS.powerup.speedMultiplier : 1;
+    const stunSlow = this.practiceStunned ? GAME_CONSTANTS.powerup.stunMoveMultiplier : 1;
 
     if (this.grounded && !this.sliding) {
       // Ground (NOT sliding): accelerate up to the (possibly slowed) walk speed. Excess speed carried
@@ -244,9 +256,9 @@ export class MovementController {
       // A slide is a committed slide: no ground acceleration at all, so you can't strafe/steer or add
       // speed on the ground while sliding — it just carries momentum (bled by slide friction above).
       const groundWishSpeed = this.crouching
-        ? TUNING.player.crouchWalkSpeed
-        : TUNING.player.maxGroundSpeed * speedMultiplier;
-      this.accelerate(wishDir, groundWishSpeed, TUNING.player.groundAcceleration, dt);
+        ? TUNING.player.crouchWalkSpeed * stunSlow
+        : TUNING.player.maxGroundSpeed * speedMultiplier * powerupSpeed * stunSlow;
+      this.accelerate(wishDir, groundWishSpeed, TUNING.player.groundAcceleration * powerupSpeed * stunSlow, dt);
     } else if (!this.grounded && !this.wallRunClimbing) {
       // CS-style air-strafe: A/D are the air-control keys. W/S preserves momentum but does not add
       // forward/back air acceleration, so speed comes from mouse-turning with side input. Suppressed
@@ -387,6 +399,7 @@ export class MovementController {
     if (this.tryWallBounce()) return;
 
     if (!this.grounded && this.jumpGraceTimer <= 0) {
+      if (this.practiceStaminaLocked) return;
       if (!this.doubleJumpAvailable) return;
       const result = this.dash.tryUpwardDash(this.velocity);
       if (!result) return;
@@ -406,7 +419,7 @@ export class MovementController {
     const bhopBonus = this.jumpGraceTimer > 0 ? TUNING.player.bhopSpeedBonus : 1;
     this.velocity.x *= bhopBonus;
     this.velocity.z *= bhopBonus;
-    this.velocity.y = TUNING.player.jumpSpeed;
+    this.velocity.y = TUNING.player.jumpSpeed * (this.practiceSpeedBuff ? Math.sqrt(GAME_CONSTANTS.powerup.jumpHeightMultiplier) : 1);
     this.grounded = false;
     this.doubleJumpAvailable = true;
     this.jumpGraceTimer = 0;
@@ -458,6 +471,7 @@ export class MovementController {
 
   private tryDash(input: InputManager, wishDir: Vector3): void {
     if (!input.wasKeyPressed(CONTROL_KEYS.dash)) return;
+    if (this.practiceStaminaLocked) return;
     const dashDir = wishDir.lengthSquared() > 0.001 ? wishDir : yawForward(this.root.rotation.y);
     const result = this.dash.tryDash(this.velocity, dashDir);
     if (!result) return;
@@ -469,6 +483,7 @@ export class MovementController {
 
   private tryBackflip(input: InputManager): void {
     if (!input.wasKeyPressed(CONTROL_KEYS.backflip)) return;
+    if (this.practiceStaminaLocked) return;
     const backward = yawForward(this.root.rotation.y).scale(-1);
     const impulse = this.backflip.start(backward);
     if (!impulse) return;

@@ -9,7 +9,7 @@ export const CONTROL_KEYS = {
   crouchAlt: 'ControlRight',
   slide: 'KeyC',
   backflip: 'KeyQ',
-  activatePowerup: 'KeyG', // Online only; G is free in gym matches (sandbox uses it for fly).
+  activatePowerup: 'KeyG', // Gym practice + online matches; sandbox uses G for fly.
   fakeThrow: 'KeyF',
   drop: 'KeyR',
   interact: 'KeyE',

@@ -279,6 +279,9 @@ describe('map effects', () => {
     const loop = new ServerGameLoop('lobby'); loop.addPlayer('a', 'A'); loop.addPlayer('b', 'B');
     expect(loop.state.match.status).toBe('warmup');
     (loop as unknown as { powerupSystem: PowerupSystem }).powerupSystem = new PowerupSystem(() => (kinds.indexOf('bomb') + 0.1) / kinds.length);
+    // This case verifies the warmup item loop itself, not the separate chance for a map effect to
+    // replace a completed spawn clock.
+    (loop.mapEffectSystem as unknown as { rng: () => number }).rng = () => 0.99;
     loop.state.players.a.movement.position = v(0, 0, 0);
     loop.state.players.b.movement.position = v(0, 0, 8);
     // The spawn clock runs in the lobby and the item can be picked up + activated.

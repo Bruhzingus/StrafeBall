@@ -1,6 +1,6 @@
 import { Color3, DynamicTexture, Mesh, MeshBuilder, Scene, StandardMaterial, TransformNode, Vector3 } from '@babylonjs/core';
 import { GAME_CONSTANTS as C } from '../../../shared/constants';
-import type { BallState, MapEffectKind, PlayerState, PowerupKind, RoomState, Vec3 } from '../../../shared/types';
+import type { BallState, MapEffectKind, MapEffectState, PlayerState, PowerupBuffs, PowerupKind, PowerupWorldState, RoomState, Vec3 } from '../../../shared/types';
 import { isGrenadeKind } from '../../../shared/simulation/BallSim';
 import { lavaMaxHeight } from '../../../shared/simulation/MapEffectSim';
 import type { PowerupEvent, PowerupPrivateMessage } from '../../../shared/protocol';
@@ -24,6 +24,34 @@ const MAP_EFFECTS: Record<MapEffectKind, { name: string; warning: string; color:
   lava: { name: "DON'T TOUCH THE LAVA", warning: 'Lava is rising — get to high ground!', color: '#ff6a2a', icon: '♨' },
   frenzy: { name: 'BALL FRENZY', warning: 'Triple balls · nothing dies on a bounce', color: '#ffd24a', icon: '※' }
 };
+
+/**
+ * Return the public kind for activations, or the local player's private item identity for a
+ * pickup. Other players must continue to hear an anonymous pickup so the item stays secret.
+ */
+export function resolvePowerupSoundKind(
+  event: Pick<PowerupEvent, 'effect' | 'kind' | 'playerId'>,
+  localId: string,
+  heldKind: PowerupKind | null | undefined
+): PowerupKind | undefined {
+  if (event.effect === 'activate') return event.kind;
+  if (event.effect === 'pickup' && event.playerId === localId) return heldKind ?? undefined;
+  return undefined;
+}
+
+/** The subset of a room the shared online/practice power-up renderer needs. */
+export interface PowerupPresentationRoom {
+  /** Local practice has no replicated PlayerState, so it supplies its active timers directly. */
+  practiceBuffs?: PowerupBuffs;
+  practicePlayerId?: string;
+  settings: Pick<RoomState['settings'], 'powerupsEnabled'>;
+  powerups?: PowerupWorldState;
+  resetVote: Pick<RoomState['resetVote'], 'resetSerial'>;
+  match: Pick<RoomState['match'], 'currentRound' | 'status'>;
+  players: Record<string, PlayerState>;
+  balls: Record<string, BallState>;
+  mapEffect?: MapEffectState | null;
+}
 
 function material(scene: Scene, name: string, hex: string, glow = 0.3): StandardMaterial {
   const existing = scene.getMaterialByName(name) as StandardMaterial | null;
@@ -50,7 +78,11 @@ function device(scene: Scene, parent: TransformNode, size = 1): void {
 }
 
 /** Mesh-native models share materials and travel with the existing interpolated ball/hand anchors. */
-export function updateSpecialBall(mesh: Mesh, ball: BallState, time: number): void {
+export function updateSpecialBall(
+  mesh: Mesh,
+  ball: Pick<BallState, 'kind' | 'phase' | 'fuseSeconds' | 'armedAtMs'>,
+  time: number
+): void {
   if (!ball.kind || ball.kind === 'normal') return;
   const scene = mesh.getScene();
   const key = `power_model_${ball.kind}`;
@@ -203,7 +235,7 @@ export class PowerupPresentation {
     return { root, box, ring, waitEstimate: C.powerup.respawnSeconds, lastWait: -1 };
   }
 
-  update(room: RoomState | null, localId: string, localPosition: Vec3, privateMessage: PowerupPrivateMessage | null, events: PowerupEvent[], dt: number): void {
+  update(room: PowerupPresentationRoom | null, localId: string, localPosition: Vec3, privateMessage: PowerupPrivateMessage | null, events: PowerupEvent[], dt: number): void {
     this.time += dt;
     const active = !!room?.powerups && room.settings.powerupsEnabled !== false;
     if (!active) { this.hud?.setPowerupSlot(null); this.setScreenFx(null, 0); this.setStun(0); this.setBanner(''); }
@@ -230,7 +262,10 @@ export class PowerupPresentation {
       if (event.resetSerial !== room.resetVote.resetSerial) continue;
       // Map-effect cues are court-wide announcements, not positional.
       const spatial = !event.effect.startsWith('map-');
-      this.sound.powerup(event.effect, spatial ? event.position : undefined, spatial ? localPosition : undefined, local?.movement.facing, event.stage ?? 0);
+      // The pickup identity remains private: only its owner supplies their just-received private
+      // item kind. Activations are public events and already carry the kind for every listener.
+      const cueKind = resolvePowerupSoundKind(event, localId, this.heldKind);
+      this.sound.powerup(event.effect, spatial ? event.position : undefined, spatial ? localPosition : undefined, local?.movement.facing, event.stage ?? 0, cueKind);
       if (event.effect === 'heal' && event.playerId === localId) this.healFlashUntil = this.time + 0.45;
       if (event.effect === 'explode' || event.effect === 'heal' || event.effect === 'pickup' || event.effect === 'thud' || event.effect === 'armor' || event.effect === 'activate' || event.effect === 'shock' || event.effect === 'stun') this.burst(event);
       if (event.effect === 'stun' && local && Math.hypot(local.movement.position.x - event.position.x, local.movement.position.z - event.position.z) <= C.powerup.stunRadius + 1) this.stunFlashUntil = this.time + 0.35;
@@ -275,14 +310,15 @@ export class PowerupPresentation {
    * One card + two text lines, in priority order: a refusal nudge, then the held item (what G does),
    * then a running effect, then the spawn state. The ring shows whichever timer matters right now.
    */
-  private updateHud(local: PlayerState | undefined, room: RoomState): void {
+  private updateHud(local: PlayerState | undefined, room: PowerupPresentationRoom): void {
     if (!this.hud) return;
     // Reveal the real item immediately. The brief acquisition treatment never conceals information.
     const rolling = !!this.heldKind && this.time < this.rouletteUntil;
     const kind = this.heldKind;
     const item = kind ? ITEMS[kind] : null;
-    const buffs = local?.movementInternal.buffs;
-    const healing = Math.max(0, ...(room.powerups?.stations ?? []).map(s => s.progress[local?.id ?? ''] ?? 0));
+    const buffs = local?.movementInternal.buffs ?? room.practiceBuffs;
+    const progressPlayerId = local?.id ?? room.practicePlayerId ?? '';
+    const healing = Math.max(0, ...(room.powerups?.stations ?? []).map(s => s.progress[progressPlayerId] ?? 0));
     const armor = local?.armorBallIds?.length ?? 0;
     const effects: { kind: PowerupKind; label: string; seconds: number; max: number; color: string }[] = [];
     if ((buffs?.speedSeconds ?? 0) > 0) effects.push({ kind: 'speed', label: 'Speed', seconds: buffs!.speedSeconds, max: C.powerup.buffSeconds, color: ITEMS.speed.color });
@@ -295,10 +331,18 @@ export class PowerupPresentation {
     const heldGrenade = local
       ? (['left', 'right'] as const).map(h => room.balls[local.hands[h].heldBallId ?? '']).find(b => b && isGrenadeKind(b.kind))
       : undefined;
-
     let view: PowerupSlotView;
     if (item) {
-      view = { glyph: item.icon, color: item.color, name: item.name, hint: rolling ? item.hint : 'Ready to activate', progress: 1, state: 'held', rolling, keybind: 'G' };
+      view = {
+        glyph: item.icon,
+        color: item.color,
+        name: item.name,
+        hint: rolling ? item.hint : 'Ready to activate',
+        progress: 1,
+        state: 'held',
+        rolling,
+        keybind: 'G'
+      };
     } else if (heldGrenade) {
       const item = ITEMS[heldGrenade.kind as PowerupKind];
       const left = 1 + (local?.pendingGrenades ?? 0);
@@ -329,10 +373,11 @@ export class PowerupPresentation {
    * running effect's color (fades out over the last 1.5 s so you feel it ending). One tint at a
    * time, low opacity, no flashing — polish, not noise. Heal completion gets a short brighter pulse.
    */
-  private updateLocalFeedback(local: PlayerState | undefined, room: RoomState, dt: number): void {
+  private updateLocalFeedback(local: PlayerState | undefined, room: PowerupPresentationRoom, dt: number): void {
     void dt;
-    const buffs = local?.movementInternal.buffs;
-    const healing = local ? Math.max(0, ...(room.powerups?.stations ?? []).map(s => s.progress[local.id] ?? 0)) : 0;
+    const buffs = local?.movementInternal.buffs ?? room.practiceBuffs;
+    const progressPlayerId = local?.id ?? room.practicePlayerId ?? '';
+    const healing = Math.max(0, ...(room.powerups?.stations ?? []).map(s => s.progress[progressPlayerId] ?? 0));
     if (healing <= 0 || healing < this.lastHealing - 0.5) this.healTicked = 0;
     const whole = Math.floor(healing);
     if (whole >= 1 && whole < C.powerup.healSeconds && whole > this.healTicked) {
@@ -363,7 +408,7 @@ export class PowerupPresentation {
 
     // Stun: blur + slowed look for the local player while their stun timer runs.
     const stun = buffs?.stunSeconds ?? 0;
-    const stunned = stun > 0 && local?.combatState === 'alive';
+    const stunned = stun > 0 && (!local || local.combatState === 'alive');
     if (stunned && !this.wasStunned) this.stunFlashUntil = Math.max(this.stunFlashUntil, this.time + 0.35);
     this.wasStunned = stunned;
     const flash = Math.max(0, (this.stunFlashUntil - this.time) / 0.35);
@@ -387,7 +432,7 @@ export class PowerupPresentation {
   }
 
   /** Banner + effect capsule during the warning, lava sheet while it runs. */
-  private updateMapEffect(room: RoomState): void {
+  private updateMapEffect(room: PowerupPresentationRoom): void {
     const effect = room.mapEffect;
     const spawns = room.powerups?.spawns ?? [];
     if (!effect) {
@@ -451,7 +496,7 @@ export class PowerupPresentation {
     this.screenFx.style.setProperty('--fx-strength', level.toFixed(2));
   }
 
-  private updateStations(room: RoomState): void {
+  private updateStations(room: PowerupPresentationRoom): void {
     const seen = new Set<string>();
     for (const station of room.powerups?.stations ?? []) {
       seen.add(station.id);
@@ -477,7 +522,7 @@ export class PowerupPresentation {
     }
     for (const [id, root] of this.stations) if (!seen.has(id)) { root.dispose(); this.stations.delete(id); }
   }
-  private updatePlayers(room: RoomState, localId: string, dt: number): void {
+  private updatePlayers(room: PowerupPresentationRoom, localId: string, dt: number): void {
     this.trailTick -= dt;
     for (const player of Object.values(room.players)) {
       if (player.id === localId) continue;

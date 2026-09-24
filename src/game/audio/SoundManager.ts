@@ -8,6 +8,7 @@
  * sounds are audible from the first throw onward.
  */
 import { settings } from '../config/Settings';
+import type { PowerupKind } from '../../../shared/types';
 
 interface AudioPoint {
   x: number;
@@ -44,8 +45,12 @@ export class SoundManager {
     }
   }
 
-  /** Layered, spatial power-up cues. Short transients leave room for ball/catch information. */
-  powerup(effect: string, position?: AudioPoint, listener?: AudioPoint, forward?: AudioPoint, stage = 0): void {
+  /**
+   * Layered, spatial power-up cues. `kind` is deliberately optional: pickup identities are
+   * private, so only the local player's pickup gets a type-specific cue while everyone else
+   * retains the anonymous pickup sound.
+   */
+  powerup(effect: string, position?: AudioPoint, listener?: AudioPoint, forward?: AudioPoint, stage = 0, kind?: PowerupKind): void {
     const ctx = this.ensureContext();
     if (!ctx || !this.master) return;
     let destination: AudioNode = this.master;
@@ -82,13 +87,71 @@ export class SoundManager {
       const step = Math.max(0, Math.min(9, stage - 1));
       note(523 * Math.pow(2, step / 12), 523 * Math.pow(2, step / 12) * 1.003, 0.16, 0.085, 0, 'triangle');
       note(1046 * Math.pow(2, step / 12), 1046 * Math.pow(2, step / 12), 0.09, 0.03, 0.01);
-    } else if (effect === 'pickup' || effect === 'spawn' || effect === 'heal') {
-      const melody = effect === 'heal' ? [523, 659, 784, 1047] : effect === 'pickup' ? [440, 659, 880, 1320] : [392, 587, 784];
+    } else if (effect === 'pickup') {
+      // The item reveal is intentionally recognisable before the HUD is read. Remote players
+      // receive no `kind`, preserving the mystery-item contract and the old neutral pickup cue.
+      if (kind === 'adrenaline') {
+        note(92, 56, 0.14, 0.15); note(98, 54, 0.13, 0.13, 0.11);
+        note(660, 1320, 0.18, 0.085, 0.15, 'triangle');
+      } else if (kind === 'speed') {
+        note(260, 1560, 0.2, 0.13, 0, 'sine'); note(880, 1760, 0.12, 0.07, 0.055, 'triangle');
+        this.noiseBurst(0.09, 0.035, 3600, destination);
+      } else if (kind === 'cannon') {
+        note(96, 52, 0.26, 0.17); note(280, 180, 0.18, 0.075, 0.01, 'square');
+        note(740, 390, 0.14, 0.055, 0.09, 'triangle');
+      } else if (kind === 'heal') {
+        note(523, 523, 0.2, 0.09, 0, 'triangle'); note(784, 784, 0.22, 0.08, 0.08, 'triangle');
+        note(262, 262, 0.42, 0.045, 0.04);
+      } else if (kind === 'magnet') {
+        note(420, 170, 0.18, 0.1, 0, 'square'); note(175, 440, 0.2, 0.08, 0.075, 'triangle');
+        note(980, 1180, 0.11, 0.045, 0.12);
+      } else if (kind === 'bomb') {
+        note(150, 82, 0.25, 0.13); note(460, 460, 0.09, 0.11, 0.03, 'square');
+        note(620, 620, 0.09, 0.11, 0.14, 'square');
+      } else if (kind === 'shock') {
+        this.noiseBurst(0.055, 0.13, 3600, destination);
+        note(280, 1900, 0.15, 0.14, 0, 'sawtooth'); note(920, 520, 0.18, 0.055, 0.05, 'triangle');
+      } else if (kind === 'stun') {
+        note(1750, 2550, 0.13, 0.105, 0, 'square'); note(620, 320, 0.34, 0.08, 0.06, 'sine');
+        note(3200, 2900, 0.26, 0.038, 0.1);
+      } else {
+        [440, 659, 880, 1320].forEach((f, i) => note(f, f * 1.002, 0.22, 0.095, i * 0.065, 'triangle'));
+      }
+    } else if (effect === 'spawn' || effect === 'heal') {
+      const melody = effect === 'heal' ? [523, 659, 784, 1047] : [392, 587, 784];
       melody.forEach((f, i) => note(f, f * 1.002, 0.22, effect === 'spawn' ? 0.055 : 0.095, i * 0.065, 'triangle'));
       if (effect === 'heal') note(262, 262, 0.7, 0.08);
     } else if (effect === 'activate') {
-      note(180, 720, 0.23, 0.12, 0, 'triangle'); note(880, 880, 0.24, 0.075, 0.16);
-      this.noiseBurst(0.14, 0.06, 2200, destination);
+      // Activation variants reinforce what was just picked up; the generic arpeggio remains a
+      // safe fallback for mixed-version event streams without a public `kind`.
+      if (kind === 'adrenaline') {
+        note(76, 44, 0.16, 0.18); note(82, 42, 0.15, 0.15, 0.13);
+        note(340, 1080, 0.26, 0.1, 0.08, 'triangle');
+      } else if (kind === 'speed') {
+        note(210, 2280, 0.24, 0.15, 0, 'sine'); note(1120, 2240, 0.12, 0.07, 0.07, 'triangle');
+        this.noiseBurst(0.1, 0.045, 4200, destination);
+      } else if (kind === 'cannon') {
+        note(92, 42, 0.44, 0.22); note(310, 720, 0.23, 0.09, 0.035, 'triangle');
+        note(720, 360, 0.18, 0.055, 0.12, 'square');
+      } else if (kind === 'heal') {
+        note(330, 660, 0.28, 0.095, 0, 'triangle'); note(880, 1320, 0.2, 0.075, 0.1, 'triangle');
+        note(220, 220, 0.55, 0.04, 0.04);
+      } else if (kind === 'magnet') {
+        note(150, 780, 0.34, 0.12, 0, 'triangle'); note(920, 160, 0.3, 0.075, 0.04, 'square');
+        note(1240, 980, 0.15, 0.04, 0.15);
+      } else if (kind === 'bomb') {
+        note(148, 78, 0.32, 0.15); note(510, 510, 0.1, 0.13, 0.05, 'square');
+        note(680, 680, 0.1, 0.13, 0.18, 'square');
+      } else if (kind === 'shock') {
+        this.noiseBurst(0.07, 0.16, 4400, destination);
+        note(180, 2200, 0.19, 0.16, 0, 'sawtooth'); note(680, 180, 0.32, 0.085, 0.06, 'triangle');
+      } else if (kind === 'stun') {
+        note(1480, 2480, 0.14, 0.13, 0, 'square'); note(2700, 2420, 0.62, 0.065, 0.09, 'sine');
+        note(380, 190, 0.35, 0.07, 0.02);
+      } else {
+        note(180, 720, 0.23, 0.12, 0, 'triangle'); note(880, 880, 0.24, 0.075, 0.16);
+        this.noiseBurst(0.14, 0.06, 2200, destination);
+      }
     } else if (effect === 'thud') {
       note(90, 35, 0.3, 0.3); this.noiseBurst(0.08, 0.13, 420, destination);
     } else if (effect === 'armor') {

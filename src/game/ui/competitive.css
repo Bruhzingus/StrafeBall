@@ -100,24 +100,6 @@ body { font-family: var(--sb-ui-font); }
   background: var(--sb-gold); box-shadow: none; border-radius: 0; transform-origin: left; transition: none;
 }
 
-.stamina-widget {
-  top: auto; bottom: calc(var(--sb-safe-y) + 68px); width: 312px;
-  align-items: center; gap: 5px; padding: 5px 10px; border-radius: 3px;
-  background: var(--sb-surface); filter: none; box-shadow: var(--sb-shadow);
-}
-.stamina-widget--ready { filter: none; }
-.stamina-widget-label { color: var(--sb-cream); font: 700 10px var(--sb-ui-font); white-space: nowrap; margin-right: 4px; }
-.stamina-widget-seg, .stamina-widget-seg--full {
-  flex: 1; min-width: 0; height: 5px; border-radius: 1px; background: #455064;
-  box-shadow: none;
-}
-.stamina-widget-seg-fill, .stamina-widget-seg--full .stamina-widget-seg-fill {
-  border-radius: 1px; background: var(--sb-cream); box-shadow: none; transition: none;
-}
-.stamina-widget-seg--charging .stamina-widget-seg-fill { background: var(--sb-muted); }
-.stamina-widget-seg--charging .stamina-widget-seg-fill::after { display: none; }
-.stamina-widget-seg--glow { animation: sb-ready 300ms ease-out; }
-@keyframes sb-ready { from { opacity: .4; } to { opacity: 1; } }
 .ability-speed {
   position: absolute; left: var(--sb-safe-x); bottom: var(--sb-safe-y);
   min-width: 0; margin: 0; padding: 7px 10px; column-gap: 6px;
@@ -257,7 +239,6 @@ body[data-hud-mode='practice']:not([data-playing='true']) .hud-bottom-right {
   .ability-hud-card { width: 91px; padding: 7px 4px; column-gap: 3px; grid-template-columns: 36px 1fr; }
   .ability-hud .ability-ring, .ability-hud .ability-icon, .ability-hud .ability-glyph { width: 36px; height: 39px; }
   .ability-hud .ability-backflip-img { width: 34px; height: 34px; }
-  .stamina-widget { width: 260px; }
   .ability-speed { bottom: calc(var(--sb-safe-y) + 104px); }
   .powerup-dock { width: 160px; }
   .powerup-dock .ability-powerup-name { font-size: 11px; }

@@ -2,6 +2,7 @@ import { describe, it, expect } from 'vitest';
 import { Vector3 } from '@babylonjs/core';
 import { DashController } from '../src/game/player/DashController';
 import { TUNING } from '../src/game/config/tuning';
+import { GAME_CONSTANTS } from '../shared/constants';
 
 describe('DashController', () => {
   it('starts with the maximum number of charges', () => {
@@ -80,5 +81,18 @@ describe('DashController', () => {
     expect(result!.y).toBeCloseTo(TUNING.dash.upwardImpulse, 4);
     expect(result!.z).toBe(1);
     expect(dash.charges).toBe(TUNING.dash.maxCharges - 1);
+  });
+
+  it('uses the adrenaline capacity and recharge rate, then clamps on expiry', () => {
+    const dash = new DashController();
+    dash.setAdrenalineActive(true);
+    expect(dash.charges).toBe(GAME_CONSTANTS.powerup.adrenalineMaxCharges);
+
+    dash.tryDash(new Vector3(0, 0, 5), new Vector3(0, 0, 1));
+    dash.update(GAME_CONSTANTS.powerup.adrenalineRechargeSeconds);
+    expect(dash.charges).toBe(GAME_CONSTANTS.powerup.adrenalineMaxCharges);
+
+    dash.setAdrenalineActive(false);
+    expect(dash.charges).toBe(TUNING.dash.maxCharges);
   });
 });

@@ -250,11 +250,6 @@ export class Hud {
     // Center stamina segments — one block + inner fill per charge, pre-built, no per-frame allocations.
     this.staminaWidget = document.createElement('div');
     this.staminaWidget.className = 'stamina-widget';
-    this.staminaWidget.setAttribute('aria-label', 'Dash stamina');
-    const dashLabel = document.createElement('span');
-    dashLabel.className = 'stamina-widget-label';
-    dashLabel.innerHTML = '<span class="key">SHIFT</span> DASH';
-    this.staminaWidget.append(dashLabel);
     for (let i = 0; i < GAME_CONSTANTS.powerup.adrenalineMaxCharges; i++) {
       const seg = document.createElement('div');
       seg.className = 'stamina-widget-seg';
@@ -1087,7 +1082,6 @@ export class Hud {
     const clamped = Math.min(maxCharges, Math.max(0, charges));
     const full = Math.floor(clamped);
     const partial = clamped - full;
-    this.staminaWidget.setAttribute('aria-label', `Dash stamina: ${full} of ${maxCharges}`);
     this.staminaWidget.classList.toggle('stamina-widget--ready', full > 0);
     this.staminaWidget.classList.toggle('stamina-widget--empty', full <= 0);
 

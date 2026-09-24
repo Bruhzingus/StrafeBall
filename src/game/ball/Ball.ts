@@ -5,6 +5,7 @@ import { CollisionWorld } from '../map/Collider';
 import { BLEACHER_LAYOUT } from '../../../shared/simulation/MapGeometry';
 import { GAME_CONSTANTS } from '../../../shared/constants';
 import { curveRampFactor } from '../../../shared/simulation/BallSim';
+import type { BallState as SharedBallState } from '../../../shared/types';
 
 let nextBallId = 1;
 const IMPACT_SQUASH_MIN_SPEED = 8;
@@ -57,6 +58,13 @@ export class Ball {
   // Visual-only state updated by BallManager. These never feed back into gameplay physics.
   public visualTrailTimer = 0;
   public impactPulse = 0;
+  /** Offline-practice special item identity. Normal balls leave this null. */
+  public powerupKind: Exclude<NonNullable<SharedBallState['kind']>, 'normal'> | null = null;
+  public fuseSeconds: number | undefined;
+  public armedAtMs: number | undefined;
+  public powerupBounceCount = 0;
+  public powerupBeepStage = 0;
+  public readonly cannonHitDummyIds = new Set<string>();
   // Offline-only world override (Creator sandbox / yard). Null = the default gym world, unchanged.
   private world: BallWorld | null = null;
 
@@ -98,6 +106,11 @@ export class Ball {
     this.curveAccel.setAll(0);
     this.impactPulse = 0;
     this.visualTrailTimer = 0;
+    this.fuseSeconds = undefined;
+    this.armedAtMs = undefined;
+    this.powerupBounceCount = 0;
+    this.powerupBeepStage = 0;
+    this.cannonHitDummyIds.clear();
   }
 
   setHeld(hand: HandSide): void {

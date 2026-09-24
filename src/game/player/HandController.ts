@@ -127,6 +127,16 @@ export class HandController {
     this.right = makeHand();
   }
 
+  removeBall(ball: Ball): void {
+    for (const hand of [this.left, this.right]) {
+      if (hand.ball !== ball) continue;
+      hand.ball = null;
+      hand.visualHolding = false;
+      hand.charging = false;
+      hand.chargeSeconds = 0;
+    }
+  }
+
   dropOneBall(position: Vector3): void {
     if (this.right.ball) {
       this.ballManager.dropBall(
@@ -372,7 +382,9 @@ export class HandController {
     const hand = this.getHand(side);
     if (!hand.ball) return;
     // Dashing allows quick throws only.
-    const charge01 = movement.dashingThisFrame ? 0 : Math.min(1, hand.chargeSeconds / TUNING.ball.maxChargeSeconds);
+    const charge01 = hand.ball.powerupKind === 'cannon'
+      ? 1
+      : movement.dashingThisFrame ? 0 : Math.min(1, hand.chargeSeconds / TUNING.ball.maxChargeSeconds);
     this.fireThrow(side, movement, charge01, 0);
   }
 

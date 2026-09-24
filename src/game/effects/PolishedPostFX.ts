@@ -42,6 +42,86 @@ const occluderMeshes = new Set<Mesh>();
 const POLISHED_SSAO_PIPELINE = 'polished_ssao';
 const POLISHED_DEFAULT_PIPELINE = 'polished_pipeline';
 
+// The glow merge is deliberately composed immediately after the normal world group. Balls use the
+// next group (see BallVisualFactory), so their regular opaque draw happens *after* the blurred
+// fullscreen glow pass and can cover it exactly. A black hole in the pre-blur glow RTT alone is not
+// enough: Gaussian blur naturally smears a light-strip halo back across that hole.
+export const POLISHED_GLOW_COMPOSITE_RENDERING_GROUP = 0;
+export const BALL_POST_GLOW_RENDERING_GROUP = 1;
+
+interface RenderingGroupAutoClearState {
+  autoClear: boolean;
+  depth: boolean;
+  stencil: boolean;
+}
+
+interface PostGlowBallSceneState {
+  meshes: Set<Mesh>;
+  activeCount: number;
+  previousAutoClear: RenderingGroupAutoClearState | null;
+}
+
+const postGlowBallStateByScene = new WeakMap<Scene, PostGlowBallSceneState>();
+
+function postGlowBallState(scene: Scene): PostGlowBallSceneState {
+  let state = postGlowBallStateByScene.get(scene);
+  if (!state) {
+    state = { meshes: new Set<Mesh>(), activeCount: 0, previousAutoClear: null };
+    postGlowBallStateByScene.set(scene, state);
+  }
+  return state;
+}
+
+/**
+ * Track a factory ball for the final, post-glow opaque draw. The registration is inert outside
+ * Polished mode, so Performance and Neutral retain their normal group-0 ordering.
+ */
+export function registerPostGlowBallMesh(mesh: Mesh): void {
+  if (mesh.isDisposed()) return;
+  const state = postGlowBallState(mesh.getScene());
+  state.meshes.add(mesh);
+  mesh.onDisposeObservable.addOnce(() => state.meshes.delete(mesh));
+  if (state.activeCount > 0) mesh.renderingGroupId = BALL_POST_GLOW_RENDERING_GROUP;
+}
+
+function activatePostGlowBallRendering(scene: Scene): void {
+  const state = postGlowBallState(scene);
+  state.activeCount += 1;
+  if (state.activeCount !== 1) return;
+
+  const previous = scene.getAutoClearDepthStencilSetup(BALL_POST_GLOW_RENDERING_GROUP);
+  state.previousAutoClear = {
+    autoClear: previous.autoClear,
+    depth: previous.depth,
+    stencil: previous.stencil
+  };
+  // The balls must retain the world depth buffer when their later rendering group is reached.
+  scene.setRenderingAutoClearDepthStencil(BALL_POST_GLOW_RENDERING_GROUP, false);
+  for (const mesh of state.meshes) {
+    if (!mesh.isDisposed()) mesh.renderingGroupId = BALL_POST_GLOW_RENDERING_GROUP;
+  }
+}
+
+function deactivatePostGlowBallRendering(scene: Scene): void {
+  const state = postGlowBallState(scene);
+  if (state.activeCount === 0) return;
+  state.activeCount -= 1;
+  if (state.activeCount !== 0) return;
+
+  for (const mesh of state.meshes) {
+    if (!mesh.isDisposed()) mesh.renderingGroupId = POLISHED_GLOW_COMPOSITE_RENDERING_GROUP;
+  }
+  if (state.previousAutoClear) {
+    scene.setRenderingAutoClearDepthStencil(
+      BALL_POST_GLOW_RENDERING_GROUP,
+      state.previousAutoClear.autoClear,
+      state.previousAutoClear.depth,
+      state.previousAutoClear.stencil
+    );
+    state.previousAutoClear = null;
+  }
+}
+
 function unregisterIncludedMesh(mesh: Mesh): void {
   if (!includedMeshes.delete(mesh)) return;
   emissiveMeshes.delete(mesh);
@@ -107,6 +187,7 @@ export class PolishedPostFX {
   private readonly glowAnchor: Mesh | null;
   private readonly glowOccluderMaterial: StandardMaterial | null;
   private readonly attachedCameras = new Set<Camera>();
+  private postGlowBallRenderingActive = false;
 
   constructor(scene: Scene, camera: Camera) {
     this.scene = scene;
@@ -167,6 +248,12 @@ export class PolishedPostFX {
         blurKernelSize: cfg.glow.blurKernelSize
       });
       glow.intensity = cfg.glow.intensity;
+      // Merge the blurred light sources after the ordinary world, then let the ball-only group
+      // render normally with the world depth buffer still intact. This is the final compositing
+      // mask that keeps cove/strip light halos from appearing to pass through dodgeballs.
+      glow.renderingGroupId = POLISHED_GLOW_COMPOSITE_RENDERING_GROUP;
+      activatePostGlowBallRendering(scene);
+      this.postGlowBallRenderingActive = true;
       // includedOnly mode activates on the first addIncludedOnlyMesh call; until then the layer
       // would glow EVERY emissive mesh (sign text planes — the past failure). Guarantee the mode by
       // adding a throwaway include immediately: an empty mesh keeps the include-list semantics on.
@@ -266,6 +353,10 @@ export class PolishedPostFX {
    * un-occlude every player. Scene teardown passes nothing and clears the list as before.
    */
   dispose(options: { retainRegistrations?: boolean } = {}): void {
+    if (this.postGlowBallRenderingActive) {
+      deactivatePostGlowBallRendering(this.scene);
+      this.postGlowBallRenderingActive = false;
+    }
     if (activeGlow === this.glow) {
       activeGlow = null;
       activeGlowScene = null;

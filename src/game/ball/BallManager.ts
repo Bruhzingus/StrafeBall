@@ -10,6 +10,8 @@ import { isBallPickupStateEligible } from '../../../shared/simulation/BallSim';
 import { ballVariantForState, createBallMesh, getBallMaterial, updateBallBlobShadow } from './BallVisualFactory';
 import type { BallVisualEffects } from './BallVisualEffects';
 import { BALL_QTE_TRAIL_SPEED_THRESHOLD, BALL_TRAIL_INTERVAL_SECONDS } from './BallVisualEffects';
+import type { BallState as SharedBallState } from '../../../shared/types';
+import { updateSpecialBall } from '../powerups/PowerupPresentation';
 
 const BALL_SQUASH_XZ_SCALE = 0.08;
 const BALL_SQUASH_Y_SCALE = 0.12;
@@ -17,6 +19,7 @@ const BALL_SQUASH_Y_SCALE = 0.12;
 export class BallManager {
   public readonly balls: Ball[] = [];
   private highlightedBallId: number | null = null;
+  private elapsed = 0;
 
   constructor(
     private readonly loader: ModelLoader,
@@ -28,6 +31,13 @@ export class BallManager {
   createBall(name: string, position: Vector3): Ball {
     const visual = createBallMesh(this.loader.scene, name, position);
     return new Ball(visual, position, this.onBallImpact);
+  }
+
+  createPowerupBall(name: string, position: Vector3, kind: Exclude<NonNullable<SharedBallState['kind']>, 'normal'>): Ball {
+    const ball = this.createBall(name, position);
+    ball.powerupKind = kind;
+    this.balls.push(ball);
+    return ball;
   }
 
   spawnCenterLineBalls(): void {
@@ -51,11 +61,31 @@ export class BallManager {
   }
 
   update(dt: number): void {
+    this.elapsed += dt;
     // Swap shared material/effect state only from ball state; gameplay physics stays in Ball.
     for (const ball of this.balls) {
       ball.update(dt, this.collision);
       this.updateBallVisual(ball, dt);
+      if (ball.powerupKind) {
+        ball.mesh.scaling.setAll(1);
+        updateSpecialBall(ball.mesh, {
+          kind: ball.powerupKind,
+          phase: ball.fuseSeconds !== undefined && (ball.powerupKind === 'shock' || ball.powerupKind === 'stun')
+            ? 'stuck'
+            : ball.state,
+          fuseSeconds: ball.fuseSeconds,
+          armedAtMs: ball.armedAtMs
+        }, this.elapsed);
+      }
     }
+  }
+
+  removeBall(ball: Ball): boolean {
+    const index = this.balls.indexOf(ball);
+    if (index < 0) return false;
+    this.balls.splice(index, 1);
+    ball.mesh.dispose();
+    return true;
   }
 
   setPickupHighlight(ball: Ball | null): void {
@@ -155,6 +185,8 @@ export class BallManager {
     // A ball already held in a hand is never a pickup candidate. It sits in front of the
     // camera at zero velocity, so without this guard holding the interact key would re-grab
     // the same ball into the second hand (the "ball in both hands" bug).
+    if (ball.powerupKind === 'cannon' || ball.powerupKind === 'heal') return false;
+    if ((ball.powerupKind === 'shock' || ball.powerupKind === 'stun') && ball.fuseSeconds !== undefined) return false;
     return isBallPickupStateEligible({ phase: ball.state, velocity: ball.velocity });
   }
 
