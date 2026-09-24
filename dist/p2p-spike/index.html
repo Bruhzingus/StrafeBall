@@ -1,0 +1,18 @@
+<!doctype html>
+<html lang="en"><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Strafeball — Phase 0 DataChannel spike</title>  <script type="module" crossorigin src="/p2p-spike/assets/index-D9RojqgX.js"></script>
+</head>
+<body>
+  <canvas id="gameCanvas"></canvas><div id="hud-root"></div><div id="lock-overlay">Click to play</div>
+  <details id="spike-panel" open data-no-lock style="position:fixed;top:8px;left:8px;z-index:10000;background:#15213b;color:white;padding:12px;width:min(520px,90vw);font:14px sans-serif;max-height:90vh;overflow:auto">
+    <summary>Phase 0 diagnostic — manual signaling, no fallback</summary>
+    <p>Host: start the Node spike, choose Host, then Create in the game's lobby. Share its normal room ID.</p>
+    <button id="host">Host game (localhost:2577)</button>
+    <p>Guest: generate an offer, send it to the host to paste in their terminal, paste the returned answer here, then load the game and Join using the host's room ID.</p>
+    <button id="offer">Generate guest offer</button>
+    <textarea id="offer-json" readonly rows="3" style="width:98%" aria-label="Copy this offer to the host"></textarea>
+    <textarea id="answer-json" rows="3" style="width:98%" aria-label="Paste the host answer JSON"></textarea>
+    <button id="answer">Apply answer</button><button id="guest">Load guest game</button>
+    <button id="report">Download direct measurements</button>
+    <p id="status">The go/no-go gate needs a full match across different networks plus the same pair's relay RTT.</p>
+  </details>
+</body></html>
