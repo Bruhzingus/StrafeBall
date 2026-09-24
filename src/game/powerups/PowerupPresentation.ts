@@ -15,8 +15,8 @@ const ITEMS: Record<PowerupKind, { name: string; icon: string; color: string; hi
   heal: { name: 'HEAL STATION', icon: '+', color: '#7fffb2', hint: 'Place with throw · stay 10s to heal' },
   magnet: { name: 'BALL MAGNET', icon: '∩', color: '#ce9aff', hint: 'Pull loose balls · up to 3 armor · 20s' },
   bomb: { name: 'BOMB BALL', icon: '✹', color: '#ffad73', hint: 'First bounce starts a 2s fuse · hits everyone' },
-  shock: { name: 'SHOCKWAVE', icon: '◎', color: '#8ef1ff', hint: 'Sticks where it lands · flings players & balls · ×2' },
-  stun: { name: 'STUN', icon: '✦', color: '#fff29a', hint: 'Sticks where it lands · dazes everyone near it · ×2' }
+  shock: { name: 'SHOCKWAVE', icon: '◎', color: '#8ef1ff', hint: `Sticks where it lands · launches players & balls · ×${C.powerup.grenadeCharges}` },
+  stun: { name: 'STUN', icon: '✦', color: '#fff29a', hint: `Sticks where it lands · dazes everyone near it · ×${C.powerup.grenadeCharges}` }
 };
 
 const MAP_EFFECTS: Record<MapEffectKind, { name: string; warning: string; color: string; icon: string }> = {

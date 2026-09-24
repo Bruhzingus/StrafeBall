@@ -360,14 +360,14 @@ exports.GAME_CONSTANTS = {
         grenadeCharges: 2,
         grenadeFuseSeconds: 0.6,
         grenadeStickMinDistance: 1.0,
-        // Shockwave: pure displacement, no damage. Players and loose balls in range get flung away
-        // from the blast (horizontal + a lift so they leave the ground), standing mats in range are
-        // knocked flat, and anyone mid charge-throw or mid backflip has it cancelled.
+        // Shockwave: pure displacement, no damage. The player impulse ADDS to existing horizontal and
+        // rising momentum, so a point-blank, correctly aligned jump can launch clear across the court.
+        // Standing mats in range are knocked flat and interrupted actions are cancelled.
         shockRadius: 5,
-        shockPlayerSpeed: 11,
-        shockPlayerLift: 5.5,
-        shockBallSpeed: 9,
-        shockBallLift: 4,
+        shockPlayerSpeed: 42,
+        shockPlayerLift: 12,
+        shockBallSpeed: 28,
+        shockBallLift: 8,
         // Stun: COD-style concussion. Slowed look + blurred vision (client-side) and slowed movement
         // with no dash (shared sim) for stunSeconds. Thrower included if they're in range.
         stunRadius: 4.5,

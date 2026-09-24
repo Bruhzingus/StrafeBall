@@ -5,6 +5,7 @@ import type { PowerupBuffs, PowerupKind, PowerupWorldState, Vec3 } from '../../.
 const KINDS: PowerupKind[] = ['adrenaline', 'speed', 'cannon', 'heal', 'magnet', 'bomb', 'shock', 'stun'];
 const HAND_ITEMS: PowerupKind[] = ['cannon', 'heal', 'bomb', 'shock', 'stun'];
 const SPAWN_HEIGHT = 1;
+type GrenadeKind = Extract<PowerupKind, 'shock' | 'stun'>;
 
 /**
  * Local practice has no authoritative room, so this owns its spawn clock and walk-over inventory.
@@ -18,6 +19,8 @@ export class PracticePowerupSpawner {
   };
   private heldKind: PowerupKind | null = null;
   private respawnSeconds: number = C.powerup.respawnSeconds;
+  private queuedGrenadeKind: GrenadeKind | null = null;
+  private queuedGrenades = 0;
   private privateMessage: PowerupPrivateMessage | null = null;
   private events: PowerupEvent[] = [];
   readonly buffs: PowerupBuffs = {
@@ -32,6 +35,10 @@ export class PracticePowerupSpawner {
 
   get identity(): PowerupPrivateMessage | null {
     return this.privateMessage;
+  }
+
+  get pendingGrenades(): number {
+    return this.queuedGrenades;
   }
 
   /**
@@ -97,6 +104,10 @@ export class PracticePowerupSpawner {
     if (kind === 'adrenaline') this.buffs.adrenalineSeconds = C.powerup.buffSeconds;
     else if (kind === 'speed') this.buffs.speedSeconds = C.powerup.buffSeconds;
     else if (kind === 'magnet') this.buffs.magnetSeconds = C.powerup.magnetSeconds;
+    else if (kind === 'shock' || kind === 'stun') {
+      this.queuedGrenadeKind = kind;
+      this.queuedGrenades = Math.max(0, C.powerup.grenadeCharges - 1);
+    }
 
     this.heldKind = null;
     this.privateMessage = { kind: null, resetSerial };
@@ -104,6 +115,14 @@ export class PracticePowerupSpawner {
       type: 'powerup-event', effect: 'activate', position: { ...position }, playerId: 'practice', kind, resetSerial
     });
     return { ok: true, kind };
+  }
+
+  /** Consume the next grenade only after the currently held grenade was actually thrown. */
+  takeGrenadeAfterThrow(kind: GrenadeKind): GrenadeKind | null {
+    if (this.queuedGrenadeKind !== kind || this.queuedGrenades <= 0) return null;
+    this.queuedGrenades -= 1;
+    if (this.queuedGrenades === 0) this.queuedGrenadeKind = null;
+    return kind;
   }
 
   placeHeal(position: Vec3, resetSerial = 0): void {
@@ -136,6 +155,8 @@ export class PracticePowerupSpawner {
     this.heldKind = null;
     this.privateMessage = null;
     this.events = [];
+    this.queuedGrenadeKind = null;
+    this.queuedGrenades = 0;
     this.buffs.speedSeconds = 0;
     this.buffs.adrenalineSeconds = 0;
     this.buffs.magnetSeconds = 0;

@@ -101,4 +101,19 @@ describe('PracticePowerupSpawner', () => {
       kind: 'bomb', resetSerial: 4, reason: 'Free a hand to use this power-up'
     });
   });
+
+  it('queues the rest of a grenade bundle and dispenses each one only after a throw', () => {
+    const shockRoll = 6.1 / 8;
+    const spawner = new PracticePowerupSpawner(() => shockRoll);
+    spawner.update(C.powerup.respawnSeconds, { x: 0, y: 0, z: 0 });
+
+    expect(spawner.activate(true, { x: 0, y: 0, z: 0 })).toEqual({ ok: true, kind: 'shock' });
+    expect(spawner.pendingGrenades).toBe(C.powerup.grenadeCharges - 1);
+
+    for (let remaining = C.powerup.grenadeCharges - 2; remaining >= 0; remaining -= 1) {
+      expect(spawner.takeGrenadeAfterThrow('shock')).toBe('shock');
+      expect(spawner.pendingGrenades).toBe(remaining);
+    }
+    expect(spawner.takeGrenadeAfterThrow('shock')).toBeNull();
+  });
 });

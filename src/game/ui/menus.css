@@ -248,22 +248,20 @@ body .htp-footer { border-top-width: 1px; }
 body .htp-close,
 body .htp-nav { border-width: 1px; border-radius: 4px; background: transparent; color: var(--menu-navy); box-shadow: none; font-size: 12px; }
 
-/* Track changes announce once; normal play has no permanent player panel. */
+/* Persistent, low-priority playback reference in the bottom-left safe area. */
 body .music-hud {
   left: var(--sb-safe-x, 20px);
-  bottom: calc(var(--sb-safe-y, 18px) + 58px);
-  max-width: min(280px, 30vw);
+  bottom: var(--sb-safe-y, 18px);
+  max-width: min(230px, 32vw);
   padding: 7px 10px;
   border: 0;
   border-left: 2px solid var(--menu-gold);
   border-radius: 0;
   background: rgba(7, 23, 46, .82);
   box-shadow: none;
-  opacity: 0;
-  transform: translateY(4px);
-  transition: opacity 180ms ease, transform 180ms ease;
+  opacity: 1;
+  transform: none;
 }
-body .music-hud--introduced { opacity: 1; transform: none; }
 body .music-hud-title { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--menu-cream); font-size: 11px; line-height: 1.4; font-weight: 500; letter-spacing: 0; }
 body .music-hud-time { margin-top: 2px; color: #b8c0cc; font-size: 10px; letter-spacing: .04em; font-weight: 400; }
 
@@ -285,7 +283,7 @@ body .music-hud-time { margin-top: 2px; color: #b8c0cc; font-size: 10px; letter-
   .multiplayer-modal--compact .multiplayer-panel--lobby { top: 104px; width: min(270px, calc(100vw - 28px)); max-height: calc(100dvh - 138px); }
   .multiplayer-modal .multiplayer-tick-presets { grid-template-columns: repeat(3, minmax(0, 1fr)); }
   .multiplayer-modal .multiplayer-settings-menu__grid { grid-template-columns: 1fr; }
-  body .music-hud { max-width: 150px; bottom: calc(var(--sb-safe-y, 18px) + 120px); }
+  body .music-hud { max-width: 150px; }
 }
 
 @media (prefers-reduced-motion: reduce) {
@@ -293,4 +291,3 @@ body .music-hud-time { margin-top: 2px; color: #b8c0cc; font-size: 10px; letter-
   .multiplayer-modal *,
   .settings-panel * { animation: none !important; transition: none !important; }
 }
-body[data-reduced-effects="true"] .music-hud { transition: none; }

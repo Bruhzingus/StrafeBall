@@ -261,7 +261,7 @@ export interface MovementInternalState {
 
 export interface PlayerState {
   hasPowerup?: boolean;
-  /** Grenade charges still queued behind the one in hand (shock/stun come in pairs). */
+  /** Grenade charges still queued behind the one in hand. */
   pendingGrenades?: number;
   armorBallIds?: string[];
   id: string;

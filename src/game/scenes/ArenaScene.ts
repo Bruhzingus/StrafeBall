@@ -1,5 +1,6 @@
 import { PowerupPresentation, type PowerupPresentationRoom } from '../powerups/PowerupPresentation';
 import { mapEffectGravityScale } from '../../../shared/simulation/MapEffectSim';
+import { shockwaveBallVelocity, shockwavePlayerVelocity } from '../../../shared/simulation/ShockwaveSim';
 import { Color3, Engine, Mesh, MeshBuilder, PBRMaterial, Scene, StandardMaterial, Vector3, type Camera } from '@babylonjs/core';
 import { FxaaPostProcess } from '@babylonjs/core/PostProcesses/fxaaPostProcess';
 import { InputManager } from '../input/InputManager';
@@ -60,7 +61,7 @@ import { ModelLoader } from '../assets/ModelLoader';
 import { BallManager } from '../ball/BallManager';
 import { Ball, type BallWorld } from '../ball/Ball';
 import { BallVisualEffects } from '../ball/BallVisualEffects';
-import { BallState } from '../ball/BallState';
+import { BallState, type HandSide } from '../ball/BallState';
 import { Hud } from '../ui/Hud';
 import { Nametags } from '../ui/Nametags';
 import { BackflipQteController } from '../player/BackflipQteController';
@@ -1151,6 +1152,10 @@ export class ArenaScene {
     // Snapshot previous states before the update so we can detect edges.
     const wasSliding = this.prevSliding;
     const wasBackflipActive = this.prevBackflipActive;
+    const heldBeforeUpdate = inPracticeLobby ? {
+      left: this.player.hands.left.ball,
+      right: this.player.hands.right.ball
+    } : null;
 
     // Suppress normal throws while a backflip is airborne or the landing QTE is pending — the
     // backflip throw is released only by the QTE click.
@@ -1183,6 +1188,7 @@ export class ArenaScene {
     this.prevBackflipActive = this.player.backflip.active;
 
     this.updateBackflipQteOffline(dt, snap.grounded);
+    if (heldBeforeUpdate) this.materializeQueuedPracticeGrenade(heldBeforeUpdate);
 
     // The Movement Sandbox runs a lean offline step (movement foley + the leave portal only) and
     // skips the normal practice/match systems below (bots, mats, dummy scoring, boundary, gym update).
@@ -3442,14 +3448,29 @@ export class ArenaScene {
     }
   }
 
-  private materializePracticePowerup(kind: PowerupKind): void {
-    if (kind === 'adrenaline' || kind === 'speed' || kind === 'magnet') return;
-    const side = !this.player.hands.left.ball ? 'left' : !this.player.hands.right.ball ? 'right' : null;
-    if (!side) return;
+  private materializePracticePowerup(kind: PowerupKind, preferredSide?: HandSide): boolean {
+    if (kind === 'adrenaline' || kind === 'speed' || kind === 'magnet') return false;
+    const preferredOpen = preferredSide && !this.player.hands.getHand(preferredSide).ball ? preferredSide : null;
+    const side = preferredOpen ?? (!this.player.hands.left.ball ? 'left' : !this.player.hands.right.ball ? 'right' : null);
+    if (!side) return false;
     const position = this.player.root.position.add(new Vector3(side === 'left' ? -0.4 : 0.4, 1.2, 0.3));
     const ball = this.ballManager.createPowerupBall(`practice_${kind}_${Date.now()}`, position, kind);
     this.ballManager.attachHeldBall(ball, side, position);
     this.player.hands.forceCatchBall(side, ball);
+    return true;
+  }
+
+  /** Mirror the server's grenade bundle: refill the hand only after its current grenade is thrown. */
+  private materializeQueuedPracticeGrenade(heldBefore: Record<HandSide, Ball | null>): void {
+    for (const side of ['left', 'right'] as const) {
+      const thrown = heldBefore[side];
+      if (!thrown) continue;
+      const kind = thrown.powerupKind;
+      if ((kind !== 'shock' && kind !== 'stun') || thrown.state !== BallState.Live) continue;
+      if (this.player.hands.getHand(side).ball === thrown || this.player.hands.heldBallCount() >= 2) continue;
+      const next = this.practicePowerups.takeGrenadeAfterThrow(kind);
+      if (next) this.materializePracticePowerup(next, side);
+    }
   }
 
   private updatePracticeMagnet(dt: number): void {
@@ -3532,27 +3553,27 @@ export class ArenaScene {
     if (kind === 'shock') {
       for (const other of this.ballManager.balls) {
         if (other === ball || other.state === BallState.Held) continue;
-        const away = other.mesh.position.subtract(position);
-        const distance = away.length();
-        if (distance > GAME_CONSTANTS.powerup.shockRadius || distance < 0.01) continue;
-        away.scaleInPlace(1 / distance);
-        other.velocity.set(
-          away.x * GAME_CONSTANTS.powerup.shockBallSpeed,
-          GAME_CONSTANTS.powerup.shockBallLift,
-          away.z * GAME_CONSTANTS.powerup.shockBallSpeed
+        const launched = shockwaveBallVelocity(
+          vector3ToVec3(other.mesh.position),
+          vector3ToVec3(position),
+          vector3ToVec3(other.velocity)
         );
+        if (!launched) continue;
+        other.velocity.set(launched.x, launched.y, launched.z);
         other.state = BallState.Dead;
       }
-      const playerDelta = this.player.root.position.subtract(position);
-      if (playerDelta.length() <= GAME_CONSTANTS.powerup.shockRadius) {
-        playerDelta.y = 0;
-        if (playerDelta.lengthSquared() < 0.001) playerDelta.set(0, 0, 1);
-        playerDelta.normalize();
-        this.player.movement.velocity.set(
-          playerDelta.x * GAME_CONSTANTS.powerup.shockPlayerSpeed,
-          GAME_CONSTANTS.powerup.shockPlayerLift,
-          playerDelta.z * GAME_CONSTANTS.powerup.shockPlayerSpeed
-        );
+      const yaw = this.player.root.rotation.y;
+      const launched = shockwavePlayerVelocity(
+        vector3ToVec3(this.player.root.position),
+        vector3ToVec3(this.player.movement.velocity),
+        vector3ToVec3(position),
+        { x: Math.sin(yaw), y: 0, z: Math.cos(yaw) }
+      );
+      if (launched) {
+        this.player.movement.velocity.set(launched.x, launched.y, launched.z);
+        this.player.movement.grounded = false;
+        this.player.movement.sliding = false;
+        this.player.movement.wallRunning = false;
       }
       this.practicePowerups.emit('shock', vector3ToVec3(position), resetSerial);
     } else if (kind === 'stun') {

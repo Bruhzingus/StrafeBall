@@ -116,7 +116,9 @@ describe('grenades: shock + stun', () => {
     // Stuck grenade right next to a standing mat; b stands 2 m from it, mid charge-throw.
     const at = v(spec.position.x, 0.2, spec.position.z + 1.2);
     loop.state.balls[id] = createBallState(id, at, { kind: 'shock', phase: 'stuck', ownerKind: 'player', ownerId: 'a', fuseSeconds: 0.01, stuckAtMs: 0 });
-    loop.state.players.b.movement.position = v(at.x + 2, 0, at.z);
+    loop.state.players.b.movement.position = v(at.x + 2, 0.05, at.z);
+    loop.state.players.b.movement.velocity = v(2, C.player.jumpSpeed, 0);
+    loop.state.players.b.movement.grounded = false;
     loop.state.players.b.hands.left = createHandState('left', { heldBallId: 'ball_0', mode: 'charging', chargeSeconds: 0.5 });
     loop.state.balls.ball_0 = { ...loop.state.balls.ball_0, phase: 'held', heldByPlayerId: 'b', heldHand: 'left', ownerKind: 'player', ownerId: 'b' };
     loop.state.balls.ball_1 = { ...loop.state.balls.ball_1, position: v(at.x - 1.5, floorY, at.z), phase: 'loose' };
@@ -125,8 +127,8 @@ describe('grenades: shock + stun', () => {
     const b = loop.state.players.b;
     expect(loop.state.balls[id]).toBeUndefined();
     expect(b.lives).toBe(livesBefore);
-    expect(b.movement.velocity.x).toBeGreaterThan(3);
-    expect(b.movement.velocity.y).toBeGreaterThan(1);
+    expect(b.movement.velocity.x).toBeGreaterThan(25);
+    expect(b.movement.velocity.y).toBeGreaterThan(12);
     expect(b.hands.left.mode).toBe('holding'); expect(b.hands.left.chargeSeconds).toBe(0);
     expect(loop.state.mats[mat].knockedOver).toBe(true);
     expect(loop.state.balls.ball_1.velocity.x).toBeLessThan(-2);

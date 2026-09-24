@@ -2,6 +2,7 @@ import { GAME_CONSTANTS as C } from '../../../shared/constants';
 import type { BallState, HandSide, PlayerState, PowerupKind, PowerupSpawnState, RoomState, Vec3 } from '../../../shared/types';
 import type { PowerupEvent, PowerupPrivateMessage } from '../../../shared/protocol';
 import { createBallState, holdBall, isGrenadeKind, markBallDead } from '../../../shared/simulation/BallSim';
+import { shockwaveBallVelocity, shockwavePlayerVelocity } from '../../../shared/simulation/ShockwaveSim';
 import { createHandState, tryPickupBall } from '../../../shared/simulation/HandSim';
 import { createBallCollisionBoxes } from '../../../shared/simulation/MapGeometry';
 
@@ -10,13 +11,6 @@ const HAND_ITEMS: PowerupKind[] = ['cannon', 'bomb', 'heal', 'shock', 'stun'];
 const alive = (p: PlayerState) => p.connected && p.combatState === 'alive' && p.lives > 0;
 const horizontal = (a: Vec3, b: Vec3) => Math.hypot(a.x - b.x, a.z - b.z);
 const SPAWN_HEIGHT = 1;
-/** Unit XZ direction from a blast to a target; falls back to the target's facing when on top of it. */
-function normalizeXZ(dx: number, dz: number, fallback: Vec3): { x: number; z: number } {
-  const len = Math.hypot(dx, dz);
-  if (len > 1e-4) return { x: dx / len, z: dz / len };
-  const flen = Math.hypot(fallback.x, fallback.z);
-  return flen > 1e-4 ? { x: -fallback.x / flen, z: -fallback.z / flen } : { x: 0, z: 1 };
-}
 
 /** 1v1: one spawn at center court. 2v2: two, mirrored across center along the neutral line. */
 function createSpawns(room: RoomState): PowerupSpawnState[] {
@@ -243,7 +237,7 @@ export class PowerupSystem {
     if (ball.kind === 'bomb' && ball.armedAtMs === undefined) ball.bombThrowerId = playerId;
     if (ball.kind === 'cannon') this.emit(room, 'cannon', ball.position, { playerId });
     const p = room.players[playerId];
-    // Grenades come in pairs: the next one lands in the hand that just threw, until the pair is spent.
+    // Grenades come in a bundle: the next one lands in the hand that just threw until it is spent.
     if (p && isGrenadeKind(ball.kind) && (p.pendingGrenades ?? 0) > 0) {
       const hand = (['left', 'right'] as const).find(h => !p.hands[h].heldBallId);
       if (hand) {
@@ -281,14 +275,11 @@ export class PowerupSystem {
       const radius = C.powerup.shockRadius;
       for (const p of Object.values(room.players)) {
         if (!alive(p)) continue;
-        const d = dist(p);
-        if (d > radius) continue;
-        // Fling away from the blast, stronger up close. Always lift so they leave the ground.
-        const falloff = 1 - 0.5 * (d / radius);
-        const dir = normalizeXZ(p.movement.position.x - pos.x, p.movement.position.z - pos.z, p.movement.facing);
+        const launched = shockwavePlayerVelocity(p.movement.position, p.movement.velocity, pos, p.movement.facing);
+        if (!launched) continue;
         p.movement = {
           ...p.movement,
-          velocity: { x: dir.x * C.powerup.shockPlayerSpeed * falloff, y: C.powerup.shockPlayerLift * falloff, z: dir.z * C.powerup.shockPlayerSpeed * falloff },
+          velocity: launched,
           grounded: false, sliding: false, wallRunning: false
         };
         // Interrupt whatever they were winding up.
@@ -300,11 +291,9 @@ export class PowerupSystem {
       for (const other of Object.values(room.balls)) {
         if (other.id === ball.id || (other.kind ?? 'normal') !== 'normal') continue;
         if (other.phase !== 'loose' && other.phase !== 'dead') continue;
-        const d = Math.hypot(other.position.x - pos.x, other.position.y - pos.y, other.position.z - pos.z);
-        if (d > radius) continue;
-        const falloff = 1 - 0.5 * (d / radius);
-        const dir = normalizeXZ(other.position.x - pos.x, other.position.z - pos.z, { x: 0, y: 0, z: 1 });
-        room.balls[other.id] = { ...markBallDead(other, { x: dir.x * C.powerup.shockBallSpeed * falloff, y: C.powerup.shockBallLift * falloff, z: dir.z * C.powerup.shockBallSpeed * falloff }), position: { ...other.position, y: other.position.y + 0.05 } };
+        const launched = shockwaveBallVelocity(other.position, pos, other.velocity);
+        if (!launched) continue;
+        room.balls[other.id] = { ...markBallDead(other, launched), position: { ...other.position, y: other.position.y + 0.05 } };
       }
       knockMatsNear(pos, radius);
       this.emit(room, 'shock', pos);
