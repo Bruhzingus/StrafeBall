@@ -101,8 +101,8 @@ export interface PowerupSpawnState { x: number; z: number; spawned: boolean; wai
 export interface PowerupWorldState { spawns: PowerupSpawnState[]; stations: HealStationState[] }
 
 /**
- * Map effects: whole-court events rolled from the same spawn clock as power-ups. Instead of an item
- * to pick up, the spawn shows an effect capsule for `warning` seconds (banner + countdown), then the
+ * Map effects: whole-court bonus events rolled from the same spawn clock as power-ups. The normal
+ * item still spawns; the effect capsule shows for `warning` seconds (banner + countdown), then the
  * effect runs for everyone. Only one can run at a time.
  */
 export type MapEffectKind = 'moon' | 'lava' | 'frenzy';

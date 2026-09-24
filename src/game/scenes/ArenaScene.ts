@@ -3409,6 +3409,15 @@ export class ArenaScene {
         this.hud.showScoreEvent(`DIFFICULTY: ${next.toUpperCase()}`, '', 'neutral');
         break;
       }
+      case 'spawnPowerup':
+        s.fastPowerupRespawnEnabled = !s.fastPowerupRespawnEnabled;
+        this.practicePowerups.setFastRespawnEnabled(s.fastPowerupRespawnEnabled);
+        this.hud.showScoreEvent(
+          s.fastPowerupRespawnEnabled ? 'POWER-UP TIMER: 2 SEC' : 'POWER-UP TIMER: NORMAL',
+          'Practice lobby only',
+          s.fastPowerupRespawnEnabled ? 'good' : 'neutral'
+        );
+        break;
     }
   }
 

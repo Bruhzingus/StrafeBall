@@ -24,6 +24,31 @@ describe('PracticePowerupSpawner', () => {
     expect(spawner.world.spawns[0]).toMatchObject({ spawned: false, waitSeconds: C.powerup.respawnSeconds });
   });
 
+  it('uses a two-second respawn interval while the practice shortcut is enabled', () => {
+    const spawner = new PracticePowerupSpawner();
+
+    spawner.setFastRespawnEnabled(true);
+    spawner.update(1.99);
+    expect(spawner.world.spawns[0].spawned).toBe(false);
+    expect(spawner.world.spawns[0].waitSeconds).toBeCloseTo(0.01);
+    spawner.update(0.01);
+    expect(spawner.world.spawns[0]).toMatchObject({ spawned: true, waitSeconds: 0 });
+    spawner.update(0, { x: 0, y: 0, z: 0 });
+    expect(spawner.world.spawns[0]).toMatchObject({ spawned: false, waitSeconds: 2 });
+  });
+
+  it('restores the normal respawn interval when the practice shortcut is disabled', () => {
+    const spawner = new PracticePowerupSpawner();
+    spawner.setFastRespawnEnabled(true);
+    spawner.setFastRespawnEnabled(false);
+    spawner.update(2);
+    expect(spawner.world.spawns[0].spawned).toBe(true);
+    spawner.update(0, { x: 0, y: 0, z: 0 });
+
+    expect(spawner.world.spawns[0].spawned).toBe(false);
+    expect(spawner.world.spawns[0].waitSeconds).toBe(C.powerup.respawnSeconds);
+  });
+
   it('picks up a spawned capsule on walk-over and restarts its clock', () => {
     const spawner = new PracticePowerupSpawner(() => 0);
     const spawn = spawner.world.spawns[0];

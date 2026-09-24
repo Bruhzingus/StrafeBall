@@ -17,6 +17,7 @@ export class PracticePowerupSpawner {
     stations: []
   };
   private heldKind: PowerupKind | null = null;
+  private respawnSeconds: number = C.powerup.respawnSeconds;
   private privateMessage: PowerupPrivateMessage | null = null;
   private events: PowerupEvent[] = [];
   readonly buffs: PowerupBuffs = {
@@ -31,6 +32,18 @@ export class PracticePowerupSpawner {
 
   get identity(): PowerupPrivateMessage | null {
     return this.privateMessage;
+  }
+
+  /**
+   * Practice lobby setting for quick iteration. It affects this countdown immediately and all
+   * subsequent respawns, but never removes a power-up that is already waiting at center court.
+   */
+  setFastRespawnEnabled(enabled: boolean): void {
+    this.respawnSeconds = enabled ? 2 : C.powerup.respawnSeconds;
+    if (!enabled) return;
+    for (const spawn of this.world.spawns) {
+      if (!spawn.spawned) spawn.waitSeconds = Math.min(spawn.waitSeconds, this.respawnSeconds);
+    }
   }
 
   update(dt: number, playerPosition?: Vec3, resetSerial = 0): void {
@@ -55,7 +68,7 @@ export class PracticePowerupSpawner {
       this.heldKind = KINDS[Math.max(0, index)];
       this.privateMessage = { kind: this.heldKind, resetSerial };
       spawn.spawned = false;
-      spawn.waitSeconds = C.powerup.respawnSeconds;
+      spawn.waitSeconds = this.respawnSeconds;
       this.events.push(this.event('pickup', spawn, resetSerial));
     }
 
@@ -131,7 +144,7 @@ export class PracticePowerupSpawner {
     this.world.stations = [];
     for (const spawn of this.world.spawns) {
       spawn.spawned = false;
-      spawn.waitSeconds = C.powerup.respawnSeconds;
+      spawn.waitSeconds = this.respawnSeconds;
     }
   }
 

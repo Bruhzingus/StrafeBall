@@ -4,6 +4,8 @@ export interface PracticeState {
   quickThrowBotEnabled: boolean;
   chargeThrowBotEnabled: boolean;
   botDifficulty: BotDifficulty;
+  /** Practice lobby only: shorten future power-up respawns to two seconds. */
+  fastPowerupRespawnEnabled: boolean;
   practiceScore: number;
   spawnedExtraBalls: number;
   maxPracticeBalls: number;
@@ -16,6 +18,7 @@ export function createPracticeState(): PracticeState {
     quickThrowBotEnabled: false,
     chargeThrowBotEnabled: false,
     botDifficulty: 'normal',
+    fastPowerupRespawnEnabled: false,
     practiceScore: 0,
     spawnedExtraBalls: 0,
     maxPracticeBalls: 8,

@@ -14,9 +14,16 @@ export type ButtonId =
   | 'addBall' | 'removeBall' | 'clearExtra' | 'giveTwoBalls'
   | 'resetScore' | 'resetMap'
   | 'toggleQuickBot' | 'toggleChargeBot' | 'stopBots'
-  | 'difficulty';
+  | 'difficulty' | 'spawnPowerup';
 
-interface ButtonDef { id: ButtonId; label: string; row: number; col: number; }
+interface ButtonDef {
+  id: ButtonId;
+  label: string;
+  row?: number;
+  col?: number;
+  /** A deliberate wall-end placement for controls outside the packed 5-column grid. */
+  position?: { y: number; z: number };
+}
 
 // 2 rows × 5 columns, spanning the full west wall above the bleachers (see diagram in the design).
 // Row 0 (top) = ball controls + map/score; row 1 (bottom) = bot controls.
@@ -53,6 +60,14 @@ const BTN_D = 0.22;
 const BTN_W = COL_GAP - 0.7;   // width runs along Z (the wall's long axis)
 const BTN_H = ROW_GAP - 0.55;  // height runs along Y
 const WALL_X = -TUNING.map.halfWidth + BTN_D / 2 + 0.04;
+
+// The north end of the wall is intentionally clear of the main control grid. Keep this timed
+// practice shortcut there so it is easy to find without reshuffling established ball/bot buttons.
+BUTTON_DEFS.push({
+  id: 'spawnPowerup',
+  label: 'POWER-UP',
+  position: { y: PANEL_Y_CENTER + ROW_GAP / 2, z: TUNING.map.halfLength - 2.25 }
+});
 
 function makeTex(scene: Scene, name: string, line1: string, line2 = ''): DynamicTexture {
   // Wide texture to match the wide buttons; big, legible type centered on the face.
@@ -96,8 +111,8 @@ export class PracticeControlWall {
 
   private createButton(def: ButtonDef): void {
     const x = WALL_X;
-    const y = PANEL_Y_CENTER + (((ROWS - 1) / 2) - def.row) * ROW_GAP;
-    const z = (def.col - (COLS - 1) / 2) * COL_GAP;
+    const y = def.position?.y ?? PANEL_Y_CENTER + (((ROWS - 1) / 2) - def.row!) * ROW_GAP;
+    const z = def.position?.z ?? (def.col! - (COLS - 1) / 2) * COL_GAP;
 
     const btnMat = new PBRMaterial(`pcbtn_mat_${def.id}`, this.scene);
     btnMat.albedoColor = new Color3(0.06, 0.10, 0.20);
@@ -192,12 +207,14 @@ export class PracticeControlWall {
       toggleQuickBot:  ['QUICK BOT',  this.state.quickThrowBotEnabled  ? 'ON' : 'OFF'],
       toggleChargeBot: ['CHARGE BOT', this.state.chargeThrowBotEnabled ? 'ON' : 'OFF'],
       difficulty:      ['DIFFICULTY', diff],
+      spawnPowerup:    ['POWER-UP',   this.state.fastPowerupRespawnEnabled ? '2 SEC: ON' : '2 SEC: OFF'],
     };
     for (const [id, [l1, l2]] of Object.entries(updates) as [ButtonId, [string, string]][]) {
       const tex = this.labelTextures.get(id);
       if (!tex) continue;
       const active = (id === 'toggleQuickBot' && this.state.quickThrowBotEnabled) ||
-                     (id === 'toggleChargeBot' && this.state.chargeThrowBotEnabled);
+                     (id === 'toggleChargeBot' && this.state.chargeThrowBotEnabled) ||
+                     (id === 'spawnPowerup' && this.state.fastPowerupRespawnEnabled);
       const stateKey = `${l1}|${l2}|${active ? 1 : 0}`;
       if (this.lastLabelState.get(id) === stateKey) continue;
       this.lastLabelState.set(id, stateKey);

@@ -9,10 +9,10 @@ const MapEffectSim_1 = require("../../../shared/simulation/MapEffectSim");
 const KINDS = ['moon', 'lava', 'frenzy'];
 const alive = (p) => p.connected && p.combatState === 'alive' && p.lives > 0;
 /**
- * Whole-court events. Rolled from the power-up spawn clock (see PowerupSystem.beforeBalls); when a
- * roll wins, the spawn shows an effect capsule and a warning banner counts down, then the effect
- * runs for everyone. State lives in room.mapEffect (world lane) so clients render from it; the
- * timers here measure simulated seconds like the rest of the loop.
+ * Whole-court bonus events. Rolled from the power-up spawn clock (see PowerupSystem.beforeBalls);
+ * when a roll wins, the normal item still spawns while an effect capsule and warning banner count
+ * down, then the effect runs for everyone. State lives in room.mapEffect (world lane) so clients
+ * render from it; the timers here measure simulated seconds like the rest of the loop.
  */
 class MapEffectSystem {
     rng;
@@ -40,8 +40,8 @@ class MapEffectSystem {
         this.frenzyBallIds = [];
     }
     /**
-     * Called when a power-up spawn clock completes. Returns true if this spawn became a map effect
-     * (so no item is placed and the spawn's wait restarts), false to place a normal item.
+     * Called when a power-up spawn clock completes. Returns true when the cycle also starts a map
+     * effect; the caller still places the normal item.
      */
     tryStart(room, spawnIndex, spawnPosition) {
         if (room.mapEffect)

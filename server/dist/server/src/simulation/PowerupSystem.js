@@ -136,7 +136,7 @@ class PowerupSystem {
         return true;
     }
     /** Runs only during live play. Timers measure simulated seconds, including under server catch-up. */
-    beforeBalls(room, dt, livesCap, rollMapEffect) {
+    beforeBalls(room, dt, livesCap, onSpawnClockComplete) {
         if (room.settings.powerupsEnabled === false)
             return;
         const world = room.powerups ??= { spawns: createSpawns(room), stations: [] };
@@ -146,11 +146,8 @@ class PowerupSystem {
             spawn.waitSeconds = Math.max(0, spawn.waitSeconds - dt);
             if (spawn.waitSeconds >= 1e-7)
                 return;
-            // A completed clock can become a map effect instead of an item; the spawn then just restarts.
-            if (rollMapEffect?.(i, spawnPosition(spawn))) {
-                spawn.waitSeconds = constants_1.GAME_CONSTANTS.powerup.respawnSeconds;
-                return;
-            }
+            // A completed clock can also start a whole-court bonus effect. It never replaces the item.
+            onSpawnClockComplete?.(i, spawnPosition(spawn));
             spawn.waitSeconds = 0;
             spawn.spawned = true;
             this.emit(room, 'spawn', spawnPosition(spawn));

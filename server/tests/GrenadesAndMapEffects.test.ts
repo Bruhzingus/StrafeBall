@@ -196,6 +196,22 @@ describe('map effects', () => {
     expect(room.mapEffect ?? null).toBeNull();
   });
 
+  it('rolls a map effect one time in five as a bonus alongside the normal item spawn', () => {
+    const room = playingRoom();
+    const powerups = new PowerupSystem(() => 0.5);
+    const effects = new MapEffectSystem(rollEffect(0));
+    powerups.reset(room);
+    room.players.a.movement.position = v(5, 0, 0);
+    room.players.b.movement.position = v(-5, 0, 0);
+    room.powerups!.spawns[0].waitSeconds = 0;
+
+    powerups.beforeBalls(room, 0, 3, (spawnIndex, position) => { effects.tryStart(room, spawnIndex, position); });
+
+    expect(C.mapEffect.chance).toBe(0.2);
+    expect(room.mapEffect).toMatchObject({ kind: 'moon', phase: 'warning', spawnIndex: 0 });
+    expect(room.powerups!.spawns[0]).toMatchObject({ spawned: true, waitSeconds: 0 });
+  });
+
   it('moon gravity: the shared sim falls slower for the same input', () => {
     const p = createPlayerState('a', 'blue');
     p.movement.position = v(0, 4, 0); p.movement.grounded = false;

@@ -410,9 +410,9 @@ export const GAME_CONSTANTS = {
 
   // Whole-court events rolled from the power-up spawn clock (see shared/types MapEffectState).
   mapEffect: {
-    // Chance a completed spawn clock produces a map effect instead of an item. Never rolls while
+    // One in five completed power-up spawn clocks starts a bonus map effect. Never rolls while
     // another effect is already running.
-    chance: 0.3,
+    chance: 0.2,
     warningSeconds: 3,
     // Moon gravity: everyone (and every ball) at this fraction of normal gravity.
     moonSeconds: 12,
