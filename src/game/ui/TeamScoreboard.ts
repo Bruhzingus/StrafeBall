@@ -1,5 +1,4 @@
 import type { MatchStatus } from '../../../shared/types';
-import './scoreboard.css';
 
 export type TeamColor = 'blue' | 'red';
 

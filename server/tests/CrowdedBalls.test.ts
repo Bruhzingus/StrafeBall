@@ -24,6 +24,21 @@ function advanceSeconds(loop: ServerGameLoop, seconds: number): void {
 }
 
 describe('crowded loose balls respawn at center', () => {
+  it('uses the same crowd timer during warmup', () => {
+    const loop = playingLoop();
+    loop.state.match.status = 'warmup';
+    const spawn = { ...loop.state.balls.ball_0.position };
+    loop.state.balls.ball_0 = { ...loop.state.balls.ball_0, position: v(12, floorY, 17) };
+    loop.state.balls.ball_1 = { ...loop.state.balls.ball_1, position: v(12.8, floorY, 17.4) };
+
+    advanceSeconds(loop, 6.5);
+    expect(loop.state.balls.ball_0.position.x).toBeCloseTo(12, 1);
+    advanceSeconds(loop, 1);
+    expect(loop.state.balls.ball_0.position.x).toBeCloseTo(spawn.x, 5);
+    expect(loop.state.balls.ball_0.position.z).toBeCloseTo(spawn.z, 5);
+    expect(loop.state.balls.ball_0.crowdedSeconds ?? 0).toBe(0);
+  });
+
   it('sends a pair of balls stashed in a corner back to their spawn slots after 7 seconds', () => {
     const loop = playingLoop();
     const spawn0 = { ...loop.state.balls.ball_0.position };

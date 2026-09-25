@@ -1,0 +1,13 @@
+/* All UI styles enter through this file. Component JS must not import individual sheets. */
+@layer legacy, tokens, primitives, menus, hud, scoreboard, room, applications, accessibility;
+@import '../../../style.css' layer(legacy);
+@import './tokens.css' layer(tokens);
+@import './primitives.css' layer(primitives);
+@import '../menus.css' layer(menus);
+@import '../competitive.css' layer(hud);
+@import '../scoreboard.css' layer(scoreboard);
+@import '../teamRoom.css' layer(room);
+@import './surfaces.css' layer(applications);
+@import './creator.css' layer(applications);
+@import './loading.css' layer(applications);
+@import './accessibility.css' layer(accessibility);

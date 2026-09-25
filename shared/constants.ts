@@ -374,20 +374,26 @@ export const GAME_CONSTANTS = {
   },
 
   powerup: {
-    respawnSeconds: 20, pickupRadius: 1.2, buffSeconds: 15,
+    respawnSeconds: 20, pickupRadius: 1.2, buffSeconds: 15, rollSeconds: 1.65,
     speedMultiplier: 1.3, jumpHeightMultiplier: 1.25,
     adrenalineMaxCharges: 6, adrenalineRechargeSeconds: 2,
-    cannonHeldScale: 2, cannonFlightScale: 5,
-    // Cannonball starts slower than the old charged-speed launch, then compounds speed with travel.
+    cannonHeldScale: 1.6, cannonFlightScale: 4,
+    // A full-charge cannon launch starts 25% slower than before, then compounds speed with travel.
+    // Partial charges have a steep speed curve and more drop, so charging nearly to full is rewarded.
     // It ignores the room's ordinary bounce limit: walls/ceiling/obstacles use this private cap,
     // while touching the floor still destroys it immediately.
-    cannonLaunchSpeedMultiplier: 0.75,
+    cannonLaunchSpeedMultiplier: 0.5625,
+    cannonMinChargeSpeedFraction: 0.25,
+    cannonChargeSpeedExponent: 3,
+    cannonChargeDropExponent: 4,
     cannonSpeedGrowthMultiplier: 1.1,
     cannonSpeedGrowthDistance: 6,
     cannonMaxBounces: 4,
-    // Its 5x flight radius overlaps the thrower at release, so self-hits arm only after it has
+    // Its 4x flight radius overlaps the thrower at release, so self-hits arm only after it has
     // cleared the body. It can still hit its owner after returning or if they run into its path.
     cannonSelfHitMinDistance: 2,
+    // Bomb balls retain the normal charge curve but travel 25% slower at every throw tier.
+    bombThrowSpeedMultiplier: 0.75,
     bombFuseSeconds: 2, blastRadius: 3,
     magnetSeconds: 20, magnetRadius: 10, magnetAcceleration: 28, magnetSpeed: 7,
     distantMagnetAcceleration: 5, distantMagnetSpeed: 2, stationarySeconds: 3, armorCap: 3,
@@ -406,10 +412,10 @@ export const GAME_CONSTANTS = {
     // rising momentum, so a point-blank, correctly aligned jump can launch clear across the court.
     // Standing mats in range are knocked flat and interrupted actions are cancelled.
     shockRadius: 5,
-    shockPlayerSpeed: 72,
-    shockPlayerLift: 18,
-    shockBallSpeed: 42,
-    shockBallLift: 11,
+    shockPlayerSpeed: 50.4,
+    shockPlayerLift: 12.6,
+    shockBallSpeed: 29.4,
+    shockBallLift: 7.7,
     // Stun: COD-style concussion. Slowed look + blurred vision (client-side) and slowed movement
     // with no dash (shared sim) for stunSeconds. Thrower included if they're in range.
     stunRadius: 4.5,

@@ -14,11 +14,11 @@ function horizontalDirection(dx, dz, fallback) {
         return { x: fallback.x / fallbackDistance, z: fallback.z / fallbackDistance };
     return { x: 0, z: 1 };
 }
-/** A close blast is a movement tool; the edge still shoves without launching across the court. */
+/** Full power at the blast center, falling linearly to zero at its outer radius. */
 function shockwaveFalloff(distance, radius) {
-    if (!Number.isFinite(distance) || distance > radius)
+    if (!Number.isFinite(distance) || !Number.isFinite(radius) || radius <= 0)
         return 0;
-    return 1 - 0.65 * Math.pow(Math.max(0, distance) / radius, 1.5);
+    return Math.max(0, 1 - Math.max(0, distance) / radius);
 }
 /**
  * Player shockwaves add to existing momentum. In particular, an already-rising jump contributes its

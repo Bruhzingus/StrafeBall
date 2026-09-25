@@ -1,7 +1,6 @@
 import { settings, SENSITIVITY_MIN, SENSITIVITY_MAX } from '../config/Settings';
 import { getGraphicsPresets, getGraphicsPreset, persistGraphicsPreset, type GraphicsPreset } from '../config/graphicsConfig';
 import { HowToPlay } from './HowToPlay';
-import './menus.css';
 
 /** GitHub's always-current archive of the main branch — the same snapshot the live site runs. */
 export const GAME_DOWNLOAD_URL = 'https://github.com/Bruhzingus/StrafeBall/archive/refs/heads/main.zip';

@@ -140,23 +140,18 @@ export class GraphicsTuningPanel {
     this.root = document.createElement('div');
     this.root.id = 'graphics-tuning-panel'; // stable id: the screenshot harness hides it in captures
     this.root.setAttribute('data-no-lock', '');
-    Object.assign(this.root.style, {
-      position: 'fixed', top: '12px', left: '12px', zIndex: '60',
-      background: 'rgba(10, 14, 30, 0.92)', border: '1px solid rgba(120, 160, 255, 0.4)',
-      borderRadius: '10px', padding: '10px 12px', width: '250px',
-      font: '12px/1.45 system-ui, sans-serif', color: '#dfe7ff', pointerEvents: 'auto'
-    } satisfies Partial<CSSStyleDeclaration>);
+    this.root.className = 'graphics-tuning';
 
     const title = document.createElement('div');
     title.textContent = 'GRAPHICS TUNING (dev)';
-    Object.assign(title.style, { fontWeight: '700', letterSpacing: '0.06em', marginBottom: '6px', color: '#9fc0ff' });
+    title.className = 'graphics-tuning__title';
     this.root.appendChild(title);
 
     const cfg = resolvePolishedConfig();
     for (const def of sliderDefs()) this.addSlider(def, cfg);
 
     const buttons = document.createElement('div');
-    Object.assign(buttons.style, { display: 'flex', gap: '6px', marginTop: '8px', flexWrap: 'wrap' });
+    buttons.className = 'graphics-tuning__actions';
     buttons.append(
       this.button('Save', () => { saveTuningOverrides(this.overrides); this.flash('saved'); }),
       this.button('Reset', () => this.resetAll()),
@@ -172,7 +167,7 @@ export class GraphicsTuningPanel {
     this.root.appendChild(buttons);
 
     this.status = document.createElement('div');
-    Object.assign(this.status.style, { marginTop: '6px', minHeight: '14px', color: '#8fd6a8' });
+    this.status.className = 'graphics-tuning__status';
     this.root.appendChild(this.status);
 
     parent.appendChild(this.root);
@@ -188,13 +183,13 @@ export class GraphicsTuningPanel {
 
   private addSlider(def: SliderDef, cfg: PolishedConfig): void {
     const row = document.createElement('label');
-    Object.assign(row.style, { display: 'block', margin: '5px 0' });
+    row.className = 'graphics-tuning__row';
     const head = document.createElement('div');
-    Object.assign(head.style, { display: 'flex', justifyContent: 'space-between' });
+    head.className = 'graphics-tuning__head';
     const name = document.createElement('span');
     name.textContent = def.label;
     const readout = document.createElement('span');
-    readout.style.color = '#ffd479';
+    readout.className = 'graphics-tuning__value';
     head.append(name, readout);
 
     const input = document.createElement('input');
@@ -203,7 +198,6 @@ export class GraphicsTuningPanel {
     input.max = String(def.max);
     input.step = String(def.step);
     input.value = String(def.read(cfg));
-    input.style.width = '100%';
     input.addEventListener('keydown', (e) => e.preventDefault()); // never steal game keys
     input.addEventListener('input', () => {
       const v = parseFloat(input.value);
@@ -222,10 +216,7 @@ export class GraphicsTuningPanel {
     const b = document.createElement('button');
     b.type = 'button';
     b.textContent = text;
-    Object.assign(b.style, {
-      background: 'rgba(90, 130, 255, 0.2)', color: '#cfe0ff', border: '1px solid rgba(120,160,255,0.5)',
-      borderRadius: '6px', padding: '3px 8px', cursor: 'pointer', font: 'inherit'
-    });
+    b.className = 'sb-button sb-button--dark';
     b.addEventListener('click', onClick);
     return b;
   }

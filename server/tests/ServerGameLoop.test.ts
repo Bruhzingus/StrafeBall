@@ -2120,6 +2120,50 @@ describe('ServerGameLoop', () => {
     // drive a VIRTUAL clock at the true tick spacing so the wall-clock windows behave like online. ---
     const STEP_MS = SERVER_STEP_MS;
 
+    it('uses lag-compensated catch reclaim in the warmup lobby after a ball has passed', () => {
+      const clock = { ms: 100000 };
+      const loop = new ServerGameLoop('room', { now: () => clock.ms });
+      loop.addPlayer('a', 'A');
+      loop.addPlayer('b', 'B');
+      expect(loop.state.match.status).toBe('warmup');
+      loop.state.players.b.movement.position = vec3(0, 0, 0);
+
+      let seq = 1;
+      for (let i = 0; i < 6; i += 1) {
+        clock.ms += STEP_MS;
+        loop.handleInput('b', { lookYawRadians: Math.PI, lookPitchRadians: 0, sequence: seq }, seq);
+        seq += 1;
+        loop.step();
+      }
+
+      loop.state.balls.ball_0 = {
+        ...loop.state.balls.ball_0,
+        phase: 'live', ownerKind: 'player', ownerId: 'a', heldByPlayerId: null, heldHand: null,
+        position: vec3(0, eye, -6), velocity: vec3(0, 0, 30), bounceCount: 0, throwId: 1
+      };
+      // The click is delayed until the ball has already crossed behind the defender. A present-time
+      // cone check cannot catch it; only the same history rewind used in a live match can.
+      for (let i = 0; i < 35; i += 1) {
+        clock.ms += STEP_MS;
+        loop.handleInput('b', { lookYawRadians: Math.PI, sequence: seq }, seq);
+        seq += 1;
+        loop.step();
+      }
+      expect(loop.state.balls.ball_0.position.z).toBeGreaterThan(0);
+      expect(loop.state.balls.ball_0.heldByPlayerId).toBeNull();
+
+      for (let i = 0; i < 8 && loop.state.balls.ball_0.heldByPlayerId !== 'b'; i += 1) {
+        clock.ms += STEP_MS;
+        loop.handleInput('b', { lookYawRadians: Math.PI, leftCatchAttemptId: 1, sequence: seq }, seq);
+        seq += 1;
+        loop.step();
+      }
+
+      expect(loop.state.balls.ball_0.heldByPlayerId).toBe('b');
+      expect(loop.state.players.b.hands.left.heldBallId).toBe('ball_0');
+      expect(loop.state.match.status).toBe('warmup');
+    });
+
     // Run a fast straight throw into a -Z-facing defender at the origin, stepping a virtual clock at
     // the active server tick rate, WITHOUT a catch — returns the loop right after 'b' is hit (score blue == 1). The ball's
     // pre-hit swept history is retained so a late catch can rewind to it.

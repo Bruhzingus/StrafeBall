@@ -24,6 +24,7 @@ const spawnPosition = (spawn: PowerupSpawnState): Vec3 => ({ x: spawn.x, y: SPAW
 /** Server-only inventory. No unused identity is ever placed in the public room state. */
 export class PowerupSystem {
   private inventory = new Map<string, PowerupKind>();
+  private rollRemaining = new Map<string, number>();
   private serial = 0;
   private events: PowerupEvent[] = [];
   private privateMessages: { playerId: string; message: PowerupPrivateMessage }[] = [];
@@ -47,7 +48,7 @@ export class PowerupSystem {
     return result;
   }
   reset(room: RoomState): void {
-    this.inventory.clear(); this.cannonHits.clear(); this.distantPulls.clear(); this.events = []; this.privateMessages = [];
+    this.inventory.clear(); this.rollRemaining.clear(); this.cannonHits.clear(); this.distantPulls.clear(); this.events = []; this.privateMessages = [];
     room.powerups = { spawns: createSpawns(room), stations: [] };
     for (const p of Object.values(room.players)) {
       p.hasPowerup = false; p.armorBallIds = []; p.pendingGrenades = 0; delete p.movementInternal.buffs;
@@ -67,7 +68,7 @@ export class PowerupSystem {
     const p = room.players[playerId];
     const kind = this.inventory.get(playerId);
     const running = room.match.status === 'playing' || room.match.status === 'warmup';
-    if (room.settings.powerupsEnabled === false || !p || !alive(p) || !running || !kind) return false;
+    if (room.settings.powerupsEnabled === false || !p || !alive(p) || !running || !kind || (this.rollRemaining.get(playerId) ?? 0) > 0) return false;
     const hand = (['left', 'right'] as const).find(h => !p.hands[h].heldBallId);
     if (HAND_ITEMS.includes(kind) && !hand) {
       this.notify(room, playerId, 'Free a hand to use this power-up'); return false;
@@ -85,7 +86,7 @@ export class PowerupSystem {
       if (kind === 'cannon') buffs.cannonLocked = true;
       if (isGrenadeKind(kind)) p.pendingGrenades = C.powerup.grenadeCharges - 1;
     }
-    this.inventory.delete(playerId); p.hasPowerup = false;
+    this.inventory.delete(playerId); this.rollRemaining.delete(playerId); p.hasPowerup = false;
     this.notify(room, playerId);
     this.emit(room, 'activate', p.movement.position, { playerId, kind });
     return true;
@@ -122,12 +123,18 @@ export class PowerupSystem {
       spawn.waitSeconds = 0; spawn.spawned = true; this.emit(room, 'spawn', spawnPosition(spawn));
     });
     for (const p of Object.values(room.players)) {
-      if (!alive(p)) { this.inventory.delete(p.id); p.hasPowerup = false; }
+      if (!alive(p)) { this.inventory.delete(p.id); this.rollRemaining.delete(p.id); p.hasPowerup = false; }
+      else if (this.rollRemaining.has(p.id)) {
+        const remaining = Math.max(0, this.rollRemaining.get(p.id)! - dt);
+        if (remaining > 1e-6) this.rollRemaining.set(p.id, remaining);
+        else this.rollRemaining.delete(p.id);
+      }
       const spawn = alive(p) && !this.inventory.has(p.id)
         ? world.spawns.find(s => s.spawned && horizontal(p.movement.position, spawnPosition(s)) <= C.powerup.pickupRadius)
         : undefined;
       if (spawn) {
         this.inventory.set(p.id, KINDS[Math.min(KINDS.length - 1, Math.floor(this.rng() * KINDS.length))]);
+        this.rollRemaining.set(p.id, C.powerup.rollSeconds);
         p.hasPowerup = true; spawn.spawned = false; spawn.waitSeconds = C.powerup.respawnSeconds;
         this.notify(room, p.id); this.emit(room, 'pickup', spawnPosition(spawn), { playerId: p.id });
       }

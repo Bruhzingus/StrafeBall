@@ -93,6 +93,20 @@ export class SoundManager {
       const step = Math.max(0, Math.min(9, stage - 1));
       note(523 * Math.pow(2, step / 12), 523 * Math.pow(2, step / 12) * 1.003, 0.16, 0.085, 0, 'triangle');
       note(1046 * Math.pow(2, step / 12), 1046 * Math.pow(2, step / 12), 0.09, 0.03, 0.01);
+    } else if (effect === 'roll-start') {
+      // Soft intake and a short rising pair leave room for the individual roulette ticks.
+      note(220, 440, 0.2, 0.07, 0, 'triangle');
+      note(440, 660, 0.16, 0.045, 0.075);
+      this.noiseBurst(0.07, 0.018, 2800, destination);
+    } else if (effect === 'roll-tick') {
+      const pitch = [523, 587, 659, 784][Math.max(0, stage - 1) % 4];
+      note(pitch, pitch * 1.035, 0.075, 0.052, 0, 'triangle');
+      note(pitch * 2, pitch * 2, 0.045, 0.012, 0.008);
+    } else if (effect === 'roll-reveal') {
+      note(392, 784, 0.24, 0.08, 0, 'triangle');
+      note(784, 1047, 0.3, 0.055, 0.065);
+      note(1175, 1175, 0.42, 0.032, 0.12);
+      if (kind) this.powerup('pickup', undefined, undefined, undefined, 0, kind);
     } else if (effect === 'pickup') {
       // The item reveal is intentionally recognisable before the HUD is read. Remote players
       // receive no `kind`, preserving the mystery-item contract and the old neutral pickup cue.

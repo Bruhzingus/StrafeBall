@@ -18,6 +18,7 @@ export class PracticePowerupSpawner {
     stations: []
   };
   private heldKind: PowerupKind | null = null;
+  private rollRemaining = 0;
   private respawnSeconds: number = C.powerup.respawnSeconds;
   private queuedGrenadeKind: GrenadeKind | null = null;
   private queuedGrenades = 0;
@@ -55,6 +56,8 @@ export class PracticePowerupSpawner {
 
   update(dt: number, playerPosition?: Vec3, resetSerial = 0): void {
     const elapsed = Math.max(0, dt);
+    this.rollRemaining = Math.max(0, this.rollRemaining - elapsed);
+    if (this.rollRemaining < 1e-6) this.rollRemaining = 0;
     this.buffs.speedSeconds = Math.max(0, this.buffs.speedSeconds - elapsed);
     this.buffs.adrenalineSeconds = Math.max(0, this.buffs.adrenalineSeconds - elapsed);
     this.buffs.magnetSeconds = Math.max(0, this.buffs.magnetSeconds - elapsed);
@@ -73,6 +76,7 @@ export class PracticePowerupSpawner {
 
       const index = Math.min(KINDS.length - 1, Math.floor(this.rng() * KINDS.length));
       this.heldKind = KINDS[Math.max(0, index)];
+      this.rollRemaining = C.powerup.rollSeconds;
       this.privateMessage = { kind: this.heldKind, resetSerial };
       spawn.spawned = false;
       spawn.waitSeconds = this.respawnSeconds;
@@ -85,7 +89,7 @@ export class PracticePowerupSpawner {
         && playerPosition.y < 0.1
         && Math.hypot(playerPosition.x - station.position.x, playerPosition.z - station.position.z) <= C.powerup.healRadius;
       station.progress.practice = inRange ? (station.progress.practice ?? 0) + elapsed : 0;
-      if (station.progress.practice + 1e-7 >= C.powerup.healSeconds) {
+      if (station.progress.practice + 1e-7 >= C.powerup.healSeconds && station.remainingSeconds > 0) {
         station.remainingSeconds = 0;
         this.events.push({ type: 'powerup-event', effect: 'heal', position: { ...station.position }, playerId: 'practice', resetSerial });
       }
@@ -95,7 +99,7 @@ export class PracticePowerupSpawner {
 
   activate(hasFreeHand: boolean, position: Vec3, resetSerial = 0): { ok: true; kind: PowerupKind } | { ok: false } {
     const kind = this.heldKind;
-    if (!kind) return { ok: false };
+    if (!kind || this.rollRemaining > 0) return { ok: false };
     if (HAND_ITEMS.includes(kind) && !hasFreeHand) {
       this.privateMessage = { kind, resetSerial, reason: 'Free a hand to use this power-up' };
       return { ok: false };
@@ -110,6 +114,7 @@ export class PracticePowerupSpawner {
     }
 
     this.heldKind = null;
+    this.rollRemaining = 0;
     this.privateMessage = { kind: null, resetSerial };
     this.events.push({
       type: 'powerup-event', effect: 'activate', position: { ...position }, playerId: 'practice', kind, resetSerial
@@ -153,6 +158,7 @@ export class PracticePowerupSpawner {
 
   reset(): void {
     this.heldKind = null;
+    this.rollRemaining = 0;
     this.privateMessage = null;
     this.events = [];
     this.queuedGrenadeKind = null;

@@ -14,8 +14,7 @@ const head = readFileSync('index.html', 'utf8').match(/<head>([\s\S]*?)<\/head>/
 await page.route('**/team-room-review', route => route.fulfill({ contentType: 'text/html', body: `<html><head>${head}</head><body></body></html>` }));
 await page.goto('http://127.0.0.1:5173/team-room-review');
 await page.evaluate(async () => {
-  await import('/src/style.css');
-  await import('/src/game/ui/competitive.css');
+  await import('/src/game/ui/styles/index.css');
   const { MultiplayerOverlay } = await import('/src/game/network/MultiplayerOverlay.ts');
   const { createRoomState, createStartVoteState } = await import('/shared/simulation/MatchSim.ts');
   const { createPlayerState } = await import('/shared/simulation/PlayerSim.ts');
@@ -119,6 +118,10 @@ await page.screenshot({ path: `${out}/live-controls.png` });
 await page.evaluate(() => { window.reviewClient.latestSnapshot.room.match.status = 'complete'; window.reviewOverlay.update(); });
 await root.locator('.multiplayer-report-card').waitFor({ state: 'visible', timeout: 6000 });
 check('Postmatch report still appears after celebration', await root.locator('.multiplayer-report-card').isVisible());
+await root.locator('.multiplayer-postmatch').evaluate(async el => { await Promise.all(el.getAnimations().map(animation => animation.finished)); });
+check('Postmatch report fits the viewport', await root.locator('.multiplayer-postmatch').evaluate(el => {
+  const r = el.getBoundingClientRect(); return r.x >= 0 && r.y >= 0 && r.right <= innerWidth && r.bottom <= innerHeight;
+}));
 await page.screenshot({ path: `${out}/postmatch.png` });
 await page.evaluate(() => {
   window.reviewClient.latestSnapshot.room = window.reviewFixture(1);

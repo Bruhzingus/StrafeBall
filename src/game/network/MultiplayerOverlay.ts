@@ -12,8 +12,6 @@ import {
 import type { InputManager } from '../input/InputManager';
 import { MultiplayerClient } from './MultiplayerClient';
 import { hostSetupError, localHostConfig } from './hostSession';
-import '../ui/menus.css';
-import '../ui/teamRoom.css';
 
 type PendingAction = (() => Promise<void>) | null;
 

@@ -1,5 +1,4 @@
 import type { MusicHudState } from '../audio/MusicManager';
-import './menus.css';
 
 export class MusicHud {
   private readonly root: HTMLDivElement;

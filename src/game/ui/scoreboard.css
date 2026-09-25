@@ -11,8 +11,8 @@
   --ts-blue: var(--sb-blue, #2787ff);
   --ts-red: var(--sb-red, #ff4c48);
   --ts-ink: var(--sb-cream, #f3f0e7);
-  --ts-muted: #a9b1bc;
-  --ts-ui-font: var(--sb-ui-font, "Segoe UI", system-ui, sans-serif);
+  --ts-muted: var(--sb-muted);
+  --ts-ui-font: var(--sb-ui-font);
   top: max(10px, 1.25vh);
   width: min(650px, calc(100vw - 40px));
   transform: translateX(-50%);
@@ -56,7 +56,7 @@
   gap: 10px;
   min-height: 78px;
   padding: 9px 11px;
-  border-radius: 7px;
+  border-radius: var(--sb-radius-card);
   background: rgba(7, 23, 46, 0.72);
   box-shadow: inset 0 0 0 1px rgba(243, 240, 231, 0.06);
 }
@@ -103,10 +103,10 @@
 }
 
 .team-scoreboard--compact .ts-team--blue .ts-team-header,
-.team-scoreboard--compact .ts-team--blue .ts-score { color: #6db0ff; }
+.team-scoreboard--compact .ts-team--blue .ts-score { color: var(--sb-blue-light); }
 
 .team-scoreboard--compact .ts-team--red .ts-team-header,
-.team-scoreboard--compact .ts-team--red .ts-score { color: #ff7774; }
+.team-scoreboard--compact .ts-team--red .ts-score { color: var(--sb-red-light); }
 
 .team-scoreboard--compact .ts-team-name {
   display: block;

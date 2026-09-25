@@ -45,6 +45,7 @@ import {
   applyMatBounce,
   catchBall,
   cannonLaunchVelocity,
+  cannonDropScale,
   createBallState,
   deflectBall,
   isBallCatchableInFlight,
@@ -843,6 +844,7 @@ export class ServerGameLoop {
     }
     // Charge is taken from the SERVER-tracked hand state, never trusted from the client (#7).
     const handState = player.hands[request.hand];
+    if (ball.kind === 'cannon' && handState.mode !== 'charging') return { ok: false, reason: 'charge-required' };
     const charge01 = handState.mode === 'charging'
       ? clamp(handState.chargeSeconds / GAME_CONSTANTS.ball.maxChargeSeconds, 0, 1)
       : 0;
@@ -866,7 +868,7 @@ export class ServerGameLoop {
       0,
       GAME_CONSTANTS.backflip.cooldownSeconds - BACKFLIP_QTE_FALLBACK_SECONDS
     );
-    const isBackflipThrow = backflipTier >= 1 &&
+    const isBackflipThrow = ball.kind !== 'cannon' && backflipTier >= 1 &&
       (trackedBackflipLanding || recentBackflipFallback) &&
       this.canHonorBackflipQteThrow(player);
     const origin = add(computePlayerHandAnchor(player, request.hand), scale(forward, 0.16));
@@ -897,8 +899,10 @@ export class ServerGameLoop {
       backflipTier: isBackflipThrow ? backflipTier : 0
     });
     if (ball.kind === 'cannon') {
-      throwCalc.velocity = cannonLaunchVelocity(forward);
-      throwCalc.curveAccel = vec3(); throwCalc.dropScale = 1; throwCalc.isSuper = false;
+      throwCalc.velocity = cannonLaunchVelocity(forward, charge01);
+      throwCalc.curveAccel = vec3(); throwCalc.dropScale = cannonDropScale(charge01); throwCalc.isSuper = false;
+    } else if (ball.kind === 'bomb') {
+      throwCalc.velocity = scale(throwCalc.velocity, GAME_CONSTANTS.powerup.bombThrowSpeedMultiplier);
     }
     const { velocity: rawVelocity, curveAccel, dropScale, isSuper } = throwCalc;
     const velocity = isDoubleThrow && ball.kind !== 'cannon' ? scale(rawVelocity, GAME_CONSTANTS.ball.doubleThrowSpeedPenalty) : rawVelocity;
@@ -1509,7 +1513,7 @@ export class ServerGameLoop {
     }
     this.updateBalls(fixedDt, active, defenseActive);
     // Lava herds every loose ball to the bleachers on purpose — don't fight it with the crowd rule.
-    if (active && this.state.mapEffect?.kind !== 'lava') this.respawnCrowdedBalls(fixedDt);
+    if (powerupsActive && this.state.mapEffect?.kind !== 'lava') this.respawnCrowdedBalls(fixedDt);
     if (powerupsActive) {
       this.applyingExplosion = true;
       this.powerupSystem.afterBalls(this.state, fixedDt, (ball, target) => {
@@ -1525,13 +1529,15 @@ export class ServerGameLoop {
       this.resolveRoundOutcome();
     }
 
-    if (active) {
-      // Lag-compensated catch reclaim: a high-ping defender's well-timed click may only arrive after
-      // the server already applied a hit/let the ball pass. Re-evaluate open catch attempts against
-      // BALL HISTORY rewound to what the defender saw; a legitimate catch claims the ball and reverts
-      // a hit it just superseded. Runs after updateBalls so this tick's swept history is recorded.
+    if (defenseActive) {
+      // Apply the same lag-compensated catch reclaim during warmup and live play. A delayed click
+      // can arrive after the ball has passed in either phase; warmup must judge it against the same
+      // ball history the player saw. Runs after updateBalls so this tick's history is recorded.
       this.resolveCatchReclaim(this.stepNowMs);
       this.pruneRecentHits(this.stepNowMs);
+    }
+
+    if (active) {
       this.updateRules(fixedDt);
     }
 
@@ -1866,7 +1872,7 @@ export class ServerGameLoop {
     if (input.fakeThrowPressed || input.fakeThrowHeld) return;
     for (const hand of ['left', 'right'] as const) {
       const ball = this.state.balls[this.state.players[playerId]?.hands[hand].heldBallId ?? ''];
-      if ((ball?.kind === 'cannon' || ball?.kind === 'heal') && (hand === 'left' ? input.leftHandPressed : input.rightHandPressed)) this.handleThrow(playerId, { hand });
+      if (ball?.kind === 'heal' && (hand === 'left' ? input.leftHandPressed : input.rightHandPressed)) this.handleThrow(playerId, { hand });
     }
     const tier = input.backflipThrowTier;
     if (input.leftHandReleased) this.handleInputThrow(playerId, 'left', tier);

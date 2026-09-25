@@ -81,6 +81,11 @@ describe('PracticePowerupSpawner', () => {
     spawner.update(C.powerup.respawnSeconds, { x: 0, y: 0, z: 0 }, 3);
     spawner.drainEvents();
 
+    expect(spawner.activate(true, { x: 2, y: 0, z: 1 }, 3)).toEqual({ ok: false });
+    expect(spawner.identity?.kind).toBe('adrenaline');
+    spawner.update(C.powerup.rollSeconds - 0.01);
+    expect(spawner.activate(true, { x: 2, y: 0, z: 1 }, 3)).toEqual({ ok: false });
+    spawner.update(0.01);
     expect(spawner.activate(true, { x: 2, y: 0, z: 1 }, 3)).toEqual({ ok: true, kind: 'adrenaline' });
     expect(spawner.buffs.adrenalineSeconds).toBe(C.powerup.buffSeconds);
     expect(spawner.identity).toEqual({ kind: null, resetSerial: 3 });
@@ -96,10 +101,28 @@ describe('PracticePowerupSpawner', () => {
     spawner.update(C.powerup.respawnSeconds, { x: 0, y: 0, z: 0 }, 4);
 
     expect(spawner.identity?.kind).toBe('bomb');
+    spawner.update(C.powerup.rollSeconds);
     expect(spawner.activate(false, { x: 0, y: 0, z: 0 }, 4)).toEqual({ ok: false });
     expect(spawner.identity).toEqual({
       kind: 'bomb', resetSerial: 4, reason: 'Free a hand to use this power-up'
     });
+  });
+
+  it('heals before expiry, but not on the tick a station expires', () => {
+    const spawner = new PracticePowerupSpawner();
+    spawner.placeHeal({ x: 0, y: 0, z: 0 });
+    spawner.drainEvents();
+
+    spawner.update(C.powerup.stationLifetimeSeconds - C.powerup.healSeconds, { x: 10, y: 0, z: 0 });
+    spawner.update(C.powerup.healSeconds, { x: 0, y: 0, z: 0 });
+
+    expect(spawner.world.stations).toHaveLength(0);
+    expect(spawner.drainEvents().filter(event => event.effect === 'heal')).toEqual([]);
+
+    spawner.placeHeal({ x: 0, y: 0, z: 0 });
+    spawner.drainEvents();
+    spawner.update(C.powerup.healSeconds, { x: 0, y: 0, z: 0 });
+    expect(spawner.drainEvents().filter(event => event.effect === 'heal')).toHaveLength(1);
   });
 
   it('queues the rest of a grenade bundle and dispenses each one only after a throw', () => {
@@ -107,6 +130,7 @@ describe('PracticePowerupSpawner', () => {
     const spawner = new PracticePowerupSpawner(() => shockRoll);
     spawner.update(C.powerup.respawnSeconds, { x: 0, y: 0, z: 0 });
 
+    spawner.update(C.powerup.rollSeconds);
     expect(spawner.activate(true, { x: 0, y: 0, z: 0 })).toEqual({ ok: true, kind: 'shock' });
     expect(spawner.pendingGrenades).toBe(C.powerup.grenadeCharges - 1);
 

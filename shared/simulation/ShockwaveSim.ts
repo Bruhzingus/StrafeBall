@@ -12,10 +12,10 @@ function horizontalDirection(dx: number, dz: number, fallback: Vec3): { x: numbe
   return { x: 0, z: 1 };
 }
 
-/** A close blast is a movement tool; the edge still shoves without launching across the court. */
+/** Full power at the blast center, falling linearly to zero at its outer radius. */
 export function shockwaveFalloff(distance: number, radius: number): number {
-  if (!Number.isFinite(distance) || distance > radius) return 0;
-  return 1 - 0.65 * Math.pow(Math.max(0, distance) / radius, 1.5);
+  if (!Number.isFinite(distance) || !Number.isFinite(radius) || radius <= 0) return 0;
+  return Math.max(0, 1 - Math.max(0, distance) / radius);
 }
 
 /**

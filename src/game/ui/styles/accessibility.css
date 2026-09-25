@@ -1,0 +1,14 @@
+/* State invariants are independent of component layout and presentation. */
+[hidden] { display: none !important; }
+:where(button, input, select, textarea, summary, a[href], [tabindex]):focus-visible {
+  outline: 3px solid var(--sb-focus); outline-offset: 3px;
+}
+:where(.sb-surface--dark, .creator-ui, .creator-hotbar, .creator-playtest-bar, .race-panel, .graphics-tuning) :focus-visible {
+  outline-color: var(--sb-gold);
+}
+:where(input[type='checkbox'], input[type='radio'], input[type='range']) { accent-color: var(--sb-blue-ink); }
+@media (prefers-reduced-motion: reduce) {
+  :where(.sb-button, .creator-ui *, .creator-hotbar *, .creator-modal *, .loading-banner, .loading-bar-fill, .course-banner, .creator-entry-prompt) {
+    animation: none !important; transition: none !important;
+  }
+}

@@ -87,6 +87,8 @@ describe('DashController', () => {
     const dash = new DashController();
     dash.setAdrenalineActive(true);
     expect(dash.charges).toBe(GAME_CONSTANTS.powerup.adrenalineMaxCharges);
+    expect(dash.maxCharges).toBe(GAME_CONSTANTS.powerup.adrenalineMaxCharges);
+    expect(dash.rechargeSeconds).toBe(GAME_CONSTANTS.powerup.adrenalineRechargeSeconds);
 
     dash.tryDash(new Vector3(0, 0, 5), new Vector3(0, 0, 1));
     dash.update(GAME_CONSTANTS.powerup.adrenalineRechargeSeconds);
@@ -94,5 +96,7 @@ describe('DashController', () => {
 
     dash.setAdrenalineActive(false);
     expect(dash.charges).toBe(TUNING.dash.maxCharges);
+    expect(dash.maxCharges).toBe(TUNING.dash.maxCharges);
+    expect(dash.rechargeSeconds).toBe(TUNING.dash.rechargeSeconds);
   });
 });

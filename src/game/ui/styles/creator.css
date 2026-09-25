@@ -1,0 +1,49 @@
+/* Dense editor tools share the HUD palette; modal decisions use paper surfaces. */
+:is(.creator-ui, .creator-hotbar, .creator-playtest-bar, .graphics-tuning) {
+  background: var(--sb-surface); color: var(--sb-cream); border: 1px solid var(--sb-line);
+  border-top: 3px solid var(--sb-gold); border-radius: var(--sb-radius-card);
+  box-shadow: var(--sb-shadow); font-family: var(--sb-ui-font); font-variant-numeric: tabular-nums;
+  color-scheme: dark;
+}
+.creator-section { border-color: var(--sb-line); border-radius: var(--sb-radius); background: var(--sb-surface-inset); }
+:is(.creator-section-title, .creator-playtest-label, .creator-hotbar-grouptitle) { color: var(--sb-gold); font-size: var(--sb-text-xs); letter-spacing: .08em; }
+:is(.creator-label, .creator-empty, .creator-meta-note, .creator-palette-grouptitle, .creator-help, .creator-course-meta, .creator-autosave-status, .creator-import-note) { color: var(--sb-muted); }
+:is(.creator-readonly, .creator-check, .creator-course-name, .creator-opacity-value) { color: var(--sb-cream); }
+:is(.creator-btn, .creator-palette-btn, .creator-hotbar-tool, .creator-chip, .creator-outliner-mini) {
+  min-height: var(--sb-control-height); border: 1px solid var(--sb-line); border-radius: var(--sb-radius);
+  background: var(--sb-surface-raised); color: var(--sb-cream); box-shadow: none;
+  font-family: var(--sb-ui-font); font-size: var(--sb-text-xs); line-height: 1.3;
+  transition: background-color var(--sb-fast) var(--sb-ease), border-color var(--sb-fast) var(--sb-ease);
+}
+:is(.creator-btn, .creator-palette-btn, .creator-hotbar-tool, .creator-chip, .creator-outliner-mini):hover:not(:disabled) { background: var(--sb-surface-hover); }
+:is(.creator-btn-primary, .creator-mode-btn--active, .creator-palette-btn--armed, .creator-hotbar-tool--active, .creator-chip--armed, .creator-settings-toggle--open) {
+  background: var(--sb-gold); color: var(--sb-navy); border-color: var(--sb-gold); box-shadow: none;
+}
+:is(.creator-btn-primary, .creator-mode-btn--active, .creator-palette-btn--armed, .creator-hotbar-tool--active, .creator-chip--armed):hover:not(:disabled) { background: var(--sb-gold-hover); }
+.creator-btn-warn { color: var(--sb-red-light); border-color: var(--sb-red-light); }
+.creator-settings-toggle { background: var(--sb-surface-raised); border-color: var(--sb-line); }
+.creator-settings-toggle--open { background: var(--sb-gold); color: var(--sb-navy); }
+:is(.creator-text, .creator-number, .creator-select) { min-height: 32px; border: 1px solid var(--sb-line); border-radius: var(--sb-radius); background: var(--sb-surface-raised); color: var(--sb-cream); font-family: var(--sb-ui-font); }
+:is(.creator-course-row, .creator-outliner-row) { border-radius: var(--sb-radius); }
+:is(.creator-course-row--active, .creator-outliner-row--active) { background: var(--sb-surface-hover); outline-color: var(--sb-gold); border-color: var(--sb-gold); }
+.creator-course-current { color: var(--sb-gold); background: var(--sb-surface-inset); border-color: var(--sb-line); }
+.creator-chip-key { background: var(--sb-surface-inset); color: inherit; border-color: var(--sb-line); box-shadow: none; }
+.creator-entry-bar > div, .creator-hold-fill { background: var(--sb-gold); }
+.creator-save-indicator { color: var(--sb-success-light); background: var(--sb-surface); border-radius: var(--sb-radius); }
+.creator-rec-timer { background: var(--sb-surface); color: var(--sb-red-light); border-color: var(--sb-red-light); border-radius: var(--sb-radius); }
+.creator-btn-mini, .creator-outliner-mini { min-height: 28px; }
+
+/* Graphics tuning uses classes, so themes also reach this previously inline-styled panel. */
+.graphics-tuning { position: absolute; top: 70px; left: var(--sb-safe-x); width: 260px; max-height: calc(100dvh - 100px); overflow-y: auto; padding: var(--sb-space-4); pointer-events: auto; z-index: 90; font-size: var(--sb-text-xs); box-sizing: border-box; }
+.graphics-tuning__title { margin-bottom: var(--sb-space-3); color: var(--sb-gold); font: 400 var(--sb-heading-sm)/1.1 var(--sb-display-font); }
+.graphics-tuning__actions { display: flex; flex-wrap: wrap; gap: var(--sb-space-2); margin-top: var(--sb-space-2); }
+.graphics-tuning__status { min-height: 14px; margin-top: var(--sb-space-2); color: var(--sb-success-light); }
+.graphics-tuning__row { display: block; margin: var(--sb-space-2) 0; }
+.graphics-tuning__head { display: flex; justify-content: space-between; gap: var(--sb-space-2); }
+.graphics-tuning__value { color: var(--sb-gold); }
+.graphics-tuning input[type='range'] { width: 100%; }
+@media (max-width: 600px) {
+  .creator-ui { width: min(286px, calc(100vw - 24px)); }
+  .creator-hotbar { right: 12px; left: 12px; max-width: calc(100vw - 24px); overflow-x: auto; }
+  .graphics-tuning { width: min(260px, calc(100vw - 32px)); }
+}

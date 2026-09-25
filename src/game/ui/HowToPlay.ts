@@ -1,6 +1,5 @@
 import { GAME_CONSTANTS } from '../../../shared/constants';
 import { CONTROL_KEYS } from '../config/controls';
-import './menus.css';
 
 /**
  * A quick-reference rulebook, opened from Settings. Built as flip-through pages (like the Quick
@@ -78,7 +77,7 @@ function buildPages(): Page[] {
         <div class="htp-items">
           <div><b>⚡ Adrenaline</b> — doubles your dash charges and refills them faster for ${buffSeconds}s.</div>
           <div><b>» Speed</b> — a solid move-speed boost and higher jumps for ${buffSeconds}s.</div>
-          <div><b>● Cannonball</b> — one huge, unstoppable throw. It starts slower, gains 10% speed every 6 metres, and punches through everyone — enemies, teammates, even you if it comes back. It can ricochet four times off walls and obstacles, but touching the floor destroys it instantly. You can't dash while carrying it.</div>
+          <div><b>● Cannonball</b> — hold the throw button to charge it, then release. Early throws are weak and fall quickly; charge nearly to full to send it far. It gains 10% speed every 6 metres and punches through everyone — enemies, teammates, even you if it comes back. It can ricochet four times off walls and obstacles, but touching the floor destroys it instantly. You can't dash while carrying it.</div>
           <div><b>+ Heal Station</b> — drop it and stand in the ring for a few seconds straight to earn back a life. Step out and the timer resets.</div>
           <div><b>∩ Ball Magnet</b> — loose balls drift toward you, and once your hands are full, extras stick to you as armor that'll eat a hit for you.</div>
           <div><b>✹ Bomb Ball</b> — throw it like normal, but the first bounce arms a short fuse. Three beeps, then it goes off and tags everyone standing close, thrower included.</div>

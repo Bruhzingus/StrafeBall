@@ -26,8 +26,8 @@ export interface PowerupSlotView {
   hint: string;
   /** Ring fill, 0..1. */
   progress: number;
-  /** empty = nothing held and nothing spawned; waiting = spawn countdown; held = item ready; active = effect running. */
-  state: 'empty' | 'waiting' | 'held' | 'active';
+  /** empty = no item; rolling = pickup reveal and activation lock; held = ready; active = running. */
+  state: 'empty' | 'waiting' | 'rolling' | 'held' | 'active';
   /** Mario-Kart roulette flicker right after pickup. */
   rolling?: boolean;
   /** Actual action for the item: inventory activation or a hand throw. */
@@ -488,14 +488,16 @@ export class Hud {
       dt: Math.max(0, frameMs / 1000)
     });
 
+    const maxCharges = player.dash.maxCharges;
+    const rechargeSeconds = player.dash.rechargeSeconds;
     const dashRecharge =
-      player.dash.charges >= TUNING.dash.maxCharges
+      player.dash.charges >= maxCharges
         ? 'full'
-        : `+1 in ${Math.max(0, TUNING.dash.rechargeSeconds - player.dash.rechargeTimer).toFixed(1)}s`;
-    const staminaHtml = this.staminaBar(player.dash.charges, TUNING.dash.maxCharges, dashRecharge);
+        : `+1 in ${Math.max(0, rechargeSeconds - player.dash.rechargeTimer).toFixed(1)}s`;
+    const staminaHtml = this.staminaBar(player.dash.charges, maxCharges, dashRecharge);
     this.updateStaminaWidget(
-      this.staminaWidgetValue(player.dash.charges, player.dash.rechargeTimer),
-      TUNING.dash.maxCharges
+      this.staminaWidgetValue(player.dash.charges, player.dash.rechargeTimer, maxCharges, rechargeSeconds),
+      maxCharges
     );
 
     // Bhop: grace window visible while it's active so you can time re-jumps.
@@ -894,7 +896,8 @@ export class Hud {
     this.powerupDock.classList.toggle('powerup-dock--acquired', !!view.rolling);
     this.powerupDock.classList.toggle('powerup-dock--expiring', !!view.expiring);
     this.powerupCard.style.setProperty('--ability-progress', `${(progress * 360).toFixed(1)}deg`);
-    this.powerupCard.style.setProperty('--power-color', 'var(--sb-gold)');
+    this.powerupDock.style.setProperty('--power-color', view.color);
+    this.powerupCard.style.setProperty('--power-color', view.color);
     this.powerupCard.classList.toggle('ability-hud-card--ready', view.state === 'held');
     this.powerupCard.classList.toggle('ability-hud-card--cooldown', view.state === 'waiting');
     this.powerupCard.classList.toggle('ability-hud-card--powerup-empty', view.state === 'empty');

@@ -50,6 +50,7 @@ function giveGrenade(loop: ServerGameLoop, kind: 'shock' | 'stun'): string {
   loop.state.players.a.movement.position = v(0, 0, 0);
   loop.advance(); // pickup
   loop.state.players.a.movement.position = v(0, 0, -6);
+  advanceSeconds(loop, C.powerup.rollSeconds);
   expect(system.activate(loop.state, 'a')).toBe(true);
   const held = loop.state.players.a.hands.left.heldBallId ?? loop.state.players.a.hands.right.heldBallId;
   expect(held).toBeTruthy();
@@ -127,8 +128,8 @@ describe('grenades: shock + stun', () => {
     const b = loop.state.players.b;
     expect(loop.state.balls[id]).toBeUndefined();
     expect(b.lives).toBe(livesBefore);
-    expect(b.movement.velocity.x).toBeGreaterThan(45);
-    expect(b.movement.velocity.y).toBeGreaterThan(15);
+    expect(b.movement.velocity.x).toBeGreaterThan(28);
+    expect(b.movement.velocity.y).toBeGreaterThan(11);
     expect(b.hands.left.mode).toBe('holding'); expect(b.hands.left.chargeSeconds).toBe(0);
     expect(loop.state.mats[mat].knockedOver).toBe(true);
     expect(loop.state.balls.ball_1.velocity.x).toBeLessThan(-2);
@@ -317,7 +318,7 @@ describe('map effects', () => {
     expect(system.frenzyBalls).toHaveLength(extra);
   });
 
-  it('lobby (warmup): power-ups spawn and can be used, bombs never cost lives, lava never rolls', () => {
+  it('lobby (warmup): power-ups and all map effects run, but bombs never cost lives', () => {
     const loop = new ServerGameLoop('lobby'); loop.addPlayer('a', 'A'); loop.addPlayer('b', 'B');
     expect(loop.state.match.status).toBe('warmup');
     (loop as unknown as { powerupSystem: PowerupSystem }).powerupSystem = new PowerupSystem(() => (kinds.indexOf('bomb') + 0.1) / kinds.length);
@@ -329,6 +330,7 @@ describe('map effects', () => {
     // The spawn clock runs in the lobby and the item can be picked up + activated.
     advanceSeconds(loop, C.powerup.respawnSeconds + 0.2);
     expect(loop.state.players.a.hasPowerup).toBe(true);
+    advanceSeconds(loop, C.powerup.rollSeconds);
     expect(powerups(loop).activate(loop.state, 'a')).toBe(true);
     const bombId = loop.state.players.a.hands.left.heldBallId ?? loop.state.players.a.hands.right.heldBallId;
     expect(loop.state.balls[bombId!].kind).toBe('bomb');
@@ -340,14 +342,33 @@ describe('map effects', () => {
     expect(loop.state.balls[bombId!]).toBeUndefined();
     expect(loop.state.players.b.lives).toBe(livesB);
 
-    // Map effects roll in the lobby too, but a roll that would be lava lands on something else.
+    // All three map effects, including lava, retain their normal roll odds in warmup.
     const effects = loop.mapEffectSystem;
+    const mapKinds = ['moon', 'lava', 'frenzy'];
     for (let i = 0; i < 3; i++) {
       (effects as unknown as { rng: () => number }).rng = rollEffect(i);
       expect(effects.tryStart(loop.state, 0, v())).toBe(true);
-      expect(loop.state.mapEffect!.kind).not.toBe('lava');
+      expect(loop.state.mapEffect!.kind).toBe(mapKinds[i]);
       effects.reset(loop.state);
     }
+  });
+
+  it('allows warmup lava to rise without costing lives', () => {
+    const loop = new ServerGameLoop('warmup-lava');
+    loop.addPlayer('a', 'A');
+    loop.addPlayer('b', 'B');
+    expect(loop.state.match.status).toBe('warmup');
+    loop.state.players.a.movement.position = v(0, 0, -8);
+    const effects = loop.mapEffectSystem;
+    (effects as unknown as { rng: () => number }).rng = rollEffect(1);
+    expect(effects.tryStart(loop.state, 0, v())).toBe(true);
+    expect(loop.state.mapEffect!.kind).toBe('lava');
+    loop.state.mapEffect!.phase = 'active';
+    loop.state.mapEffect!.remainingSeconds = C.mapEffect.lavaHoldSeconds;
+    const livesA = loop.state.players.a.lives;
+    advanceSeconds(loop, C.mapEffect.lavaFirstDamageSeconds + 0.5);
+    expect(loop.state.mapEffect!.lavaLevel).toBeGreaterThan(0);
+    expect(loop.state.players.a.lives).toBe(livesA);
   });
 
   it('intermission: nothing spawns and nothing can be used', () => {

@@ -16,6 +16,7 @@ exports.applyBallBounce = applyBallBounce;
 exports.applyMatBounce = applyMatBounce;
 exports.applyCannonBounce = applyCannonBounce;
 exports.cannonLaunchVelocity = cannonLaunchVelocity;
+exports.cannonDropScale = cannonDropScale;
 exports.cannonSpeedGrowthFactor = cannonSpeedGrowthFactor;
 exports.settleBallIfSlow = settleBallIfSlow;
 exports.curveRampFactor = curveRampFactor;
@@ -223,9 +224,17 @@ function applyCannonBounce(ball, constants = constants_1.GAME_CONSTANTS) {
         ? { ...markBallDead(ball), bounceCount }
         : { ...ball, bounceCount };
 }
-/** Authoritative/offline cannon launch: 25% below the old charged throw speed. */
-function cannonLaunchVelocity(direction, constants = constants_1.GAME_CONSTANTS) {
-    return (0, CollisionMath_1.scale)((0, CollisionMath_1.normalize)(direction, (0, CollisionMath_1.vec3)(0, 0, 1)), constants.ball.chargedThrowSpeed * constants.powerup.cannonLaunchSpeedMultiplier);
+/** Cannon speed is deliberately back-loaded: early releases barely leave the thrower's side. */
+function cannonLaunchVelocity(direction, charge01, constants = constants_1.GAME_CONSTANTS) {
+    const charge = Math.max(0, Math.min(1, charge01));
+    const fraction = constants.powerup.cannonMinChargeSpeedFraction +
+        (1 - constants.powerup.cannonMinChargeSpeedFraction) * Math.pow(charge, constants.powerup.cannonChargeSpeedExponent);
+    return (0, CollisionMath_1.scale)((0, CollisionMath_1.normalize)(direction, (0, CollisionMath_1.vec3)(0, 0, 1)), constants.ball.chargedThrowSpeed * constants.powerup.cannonLaunchSpeedMultiplier * fraction);
+}
+/** A full charge flies level; weak releases drop quickly and expire on floor contact. */
+function cannonDropScale(charge01, constants = constants_1.GAME_CONSTANTS) {
+    const charge = Math.max(0, Math.min(1, charge01));
+    return 1 - Math.pow(charge, constants.powerup.cannonChargeDropExponent);
 }
 /** Continuous exponential growth: exactly +10% for each six meters traveled. */
 function cannonSpeedGrowthFactor(distanceTraveled, constants = constants_1.GAME_CONSTANTS) {

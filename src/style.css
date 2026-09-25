@@ -1,7 +1,7 @@
 /* ============================================================================================
-   StrafeBall — high-school "pep-rally cartoon" UI theme.
-   Chunky rounded panels, thick ink outlines, bold marker-style type, and bright school colors.
-   Class names are unchanged so the TS HUD code keeps working; this file only restyles them.
+   Legacy UI geometry and state selectors. Loaded in the lowest-priority cascade layer.
+   Current visual styling and tokens live in game/ui/styles/index.css and its component sheets.
+   Add new visual rules to those sheets; preserve state, visibility and gameplay positioning here.
    ============================================================================================ */
 
 :root {

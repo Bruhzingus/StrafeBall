@@ -11,7 +11,7 @@ import type { Hud, PowerupSlotView } from '../ui/Hud';
 const ITEMS: Record<PowerupKind, { name: string; icon: string; color: string; hint: string }> = {
   adrenaline: { name: 'ADRENALINE', icon: 'ϟ', color: '#ffce65', hint: '6 dash charges · faster recharge · 15s' },
   speed: { name: 'SPEED', icon: '»', color: '#75e6ff', hint: '+30% speed · higher jumps · 15s' },
-  cannon: { name: 'CANNONBALL', icon: '●', color: '#b9c5d8', hint: 'Hits everyone · accelerates · 4 ricochets' },
+  cannon: { name: 'CANNONBALL', icon: '●', color: '#b9c5d8', hint: 'Hold to full charge for range · weak if released early' },
   heal: { name: 'HEAL STATION', icon: '+', color: '#7fffb2', hint: 'Place with throw · stay 10s to heal' },
   magnet: { name: 'BALL MAGNET', icon: '∩', color: '#ce9aff', hint: 'Pull loose balls · up to 3 armor · 20s' },
   bomb: { name: 'BOMB BALL', icon: '✹', color: '#ffad73', hint: 'First bounce starts a 2s fuse · hits everyone' },
@@ -24,6 +24,9 @@ const MAP_EFFECTS: Record<MapEffectKind, { name: string; warning: string; color:
   lava: { name: "DON'T TOUCH THE LAVA", warning: 'Lava is rising — get to high ground!', color: '#ff6a2a', icon: '♨' },
   frenzy: { name: 'BALL FRENZY', warning: 'Triple balls · nothing dies on a bounce', color: '#ffd24a', icon: '※' }
 };
+const PICKUP_BLUE = '#62bdff';
+const ROLL_TIMES = [0, 0.085, 0.17, 0.26, 0.36, 0.47, 0.59, 0.72, 0.87, 1.04, 1.23, 1.46];
+const ROLL_KINDS = Object.keys(ITEMS) as PowerupKind[];
 
 /**
  * Return the public kind for activations, or the local player's private item identity for a
@@ -207,6 +210,8 @@ export class PowerupPresentation {
   private screenFx = document.createElement('div');
   private heldKind: PowerupKind | null = null;
   private rouletteUntil = 0;
+  private rouletteStart = 0;
+  private rouletteStep = -1;
   private nudgeUntil = 0;
   private lastPrivate: PowerupPrivateMessage | null = null;
   private lastSerial = -1;
@@ -221,6 +226,10 @@ export class PowerupPresentation {
   private stunFx = document.createElement('div');
   private lastBannerHtml = '';
   private lava: Mesh | null = null;
+  private mapField: Mesh | null = null;
+  private mapRings: Mesh[] = [];
+  private mapBeacons: Mesh[] = [];
+  private mapMotes: Mesh[] = [];
   private effectCapsule: TransformNode | null = null;
   private effectCapsuleCore: Mesh | null = null;
   private stunFlashUntil = 0;
@@ -234,6 +243,8 @@ export class PowerupPresentation {
   private readonly afterRenderObserver: Observer<Scene>;
   /** Mouse-look multiplier for the local player (1 = normal; dropped while stunned). */
   localLookScale = 1;
+  /** Suppress activation inputs until the pickup is revealed. The server enforces this too. */
+  activationLocked = false;
 
   constructor(private scene: Scene, private sound: SoundManager) {
     // Apply only during rendering; the camera used for aiming and movement keeps its exact pose.
@@ -251,15 +262,15 @@ export class PowerupPresentation {
     const scene = this.scene;
     const root = new TransformNode(`powerup_spawn_${index}`, scene);
     const box = new TransformNode('mystery_capsule', scene); box.parent = root;
-    const gold = material(scene, 'power_gold', '#ffcc62', 0.55);
+    const blue = material(scene, 'power_pickup_blue', PICKUP_BLUE, 0.7);
     const dark = material(scene, 'power_box_dark', '#182c46', 0.1);
     const shell = attach(MeshBuilder.CreateBox('mystery_shell', { size: 0.62 }, scene), box, dark);
-    shell.enableEdgesRendering(); shell.edgesWidth = 2; shell.edgesColor.set(1, 0.8, 0.35, 1);
-    for (const y of [-0.31, 0.31]) attach(MeshBuilder.CreateBox('mystery_trim', { width: 0.68, height: 0.045, depth: 0.68 }, scene), box, gold, new Vector3(0, y, 0));
+    shell.enableEdgesRendering(); shell.edgesWidth = 2; shell.edgesColor.set(0.38, 0.74, 1, 1);
+    for (const y of [-0.31, 0.31]) attach(MeshBuilder.CreateBox('mystery_trim', { width: 0.68, height: 0.045, depth: 0.68 }, scene), box, blue, new Vector3(0, y, 0));
     const faceMat = material(scene, 'power_question', '#ffffff', 0.8);
     if (!faceMat.diffuseTexture) {
       const tex = new DynamicTexture('mystery_question', { width: 128, height: 128 }, scene, false);
-      tex.drawText('?', null, 102, 'bold 110px sans-serif', '#ffdc87', '#182c46', true);
+      tex.drawText('?', null, 102, 'bold 110px sans-serif', '#a7e4ff', '#182c46', true);
       faceMat.diffuseTexture = tex; faceMat.emissiveTexture = tex;
     }
     for (let i = 0; i < 4; i++) {
@@ -281,26 +292,33 @@ export class PowerupPresentation {
   update(room: PowerupPresentationRoom | null, localId: string, localPosition: Vec3, privateMessage: PowerupPrivateMessage | null, events: PowerupEvent[], dt: number): void {
     this.time += dt;
     const active = !!room?.powerups && room.settings.powerupsEnabled !== false;
-    if (!active) { this.hud?.setPowerupSlot(null); this.setScreenFx(null, 0); this.setStun(0); this.setBanner(''); }
+    if (!active) { this.activationLocked = false; this.hud?.setPowerupSlot(null); this.setScreenFx(null, 0); this.setStun(0); this.setBanner(''); }
     this.neutral.hidden = Math.abs(localPosition.z) > C.match.neutralZoneHalfDepth || Math.abs(localPosition.x) > C.map.halfWidth;
     if (room && (this.lastSerial !== room.resetVote.resetSerial || this.lastRound !== room.match.currentRound)) {
-      this.clearDynamic(); this.heldKind = null; this.lastPrivate = null;
+      this.clearDynamic(); this.heldKind = null; this.lastPrivate = null; this.rouletteUntil = 0;
       for (const node of this.spawnNodes) node.lastWait = -1;
       this.lastSerial = room.resetVote.resetSerial; this.lastRound = room.match.currentRound;
     }
     if (!room) {
       this.hud?.setPowerupSlot(null); this.setScreenFx(null, 0); this.setStun(0); this.setBanner(''); this.clearDynamic();
-      this.lava?.setEnabled(false); this.effectCapsule?.setEnabled(false);
+      this.lava?.setEnabled(false); this.effectCapsule?.setEnabled(false); this.hideMapAtmosphere();
       for (const node of this.spawnNodes) node.root.setEnabled(false);
-      this.heldKind = null; this.lastPrivate = null; this.lastSerial = -1; return;
+      this.heldKind = null; this.lastPrivate = null; this.rouletteUntil = 0; this.activationLocked = false; this.lastSerial = -1; return;
     }
     const local = room.players[localId];
     if (privateMessage && privateMessage !== this.lastPrivate && privateMessage.resetSerial === room.resetVote.resetSerial) {
-      if (privateMessage.kind && privateMessage.kind !== this.heldKind) this.rouletteUntil = this.time + 3.5;
+      if (privateMessage.kind && privateMessage.kind !== this.heldKind) {
+        this.rouletteStart = this.time;
+        this.rouletteUntil = this.time + C.powerup.rollSeconds;
+        this.rouletteStep = -1;
+        this.sound.powerup('roll-start');
+      }
       this.heldKind = privateMessage.kind; this.lastPrivate = privateMessage;
       if (privateMessage.reason) { this.nudgeUntil = this.time + 2.5; this.sound.powerup('refuse'); }
     }
-    if (local?.combatState === 'eliminated') this.heldKind = null;
+    if (local?.combatState === 'eliminated') { this.heldKind = null; this.rouletteUntil = 0; }
+    this.updateRoulette();
+    this.activationLocked = (!!local?.hasPowerup && !this.heldKind) || (!!this.heldKind && this.time < this.rouletteUntil);
     for (const event of events) {
       if (event.resetSerial !== room.resetVote.resetSerial) continue;
       // Map-effect cues are court-wide announcements, not positional.
@@ -308,7 +326,9 @@ export class PowerupPresentation {
       // The pickup identity remains private: only its owner supplies their just-received private
       // item kind. Activations are public events and already carry the kind for every listener.
       const cueKind = resolvePowerupSoundKind(event, localId, this.heldKind);
-      this.sound.powerup(event.effect, spatial ? event.position : undefined, spatial ? localPosition : undefined, local?.movement.facing, event.stage ?? 0, cueKind);
+      // The local pickup is scored by the roll and reveal cues; remote pickups stay anonymous.
+      if (!(event.effect === 'pickup' && event.playerId === localId))
+        this.sound.powerup(event.effect, spatial ? event.position : undefined, spatial ? localPosition : undefined, local?.movement.facing, event.stage ?? 0, cueKind);
       if (event.effect === 'explode' && !settings.reducedEffects) {
         const distance = Math.hypot(localPosition.x - event.position.x, localPosition.y + C.player.eyeHeight - event.position.y, localPosition.z - event.position.z);
         const strength = Math.max(0, 1 - distance / (C.powerup.blastRadius * 3));
@@ -336,14 +356,14 @@ export class PowerupPresentation {
         node.box.position.y = 1.05 + (settings.reducedEffects ? 0 : Math.sin(this.time * 2.7) * 0.1);
         node.box.rotation.set(0.09, this.time * 0.65, settings.reducedEffects ? 0 : Math.sin(this.time * 1.8) * 0.06);
         const filled = spawn.spawned ? 60 : Math.floor((1 - node.waitEstimate / C.powerup.respawnSeconds) * 60);
-        node.ring.forEach((m, j) => { m.material = material(this.scene, j < filled ? 'power_gold' : 'power_ring_wait', j < filled ? '#ffcc62' : '#566171', j < filled ? 0.55 : 0.1); });
+        node.ring.forEach((m, j) => { m.material = material(this.scene, j < filled ? 'power_pickup_blue' : 'power_ring_wait', j < filled ? PICKUP_BLUE : '#566171', j < filled ? 0.7 : 0.1); });
       });
       for (let i = world.spawns.length; i < this.spawnNodes.length; i++) this.spawnNodes[i].root.setEnabled(false);
       this.updateStations(room);
       this.updateMapEffect(room);
     } else {
       for (const node of this.spawnNodes) node.root.setEnabled(false);
-      this.lava?.setEnabled(false); this.effectCapsule?.setEnabled(false); this.setBanner('');
+      this.lava?.setEnabled(false); this.effectCapsule?.setEnabled(false); this.hideMapAtmosphere(); this.setBanner('');
     }
     this.updatePlayers(room, localId, dt);
     if (active) { this.updateHud(local, room); this.updateLocalFeedback(local, room, dt); }
@@ -358,13 +378,28 @@ export class PowerupPresentation {
   /** Give the presentation the gameplay HUD so it can drive the ability bar's power-up slot. */
   attachHud(hud: Hud): void { this.hud = hud; }
 
+  private updateRoulette(): void {
+    if (!this.heldKind || !this.rouletteUntil) return;
+    if (this.time >= this.rouletteUntil) {
+      this.rouletteUntil = 0;
+      this.sound.powerup('roll-reveal', undefined, undefined, undefined, 0, this.heldKind);
+      return;
+    }
+    const elapsed = this.time - this.rouletteStart;
+    let step = 0;
+    while (step + 1 < ROLL_TIMES.length && elapsed >= ROLL_TIMES[step + 1]) step++;
+    if (step !== this.rouletteStep) {
+      this.rouletteStep = step;
+      if (step > 0) this.sound.powerup('roll-tick', undefined, undefined, undefined, step);
+    }
+  }
+
   /**
    * One card + two text lines, in priority order: a refusal nudge, then the held item (what G does),
    * then a running effect, then the spawn state. The ring shows whichever timer matters right now.
    */
   private updateHud(local: PlayerState | undefined, room: PowerupPresentationRoom): void {
     if (!this.hud) return;
-    // Reveal the real item immediately. The brief acquisition treatment never conceals information.
     const rolling = !!this.heldKind && this.time < this.rouletteUntil;
     const kind = this.heldKind;
     const item = kind ? ITEMS[kind] : null;
@@ -385,15 +420,20 @@ export class PowerupPresentation {
       : undefined;
     const grenadeKind = heldGrenade?.kind ?? room.practiceGrenade?.kind;
     let view: PowerupSlotView;
-    if (item) {
+    if (rolling) {
+      const rollKind = ROLL_KINDS[(Math.max(0, this.rouletteStep) * 5 + 2) % ROLL_KINDS.length];
+      const candidate = ITEMS[rollKind];
+      view = { glyph: candidate.icon, color: PICKUP_BLUE, name: 'ITEM ROULETTE',
+        hint: 'Rolling · activation locked', progress: Math.min(1, (this.time - this.rouletteStart) / C.powerup.rollSeconds),
+        state: 'rolling', rolling: true, keybind: '' };
+    } else if (item) {
       view = {
         glyph: item.icon,
         color: item.color,
         name: item.name,
-        hint: rolling ? item.hint : 'Ready to activate',
+        hint: item.hint,
         progress: 1,
         state: 'held',
-        rolling,
         keybind: 'G'
       };
     } else if (grenadeKind) {
@@ -404,23 +444,23 @@ export class PowerupPresentation {
         : local?.hands.left.heldBallId === heldGrenade?.id ? 'M1' : 'M2';
       view = { glyph: item.icon, color: item.color, name: item.name, hint: `${left} throw${left === 1 ? '' : 's'} left`, progress: left / C.powerup.grenadeCharges, state: 'held', keybind: handKey };
     } else if (local?.hasPowerup) {
-      view = { glyph: '?', color: ITEMS.adrenaline.color, name: 'Mystery item', hint: 'Revealing…', progress: 1, state: 'held' };
+      view = { glyph: '?', color: PICKUP_BLUE, name: 'Mystery item', hint: 'Revealing…', progress: 0, state: 'rolling', rolling: true, keybind: '' };
     } else if (effects.length > 0 || armor > 0 || buffs?.cannonLocked) {
       const lead = effects[0];
       view = { glyph: lead ? ITEMS[lead.kind].icon : armor ? ITEMS.magnet.icon : ITEMS.cannon.icon, color: lead?.color ?? (armor ? ITEMS.magnet.color : ITEMS.cannon.color), name: 'Active effects', hint: effectText, progress: lead ? lead.seconds / lead.max : 1, state: 'active', expiring: effects.some(e => e.seconds <= 3) };
     } else if (healing > 0) {
       view = { glyph: ITEMS.heal.icon, color: ITEMS.heal.color, name: 'Healing', hint: `Stay put · ${Math.min(C.powerup.healSeconds, Math.floor(healing))}/${C.powerup.healSeconds}s`, progress: healing / C.powerup.healSeconds, state: 'active' };
     } else if (world?.spawns.some(s => s.spawned)) {
-      view = { glyph: '?', color: ITEMS.adrenaline.color, name: 'Center court', hint: 'Power-up available', progress: 1, state: 'empty' };
+      view = { glyph: '?', color: PICKUP_BLUE, name: 'Center court', hint: 'Power-up available', progress: 1, state: 'empty' };
     } else {
       const soonest = Math.min(C.powerup.respawnSeconds, ...this.spawnNodes.filter((n, i) => world?.spawns[i]).map(n => n.waitEstimate));
       if (soonest > 10) { this.hud.setPowerupSlot(null); return; }
-      view = { glyph: '?', color: ITEMS.adrenaline.color, name: 'Center court', hint: `Power-up in ${Math.ceil(soonest)}s`, progress: 1 - soonest / C.powerup.respawnSeconds, state: 'waiting' };
+      view = { glyph: '?', color: PICKUP_BLUE, name: 'Center court', hint: `Power-up in ${Math.ceil(soonest)}s`, progress: 1 - soonest / C.powerup.respawnSeconds, state: 'waiting' };
     }
     // A refusal ("free a hand") overrides the hint line briefly.
     if (this.nudgeUntil > this.time && this.lastPrivate?.reason) view = { ...view, hint: this.lastPrivate.reason };
     // Keep the running effect visible in the hint even while an item is held (it's the shorter-lived info).
-    else if (item && effectText) view = { ...view, hint: effectText };
+    else if (item && !rolling && effectText) view = { ...view, hint: effectText };
     this.hud.setPowerupSlot(view);
   }
   /**
@@ -459,6 +499,7 @@ export class PowerupPresentation {
     else if (kind) this.setScreenFx(kind, strength, ITEMS[kind].color);
     else if (effect?.phase === 'active' && effect.kind === 'moon') this.setScreenFx('moon', 0.7, MAP_EFFECTS.moon.color);
     else if (effect?.phase === 'active' && effect.kind === 'lava') this.setScreenFx('lava', 0.5, MAP_EFFECTS.lava.color);
+    else if (effect?.phase === 'active' && effect.kind === 'frenzy') this.setScreenFx('frenzy', 0.45, MAP_EFFECTS.frenzy.color);
     else this.setScreenFx(null, 0);
 
     // Stun: blur + slowed look for the local player while their stun timer runs.
@@ -494,6 +535,7 @@ export class PowerupPresentation {
       this.setBanner('');
       this.effectCapsule?.setEnabled(false);
       this.lava?.setEnabled(false);
+      this.hideMapAtmosphere();
       return;
     }
     const info = MAP_EFFECTS[effect.kind];
@@ -511,7 +553,10 @@ export class PowerupPresentation {
       const c = Color3.FromHexString(info.color);
       for (const child of this.effectCapsule.getChildMeshes()) {
         const m = child.material as StandardMaterial | null;
-        if (m) { m.diffuseColor = c; m.emissiveColor = c.scale(0.9); }
+        if (m) {
+          const tint = child === this.effectCapsuleCore ? Color3.FromHexString(PICKUP_BLUE) : c;
+          m.diffuseColor = tint; m.emissiveColor = tint.scale(0.9);
+        }
       }
       this.effectCapsule.setEnabled(true);
       this.effectCapsule.position.set(spawn?.x ?? 0, 1.05 + Math.sin(this.time * 3) * 0.08, spawn?.z ?? 0);
@@ -539,6 +584,82 @@ export class PowerupPresentation {
     } else {
       this.lava?.setEnabled(false);
     }
+    this.updateMapAtmosphere(effect);
+  }
+
+  /** Broad floor wash and traveling rings make every bonus readable across the whole court. */
+  private updateMapAtmosphere(effect: MapEffectState): void {
+    const scene = this.scene;
+    if (!this.mapField) {
+      this.mapField = MeshBuilder.CreateGround('map_effect_field', { width: C.map.halfWidth * 2, height: C.map.halfLength * 2 }, scene);
+      const floor = material(scene, 'map_effect_field_mat', '#85bcff', 0.55);
+      floor.alpha = 0.12; floor.disableDepthWrite = true; floor.backFaceCulling = false;
+      this.mapField.material = floor; this.mapField.isPickable = false;
+      const accent = material(scene, 'map_effect_wave_mat', '#85bcff', 0.85);
+      accent.alpha = 0.7; accent.disableDepthWrite = true;
+      for (let i = 0; i < 3; i++) {
+        const ring = MeshBuilder.CreateTorus('map_effect_wave', { diameter: 2, thickness: 0.006, tessellation: 64 }, scene);
+        ring.material = accent; ring.isPickable = false; this.mapRings.push(ring);
+      }
+      for (const x of [-1, 1]) for (const z of [-1, 1]) {
+        const beacon = MeshBuilder.CreateTorus('map_effect_beacon', { diameter: 0.62, thickness: 0.035, tessellation: 24 }, scene);
+        beacon.position.set(x * C.map.halfWidth * 0.85, 1.1, z * C.map.halfLength * 0.85);
+        beacon.rotation.x = Math.PI / 2;
+        beacon.material = accent; beacon.isPickable = false; this.mapBeacons.push(beacon);
+      }
+      for (let i = 0; i < 18; i++) {
+        const mote = MeshBuilder.CreateBox('map_effect_mote', { size: 0.075 }, scene);
+        mote.material = accent; mote.isPickable = false; this.mapMotes.push(mote);
+      }
+    }
+    const color = Color3.FromHexString(MAP_EFFECTS[effect.kind].color);
+    const floor = this.mapField.material as StandardMaterial;
+    const accent = this.mapRings[0].material as StandardMaterial;
+    floor.diffuseColor.copyFrom(color); floor.emissiveColor.copyFrom(color).scaleInPlace(0.55);
+    accent.diffuseColor.copyFrom(color); accent.emissiveColor.copyFrom(color).scaleInPlace(0.85);
+    const warning = effect.phase === 'warning';
+    const surface = effect.kind === 'lava' ? effect.lavaLevel : 0;
+    this.mapField.setEnabled(true);
+    this.mapField.position.y = surface + 0.028;
+    floor.alpha = settings.reducedEffects ? 0.045 : warning ? 0.055 : effect.kind === 'frenzy' ? 0.115 : 0.085;
+    const animated = !settings.reducedEffects;
+    const period = effect.kind === 'moon' ? 4.2 : effect.kind === 'frenzy' ? 1.45 : 2.25;
+    this.mapRings.forEach((ring, index) => {
+      ring.setEnabled(animated);
+      if (!animated) return;
+      const phase = (this.time / period + index / this.mapRings.length) % 1;
+      const reach = 0.18 + phase * 0.82;
+      ring.position.y = surface + 0.07;
+      ring.scaling.set(C.map.halfWidth * reach, 1, C.map.halfLength * reach);
+      ring.visibility = (warning ? 0.28 : 0.6) * Math.pow(1 - phase, 1.3);
+    });
+    this.mapBeacons.forEach((beacon, index) => {
+      beacon.setEnabled(animated);
+      if (!animated) return;
+      beacon.position.y = surface + 1.1 + Math.sin(this.time * (effect.kind === 'frenzy' ? 5 : 2) + index) * 0.18;
+      beacon.rotation.y = this.time * (effect.kind === 'moon' ? 0.45 : 1.7) + index;
+      beacon.visibility = (warning ? 0.35 : 0.68) * (0.75 + 0.25 * Math.sin(this.time * 3 + index));
+    });
+    this.mapMotes.forEach((mote, index) => {
+      mote.setEnabled(animated && !warning);
+      if (!animated || warning) return;
+      // Stable scattered positions avoid flicker while each kind has its own direction and shape.
+      const x = (((index * 0.61803398875) % 1) * 2 - 1) * C.map.halfWidth * 0.9;
+      const z = (((index * 0.38196601125 + 0.23) % 1) * 2 - 1) * C.map.halfLength * 0.9;
+      const drift = (this.time * (effect.kind === 'moon' ? 0.16 : effect.kind === 'lava' ? 0.42 : 0.65) + index * 0.173) % 1;
+      mote.position.set(x + Math.sin(this.time * 0.7 + index) * 0.18,
+        effect.kind === 'frenzy' ? 0.3 + (1 - drift) * 4.5 : surface + 0.15 + drift * (effect.kind === 'moon' ? 3.1 : 1.3), z);
+      mote.scaling.set(1, effect.kind === 'frenzy' ? 6 : effect.kind === 'moon' ? 1.3 : 0.8, 1);
+      mote.rotation.y = this.time * 0.8 + index;
+      mote.visibility = 0.55 * Math.sin(Math.PI * drift);
+    });
+  }
+
+  private hideMapAtmosphere(): void {
+    this.mapField?.setEnabled(false);
+    this.mapRings.forEach(ring => ring.setEnabled(false));
+    this.mapBeacons.forEach(beacon => beacon.setEnabled(false));
+    this.mapMotes.forEach(mote => mote.setEnabled(false));
   }
 
   private setScreenFx(key: string | null, strength: number, color = ''): void {
@@ -584,7 +705,7 @@ export class PowerupPresentation {
       let marker = this.markers.get(player.id);
       if (player.hasPowerup && !marker) {
         marker = MeshBuilder.CreatePolyhedron('powerup_holder_marker', { type: 1, size: 0.11 }, this.scene);
-        marker.material = material(this.scene, 'power_gold', '#ffcc62', 0.55); marker.isPickable = false; this.markers.set(player.id, marker);
+        marker.material = material(this.scene, 'power_pickup_blue', PICKUP_BLUE, 0.7); marker.isPickable = false; this.markers.set(player.id, marker);
       }
       if (marker) { marker.setEnabled(!!player.hasPowerup && player.combatState === 'alive'); marker.position.set(player.movement.position.x, player.movement.position.y + 2.2, player.movement.position.z); marker.rotation.y = this.time; }
       if (!settings.reducedEffects && this.trailTick <= 0 && (player.movementInternal.buffs?.speedSeconds ?? 0) > 0 && player.movement.speed > 1 && this.trails.length < 36) {
@@ -663,5 +784,9 @@ export class PowerupPresentation {
     this.clearDynamic(); this.hud?.setPowerupSlot(null); this.neutral.remove(); this.screenFx.remove(); this.stunFx.remove(); this.mapBanner.remove();
     for (const node of this.spawnNodes) node.root.dispose(); this.spawnNodes = [];
     this.lava?.dispose(); this.lava = null; this.effectCapsule?.dispose(); this.effectCapsule = null;
+    this.mapField?.dispose(); this.mapField = null;
+    this.mapRings.forEach(ring => ring.dispose()); this.mapRings = [];
+    this.mapBeacons.forEach(beacon => beacon.dispose()); this.mapBeacons = [];
+    this.mapMotes.forEach(mote => mote.dispose()); this.mapMotes = [];
   }
 }

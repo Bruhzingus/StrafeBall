@@ -22,6 +22,7 @@ function setup(kind: PowerupKind = 'speed') {
 }
 function take(room: RoomState, system: PowerupSystem) {
   room.powerups!.spawns[0].waitSeconds = 0; system.beforeBalls(room, 0, 3);
+  system.beforeBalls(room, C.powerup.rollSeconds, 3);
 }
 function input(overrides: Partial<PlayerInput> = {}): PlayerInput {
   return { moveX: 0, moveZ: 0, lookYawRadians: 0, lookPitchRadians: 0, dashDirection: v(), ...overrides } as PlayerInput;
@@ -50,6 +51,17 @@ describe('neutral zone and expanded gym', () => {
 });
 
 describe('power-up inventory and replication', () => {
+  it('locks activation throughout the pickup roll without consuming the item', () => {
+    const { room, system } = setup('speed');
+    room.powerups!.spawns[0].waitSeconds = 0;
+    system.beforeBalls(room, 0, 3);
+    expect(system.activate(room, 'a')).toBe(false);
+    system.beforeBalls(room, C.powerup.rollSeconds - 0.01, 3);
+    expect(system.activate(room, 'a')).toBe(false);
+    expect(system.identity(room, 'a').kind).toBe('speed');
+    system.beforeBalls(room, 0.01, 3);
+    expect(system.activate(room, 'a')).toBe(true);
+  });
   it('first spawns after exactly 20 simulated seconds; first player wins; next wait starts on pickup', () => {
     const { room, system } = setup();
     room.players.a.movement.position = v(5); system.beforeBalls(room, 19.99, 3);
@@ -186,7 +198,7 @@ describe('special ball combat', () => {
     expect(loop.state.balls.cannon?.phase).toBe('live');
   });
 
-  it('cannon starts at 75% speed without hitting its owner on release', () => {
+  it('cannon requires a charge and a full release starts 25% slower without hitting its owner', () => {
     const loop = new ServerGameLoop('cannon-launch');
     loop.addPlayer('a', 'A'); loop.addPlayer('b', 'B');
     loop.state.match.status = 'playing'; loop.state.match.boundary.noBoundaries = true;
@@ -195,12 +207,52 @@ describe('special ball combat', () => {
     loop.state.balls.cannon = holdBall(ball, p.id, 'left');
     p.hands.left = createHandState('left', { heldBallId: 'cannon', mode: 'holding' });
 
+    expect(loop.handleThrow(p.id, { hand: 'left' })).toEqual({ ok: false, reason: 'charge-required' });
+    p.hands.left = createHandState('left', { heldBallId: 'cannon', mode: 'charging', chargeSeconds: C.ball.maxChargeSeconds });
     expect(loop.handleThrow(p.id, { hand: 'left' }).ok).toBe(true);
     const thrown = loop.state.balls.cannon;
     expect(Math.hypot(thrown.velocity.x, thrown.velocity.y, thrown.velocity.z))
       .toBeCloseTo(C.ball.chargedThrowSpeed * C.powerup.cannonLaunchSpeedMultiplier, 6);
+    expect(thrown.dropScale).toBe(0);
     for (let i = 0; i < 10; i++) loop.advance();
     expect(loop.state.players.a.lives).toBe(3);
+  });
+
+  it('cannon press starts charging and an early release throws weakly', () => {
+    const loop = new ServerGameLoop('cannon-charge');
+    loop.addPlayer('a', 'A'); loop.addPlayer('b', 'B');
+    loop.state.match.status = 'playing'; loop.state.match.boundary.noBoundaries = true;
+    const p = loop.state.players.a;
+    loop.state.balls.cannon = holdBall(createBallState('cannon', p.movement.position, { kind: 'cannon' }), p.id, 'left');
+    p.hands.left = createHandState('left', { heldBallId: 'cannon', mode: 'holding' });
+
+    loop.handleInput('a', { leftHandPressed: true, leftHandHeld: true, sequence: 1 }, 1);
+    loop.step();
+    expect(loop.state.balls.cannon.phase).toBe('held');
+    expect(loop.state.players.a.hands.left.mode).toBe('charging');
+
+    loop.handleInput('a', { leftHandReleased: true, sequence: 2 }, 2);
+    loop.step();
+    const thrown = loop.state.balls.cannon;
+    expect(thrown.phase).toBe('live');
+    expect(Math.hypot(thrown.velocity.x, thrown.velocity.y, thrown.velocity.z))
+      .toBeLessThan(C.ball.chargedThrowSpeed * C.powerup.cannonLaunchSpeedMultiplier * 0.3);
+    expect(thrown.dropScale).toBeGreaterThan(0.9);
+  });
+
+  it('throws bomb balls 25% slower than ordinary balls', () => {
+    const loop = new ServerGameLoop('bomb-throw-speed');
+    loop.addPlayer('a', 'A'); loop.addPlayer('b', 'B');
+    loop.state.match.status = 'playing'; loop.state.match.boundary.noBoundaries = true;
+    const p = loop.state.players.a;
+    const ball = createBallState('bomb', p.movement.position, { kind: 'bomb' });
+    loop.state.balls.bomb = holdBall(ball, p.id, 'left');
+    p.hands.left = createHandState('left', { heldBallId: 'bomb', mode: 'holding' });
+
+    expect(loop.handleThrow(p.id, { hand: 'left' }).ok).toBe(true);
+    const thrown = loop.state.balls.bomb;
+    expect(Math.hypot(thrown.velocity.x, thrown.velocity.y, thrown.velocity.z))
+      .toBeCloseTo(C.ball.quickThrowSpeed * C.powerup.bombThrowSpeedMultiplier, 6);
   });
 
   it('cannon survives three wall impacts, expires on the fourth, and dies instantly on the floor', () => {

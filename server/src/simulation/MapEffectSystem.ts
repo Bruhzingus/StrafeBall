@@ -59,9 +59,7 @@ export class MapEffectSystem {
   tryStart(room: RoomState, spawnIndex: number, spawnPosition: Vec3): boolean {
     if (room.mapEffect) return false;
     if (this.rng() >= C.mapEffect.chance) return false;
-    // The lobby is for messing around, not dying: lava never rolls before the match starts.
-    const pool = room.match.status === 'warmup' ? KINDS.filter((k) => k !== 'lava') : KINDS;
-    const kind = pool[Math.min(pool.length - 1, Math.floor(this.rng() * pool.length))];
+    const kind = KINDS[Math.min(KINDS.length - 1, Math.floor(this.rng() * KINDS.length))];
     room.mapEffect = { kind, phase: 'warning', remainingSeconds: C.mapEffect.warningSeconds, spawnIndex, lavaLevel: 0 };
     this.emit(room, 'map-warning', spawnPosition, kind);
     return true;

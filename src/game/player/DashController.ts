@@ -21,6 +21,14 @@ export class DashController {
   private dashCooldownTimer = 0;
   private adrenalineActive = false;
 
+  get maxCharges(): number {
+    return this.constants().dash.maxCharges;
+  }
+
+  get rechargeSeconds(): number {
+    return this.constants().dash.rechargeSeconds;
+  }
+
   setAdrenalineActive(active: boolean): void {
     if (active && !this.adrenalineActive) {
       this.charges = GAME_CONSTANTS.powerup.adrenalineMaxCharges;

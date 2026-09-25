@@ -48,6 +48,9 @@ export class PlayerController {
     this.movement = new MovementController(this.root, this.camera, this.dash, this.backflip, collision);
     this.hands = new HandController(this.camera, ballManager, effects);
     this.catching = new CatchController(this.camera, ballManager, this.hands, this.movement, this.dash, effects);
+    ballManager.setBallAdvanceHandler((ball, segmentStart, segmentEnd) => {
+      this.catching.resolveAdvancedBall(ball, segmentStart, segmentEnd);
+    });
     this.viewmodel = new Viewmodel(this.camera);
     // Seed a valid snapshot so the HUD never reads `undefined` on a frame before the first
     // sim step has run.
@@ -55,7 +58,8 @@ export class PlayerController {
   }
 
   update(dt: number, throwsSuppressed = false): void {
-    // Look first (drains this frame's mouse delta), then physics, then hands/catch.
+    // Look first (drains this frame's mouse delta), then physics and hands. Catch clicks open
+    // here; their swept checks run as BallManager advances each ball later in the scene step.
     this.updateLook();
 
     const catchStanceActive = this.hands.left.catchStance || this.hands.right.catchStance;

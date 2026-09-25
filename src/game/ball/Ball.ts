@@ -153,9 +153,14 @@ export class Ball {
     this.isSuper = false;
   }
 
-  update(dt: number, collision?: CollisionWorld): void {
+  update(
+    dt: number,
+    collision?: CollisionWorld,
+    onAdvanced?: (ball: Ball, segmentStart: Vector3, segmentEnd: Vector3) => void
+  ): void {
     if (this.state !== BallState.Live && this.state !== BallState.Dead && this.state !== BallState.Loose) return;
 
+    const segmentStart = onAdvanced ? this.mesh.position.clone() : null;
     const firstFlight = this.state === BallState.Live && this.bounceCount === 0;
     const gravityScale = firstFlight ? this.dropScale : 1;
     this.velocity.y -= TUNING.ball.gravity * gravityScale * dt;
@@ -184,6 +189,14 @@ export class Ball {
       this.curveDistance += Math.sqrt(
         this.velocity.x * this.velocity.x + this.velocity.y * this.velocity.y + this.velocity.z * this.velocity.z
       ) * dt;
+    }
+
+    // Defensive interactions use the actual swept flight path before a wall or mat moves the ball.
+    // The server resolves parry/catch against this same pre-collision segment.
+    if (segmentStart && onAdvanced) {
+      onAdvanced(this, segmentStart, this.mesh.position.clone());
+      // The callback may change this ball from in flight to held.
+      if ((this.state as BallState) === BallState.Held) return;
     }
 
     this.resolveSimpleBounds();

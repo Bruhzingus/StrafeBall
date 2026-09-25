@@ -10,7 +10,8 @@ import { cameraForward } from '../utils/vector';
 import { MovementSnapshot } from './MovementController';
 import { Effects } from '../effects/Effects';
 import { practiceCheats } from '../config/practiceCheats';
-import { cannonLaunchVelocity } from '../../../shared/simulation/BallSim';
+import { cannonDropScale, cannonLaunchVelocity } from '../../../shared/simulation/BallSim';
+import { GAME_CONSTANTS } from '../../../shared/constants';
 
 export interface HandState {
   ball: Ball | null;
@@ -266,13 +267,11 @@ export class HandController {
       }
     }
 
-    // Hold E to pick up: grabs the nearest valid ball the moment one is in range (no single-
-    // frame timing to fumble). Allowed on the ground or just barely off it (not mid-air).
-    if (!input.isKeyDown(CONTROL_KEYS.interact)) return;
-    if (!movement.grounded && movement.position.y > 0.6) return;
+    // Match input uses a press edge for pickup and allows it while airborne if the ball is in reach.
+    if (!input.wasKeyPressed(CONTROL_KEYS.interact)) return;
     if (this.left.ball && this.right.ball) return;
 
-    const candidate = this.ballManager.findPickupCandidate(movement.position.add(new Vector3(0, 0.8, 0)));
+    const candidate = this.ballManager.findPickupCandidate(movement.position);
     if (!candidate) return;
 
     // First pickup goes to the left (dominant) hand, otherwise the empty hand.
@@ -367,7 +366,7 @@ export class HandController {
    */
   throwBackflipQte(side: HandSide, movement: MovementSnapshot, tier: number): boolean {
     const hand = this.getHand(side);
-    if (!hand.ball) return false;
+    if (!hand.ball || hand.ball.powerupKind === 'cannon') return false;
     this.fireThrow(side, movement, 0, tier);
     return true;
   }
@@ -383,9 +382,7 @@ export class HandController {
     const hand = this.getHand(side);
     if (!hand.ball) return;
     // Dashing allows quick throws only.
-    const charge01 = hand.ball.powerupKind === 'cannon'
-      ? 1
-      : movement.dashingThisFrame ? 0 : Math.min(1, hand.chargeSeconds / TUNING.ball.maxChargeSeconds);
+    const charge01 = movement.dashingThisFrame ? 0 : Math.min(1, hand.chargeSeconds / TUNING.ball.maxChargeSeconds);
     this.fireThrow(side, movement, charge01, 0);
   }
 
@@ -409,19 +406,23 @@ export class HandController {
       fastDoubleThrowPenalty: rushed
     });
     if (hand.ball.powerupKind === 'cannon') {
-      const cannonVelocity = cannonLaunchVelocity({ x: forward.x, y: forward.y, z: forward.z });
+      const cannonVelocity = cannonLaunchVelocity({ x: forward.x, y: forward.y, z: forward.z }, charge01);
       throwResult.velocity.set(cannonVelocity.x, cannonVelocity.y, cannonVelocity.z);
       throwResult.curveAccel.setAll(0);
-      throwResult.dropScale = 1;
+      throwResult.dropScale = cannonDropScale(charge01);
       throwResult.isSuper = false;
+    } else if (hand.ball.powerupKind === 'bomb') {
+      throwResult.velocity.scaleInPlace(GAME_CONSTANTS.powerup.bombThrowSpeedMultiplier);
     }
 
     const origin = this.camera.globalPosition.add(forward.scale(0.8));
     this.ballManager.throwBall(hand.ball, origin, throwResult.velocity, throwResult.velocity.length(), 'player', throwResult.isSuper, throwResult.dropScale, throwResult.curveAccel);
 
-    const throwLabel = backflipTier >= 1
-      ? `backflip T${backflipTier}`
-      : charge01 >= 0.25 ? `charged ${Math.round(charge01 * 100)}%` : 'quick';
+    const throwLabel = hand.ball.powerupKind === 'cannon'
+      ? `cannon charge ${Math.round(charge01 * 100)}%`
+      : backflipTier >= 1
+        ? `backflip T${backflipTier}`
+        : charge01 >= 0.25 ? `charged ${Math.round(charge01 * 100)}%` : 'quick';
     this.lastAction = `${throwLabel} throw #${hand.ball.id} (${side})`;
     hand.ball = null;
     hand.visualHolding = false;

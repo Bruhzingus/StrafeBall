@@ -1,22 +1,21 @@
-/** Browser regression review: real application composition plus actual HUD event/state rendering.
+/** Browser regression review: actual HUD components, event/state rendering and production styles.
  * Run with the Vite client on :5173. Artifacts go to tmp/ui-review (not shipped with the game).
  */
 import { chromium } from 'playwright';
-import { mkdirSync, writeFileSync } from 'node:fs';
+import { mkdirSync, writeFileSync, readFileSync } from 'node:fs';
 
 const out = 'tmp/ui-review';
 mkdirSync(out, { recursive: true });
 const browser = await chromium.launch({ headless: true });
 const page = await browser.newPage({ viewport: { width: 1920, height: 1080 } });
+try {
 const errors = [];
 page.on('pageerror', error => errors.push(error.message));
 await page.addInitScript(() => localStorage.setItem('strafeball.graphics.mode', 'performance'));
-await page.goto('http://127.0.0.1:5173/', { waitUntil: 'domcontentloaded' });
-await page.waitForSelector('.ability-hud');
-await page.locator('#loading-screen').waitFor({ state: 'hidden', timeout: 30000 }).catch(() => {});
-await page.locator('#lock-overlay').click({ force: true });
-await page.waitForTimeout(1200);
-await page.screenshot({ path: `${out}/practice-1920.png` });
+// Isolate components from scene transitions, which dispose HUD instances during application startup.
+const head = readFileSync('index.html', 'utf8').match(/<head>([\s\S]*?)<\/head>/)[1];
+await page.route('**/ui-review', route => route.fulfill({ contentType: 'text/html', body: `<html><head>${head}</head><body></body></html>` }));
+await page.goto('http://127.0.0.1:5173/ui-review');
 
 await page.evaluate(async () => {
   const { Hud } = await import('/src/game/ui/Hud.ts');
@@ -125,5 +124,5 @@ const lowContrast = contrast.flatMap(group => group.text.filter(t => t.contrast 
 const bounds = measurements.flatMap(m => m.elements.filter(e => !e.inBounds).map(e => ({ viewport: m.viewport, ...e })));
 writeFileSync(`${out}/results.json`, JSON.stringify({ errors, measurements, contrast, countdownChecks }, null, 2));
 console.log(JSON.stringify({ errors, bounds, lowContrast, countdownChecks, viewports: measurements.length, eventVariants: contrast.length }, null, 2));
-await browser.close();
 if (errors.length || bounds.length || lowContrast.length || Object.values(countdownChecks).some(passed => !passed)) process.exitCode = 1;
+} finally { await browser.close(); }

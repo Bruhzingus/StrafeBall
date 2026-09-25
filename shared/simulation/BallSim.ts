@@ -264,12 +264,21 @@ export function applyCannonBounce(ball: BallState, constants: GameConstants = GA
     : { ...ball, bounceCount };
 }
 
-/** Authoritative/offline cannon launch: 25% below the old charged throw speed. */
-export function cannonLaunchVelocity(direction: Vec3, constants: GameConstants = GAME_CONSTANTS): Vec3 {
+/** Cannon speed is deliberately back-loaded: early releases barely leave the thrower's side. */
+export function cannonLaunchVelocity(direction: Vec3, charge01: number, constants: GameConstants = GAME_CONSTANTS): Vec3 {
+  const charge = Math.max(0, Math.min(1, charge01));
+  const fraction = constants.powerup.cannonMinChargeSpeedFraction +
+    (1 - constants.powerup.cannonMinChargeSpeedFraction) * Math.pow(charge, constants.powerup.cannonChargeSpeedExponent);
   return scale(
     normalize(direction, vec3(0, 0, 1)),
-    constants.ball.chargedThrowSpeed * constants.powerup.cannonLaunchSpeedMultiplier
+    constants.ball.chargedThrowSpeed * constants.powerup.cannonLaunchSpeedMultiplier * fraction
   );
+}
+
+/** A full charge flies level; weak releases drop quickly and expire on floor contact. */
+export function cannonDropScale(charge01: number, constants: GameConstants = GAME_CONSTANTS): number {
+  const charge = Math.max(0, Math.min(1, charge01));
+  return 1 - Math.pow(charge, constants.powerup.cannonChargeDropExponent);
 }
 
 /** Continuous exponential growth: exactly +10% for each six meters traveled. */

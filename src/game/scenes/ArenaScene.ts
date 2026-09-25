@@ -90,6 +90,7 @@ import { CreatorEditor, CREATOR_ENTRY_RADIUS, CREATOR_ENTRY_HOLD_SECONDS, type C
 import { createPracticeState } from '../practice/PracticeState';
 import type { PracticeState } from '../practice/PracticeState';
 import { PracticePowerupSpawner } from '../practice/PracticePowerupSpawner';
+import { stepPracticeMagnetBall } from '../practice/PracticeMagnet';
 import { MultiplayerClient } from '../network/MultiplayerClient';
 import { NetFlightRecorder, defaultFlightRecorderGraphicsPreset } from '../network/NetFlightRecorder';
 import { MultiplayerOverlay } from '../network/MultiplayerOverlay';
@@ -113,7 +114,8 @@ import {
   PERF_REPORT_INTERVAL_MS,
   SNAPSHOT_RATE
 } from '../../../shared/netConfig';
-import { createPlayerCollisionBoxes, MAT_SPECS, type AABB } from '../../../shared/simulation/MapGeometry';
+import { createPlayerCollisionBoxes, matSpecsForPreset, MAT_SPECS, type AABB } from '../../../shared/simulation/MapGeometry';
+import { recommendedRoomSettings } from '../../../shared/roomSettings';
 import { isIllegalHalfCourtPosition } from '../../../shared/simulation/RuleSim';
 import { sweptBallHitsBody } from '../../../shared/simulation/CollisionMath';
 import { playerBallHitRadius, playerHitCapsule } from '../../../shared/simulation/PlayerHitbox';
@@ -126,6 +128,7 @@ const MIN_BALL_BOUNCE_GAIN = 0.00001;
 const BALL_IMPACT_FX_MIN_SPEED = 8;
 const AUDIO_UP = { x: 0, y: 1, z: 0 };
 const PERF_FRAME_BUCKETS_MS = [8, 10, 12, 14, 16, 20, 25, 33, 50, 66, 100, 150, 250, 500, 1000];
+const PRACTICE_MAT_IDS = new Set(matSpecsForPreset(recommendedRoomSettings('1v1').matPreset).map((spec) => spec.id));
 
 export class ArenaScene {
   public readonly scene: Scene;
@@ -168,6 +171,8 @@ export class ArenaScene {
   private readonly creatorDummies: Mesh[] = [];
   private readonly practiceState: PracticeState = createPracticeState();
   private readonly practicePowerups = new PracticePowerupSpawner();
+  private readonly practiceMagnetSettledSeconds = new WeakMap<Ball, number>();
+  private readonly practiceMagnetDistantPulls = new WeakSet<Ball>();
   private readonly practicePowerupRoom: PowerupPresentationRoom = {
     practiceBuffs: this.practicePowerups.buffs,
     practicePlayerId: 'practice',
@@ -383,6 +388,7 @@ export class ArenaScene {
     const loader = new ModelLoader(this.scene);
     this.gym = new GymArena(this.scene, loader);
     this.gym.build();
+    this.applyPracticeMatPreset();
     // Polished reference pass: warm cove/strip lighting (ceiling perimeter, wall band, bleacher step
     // noses). Built BEFORE setupGymEnvironmentResponse so the floor mirror's static scan catches the
     // 'decor_cove_' meshes; registered with the GlowLayer further below once the post FX exist.
@@ -951,6 +957,7 @@ export class ArenaScene {
     const reach = r + 0.12;
 
     for (const mat of this.gym.mats) {
+      if (!PRACTICE_MAT_IDS.has(mat.id)) continue;
       if (mat.knockedOver) continue;
       if ((this.matPostResetKnockImmunityById.get(mat.id) ?? 0) > 0) continue;
       const box = mat.getAABB();
@@ -1029,8 +1036,7 @@ export class ArenaScene {
     const left = this.player.hands.getHand('left');
     const right = this.player.hands.getHand('right');
     if (!left.ball || !right.ball) {
-      const waist = this.player.lastMovementSnapshot.position.add(new Vector3(0, 0.8, 0));
-      if (this.ballManager.findPickupCandidate(waist)) {
+      if (this.ballManager.findPickupCandidate(this.player.root.position)) {
         this.hud.setInteractPrompt('Press', 'to pick up ball');
         return;
       }
@@ -1219,8 +1225,8 @@ export class ArenaScene {
     this.ballManager.setPickupHighlight(
       this.ballManager.findPickupLookCandidate(this.player.camera.globalPosition, cameraForward(this.player.camera))
     );
-    this.ballManager.update(dt);
     this.updatePracticeMagnet(dt);
+    this.ballManager.update(dt);
     this.updatePracticePowerupBalls(dt);
     this.checkBotHitsPlayer(dt);
     this.ballVisualEffects.update(dt);
@@ -1289,7 +1295,8 @@ export class ArenaScene {
     this.latchJumpPressed ||= this.input.wasKeyPressed(CONTROL_KEYS.jump);
     this.latchDashPressed ||= this.input.wasKeyPressed(CONTROL_KEYS.dash);
     this.latchSlidePressed ||= this.input.wasKeyPressed(CONTROL_KEYS.slide);
-    this.latchPowerupPressed ||= this.input.wasKeyPressed(CONTROL_KEYS.activatePowerup);
+    this.latchPowerupPressed = !this.powerupPresentation.activationLocked &&
+      (this.latchPowerupPressed || this.input.wasKeyPressed(CONTROL_KEYS.activatePowerup));
     this.latchBackflipPressed ||= this.input.wasKeyPressed(CONTROL_KEYS.backflip);
     this.latchPickupPressed ||= this.input.wasKeyPressed(CONTROL_KEYS.interact);
     this.latchDropPressed ||= this.input.wasKeyPressed(CONTROL_KEYS.drop);
@@ -2238,10 +2245,9 @@ export class ArenaScene {
     this.chargeBot.reset();
     this.setPracticePropsEnabled(true);
     this.ballManager.spawnCenterLineBalls();
-    // Restore upright + VISIBLE mats and their player collision when returning to practice (a host
-    // mat preset may have hidden some online). resetMats rebuilds all mat collision boxes.
+    // Restore the practice layout after a host preset may have changed visible cover online.
     this.gym.resetMats();
-    for (const mat of this.gym.mats) mat.mesh.setEnabled(true);
+    this.applyPracticeMatPreset();
     this.knockedNetMatIds.clear();
     this.excludedNetMatIds.clear();
   }
@@ -2639,8 +2645,7 @@ export class ArenaScene {
     const left = this.player.hands.getHand('left');
     const right = this.player.hands.getHand('right');
     if (!left.ball || !right.ball) {
-      const waist = this.player.lastMovementSnapshot.position.add(new Vector3(0, 0.8, 0));
-      if (this.ballManager.findPickupCandidate(waist)) {
+      if (this.ballManager.findPickupCandidate(this.player.root.position)) {
         this.hud.setInteractPrompt('Press', 'to pick up ball');
         return;
       }
@@ -3480,23 +3485,41 @@ export class ArenaScene {
   }
 
   private updatePracticeMagnet(dt: number): void {
-    if (this.practicePowerups.buffs.magnetSeconds <= 0) return;
-    const target = this.player.root.position.add(new Vector3(0, 0.9, 0));
+    const active = this.practicePowerups.buffs.magnetSeconds > 0;
+    const playerPosition = this.player.root.position;
     for (const ball of this.ballManager.balls) {
-      if (ball.powerupKind || (ball.state !== BallState.Loose && ball.state !== BallState.Dead)) continue;
-      const dx = target.x - ball.mesh.position.x;
-      const dy = target.y - ball.mesh.position.y;
-      const dz = target.z - ball.mesh.position.z;
-      const distance = Math.hypot(dx, dy, dz);
-      if (distance < 0.01) continue;
-      const nearby = distance <= GAME_CONSTANTS.powerup.magnetRadius;
-      const acceleration = nearby ? GAME_CONSTANTS.powerup.magnetAcceleration : GAME_CONSTANTS.powerup.distantMagnetAcceleration;
-      const maxSpeed = nearby ? GAME_CONSTANTS.powerup.magnetSpeed : GAME_CONSTANTS.powerup.distantMagnetSpeed;
-      ball.velocity.x += dx / distance * acceleration * dt;
-      ball.velocity.y += dy / distance * acceleration * dt;
-      ball.velocity.z += dz / distance * acceleration * dt;
-      const speed = ball.velocity.length();
-      if (speed > maxSpeed) ball.velocity.scaleInPlace(maxSpeed / speed);
+      if (ball.powerupKind || (ball.state !== BallState.Loose && ball.state !== BallState.Dead)) {
+        this.practiceMagnetDistantPulls.delete(ball);
+        continue;
+      }
+      const hasFreeHand = !this.player.hands.left.ball || !this.player.hands.right.ball;
+      const next = stepPracticeMagnetBall(
+        ball.mesh.position,
+        ball.velocity,
+        playerPosition,
+        dt,
+        this.practiceMagnetSettledSeconds.get(ball) ?? 0,
+        this.practiceMagnetDistantPulls.has(ball),
+        active && hasFreeHand
+      );
+      this.practiceMagnetSettledSeconds.set(ball, next.settledSeconds);
+      if (next.distantPulling) this.practiceMagnetDistantPulls.add(ball);
+      else this.practiceMagnetDistantPulls.delete(ball);
+
+      if (next.reachedPlayer && this.ballManager.canPickup(ball)) {
+        const side = !this.player.hands.left.ball ? 'left' : 'right';
+        this.player.hands.forceCatchBall(side, ball);
+        const hand = this.player.hands.getHand(side);
+        hand.cooldown = 0;
+        hand.catchAnim = 0;
+        hand.pickupAnim = 1;
+        this.player.hands.lastAction = `pickup #${ball.id} (${side})`;
+        const holdPosition = playerPosition.add(new Vector3(side === 'left' ? -0.4 : 0.4, 1.2, 0.3));
+        this.ballManager.attachHeldBall(ball, side, holdPosition);
+      } else if (next.pulling) {
+        ball.velocity.set(next.velocity.x, next.velocity.y, next.velocity.z);
+        ball.state = BallState.Dead;
+      }
     }
   }
 
@@ -3613,7 +3636,17 @@ export class ArenaScene {
       if (dummy.metadata) dummy.metadata.hitCount = 0;
     }
     this.gym.resetMats();
+    this.applyPracticeMatPreset();
     this.hud.showScoreEvent('MAP RESET', 'Practice reset', 'neutral');
+  }
+
+  /** Keep the offline practice gym's cover layout equal to the recommended match preset. */
+  private applyPracticeMatPreset(): void {
+    for (const mat of this.gym.mats) {
+      const enabled = PRACTICE_MAT_IDS.has(mat.id);
+      mat.mesh.setEnabled(enabled);
+      if (!enabled) this.gym.removeMatCollision(mat);
+    }
   }
 
   private createLighting(): void {

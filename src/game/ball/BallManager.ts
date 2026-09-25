@@ -6,7 +6,7 @@ import { BallState } from './BallState';
 import { safeNormalize } from '../utils/math';
 import { CollisionWorld } from '../map/Collider';
 import { ModelLoader } from '../assets/ModelLoader';
-import { isBallPickupStateEligible } from '../../../shared/simulation/BallSim';
+import { isBallPickupEligible, isBallPickupStateEligible } from '../../../shared/simulation/BallSim';
 import { ballVariantForState, createBallMesh, getBallMaterial, updateBallBlobShadow } from './BallVisualFactory';
 import type { BallVisualEffects } from './BallVisualEffects';
 import { BALL_QTE_TRAIL_SPEED_THRESHOLD, BALL_TRAIL_INTERVAL_SECONDS } from './BallVisualEffects';
@@ -20,6 +20,7 @@ export class BallManager {
   public readonly balls: Ball[] = [];
   private highlightedBallId: number | null = null;
   private elapsed = 0;
+  private onBallAdvanced: ((ball: Ball, segmentStart: Vector3, segmentEnd: Vector3) => void) | null = null;
 
   constructor(
     private readonly loader: ModelLoader,
@@ -60,11 +61,16 @@ export class BallManager {
     this.highlightedBallId = null;
   }
 
+  /** Offline combat runs on each ball's real swept path, before that ball resolves world collisions. */
+  setBallAdvanceHandler(handler: ((ball: Ball, segmentStart: Vector3, segmentEnd: Vector3) => void) | null): void {
+    this.onBallAdvanced = handler;
+  }
+
   update(dt: number): void {
     this.elapsed += dt;
     // Swap shared material/effect state only from ball state; gameplay physics stays in Ball.
     for (const ball of this.balls) {
-      ball.update(dt, this.collision);
+      ball.update(dt, this.collision, this.onBallAdvanced ?? undefined);
       this.updateBallVisual(ball, dt);
       if (ball.powerupKind) {
         ball.mesh.scaling.setAll(1);
@@ -165,14 +171,21 @@ export class BallManager {
     }
   }
 
-  findPickupCandidate(position: Vector3): Ball | null {
+  findPickupCandidate(playerPosition: Vector3): Ball | null {
     let best: Ball | null = null;
     let bestDist = Number.POSITIVE_INFINITY;
 
     for (const ball of this.balls) {
       if (!this.canPickup(ball)) continue;
-      const dist = Vector3.Distance(position, ball.mesh.position);
-      if (dist <= TUNING.ball.pickupRadius && dist < bestDist) {
+      if (!isBallPickupEligible({
+        phase: ball.state,
+        velocity: ball.velocity,
+        position: ball.mesh.position,
+        kind: ball.powerupKind ?? 'normal'
+      }, playerPosition)) continue;
+      // The server checks nearby eligible balls in 3D distance order from the player's root.
+      const dist = Vector3.Distance(playerPosition, ball.mesh.position);
+      if (dist < bestDist) {
         best = ball;
         bestDist = dist;
       }
@@ -187,7 +200,7 @@ export class BallManager {
     // the same ball into the second hand (the "ball in both hands" bug).
     if (ball.powerupKind === 'cannon' || ball.powerupKind === 'heal') return false;
     if ((ball.powerupKind === 'shock' || ball.powerupKind === 'stun') && ball.fuseSeconds !== undefined) return false;
-    return isBallPickupStateEligible({ phase: ball.state, velocity: ball.velocity });
+    return isBallPickupStateEligible({ phase: ball.state, velocity: ball.velocity, kind: ball.powerupKind ?? 'normal' });
   }
 
   /** A ball the debug launcher can safely reuse: never one held in a player's hand. */
