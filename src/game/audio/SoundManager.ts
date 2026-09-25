@@ -72,8 +72,14 @@ export class SoundManager {
       osc.connect(amp); amp.connect(destination); osc.start(start); osc.stop(start + duration + 0.02);
       osc.onended = () => { osc.disconnect(); amp.disconnect(); };
     };
-    if (effect === 'cannon' || effect === 'explode') {
-      note(effect === 'cannon' ? 110 : 75, 28, 0.75, 0.42);
+    if (effect === 'explode') {
+      // The bomb gets its own heavier transient and longer low tail so it reads over combat.
+      note(85, 25, 0.85, 0.68);
+      note(230, 42, 0.3, 0.32, 0, 'triangle');
+      this.noiseBurst(0.43, 0.42, 1100, destination);
+      note(48, 26, 0.8, 0.2, 0.1);
+    } else if (effect === 'cannon') {
+      note(110, 28, 0.75, 0.42);
       note(210, 46, 0.22, 0.22, 0, 'triangle');
       this.noiseBurst(0.35, 0.28, 750, destination);
       note(56, 30, 0.65, 0.12, 0.12);

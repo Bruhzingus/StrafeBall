@@ -27,7 +27,7 @@ describe('shockwave launch', () => {
     );
 
     expect(launched).not.toBeNull();
-    expect(launched!.z).toBeGreaterThan(24);
+    expect(launched!.z).toBeGreaterThan(60);
     expect(launched!.y).toBeGreaterThan(C.powerup.shockPlayerLift);
 
     let movement = { ...player.movement, position: start, velocity: launched!, grounded: false };
@@ -45,6 +45,7 @@ describe('shockwave launch', () => {
       if (tick > 0 && movement.grounded) break;
     }
 
-    expect(maxZ - start.z).toBeGreaterThan(35);
+    // The arena wall clamps the final position; reaching its far edge is the full-court launch.
+    expect(maxZ).toBeGreaterThan(C.map.halfLength - C.player.radius - 0.1);
   });
 });

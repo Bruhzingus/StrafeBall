@@ -39,6 +39,14 @@ const STALE_INPUT_MS = 1000;
 // high airborne or wall-run spoof attempts still downgrade to a normal throw.
 const BACKFLIP_QTE_LANDING_GRACE_HEIGHT = 0.55;
 const BACKFLIP_QTE_MAX_UPWARD_GRACE_SPEED = 0.5;
+// Once the authoritative sim sees the landing, keep the earned QTE available through its full
+// client-side delay/sweep plus a small delivery cushion. Tracking the landing explicitly avoids
+// guessing from backflipCooldown: a normal backflip is airborne longer than the old guess allowed.
+const BACKFLIP_QTE_ELIGIBILITY_SECONDS = constants_1.GAME_CONSTANTS.backflip.qte.armDelaySeconds +
+    constants_1.GAME_CONSTANTS.backflip.qte.durationSeconds +
+    0.35;
+const BACKFLIP_QTE_FALLBACK_SECONDS = (2 * constants_1.GAME_CONSTANTS.backflip.verticalImpulse) / constants_1.GAME_CONSTANTS.ball.gravity +
+    BACKFLIP_QTE_ELIGIBILITY_SECONDS;
 // Default dashDirection for an input whose dashDirection was trimmed from the wire (zero vector).
 // MUST be zero, not the previous input, so the sim derives the dash dir from the wish/facing — see
 // normalizeInput. Frozen so it can't be mutated by a downstream consumer.
@@ -127,6 +135,10 @@ class ServerGameLoop {
     lastEnqueuedSeqByPlayerId = new Map();
     inputRttMsByPlayerId = new Map();
     parryCooldownByPlayerId = new Map();
+    // A backflip remains pending after its short animation flag clears, until the player actually
+    // reaches the floor. The resulting QTE eligibility is server-authored and consumed by a throw.
+    backflipLandingPendingByPlayerId = new Set();
+    backflipQteSecondsByPlayerId = new Map();
     lastInputDebugAtByPlayerId = new Map();
     playerNetWindowStatsByPlayerId = new Map();
     teamChoicesByPlayerId = new Set();
@@ -302,6 +314,8 @@ class ServerGameLoop {
         this.lastEnqueuedSeqByPlayerId.delete(playerId);
         this.inputRttMsByPlayerId.delete(playerId);
         this.parryCooldownByPlayerId.delete(playerId);
+        this.backflipLandingPendingByPlayerId.delete(playerId);
+        this.backflipQteSecondsByPlayerId.delete(playerId);
         this.lastInputDebugAtByPlayerId.delete(playerId);
         this.playerNetWindowStatsByPlayerId.delete(playerId);
         this.defenseHistoryByPlayerId.delete(playerId);
@@ -326,8 +340,11 @@ class ServerGameLoop {
         const player = this.state.players[playerId];
         if (!player)
             return;
-        if (!connected)
+        if (!connected) {
             this.dropAllHeldBalls(player);
+            this.backflipLandingPendingByPlayerId.delete(playerId);
+            this.backflipQteSecondsByPlayerId.delete(playerId);
+        }
         player.connected = connected;
         player.reconnectDeadlineAtMs = connected ? null : reconnectDeadlineAtMs;
         if (connected)
@@ -356,6 +373,8 @@ class ServerGameLoop {
         this.lastEnqueuedSeqByPlayerId.clear();
         this.inputRttMsByPlayerId.clear();
         this.parryCooldownByPlayerId.clear();
+        this.backflipLandingPendingByPlayerId.clear();
+        this.backflipQteSecondsByPlayerId.clear();
         this.lastInputDebugAtByPlayerId.clear();
         this.playerNetWindowStatsByPlayerId.clear();
         this.defenseHistoryByPlayerId.clear();
@@ -553,9 +572,13 @@ class ServerGameLoop {
         // `canHonorBackflipQteThrow` also accepts a tight near-ground descent grace for online packets
         // that arrive on the authoritative crossing-ground tick.
         const backflipTier = (0, CollisionMath_1.clamp)(Math.trunc(request.backflipTier ?? 0), 0, constants_1.GAME_CONSTANTS.backflip.qte.tierCount);
-        const backflipRecent = player.movementInternal.backflipCooldown >
-            constants_1.GAME_CONSTANTS.backflip.cooldownSeconds - (constants_1.GAME_CONSTANTS.backflip.durationSeconds + constants_1.GAME_CONSTANTS.backflip.qte.durationSeconds + 0.3);
-        const isBackflipThrow = backflipTier >= 1 && backflipRecent && this.canHonorBackflipQteThrow(player);
+        const trackedBackflipLanding = (this.backflipQteSecondsByPlayerId.get(playerId) ?? 0) > 0;
+        // Keep the cooldown fallback for direct/server API throws and clients connected during a deploy.
+        // Grounded/near-landing validation below still prevents using it in mid-air or on a wall-run.
+        const recentBackflipFallback = player.movementInternal.backflipCooldown > Math.max(0, constants_1.GAME_CONSTANTS.backflip.cooldownSeconds - BACKFLIP_QTE_FALLBACK_SECONDS);
+        const isBackflipThrow = backflipTier >= 1 &&
+            (trackedBackflipLanding || recentBackflipFallback) &&
+            this.canHonorBackflipQteThrow(player);
         const origin = (0, CollisionMath_1.add)((0, HandAnchors_1.computePlayerHandAnchor)(player, request.hand), (0, CollisionMath_1.scale)(forward, 0.16));
         // Anti "2-ball technique": a second throw landing within doubleThrowWindowSeconds of this
         // player's previous throw slows BOTH balls down, instead of only the new client-side throw.
@@ -582,7 +605,7 @@ class ServerGameLoop {
             backflipTier: isBackflipThrow ? backflipTier : 0
         });
         if (ball.kind === 'cannon') {
-            throwCalc.velocity = (0, CollisionMath_1.scale)(forward, constants_1.GAME_CONSTANTS.ball.chargedThrowSpeed);
+            throwCalc.velocity = (0, BallSim_1.cannonLaunchVelocity)(forward);
             throwCalc.curveAccel = (0, CollisionMath_1.vec3)();
             throwCalc.dropScale = 1;
             throwCalc.isSuper = false;
@@ -609,6 +632,10 @@ class ServerGameLoop {
             : player.dash;
         this.state.players[playerId] = { ...player, hands: result.hands, dash };
         this.state.balls[ball.id] = result.ball;
+        if (isBackflipThrow) {
+            this.backflipQteSecondsByPlayerId.delete(playerId);
+            this.backflipLandingPendingByPlayerId.delete(playerId);
+        }
         this.powerupSystem.thrown(this.state, result.ball, playerId);
         // Attach backflip tier to the ball state for defensive logic
         this.state.balls[ball.id].backflipTier = isBackflipThrow ? backflipTier : 0;
@@ -654,6 +681,23 @@ class ServerGameLoop {
         const heightAboveGround = player.movement.position.y - groundHeight;
         return heightAboveGround <= BACKFLIP_QTE_LANDING_GRACE_HEIGHT &&
             player.movement.velocity.y <= BACKFLIP_QTE_MAX_UPWARD_GRACE_SPEED;
+    }
+    updateBackflipQteEligibility(player, dt, wasBackflipActive) {
+        const remaining = this.backflipQteSecondsByPlayerId.get(player.id) ?? 0;
+        if (remaining > dt)
+            this.backflipQteSecondsByPlayerId.set(player.id, remaining - dt);
+        else if (remaining > 0)
+            this.backflipQteSecondsByPlayerId.delete(player.id);
+        if (!wasBackflipActive && player.movementInternal.backflipActive) {
+            this.backflipLandingPendingByPlayerId.add(player.id);
+            this.backflipQteSecondsByPlayerId.delete(player.id);
+        }
+        if (this.backflipLandingPendingByPlayerId.has(player.id) &&
+            !player.movementInternal.backflipActive &&
+            this.canHonorBackflipQteThrow(player)) {
+            this.backflipLandingPendingByPlayerId.delete(player.id);
+            this.backflipQteSecondsByPlayerId.set(player.id, BACKFLIP_QTE_ELIGIBILITY_SECONDS);
+        }
     }
     /**
      * Legacy discrete catch/parry request. Catch is now driven by the input-stream attempt model
@@ -1429,12 +1473,14 @@ class ServerGameLoop {
         this.powerupSystem.syncLock(this.state, player);
         const preVelocity = player.movement.velocity;
         const preGrounded = player.movement.grounded;
+        const wasBackflipActive = player.movementInternal.backflipActive;
         const result = (0, MovementSim_1.stepMovement)(player.movement, player.movementInternal, player.dash, input, prevInput, dt, this.collisionBoxesForPlayer(player.id), catchStanceActive, constants_1.GAME_CONSTANTS, this.playerMovementScale(player), this.playerCooldownRateScale(player), (0, MapEffectSim_1.mapEffectGravityScale)(this.state.mapEffect));
         player.movement = result.movement;
         if (this.state.match.status !== 'playing' && this.state.match.status !== 'warmup')
             result.internal.buffs = player.movementInternal.buffs;
         player.movementInternal = result.internal;
         player.dash = result.dash;
+        this.updateBackflipQteEligibility(player, dt, wasBackflipActive);
         player.hands = updateHandCharging(player.hands, input, prevInput);
         player.hands = (0, HandSim_1.tickHands)(player.hands, dt);
         this.recordProcessedInputSeq(player, seq);
@@ -1612,10 +1658,6 @@ class ServerGameLoop {
                 if (collided.bounceCount > current.bounceCount)
                     this.powerupSystem.contact(this.state, collided, this.stepNowMs);
                 current = (0, BallSim_1.settleBallIfSlow)(collided);
-                if (current.kind === 'cannon' && current.bounceCount > 0) {
-                    current = (0, BallSim_1.markBallDead)(current);
-                    combatDone = true;
-                }
                 if (!combatDone &&
                     (current.phase === 'loose' || (current.phase === 'dead' && !(0, BallSim_1.isBallCatchableInFlight)(current)))) {
                     combatDone = true;
@@ -1688,12 +1730,20 @@ class ServerGameLoop {
         const radiusSq = radius * radius;
         for (const targetId in this.state.players) {
             const target = this.state.players[targetId];
-            if (targetId === ownerId)
-                continue;
             if (!this.isPlayerActiveFighter(target))
                 continue;
-            if (!this.isOpponent(scorer, target))
-                continue;
+            if (ball.kind === 'cannon') {
+                // The 5x-radius cannon overlaps its owner when released. Arm owner damage only after it has
+                // cleared the body; after that, self-hits and friendly fire are intentional.
+                if (targetId === ownerId && ball.curveDistance < constants_1.GAME_CONSTANTS.powerup.cannonSelfHitMinDistance)
+                    continue;
+            }
+            else {
+                if (targetId === ownerId)
+                    continue;
+                if (!this.isOpponent(scorer, target))
+                    continue;
+            }
             if (horizontalDistanceSqToSegment(target.movement.position, segPrev, segCurr) > radiusSq)
                 continue;
             const hitbox = (0, PlayerHitbox_1.playerHitCapsule)(target);
@@ -3424,6 +3474,8 @@ class ServerGameLoop {
         this.lastProcessedInputAtByPlayerId.set(playerId, now);
         this.lastEnqueuedSeqByPlayerId.set(playerId, 0);
         this.parryCooldownByPlayerId.set(playerId, 0);
+        this.backflipLandingPendingByPlayerId.delete(playerId);
+        this.backflipQteSecondsByPlayerId.delete(playerId);
         this.playerNetWindowStatsByPlayerId.delete(playerId);
         // CRITICAL: the client restarts its input sequence at 0 on a reset (resetPrediction). The player
         // object is REUSED across a room reset, so its lastProcessedInputSeq still holds the pre-reset
@@ -3457,6 +3509,8 @@ class ServerGameLoop {
         this.catchAttemptByKey.clear();
         this.catchTraceEvalSeen.clear();
         this.recentHitByBallId.clear();
+        this.backflipLandingPendingByPlayerId.clear();
+        this.backflipQteSecondsByPlayerId.clear();
         this.pendingThrowEvents = [];
         // Fresh room state always returns to warmup. Joins / explicit start votes / auto-start checks
         // drive the next countdown transition so resets and post-game roster changes land in a clean
@@ -3639,7 +3693,10 @@ function applySurfaceKillingBounce(ball, bounceRule) {
     if (ball.phase !== 'live' && ball.phase !== 'deflected') {
         return { ...ball, bounceCount: ball.bounceCount + 1 };
     }
-    // Frenzy's unlimited rule keeps the ball live even off the floor/back wall.
+    // Cannonballs always die on floor contact, even when Frenzy gives ordinary balls infinite life.
+    if (ball.kind === 'cannon')
+        return { ...(0, BallSim_1.markBallDead)(ball), bounceCount: ball.bounceCount + 1 };
+    // Frenzy's unlimited rule keeps ordinary balls live even off the floor/back wall.
     if ((bounceRule?.deadAfterBounces ?? 0) >= Number.MAX_SAFE_INTEGER)
         return { ...ball, bounceCount: ball.bounceCount + 1 };
     return { ...(0, BallSim_1.markBallDead)(ball), bounceCount: ball.bounceCount + 1 };
@@ -3653,6 +3710,8 @@ function applyWallCeilingBounce(ball, bounceRule) {
     if (ball.phase !== 'live' && ball.phase !== 'deflected') {
         return { ...ball, bounceCount: ball.bounceCount + 1 };
     }
+    if (ball.kind === 'cannon')
+        return (0, BallSim_1.applyCannonBounce)(ball);
     const bounceCount = ball.bounceCount + 1;
     const deadAfterBounces = ball.phase === 'deflected'
         ? bounceRule?.deflectedDeadAfterBounces ?? constants_1.GAME_CONSTANTS.ball.deflectedDeadAfterBounces
@@ -3721,11 +3780,13 @@ function resolveBallStaticBoxes(ball, boxes, logger, bounceRule) {
     const resolvedBall = { ...ball, position, velocity };
     // A mat (standing cover OR a fallen mat lying flat) reflects the ball but keeps it live; the side
     // bleachers act like a side wall (survive one); everything else dies on first bounce as before.
-    const resolved = isSideWallLikeStaticBounce(hitBox, hitAxis)
-        ? applyWallCeilingBounce(resolvedBall, bounceRule)
-        : hitBox?.kind === 'mat'
-            ? (0, BallSim_1.applyMatBounce)(resolvedBall)
-            : (0, BallSim_1.applyBallBounce)(resolvedBall, bounceRule);
+    const resolved = ball.kind === 'cannon'
+        ? (0, BallSim_1.applyCannonBounce)(resolvedBall)
+        : isSideWallLikeStaticBounce(hitBox, hitAxis)
+            ? applyWallCeilingBounce(resolvedBall, bounceRule)
+            : hitBox?.kind === 'mat'
+                ? (0, BallSim_1.applyMatBounce)(resolvedBall)
+                : (0, BallSim_1.applyBallBounce)(resolvedBall, bounceRule);
     if (hitBox?.kind === 'bleacher') {
         logger?.(`bleacher collision ball=${ball.id} box=${hitBox.id ?? 'unknown'}` +
             ` axis=${hitAxis ?? 'unknown'}` +

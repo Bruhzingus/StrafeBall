@@ -398,7 +398,7 @@ class PowerupSystem {
                 delete room.balls[ball.id];
                 continue;
             }
-            if (ball.kind === 'cannon' && ball.phase !== 'held' && (ball.bounceCount > 0 || ball.phase === 'dead' || ball.phase === 'loose')) {
+            if (ball.kind === 'cannon' && ball.phase !== 'held' && (ball.phase === 'dead' || ball.phase === 'loose')) {
                 delete room.balls[ball.id];
                 this.cannonHits.delete(`${ball.id}:${ball.throwId}`);
                 continue;

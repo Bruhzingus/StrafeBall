@@ -346,6 +346,16 @@ exports.GAME_CONSTANTS = {
         speedMultiplier: 1.3, jumpHeightMultiplier: 1.25,
         adrenalineMaxCharges: 6, adrenalineRechargeSeconds: 2,
         cannonHeldScale: 2, cannonFlightScale: 5,
+        // Cannonball starts slower than the old charged-speed launch, then compounds speed with travel.
+        // It ignores the room's ordinary bounce limit: walls/ceiling/obstacles use this private cap,
+        // while touching the floor still destroys it immediately.
+        cannonLaunchSpeedMultiplier: 0.75,
+        cannonSpeedGrowthMultiplier: 1.1,
+        cannonSpeedGrowthDistance: 6,
+        cannonMaxBounces: 4,
+        // Its 5x flight radius overlaps the thrower at release, so self-hits arm only after it has
+        // cleared the body. It can still hit its owner after returning or if they run into its path.
+        cannonSelfHitMinDistance: 2,
         bombFuseSeconds: 2, blastRadius: 3,
         magnetSeconds: 20, magnetRadius: 10, magnetAcceleration: 28, magnetSpeed: 7,
         distantMagnetAcceleration: 5, distantMagnetSpeed: 2, stationarySeconds: 3, armorCap: 3,
@@ -364,10 +374,10 @@ exports.GAME_CONSTANTS = {
         // rising momentum, so a point-blank, correctly aligned jump can launch clear across the court.
         // Standing mats in range are knocked flat and interrupted actions are cancelled.
         shockRadius: 5,
-        shockPlayerSpeed: 42,
-        shockPlayerLift: 12,
-        shockBallSpeed: 28,
-        shockBallLift: 8,
+        shockPlayerSpeed: 72,
+        shockPlayerLift: 18,
+        shockBallSpeed: 42,
+        shockBallLift: 11,
         // Stun: COD-style concussion. Slowed look + blurred vision (client-side) and slowed movement
         // with no dash (shared sim) for stunSeconds. Thrower included if they're in range.
         stunRadius: 4.5,
@@ -395,10 +405,11 @@ exports.GAME_CONSTANTS = {
         lavaFirstDamageSeconds: 0.35,
         lavaDamageIntervalSeconds: 1,
         lavaBallDriftSpeed: 2.5,
-        // Frenzy: the court fills with frenzyBallMultiplier× the balls, dropped from the ceiling, and
-        // live balls never die on a bounce for frenzySeconds. Extra balls vanish when it ends.
+        // Frenzy: extra balls drop one by one from above over five seconds. Live balls never die on a
+        // bounce for frenzySeconds, and the extra balls vanish when the effect ends.
         frenzySeconds: 20,
         frenzyBallMultiplier: 3,
+        frenzySpawnSeconds: 5,
         frenzyDropHeight: 6
     },
     map: {

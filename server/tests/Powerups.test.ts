@@ -170,18 +170,68 @@ describe('special ball combat', () => {
     expect(autoParryBall(p, p.hands, ball, v(0, 0, 1), 0).ok).toBe(false);
     ball.phase = 'dead'; expect(isBallPickupEligible(ball, v())).toBe(false);
   });
-  it('cannon hits two opponents once each, through their two-ball guards, then is removed on bounce', () => {
+  it('cannon hits its owner, teammate, and both opponents once each while piercing the group', () => {
     const loop = new ServerGameLoop('cannon', { mode: '2v2', playersPerTeam: 2 });
     for (const id of ['a', 'b', 'c', 'd']) loop.addPlayer(id, id);
     loop.state.match.status = 'playing'; loop.state.match.boundary.noBoundaries = true;
-    const p = loop.state.players.a; const targets = Object.values(loop.state.players).filter(t => t.teamId !== p.teamId);
-    Object.values(loop.state.players).forEach(t => { t.movement.position = v(9, 0, -10); });
-    targets.forEach((t, i) => { t.movement.position = v(0, 0, i * 2); });
-    loop.state.balls.cannon = createBallState('cannon', v(0, 1.4, -2), { kind: 'cannon', phase: 'live', ownerKind: 'player', ownerId: p.id, velocity: v(0, 0, 42), throwId: 10 });
-    for (let i = 0; i < 18; i++) loop.advance();
-    expect(targets.map(t => loop.state.players[t.id].lives)).toEqual([2, 2]);
-    for (let i = 0; i < 120; i++) loop.advance();
+    const p = loop.state.players.a;
+    Object.values(loop.state.players).forEach(t => { t.movement.position = v(0, 0, 0); });
+    loop.state.balls.cannon = createBallState('cannon', v(0, 1.4, -3), {
+      kind: 'cannon', phase: 'live', ownerKind: 'player', ownerId: p.id,
+      velocity: v(0, 0, C.ball.chargedThrowSpeed * C.powerup.cannonLaunchSpeedMultiplier),
+      curveDistance: C.powerup.cannonSelfHitMinDistance + 1, throwId: 10
+    });
+    for (let i = 0; i < 24; i++) loop.advance();
+    expect(Object.values(loop.state.players).map(t => t.lives)).toEqual([2, 2, 2, 2]);
+    expect(loop.state.balls.cannon?.phase).toBe('live');
+  });
+
+  it('cannon starts at 75% speed without hitting its owner on release', () => {
+    const loop = new ServerGameLoop('cannon-launch');
+    loop.addPlayer('a', 'A'); loop.addPlayer('b', 'B');
+    loop.state.match.status = 'playing'; loop.state.match.boundary.noBoundaries = true;
+    const p = loop.state.players.a;
+    const ball = createBallState('cannon', p.movement.position, { kind: 'cannon' });
+    loop.state.balls.cannon = holdBall(ball, p.id, 'left');
+    p.hands.left = createHandState('left', { heldBallId: 'cannon', mode: 'holding' });
+
+    expect(loop.handleThrow(p.id, { hand: 'left' }).ok).toBe(true);
+    const thrown = loop.state.balls.cannon;
+    expect(Math.hypot(thrown.velocity.x, thrown.velocity.y, thrown.velocity.z))
+      .toBeCloseTo(C.ball.chargedThrowSpeed * C.powerup.cannonLaunchSpeedMultiplier, 6);
+    for (let i = 0; i < 10; i++) loop.advance();
+    expect(loop.state.players.a.lives).toBe(3);
+  });
+
+  it('cannon survives three wall impacts, expires on the fourth, and dies instantly on the floor', () => {
+    const loop = new ServerGameLoop('cannon-bounces');
+    loop.addPlayer('a', 'A'); loop.addPlayer('b', 'B');
+    loop.state.match.status = 'playing'; loop.state.match.boundary.noBoundaries = true;
+    loop.state.players.a.movement.position = v(0, 0, -10);
+    loop.state.players.b.movement.position = v(0, 0, 10);
+    loop.state.balls.cannon = createBallState('cannon', v(0, 5, 0), {
+      kind: 'cannon', phase: 'live', ownerKind: 'player', ownerId: 'a', velocity: v(10, 0, 0), throwId: 11
+    });
+    const wallX = C.map.halfWidth - C.ball.radius * C.powerup.cannonFlightScale;
+
+    for (let bounce = 1; bounce <= C.powerup.cannonMaxBounces; bounce += 1) {
+      const cannon = loop.state.balls.cannon;
+      expect(cannon).toBeTruthy();
+      const towardPositive = bounce % 2 === 1;
+      cannon.position = v(towardPositive ? wallX + 0.1 : -wallX - 0.1, 5, 0);
+      cannon.velocity = v(towardPositive ? 10 : -10, 0, 0);
+      loop.advance();
+      if (bounce < C.powerup.cannonMaxBounces) {
+        expect(loop.state.balls.cannon).toMatchObject({ phase: 'live', bounceCount: bounce });
+      }
+    }
     expect(loop.state.balls.cannon).toBeUndefined();
+
+    loop.state.balls.floorCannon = createBallState('floorCannon', v(0, 0.5, 0), {
+      kind: 'cannon', phase: 'live', ownerKind: 'player', ownerId: 'a', velocity: v(0, -1, 0), throwId: 12
+    });
+    loop.advance();
+    expect(loop.state.balls.floorCannon).toBeUndefined();
   });
   it('bomb arms once with three beeps; re-holding preserves fuse; held explosion removes ball', () => {
     const { room, system } = setup('bomb'); take(room, system); system.activate(room, 'a');

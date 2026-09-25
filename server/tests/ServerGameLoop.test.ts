@@ -281,6 +281,54 @@ describe('ServerGameLoop', () => {
     expect(length(live!.velocity)).toBeCloseTo(backflipQteSpeed(5), 1);
   });
 
+  it('accepts a backflip QTE throw after a real full flight and landing', () => {
+    const loop = new ServerGameLoop('backflip-full-flight');
+    loop.addPlayer('a', 'A');
+    loop.addPlayer('b', 'B');
+    playNow(loop);
+    loop.state.players.a.movement.position = vec3(0, 0, 0);
+    expect(loop.handlePickup('a').ok).toBe(true);
+
+    let sequence = 1;
+    loop.handleInput('a', { backflipPressed: true, sequence }, sequence);
+    loop.step();
+    expect(loop.state.players.a.movementInternal.backflipActive).toBe(true);
+
+    let landed = false;
+    for (let tick = 0; tick < loop.tickRate * 5; tick += 1) {
+      sequence += 1;
+      loop.handleInput('a', { sequence }, sequence);
+      loop.step();
+      const player = loop.state.players.a;
+      if (player.movement.grounded && !player.movementInternal.backflipActive) {
+        landed = true;
+        break;
+      }
+    }
+    expect(landed).toBe(true);
+    // Eligibility comes from the observed landing, not a fragile cooldown estimate. This also
+    // covers long low-gravity flights where the ordinary backflip cooldown can finish in the air.
+    loop.state.players.a.movementInternal.backflipCooldown = 0;
+
+    // Match the client: wait through the arm delay and click around the center of the sweep.
+    const centerClickDelay = GAME_CONSTANTS.backflip.qte.armDelaySeconds +
+      GAME_CONSTANTS.backflip.qte.durationSeconds / 2;
+    for (let tick = 0; tick < Math.ceil(centerClickDelay * loop.tickRate); tick += 1) {
+      sequence += 1;
+      loop.handleInput('a', { sequence }, sequence);
+      loop.step();
+    }
+
+    sequence += 1;
+    loop.handleInput('a', { leftHandReleased: true, backflipThrowTier: 5, sequence }, sequence);
+    loop.step();
+
+    const live = Object.values(loop.state.balls).find((ball) => ball.phase === 'live');
+    expect(live).toBeTruthy();
+    expect(live!.isSuper).toBe(true);
+    expect(length(live!.velocity)).toBeCloseTo(backflipQteSpeed(5), 1);
+  });
+
   it('clears drained one-shot edges from fallback ticks', () => {
     const loop = new ServerGameLoop('room');
     loop.addPlayer('a', 'A');

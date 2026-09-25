@@ -13,6 +13,7 @@ import type { InputManager } from '../input/InputManager';
 import { MultiplayerClient } from './MultiplayerClient';
 import { hostSetupError, localHostConfig } from './hostSession';
 import '../ui/menus.css';
+import '../ui/teamRoom.css';
 
 type PendingAction = (() => Promise<void>) | null;
 
@@ -75,6 +76,7 @@ export class MultiplayerOverlay {
   // lighting + HUD banner) plays first, then the card fades in (CSS entrance on --postmatch).
   private reportRevealed = false;
   private reportRevealTimer: number | null = null;
+  private readonly renderedHtml = new WeakMap<HTMLElement, string>();
   private lastRendered = {
     connected: false,
     busy: false,
@@ -104,6 +106,9 @@ export class MultiplayerOverlay {
         <button class="multiplayer-close" type="button" aria-label="Close match menu">x</button>
         <div class="multiplayer-kicker">StrafeBall Lobby</div>
         <div class="multiplayer-title">Private Match</div>
+        <div class="team-room-intro">Invite your squad. Pick a side. Own the court.</div>
+        <div class="team-room-compact-status" role="status"></div>
+        <button class="team-room-manage" type="button">Manage teams <span aria-hidden="true">&#8594;</span></button>
 
         <label class="multiplayer-field">
           <span>Player (required)</span>
@@ -194,9 +199,10 @@ export class MultiplayerOverlay {
         <div class="multiplayer-reset"></div>
         <div class="multiplayer-room-notice"></div>
         <div class="multiplayer-actions multiplayer-actions--leave">
+          <button class="team-room-resume" type="button">Warm up on court <span>Esc</span></button>
           <button class="multiplayer-leave">Leave room</button>
         </div>
-        <div class="multiplayer-error"></div>
+        <div class="multiplayer-error" role="alert"></div>
       </div>
 
       <div class="multiplayer-settings-host"></div>
@@ -372,6 +378,9 @@ export class MultiplayerOverlay {
     this.wasLiveMatch = liveMatch;
     this.wasReportOpen = reportOpen;
     const connected = this.client.connected;
+    if (connected && !this.lastRendered.connected && snapshot?.room.match.mode === '2v2' && matchStatus === 'warmup') {
+      this.modalOpen = true;
+    }
     const pointerLocked = document.pointerLockElement !== null;
     const busy = this.client.status === 'connecting';
     const nameReady = this.nameInput.value.trim().length > 0;
@@ -431,13 +440,28 @@ export class MultiplayerOverlay {
     this.networkStatus.title = this.client.pingMs === null ? 'Waiting for a latency measurement' : `Round-trip latency: ${this.client.pingMs} milliseconds via ${path.toLowerCase()}`;
     this.roomMenuButton.hidden = pointerLocked || this.modalOpen || reportOpen;
     this.roomMenuButton.setAttribute('aria-expanded', String(this.modalOpen));
-    this.rosterValue.innerHTML = roomSummary.rosterHtml;
-    this.settingsEntryValue.innerHTML = roomSummary.settingsEntryHtml;
-    this.controlsValue.innerHTML = roomSummary.controlsHtml;
-    this.settingsValue.innerHTML = roomSummary.settingsHtml;
-    this.pregameValue.innerHTML = roomSummary.pregameHtml;
-    this.resetValue.innerHTML = roomSummary.resetHtml;
-    this.postmatchValue.innerHTML = roomSummary.postmatchHtml;
+    // Ping updates must not replace focused buttons or restart their hover/pressed state.
+    for (const [element, html] of [
+      [this.rosterValue, roomSummary.rosterHtml], [this.settingsEntryValue, roomSummary.settingsEntryHtml],
+      [this.controlsValue, roomSummary.controlsHtml], [this.settingsValue, roomSummary.settingsHtml],
+      [this.pregameValue, roomSummary.pregameHtml], [this.resetValue, roomSummary.resetHtml],
+      [this.postmatchValue, roomSummary.postmatchHtml]
+    ] as const) {
+      if (this.renderedHtml.get(element) === html) continue;
+      const active = document.activeElement;
+      const buttons = Array.from(element.querySelectorAll('button'));
+      const index = buttons.indexOf(active as HTMLButtonElement);
+      element.innerHTML = html;
+      this.renderedHtml.set(element, html);
+      if (index >= 0) {
+        const replacement = element.querySelectorAll('button')[index];
+        if (replacement && !replacement.disabled) replacement.focus({ preventScroll: true });
+        else {
+          element.tabIndex = -1;
+          element.focus({ preventScroll: true });
+        }
+      }
+    }
     this.noticeValue.textContent = roomSummary.noticeText;
     this.errorValue.textContent = friendlyError(this.client.errorMessage);
 
@@ -450,6 +474,17 @@ export class MultiplayerOverlay {
       ? 'Tip: use F11 fullscreen before the match starts.'
       : '2v2 is disabled in the active build configuration.';
     this.panel.dataset.mode = this.selectedMode;
+    const teamRoom = connected && this.selectedMode === '2v2';
+    this.root.classList.toggle('multiplayer-modal--team-room', teamRoom);
+    this.root.classList.toggle('multiplayer-modal--warmup', matchStatus === 'warmup');
+    this.mustQuery<HTMLElement>('.multiplayer-title').textContent = teamRoom ? 'Team room' : 'Private Match';
+    this.mustQuery<HTMLElement>('.team-room-compact-status').textContent = snapshot
+      ? `${Object.values(snapshot.room.players).filter(p => p.connected !== false).length} / ${snapshot.room.match.maxPlayers} players · ${snapshot.room.startVote.voteCount} ready`
+      : '';
+    this.mustQuery<HTMLElement>('.team-room-resume').firstChild!.textContent = liveMatch ? 'Return to match ' : 'Warm up on court ';
+    this.mustQuery<HTMLElement>('.team-room-intro').textContent = liveMatch
+      ? 'Match in progress. Return to court when you’re ready.'
+      : 'Invite your squad. Pick a side. Own the court.';
     for (const button of this.modeButtons) {
       button.classList.toggle('multiplayer-mode-tab--active', button.dataset.mode === this.selectedMode);
     }
@@ -485,6 +520,11 @@ export class MultiplayerOverlay {
     // HUD banner) IS the end-of-match screen until the card fades in.
     const shouldShow = (!celebrationHold && (this.settingsOpen || this.modalOpen || (connected && !liveMatch))) || busy || this.client.status === 'error' || reportVisible;
     this.root.classList.toggle('multiplayer-modal--hidden', !shouldShow);
+    const roomDialogOpen = teamRoom && this.modalOpen && !reportOpen && !this.settingsOpen;
+    this.panel.setAttribute('role', roomDialogOpen ? 'dialog' : 'group');
+    this.panel.setAttribute('aria-label', teamRoom ? '2v2 team room' : 'Private match');
+    if (roomDialogOpen) this.panel.setAttribute('aria-modal', 'true');
+    else this.panel.removeAttribute('aria-modal');
     this.syncLockOverlaySuppression();
   }
 
@@ -495,6 +535,7 @@ export class MultiplayerOverlay {
   private openRoomMenu = (): void => {
     this.modalOpen = true;
     this.update();
+    this.closeButton.focus({ preventScroll: true });
   };
 
   private createRoom = (): void => {
@@ -553,11 +594,25 @@ export class MultiplayerOverlay {
   // Escape closes the portal overlay only (settings sub-panel first, then the menu). It never reaches
   // gameplay. Other keys are left to the focused field / the gameplay input guard in InputManager.
   private onPortalKeyDown = (event: KeyboardEvent): void => {
+    if (event.key === 'Tab' && (this.modalOpen || this.settingsOpen)) {
+      const surface = this.settingsOpen ? this.settingsValue : this.panel;
+      const focusable = Array.from(surface.querySelectorAll<HTMLElement>('button:not(:disabled), input:not(:disabled), summary, a[href]'))
+        .filter(element => element.getClientRects().length > 0);
+      const first = focusable[0];
+      const last = focusable[focusable.length - 1];
+      if (first && (!surface.contains(document.activeElement) || (event.shiftKey ? document.activeElement === first : document.activeElement === last))) {
+        event.preventDefault();
+        (event.shiftKey ? last : first).focus();
+      }
+      return;
+    }
     if (event.key !== 'Escape') return;
     if (this.settingsOpen) {
       event.preventDefault();
       this.settingsOpen = false;
+      this.modalOpen = true;
       this.update();
+      this.settingsEntryValue.querySelector('button')?.focus();
       return;
     }
     if (this.modalOpen) {
@@ -629,6 +684,8 @@ export class MultiplayerOverlay {
   private onRootClick = (event: MouseEvent): void => {
     const target = event.target instanceof Element ? event.target : null;
     if (!target) return;
+    if (target.closest('.team-room-manage')) { this.openRoomMenu(); return; }
+    if (target.closest('.team-room-resume')) { this.close(); return; }
 
     // Unified room-control surface: presets, host settings steppers, host start, early-end vote.
     const control = target.closest<HTMLButtonElement>('.multiplayer-control');
@@ -705,11 +762,14 @@ export class MultiplayerOverlay {
       this.settingsOpen = true;
       this.modalOpen = false;
       this.update();
+      this.settingsValue.querySelector<HTMLButtonElement>('.multiplayer-settings-menu__close')?.focus();
       return;
     }
     if (action === 'close-settings') {
       this.settingsOpen = false;
+      this.modalOpen = true;
       this.update();
+      this.settingsEntryValue.querySelector('button')?.focus();
       return;
     }
     if (action === 'start-match') {
@@ -1195,7 +1255,7 @@ function buildControlsHtml(room: RoomState, localPlayerId: string): string {
     ? `<button class="multiplayer-control" data-action="preset" data-preset="${presetId}" type="button">Reset to ${escapeHtml(s.format)} recommended</button>`
     : '';
 
-  const startBtn = isHost && room.match.status === 'warmup'
+  const startBtn = room.match.mode !== '2v2' && isHost && room.match.status === 'warmup'
     ? `<button class="multiplayer-control multiplayer-control--primary" data-action="start-match" type="button">Start Match</button>`
     : '';
 
@@ -1222,12 +1282,12 @@ function buildControlsHtml(room: RoomState, localPlayerId: string): string {
       : '';
 
   const roundInfo = `Round ${room.match.currentRound} / ${room.match.roundCount}`;
-  const compactSummary = `${escapeHtml(s.format.toUpperCase())} - ${tickPresetDisplay(room.netMode)} - ${s.livesPerPlayer} lives - ${s.dodgeballCount} balls - ${s.roundCount} round${s.roundCount === 1 ? '' : 's'}`;
+  const compactSummary = `${escapeHtml(s.format.toUpperCase())} · ${room.match.mode === '2v2' ? '' : `${tickPresetDisplay(room.netMode)} · `}${s.livesPerPlayer} lives · ${s.dodgeballCount} balls · ${s.roundCount} round${s.roundCount === 1 ? '' : 's'}`;
 
   return `
     <div class="multiplayer-controls__panel multiplayer-controls__panel--compact" data-editable="${editable ? '1' : '0'}">
       <div class="multiplayer-controls__head">
-        <span class="multiplayer-controls__title">Match Controls</span>
+        <span class="multiplayer-controls__title">${live ? 'Match controls' : 'Match format'}</span>
         ${permission}
       </div>
       <div class="multiplayer-controls__meta">Code <strong>${escapeHtml(room.id)}</strong> · ${roundInfo}</div>
@@ -1263,7 +1323,9 @@ function buildSettingsHtml(room: RoomState, localPlayerId: string): string {
   const presetBtn = editable && s.preset === 'custom'
     ? `<button class="multiplayer-control" data-action="preset" data-preset="${presetId}" type="button">Reset to ${escapeHtml(s.format)} recommended</button>`
     : '';
-  const startBtn = isHost
+  const startBtn = room.match.mode === '2v2'
+    ? `<button class="multiplayer-control" data-action="close-settings" type="button">Back to teams</button>`
+    : isHost
     ? `<button class="multiplayer-control multiplayer-control--primary" data-action="start-match" type="button">Start Match</button>`
     : '';
   const lockNote = !isHost
@@ -1325,16 +1387,17 @@ function buildStartButtonHtml(room: RoomState, localPlayerId: string): string {
     room.startVote.teamChoiceCount >= room.startVote.requiredTeamChoices;
   const localVoted = room.startVote.votesByPlayerId[localPlayerId] === true;
   const startEnabled = choicesReady && room.startVote.requiredVotes > 0 && !localVoted;
-  const startLabel = localVoted ? 'Waiting...' : 'Start Game';
+  const startLabel = localVoted ? 'Ready — waiting for players' : room.match.mode === '2v2' ? 'Ready up' : 'Start Game';
   const hint = !choicesReady
-    ? 'Choose teams to unlock Start Game.'
+    ? 'Everyone needs to confirm a team before readying up.'
     : room.startVote.requiredVotes === 0
-      ? 'Waiting for an opponent...'
+      ? 'Invite a friend to the other team to get started.'
       : localVoted
         ? `Waiting on ${Math.max(0, room.startVote.requiredVotes - room.startVote.voteCount)} more player${room.startVote.requiredVotes - room.startVote.voteCount === 1 ? '' : 's'}...`
-        : '';
+        : `Match starts at ${room.startVote.requiredVotes} ready vote${room.startVote.requiredVotes === 1 ? '' : 's'}.`;
   return `
     <div class="multiplayer-start-vote-wrap">
+      <div class="team-room-ready-count" role="status">${room.startVote.requiredVotes > 0 ? `${room.startVote.voteCount} / ${room.startVote.requiredVotes} ready votes` : 'Waiting for players'}</div>
       <button class="multiplayer-start-vote multiplayer-start-vote--big" type="button"${startEnabled ? '' : ' disabled'}>${startLabel}</button>
       ${hint ? `<div class="multiplayer-start-vote-hint">${escapeHtml(hint)}</div>` : ''}
     </div>
@@ -1352,39 +1415,44 @@ function buildPregameHtml(room: RoomState, localPlayerId: string): string {
     `;
   }
 
+  const players = Object.values(room.players);
   const teams = room.match.teamIds.map((teamId) => {
+    const color = teamId === 'red' ? 'red' : 'blue';
+    const members = players.filter(player => player.teamId === teamId && player.connected !== false);
+    const yours = room.players[localPlayerId]?.teamId === teamId;
     const rows: string[] = [];
     for (let slotIndex = 0; slotIndex < room.match.playersPerTeam; slotIndex += 1) {
-      const occupant = Object.values(room.players).find((player) => player.teamId === teamId && player.teamSlotIndex === slotIndex);
+      const occupant = players.find((player) => player.teamId === teamId && player.teamSlotIndex === slotIndex);
+      const isLocal = occupant?.id === localPlayerId;
       const chosen = occupant ? room.startVote.teamChoicesByPlayerId[occupant.id] === true : false;
-      const status = occupant
-        ? occupant.connected === false
-          ? 'Disconnected'
-          : occupant.combatState === 'eliminated'
-            ? 'Eliminated'
-            : chosen
-              ? 'Chosen'
-              : 'Choose team'
-        : 'Open';
-      const buttonLabel = occupant?.id === localPlayerId
-        ? chosen ? 'Chosen' : 'Choose'
+      const ready = occupant ? room.startVote.votesByPlayerId[occupant.id] === true : false;
+      const status = !occupant ? 'Invite a friend or join this side'
+        : occupant.connected === false ? 'Reconnecting…'
+        : ready ? 'Ready to play' : chosen ? 'Team confirmed' : 'Confirm your team';
+      const buttonLabel = isLocal
+        ? chosen ? 'Your slot' : 'Confirm'
         : occupant ? 'Swap' : 'Join';
       rows.push(`
-        <div class="multiplayer-slot-row${chosen ? ' multiplayer-slot-row--chosen' : ''}">
-          <div>
-            <strong>${escapeHtml(teamId.toUpperCase())} ${slotIndex + 1}</strong>
-            <span>${occupant ? `${escapeHtml(occupant.name)} · ${status}` : 'Open slot'}</span>
+        <div class="multiplayer-slot-row${isLocal ? ' multiplayer-slot-row--chosen' : ''}${!occupant ? ' team-room-slot--empty' : ''}">
+          <div class="team-room-avatar" aria-hidden="true">${occupant ? escapeHtml(occupant.name.slice(0, 1).toUpperCase()) : '+'}</div>
+          <div class="team-room-player">
+            <strong title="${occupant ? escapeHtml(occupant.name) : 'Open slot'}">${occupant ? escapeHtml(occupant.name) : 'Open slot'}${isLocal ? ' <small>YOU</small>' : ''}</strong>
+            <span class="${ready ? 'team-room-player--ready' : ''}">${ready ? '&#10003; ' : ''}${status}</span>
           </div>
-          <button class="multiplayer-switch" type="button" data-team-id="${escapeHtml(teamId)}" data-slot-index="${slotIndex}">${buttonLabel}</button>
+          <button class="multiplayer-switch" type="button" data-team-id="${escapeHtml(teamId)}" data-slot-index="${slotIndex}"
+            aria-label="${escapeHtml(`${buttonLabel}: ${teamId} slot ${slotIndex + 1}${occupant && !isLocal ? ` with ${occupant.name}` : ''}`)}"${isLocal && chosen ? ' disabled' : ''}>${buttonLabel}</button>
         </div>
       `);
     }
-    return rows.join('');
+    return `<section class="team-room-team team-room-team--${color}" aria-label="${escapeHtml(teamId)} team">
+      <div class="team-room-team__header"><h3>${escapeHtml(teamId)} team</h3><span>${yours ? 'YOUR TEAM · ' : ''}${members.length} / ${room.match.playersPerTeam}</span></div>
+      ${rows.join('')}
+    </section>`;
   }).join('');
 
   return `
     <div class="multiplayer-pregame-card">
-      <div class="multiplayer-pregame-title">Pre-Game Teams</div>
+      <div class="team-room-section-head"><div><div class="multiplayer-pregame-title">Choose your side</div><p>Join an open slot, or swap places with another player.</p></div><span>${players.filter(p => p.connected !== false).length} / ${room.match.maxPlayers} players</span></div>
       <div class="multiplayer-pregame-slots">${teams}</div>
       ${buildStartButtonHtml(room, localPlayerId)}
     </div>
@@ -1392,7 +1460,7 @@ function buildPregameHtml(room: RoomState, localPlayerId: string): string {
 }
 
 function buildResetControlsHtml(room: RoomState, localPlayerId: string): string {
-  if (room.match.mode !== '2v2' || room.match.status === 'complete') return '';
+  if (room.match.mode !== '2v2' || room.match.status === 'complete' || room.match.status === 'warmup') return '';
   const sameTeamsVoted = room.resetVote.mode === 'same-teams' && room.resetVote.votesByPlayerId[localPlayerId] === true;
   const resetTeamsVoted = room.resetVote.mode === 'reset-teams' && room.resetVote.votesByPlayerId[localPlayerId] === true;
   const sameTeamsCount = room.resetVote.mode === 'same-teams' ? room.resetVote.voteCount : 0;
@@ -1403,10 +1471,10 @@ function buildResetControlsHtml(room: RoomState, localPlayerId: string): string 
     : 'Vote to reset';
   const sameTeamsLabel = sameTeamsVoted
     ? `Voted${formatVoteTally(sameTeamsCount, room.resetVote.requiredVotes)}`
-    : `Match${formatVoteTally(sameTeamsCount, room.resetVote.requiredVotes)}`;
+    : `Restart match${formatVoteTally(sameTeamsCount, room.resetVote.requiredVotes)}`;
   const resetTeamsLabel = resetTeamsVoted
     ? `Voted${formatVoteTally(resetTeamsCount, room.resetVote.requiredVotes)}`
-    : `Teams${formatVoteTally(resetTeamsCount, room.resetVote.requiredVotes)}`;
+    : `Reset teams${formatVoteTally(resetTeamsCount, room.resetVote.requiredVotes)}`;
   return `
     <div class="multiplayer-reset-card">
       <div class="multiplayer-reset-copy">

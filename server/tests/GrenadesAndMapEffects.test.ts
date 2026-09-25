@@ -127,8 +127,8 @@ describe('grenades: shock + stun', () => {
     const b = loop.state.players.b;
     expect(loop.state.balls[id]).toBeUndefined();
     expect(b.lives).toBe(livesBefore);
-    expect(b.movement.velocity.x).toBeGreaterThan(25);
-    expect(b.movement.velocity.y).toBeGreaterThan(12);
+    expect(b.movement.velocity.x).toBeGreaterThan(45);
+    expect(b.movement.velocity.y).toBeGreaterThan(15);
     expect(b.hands.left.mode).toBe('holding'); expect(b.hands.left.chargeSeconds).toBe(0);
     expect(loop.state.mats[mat].knockedOver).toBe(true);
     expect(loop.state.balls.ball_1.velocity.x).toBeLessThan(-2);
@@ -268,7 +268,7 @@ describe('map effects', () => {
     expect(room.mapEffect).toBeNull();
   });
 
-  it('frenzy triples the balls from the ceiling, keeps live balls alive through bounces, then cleans up', () => {
+  it('frenzy drops extra balls one at a time over five seconds, keeps live bounces, then cleans up', () => {
     const loop = new ServerGameLoop('frenzy'); loop.addPlayer('a', 'A'); loop.addPlayer('b', 'B');
     loop.state.match.status = 'playing'; loop.state.match.boundary.noBoundaries = true;
     loop.state.players.a.movement.position = v(-10, 0, -15); loop.state.players.b.movement.position = v(10, 0, 15);
@@ -278,8 +278,19 @@ describe('map effects', () => {
     expect(system.tryStart(loop.state, 0, v())).toBe(true);
     advanceSeconds(loop, C.mapEffect.warningSeconds + 0.05);
     expect(loop.state.mapEffect?.phase).toBe('active');
+    expect(system.frenzyBalls).toHaveLength(1);
+    const firstId = system.frenzyBalls[0];
+    const firstHeight = loop.state.balls[firstId].position.y;
+    expect(firstHeight).toBeGreaterThan(1);
+    advanceSeconds(loop, 0.2);
+    expect(system.frenzyBalls).toHaveLength(1);
+    expect(loop.state.balls[firstId].position.y).toBeLessThan(firstHeight);
+    advanceSeconds(loop, 2.3);
+    expect(system.frenzyBalls.length).toBeGreaterThan(1);
+    expect(system.frenzyBalls.length).toBeLessThan(before * (C.mapEffect.frenzyBallMultiplier - 1));
+    advanceSeconds(loop, C.mapEffect.frenzySpawnSeconds - 2.5 + 0.1);
     expect(Object.keys(loop.state.balls).length).toBe(before * C.mapEffect.frenzyBallMultiplier);
-    expect(system.frenzyBalls.every(id => loop.state.balls[id].position.y > 1)).toBe(true);
+    expect(loop.state.balls[system.frenzyBalls[system.frenzyBalls.length - 1]].position.y).toBeGreaterThan(1);
 
     // A live ball thrown into the floor keeps flying live after several bounces.
     loop.state.balls.ball_0 = createBallState('ball_0', v(0, 1.2, -2), { phase: 'live', ownerKind: 'player', ownerId: 'a', velocity: v(0, -6, 14), throwId: 9 });
@@ -291,6 +302,19 @@ describe('map effects', () => {
     expect(loop.state.mapEffect ?? null).toBeNull();
     expect(Object.keys(loop.state.balls).filter(id => id.startsWith('frenzy_'))).toHaveLength(0);
     expect(Object.keys(loop.state.balls).length).toBe(before);
+  });
+
+  it('finishes the frenzy drop sequence at five seconds, without releasing the last ball early', () => {
+    const room = playingRoom();
+    const system = new MapEffectSystem(rollEffect(2));
+    expect(system.tryStart(room, 0, v())).toBe(true);
+    system.step(room, C.mapEffect.warningSeconds, env, 6);
+    const extra = 6 * (C.mapEffect.frenzyBallMultiplier - 1);
+    expect(system.frenzyBalls).toHaveLength(1);
+    system.step(room, C.mapEffect.frenzySpawnSeconds - 0.01, env, 6);
+    expect(system.frenzyBalls).toHaveLength(extra - 1);
+    system.step(room, 0.01, env, 6);
+    expect(system.frenzyBalls).toHaveLength(extra);
   });
 
   it('lobby (warmup): power-ups spawn and can be used, bombs never cost lives, lava never rolls', () => {

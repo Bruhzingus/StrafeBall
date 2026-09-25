@@ -12,10 +12,10 @@ function horizontalDirection(dx: number, dz: number, fallback: Vec3): { x: numbe
   return { x: 0, z: 1 };
 }
 
-/** Linear blast falloff that keeps the outer edge useful while rewarding point-blank placement. */
+/** A close blast is a movement tool; the edge still shoves without launching across the court. */
 export function shockwaveFalloff(distance: number, radius: number): number {
   if (!Number.isFinite(distance) || distance > radius) return 0;
-  return 1 - 0.5 * Math.max(0, distance) / radius;
+  return 1 - 0.65 * Math.pow(Math.max(0, distance) / radius, 1.5);
 }
 
 /**

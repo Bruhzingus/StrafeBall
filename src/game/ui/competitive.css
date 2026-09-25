@@ -36,68 +36,95 @@ body { font-family: var(--sb-ui-font); }
   box-shadow: none; font: 700 11px/1.2 var(--sb-ui-font);
 }
 
-/* The mechanics form a fixed three-tile group; temporary systems cannot reflow it. */
+/* Core mechanics form one stable command dock; temporary systems cannot reflow it. */
 .ability-hud {
-  bottom: var(--sb-safe-y); gap: 5px; padding: 0;
-  border: 0; border-radius: 0; background: none;
-  box-shadow: none; backdrop-filter: none;
+  bottom: var(--sb-safe-y);
+  gap: 3px;
+  padding: 6px;
+  overflow: hidden;
+  border: 1px solid var(--sb-line);
+  border-radius: 11px;
+  background: rgba(4, 13, 28, .86);
+  box-shadow: 0 10px 28px rgba(0, 0, 0, .3), inset 0 1px rgba(255, 255, 255, .05);
+  backdrop-filter: blur(10px);
+  -webkit-backdrop-filter: blur(10px);
 }
 .ability-hud-card {
   position: relative; box-sizing: border-box;
-  grid-template-columns: 43px 1fr; grid-template-rows: 23px 20px;
-  justify-items: start; column-gap: 5px;
-  width: 108px; min-width: 0; height: 61px; padding: 7px 6px 8px;
-  border: 1px solid var(--sb-line); border-radius: var(--sb-radius);
-  background: var(--sb-surface); color: var(--sb-cream);
-  box-shadow: var(--sb-shadow); --ability-ring-color: var(--sb-cream);
+  grid-template-columns: 48px minmax(58px, 1fr);
+  grid-template-rows: 17px 17px 17px;
+  justify-items: start;
+  column-gap: 8px;
+  width: clamp(118px, 7vw, 138px);
+  min-width: 0;
+  height: 69px;
+  padding: 8px 9px 9px;
+  border: 0;
+  border-radius: 7px;
+  background: rgba(243, 240, 231, .035);
+  color: var(--sb-cream);
+  box-shadow: none;
+  --ability-ring-color: var(--sb-cream);
+  transition: background var(--sb-fast) ease, opacity var(--sb-fast) ease;
 }
 .ability-hud-card::after {
-  content: ''; position: absolute; bottom: 0; left: 0; right: 0; height: 3px;
+  content: ''; position: absolute; bottom: 0; left: 7px; right: 7px; height: 3px;
+  border-radius: 999px;
   background: var(--sb-cream); transform: scaleX(var(--ability-fill, 1)); transform-origin: left;
 }
 .ability-hud-card[data-ability='left-catch'] { order: 0; }
 .ability-hud-card[data-ability='backflip'] { order: 1; }
 .ability-hud-card[data-ability='right-catch'] { order: 2; }
 .ability-ring, .ability-hud-card--ready .ability-ring, .ability-hud-card--cooldown .ability-ring {
-  grid-column: 1; grid-row: 1 / 3; width: 43px; height: 43px;
+  grid-column: 1; grid-row: 1 / 4; width: 48px; height: 48px;
   background: none; box-shadow: none; filter: none; border-radius: 0;
 }
 .ability-icon, .ability-icon--left, .ability-icon--right, .ability-icon--flip {
-  width: 43px; height: 43px; background: none; border: 0; border-radius: 0;
+  width: 48px; height: 48px; background: none; border: 0; border-radius: 0;
 }
-.ability-glyph { width: 43px; height: 43px; }
+.ability-glyph { width: 46px; height: 46px; }
 .ability-icon .ability-glyph--hand { transform: none; }
 .ability-glyph-fill, .ability-icon--right .ability-glyph-fill { fill: var(--sb-cream); stroke: none; }
 .ability-glyph text { fill: var(--sb-navy); font: 800 19px var(--sb-ui-font); }
-.ability-backflip-img { width: 39px; height: 39px; filter: grayscale(1); }
+.ability-backflip-img { width: 44px; height: 44px; filter: grayscale(1) brightness(1.15); }
 .ability-keybind {
   grid-column: 2; grid-row: 1; align-self: center;
-  padding: 2px 4px; margin: 0; min-width: 19px;
-  background: none; color: var(--sb-cream); border: 1px solid var(--sb-line);
-  border-radius: 3px; box-shadow: none; font: 700 11px/1 var(--sb-ui-font);
+  padding: 2px 5px; margin: 0; min-width: 23px;
+  background: rgba(243, 240, 231, .09); color: var(--sb-cream); border: 1px solid rgba(243, 240, 231, .26);
+  border-radius: 4px; box-shadow: none; font: 750 10px/1 var(--sb-ui-font);
 }
-.ability-label { display: none; }
+.ability-label {
+  display: block;
+  grid-column: 2;
+  grid-row: 2;
+  align-self: center;
+  color: rgba(243, 240, 231, .72);
+  font: 650 10px/1 var(--sb-ui-font);
+  letter-spacing: .01em;
+  text-transform: none;
+  white-space: nowrap;
+}
 .ability-status {
-  display: block; grid-column: 2; grid-row: 2;
-  color: var(--sb-cream); font: 700 10px/1 var(--sb-ui-font); letter-spacing: .03em; text-shadow: none;
+  display: block; grid-column: 2; grid-row: 3; align-self: center;
+  color: var(--sb-cream); font: 750 10px/1 var(--sb-ui-font); letter-spacing: .065em; text-shadow: none;
 }
 .ability-hud-card--cooldown .ability-status { color: var(--sb-muted); }
 .ability-hud-card--cooldown .ability-icon { opacity: .45; filter: none; }
 .ability-hud-card--cooldown .ability-keybind { background: none; opacity: .65; filter: none; }
 .ability-hud-card--cooldown::after { background: var(--sb-muted); }
-.ability-hud-card[data-state='catching'], .ability-hud-card[data-state='charging'], .ability-hud-card[data-state='active'] { border-color: var(--sb-gold); }
+.ability-hud-card[data-state='catching'], .ability-hud-card[data-state='charging'], .ability-hud-card[data-state='active'] { background: rgba(242, 200, 75, .11); }
 .ability-hud-card[data-state='holding'] .ability-status,
 .ability-hud-card[data-state='catching'] .ability-status,
 .ability-hud-card[data-state='charging'] .ability-status,
 .ability-hud-card[data-state='active'] .ability-status { color: var(--sb-gold); }
 .ability-hud-card[data-state='unavailable'] { opacity: .5; }
 .ability-power-bar, .ability-power-bar--left, .ability-power-bar--right {
-  inset: auto 0 0; height: 3px; width: auto; border: 0; border-radius: 0;
+  inset: auto 7px 0; height: 3px; width: auto; border: 0; border-radius: 999px;
   background: none; box-shadow: none; opacity: 0; z-index: 1;
 }
 .ability-power-bar--active { opacity: 1; }
 .ability-power-bar__fill, .ability-power-bar--full .ability-power-bar__fill {
-  background: var(--sb-gold); box-shadow: none; border-radius: 0; transform-origin: left; transition: none;
+  background: var(--sb-gold); box-shadow: 0 0 9px rgba(242, 200, 75, .36); border-radius: 999px; transform-origin: left; transition: none;
 }
 
 .ability-speed {

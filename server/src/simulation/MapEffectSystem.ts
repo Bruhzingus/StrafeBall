@@ -28,6 +28,7 @@ export class MapEffectSystem {
   private lavaSeconds = new Map<string, number>();
   private lavaDamageDue = new Map<string, number>();
   private frenzyBallIds: string[] = [];
+  private frenzyTargetBalls = 0;
   private serial = 0;
 
   constructor(private readonly rng: () => number = Math.random) {}
@@ -48,6 +49,7 @@ export class MapEffectSystem {
     this.lavaSeconds.clear();
     this.lavaDamageDue.clear();
     this.frenzyBallIds = [];
+    this.frenzyTargetBalls = 0;
   }
 
   /**
@@ -75,15 +77,18 @@ export class MapEffectSystem {
     if (effect.phase === 'warning' && effect.remainingSeconds <= 1e-7) {
       effect.phase = 'active';
       effect.remainingSeconds = this.activeSeconds(effect.kind);
-      if (effect.kind === 'frenzy') this.spawnFrenzyBalls(room, ballCount);
+      if (effect.kind === 'frenzy') this.beginFrenzy(room, ballCount);
       this.emit(room, 'map-start', center, effect.kind);
-    } else if (effect.phase === 'active' && effect.remainingSeconds <= 1e-7) {
-      if (effect.kind === 'lava') {
-        effect.phase = 'ending';
-        effect.remainingSeconds = C.mapEffect.lavaRecedeSeconds;
-      } else {
-        this.finish(room, env);
-        return;
+    } else if (effect.phase === 'active') {
+      if (effect.kind === 'frenzy') this.advanceFrenzy(room, effect.remainingSeconds);
+      if (effect.remainingSeconds <= 1e-7) {
+        if (effect.kind === 'lava') {
+          effect.phase = 'ending';
+          effect.remainingSeconds = C.mapEffect.lavaRecedeSeconds;
+        } else {
+          this.finish(room, env);
+          return;
+        }
       }
     } else if (effect.phase === 'ending' && effect.remainingSeconds <= 1e-7) {
       this.finish(room, env);
@@ -159,14 +164,28 @@ export class MapEffectSystem {
 
   // --- frenzy -----------------------------------------------------------------------------------
 
-  private spawnFrenzyBalls(room: RoomState, ballCount: number): void {
+  private beginFrenzy(room: RoomState, ballCount: number): void {
     const m = C.mapEffect;
-    const extra = Math.max(0, Math.round(ballCount * (m.frenzyBallMultiplier - 1)));
-    for (let i = 0; i < extra; i += 1) {
+    this.frenzyTargetBalls = Math.max(0, Math.round(ballCount * (m.frenzyBallMultiplier - 1)));
+    this.spawnFrenzyBalls(room, Math.min(1, this.frenzyTargetBalls));
+  }
+
+  private advanceFrenzy(room: RoomState, remainingSeconds: number): void {
+    const total = this.frenzyTargetBalls;
+    if (total <= 1) return;
+    const elapsed = Math.max(0, C.mapEffect.frenzySeconds - remainingSeconds);
+    // First drop is immediate; the last is due exactly five seconds after activation.
+    const due = Math.min(total, 1 + Math.floor((elapsed + 1e-7) * (total - 1) / C.mapEffect.frenzySpawnSeconds));
+    this.spawnFrenzyBalls(room, due - this.frenzyBallIds.length);
+  }
+
+  private spawnFrenzyBalls(room: RoomState, count: number): void {
+    for (let i = 0; i < count; i += 1) {
       const id = `frenzy_${++this.serial}`;
       const x = (this.rng() * 2 - 1) * C.map.halfWidth * 0.6;
       const z = (this.rng() * 2 - 1) * C.map.halfLength * 0.6;
-      room.balls[id] = markBallDead(createBallState(id, { x, y: m.frenzyDropHeight, z }), { x: 0, y: 0, z: 0 });
+      // A zero-speed dead ball settles into the stationary loose phase before gravity can act.
+      room.balls[id] = markBallDead(createBallState(id, { x, y: C.mapEffect.frenzyDropHeight, z }), { x: 0, y: -1, z: 0 });
       this.frenzyBallIds.push(id);
     }
   }
@@ -181,6 +200,7 @@ export class MapEffectSystem {
     }
     for (const id of ids) { delete room.balls[id]; env.forgetBall(id); }
     this.frenzyBallIds = [];
+    this.frenzyTargetBalls = 0;
   }
 
   /** For tests: ids of the extra balls currently on the court. */

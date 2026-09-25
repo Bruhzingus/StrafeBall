@@ -256,6 +256,31 @@ export function applyMatBounce(ball: BallState): BallState {
   return { ...ball, bounceCount: ball.bounceCount + 1 };
 }
 
+/** Cannonballs ignore ordinary/host bounce limits and instead die on their fourth non-floor hit. */
+export function applyCannonBounce(ball: BallState, constants: GameConstants = GAME_CONSTANTS): BallState {
+  const bounceCount = ball.bounceCount + 1;
+  return bounceCount >= constants.powerup.cannonMaxBounces
+    ? { ...markBallDead(ball), bounceCount }
+    : { ...ball, bounceCount };
+}
+
+/** Authoritative/offline cannon launch: 25% below the old charged throw speed. */
+export function cannonLaunchVelocity(direction: Vec3, constants: GameConstants = GAME_CONSTANTS): Vec3 {
+  return scale(
+    normalize(direction, vec3(0, 0, 1)),
+    constants.ball.chargedThrowSpeed * constants.powerup.cannonLaunchSpeedMultiplier
+  );
+}
+
+/** Continuous exponential growth: exactly +10% for each six meters traveled. */
+export function cannonSpeedGrowthFactor(distanceTraveled: number, constants: GameConstants = GAME_CONSTANTS): number {
+  const distance = Number.isFinite(distanceTraveled) ? Math.max(0, distanceTraveled) : 0;
+  return Math.pow(
+    constants.powerup.cannonSpeedGrowthMultiplier,
+    distance / constants.powerup.cannonSpeedGrowthDistance
+  );
+}
+
 export function settleBallIfSlow(ball: BallState, constants: GameConstants = GAME_CONSTANTS): BallState {
   if (ball.phase !== 'dead' || length(ball.velocity) >= constants.ball.settleSpeed) return ball;
   return {
@@ -292,6 +317,12 @@ export function advanceBall(ball: BallState, dt: number, constants: GameConstant
     ? add(velocityWithGravity, scale(ball.curveAccel, rampFactor * dt))
     : velocityWithGravity;
 
+  const acceleratingCannon = ball.kind === 'cannon' && ball.phase === 'live';
+  if (acceleratingCannon) {
+    const stepDistance = length(velocity) * dt;
+    velocity = scale(velocity, cannonSpeedGrowthFactor(stepDistance, constants));
+  }
+
   // Apply floor friction to dead/loose balls resting on or near the ground so they don't
   // slide forever. Only damp the XZ plane when the ball is on the floor (y ≈ radius).
   if ((ball.phase === 'dead' || ball.phase === 'loose') && ball.position.y <= constants.ball.radius + 0.05) {
@@ -304,6 +335,8 @@ export function advanceBall(ball: BallState, dt: number, constants: GameConstant
     ...ball,
     velocity,
     position: add(ball.position, scale(velocity, dt)),
-    curveDistance: firstLiveFlight ? ball.curveDistance + length(scale(velocity, dt)) : ball.curveDistance
+    curveDistance: firstLiveFlight || acceleratingCannon
+      ? ball.curveDistance + length(scale(velocity, dt))
+      : ball.curveDistance
   };
 }

@@ -4,7 +4,7 @@ import { TUNING } from '../config/tuning';
 import { CollisionWorld } from '../map/Collider';
 import { BLEACHER_LAYOUT } from '../../../shared/simulation/MapGeometry';
 import { GAME_CONSTANTS } from '../../../shared/constants';
-import { curveRampFactor } from '../../../shared/simulation/BallSim';
+import { cannonSpeedGrowthFactor, curveRampFactor } from '../../../shared/simulation/BallSim';
 import type { BallState as SharedBallState } from '../../../shared/types';
 
 let nextBallId = 1;
@@ -166,6 +166,10 @@ export class Ball {
       this.velocity.x += this.curveAccel.x * rampFactor * dt;
       this.velocity.z += this.curveAccel.z * rampFactor * dt;
     }
+    const acceleratingCannon = this.powerupKind === 'cannon' && this.state === BallState.Live;
+    if (acceleratingCannon) {
+      this.velocity.scaleInPlace(cannonSpeedGrowthFactor(this.velocity.length() * dt));
+    }
     if ((this.state === BallState.Dead || this.state === BallState.Loose)
       && this.mesh.position.y <= this.floorY() + TUNING.ball.radius + 0.05) {
       const frictionFactor = Math.max(0, 1 - TUNING.ball.looseFriction * dt);
@@ -176,7 +180,7 @@ export class Ball {
     this.mesh.position.x += this.velocity.x * dt;
     this.mesh.position.y += this.velocity.y * dt;
     this.mesh.position.z += this.velocity.z * dt;
-    if (firstFlight) {
+    if (firstFlight || acceleratingCannon) {
       this.curveDistance += Math.sqrt(
         this.velocity.x * this.velocity.x + this.velocity.y * this.velocity.y + this.velocity.z * this.velocity.z
       ) * dt;
@@ -196,7 +200,7 @@ export class Ball {
 
   private resolveSimpleBounds(): void {
     const p = this.mesh.position;
-    const r = TUNING.ball.radius;
+    const r = this.collisionRadius();
     // The world override (Creator yard) or the gym. Getting this wrong is not a subtle bug: the yard
     // is ~800m from the gym, so the gym's bounds don't merely misbehave there, they teleport the ball.
     const w = this.world;
@@ -211,7 +215,7 @@ export class Ball {
       const normalImpactSpeed = Math.abs(this.velocity.y);
       p.y = floor + r;
       this.velocity.y = Math.abs(this.velocity.y) * TUNING.ball.bounceRestitution;
-      this.onBounce(normalImpactSpeed);
+      this.onFloorBounce(normalImpactSpeed);
     }
 
     if (p.y > maxY) {
@@ -240,7 +244,7 @@ export class Ball {
   // The ball is treated as a point against each box expanded by its radius, resolving on
   // the shallowest axis. A hit counts as a bounce, so a blocked live ball goes dead/loose.
   private resolveBoxCollisions(collision: CollisionWorld): void {
-    const r = TUNING.ball.radius;
+    const r = this.collisionRadius();
     const p = this.mesh.position;
     const e = TUNING.ball.bounceRestitution;
 
@@ -287,11 +291,19 @@ export class Ball {
   }
 
   private onMatBounce(normalImpactSpeed: number): void {
+    if (this.powerupKind === 'cannon' && this.state === BallState.Live) {
+      this.onCannonBounce(normalImpactSpeed);
+      return;
+    }
     this.bounceCount += 1;
     this.emitImpact(normalImpactSpeed);
   }
 
   private onBounce(normalImpactSpeed: number): void {
+    if (this.powerupKind === 'cannon' && this.state === BallState.Live) {
+      this.onCannonBounce(normalImpactSpeed);
+      return;
+    }
     this.bounceCount += 1;
     this.emitImpact(normalImpactSpeed);
     if (this.bounceCount >= TUNING.ball.deadAfterBounces) {
@@ -305,11 +317,38 @@ export class Ball {
       return;
     }
 
+    if (this.powerupKind === 'cannon') {
+      this.onCannonBounce(normalImpactSpeed);
+      return;
+    }
+
     this.bounceCount += 1;
     this.emitImpact(normalImpactSpeed);
     if (this.bounceCount > 1) {
       this.makeDead();
     }
+  }
+
+  private onFloorBounce(normalImpactSpeed: number): void {
+    if (this.powerupKind !== 'cannon' || this.state !== BallState.Live) {
+      this.onBounce(normalImpactSpeed);
+      return;
+    }
+    this.bounceCount += 1;
+    this.emitImpact(normalImpactSpeed);
+    this.makeDead();
+  }
+
+  private onCannonBounce(normalImpactSpeed: number): void {
+    this.bounceCount += 1;
+    this.emitImpact(normalImpactSpeed);
+    if (this.bounceCount >= GAME_CONSTANTS.powerup.cannonMaxBounces) this.makeDead();
+  }
+
+  private collisionRadius(): number {
+    return TUNING.ball.radius * (this.powerupKind === 'cannon' && this.state !== BallState.Held
+      ? GAME_CONSTANTS.powerup.cannonFlightScale
+      : 1);
   }
 
   private emitImpact(normalImpactSpeed: number): void {

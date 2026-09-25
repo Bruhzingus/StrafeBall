@@ -20,6 +20,7 @@ class MapEffectSystem {
     lavaSeconds = new Map();
     lavaDamageDue = new Map();
     frenzyBallIds = [];
+    frenzyTargetBalls = 0;
     serial = 0;
     constructor(rng = Math.random) {
         this.rng = rng;
@@ -38,6 +39,7 @@ class MapEffectSystem {
         this.lavaSeconds.clear();
         this.lavaDamageDue.clear();
         this.frenzyBallIds = [];
+        this.frenzyTargetBalls = 0;
     }
     /**
      * Called when a power-up spawn clock completes. Returns true when the cycle also starts a map
@@ -66,17 +68,21 @@ class MapEffectSystem {
             effect.phase = 'active';
             effect.remainingSeconds = this.activeSeconds(effect.kind);
             if (effect.kind === 'frenzy')
-                this.spawnFrenzyBalls(room, ballCount);
+                this.beginFrenzy(room, ballCount);
             this.emit(room, 'map-start', center, effect.kind);
         }
-        else if (effect.phase === 'active' && effect.remainingSeconds <= 1e-7) {
-            if (effect.kind === 'lava') {
-                effect.phase = 'ending';
-                effect.remainingSeconds = constants_1.GAME_CONSTANTS.mapEffect.lavaRecedeSeconds;
-            }
-            else {
-                this.finish(room, env);
-                return;
+        else if (effect.phase === 'active') {
+            if (effect.kind === 'frenzy')
+                this.advanceFrenzy(room, effect.remainingSeconds);
+            if (effect.remainingSeconds <= 1e-7) {
+                if (effect.kind === 'lava') {
+                    effect.phase = 'ending';
+                    effect.remainingSeconds = constants_1.GAME_CONSTANTS.mapEffect.lavaRecedeSeconds;
+                }
+                else {
+                    this.finish(room, env);
+                    return;
+                }
             }
         }
         else if (effect.phase === 'ending' && effect.remainingSeconds <= 1e-7) {
@@ -158,14 +164,27 @@ class MapEffectSystem {
         }
     }
     // --- frenzy -----------------------------------------------------------------------------------
-    spawnFrenzyBalls(room, ballCount) {
+    beginFrenzy(room, ballCount) {
         const m = constants_1.GAME_CONSTANTS.mapEffect;
-        const extra = Math.max(0, Math.round(ballCount * (m.frenzyBallMultiplier - 1)));
-        for (let i = 0; i < extra; i += 1) {
+        this.frenzyTargetBalls = Math.max(0, Math.round(ballCount * (m.frenzyBallMultiplier - 1)));
+        this.spawnFrenzyBalls(room, Math.min(1, this.frenzyTargetBalls));
+    }
+    advanceFrenzy(room, remainingSeconds) {
+        const total = this.frenzyTargetBalls;
+        if (total <= 1)
+            return;
+        const elapsed = Math.max(0, constants_1.GAME_CONSTANTS.mapEffect.frenzySeconds - remainingSeconds);
+        // First drop is immediate; the last is due exactly five seconds after activation.
+        const due = Math.min(total, 1 + Math.floor((elapsed + 1e-7) * (total - 1) / constants_1.GAME_CONSTANTS.mapEffect.frenzySpawnSeconds));
+        this.spawnFrenzyBalls(room, due - this.frenzyBallIds.length);
+    }
+    spawnFrenzyBalls(room, count) {
+        for (let i = 0; i < count; i += 1) {
             const id = `frenzy_${++this.serial}`;
             const x = (this.rng() * 2 - 1) * constants_1.GAME_CONSTANTS.map.halfWidth * 0.6;
             const z = (this.rng() * 2 - 1) * constants_1.GAME_CONSTANTS.map.halfLength * 0.6;
-            room.balls[id] = (0, BallSim_1.markBallDead)((0, BallSim_1.createBallState)(id, { x, y: m.frenzyDropHeight, z }), { x: 0, y: 0, z: 0 });
+            // A zero-speed dead ball settles into the stationary loose phase before gravity can act.
+            room.balls[id] = (0, BallSim_1.markBallDead)((0, BallSim_1.createBallState)(id, { x, y: constants_1.GAME_CONSTANTS.mapEffect.frenzyDropHeight, z }), { x: 0, y: -1, z: 0 });
             this.frenzyBallIds.push(id);
         }
     }
@@ -184,6 +203,7 @@ class MapEffectSystem {
             env.forgetBall(id);
         }
         this.frenzyBallIds = [];
+        this.frenzyTargetBalls = 0;
     }
     /** For tests: ids of the extra balls currently on the court. */
     get frenzyBalls() { return this.frenzyBallIds; }

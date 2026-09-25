@@ -1,0 +1,141 @@
+/* Team rooms use a coach's lineup sheet: cream paper, navy equipment, team-color rails. */
+.team-room-intro, .team-room-compact-status, .team-room-manage, .team-room-resume,
+.team-room-ready-count { display: none; }
+
+.multiplayer-modal--team-room:not(.multiplayer-modal--compact):not(.multiplayer-modal--postmatch):not(.multiplayer-modal--hidden) {
+  display: grid;
+  place-items: center;
+  pointer-events: auto;
+}
+.multiplayer-modal--team-room:not(.multiplayer-modal--compact):not(.multiplayer-modal--postmatch) .multiplayer-modal__shade {
+  display: block;
+  background: rgba(3, 12, 27, .72);
+}
+.multiplayer-modal--team-room .multiplayer-panel--lobby {
+  position: relative;
+  inset: auto;
+  display: grid;
+  grid-template-columns: 1fr auto;
+  gap: 0 20px;
+  width: min(860px, calc(100vw - 40px));
+  max-height: calc(100dvh - 48px);
+  padding: 30px;
+  border: 1px solid #7c8591;
+  border-top: 5px solid var(--menu-gold);
+  border-radius: 12px;
+  box-shadow: 0 24px 80px #0007;
+  transform: none;
+  scrollbar-width: thin;
+  font-family: "Segoe UI", system-ui, sans-serif;
+}
+.multiplayer-modal--team-room .multiplayer-panel--lobby > * { grid-column: 1 / -1; min-width: 0; }
+.multiplayer-modal--team-room .multiplayer-kicker { color: #586475; font-size: 11px; letter-spacing: .18em; }
+.multiplayer-modal--team-room .multiplayer-title { margin: 6px 0 8px; font-size: 44px; }
+.multiplayer-modal--team-room .team-room-intro { display: block; color: #536074; font-size: 13px; margin-bottom: 24px; }
+.multiplayer-modal--team-room .multiplayer-close { display: block; top: 18px; right: 18px; width: 36px; height: 36px; font-size: 20px; }
+.multiplayer-modal--team-room .multiplayer-room-card {
+  grid-column: 1;
+  grid-row: 4;
+  margin: 0 0 20px;
+  padding: 14px 16px;
+  gap: 20px;
+  border-radius: 7px;
+}
+.multiplayer-modal--team-room .multiplayer-card-label { font-size: 10px; letter-spacing: .1em; }
+.multiplayer-modal--team-room .multiplayer-room { margin-top: 3px; font-size: 21px; letter-spacing: .04em; user-select: all; }
+.multiplayer-modal--team-room .multiplayer-copy { min-height: 38px; padding: 8px 14px; font-size: 12px; }
+.multiplayer-modal--team-room .multiplayer-settings-entry { grid-column: 2; grid-row: 4; align-self: center; margin: 0 0 20px; }
+.multiplayer-modal--team-room .multiplayer-settings-entry__button { min-height: 42px; padding: 10px 16px; font-size: 12px; }
+.multiplayer-modal--team-room .multiplayer-line--ping,
+.multiplayer-modal.multiplayer-modal--team-room .multiplayer-name-warning,
+.multiplayer-modal--team-room.multiplayer-modal--warmup .multiplayer-room-summary,
+.multiplayer-modal--team-room.multiplayer-modal--warmup .multiplayer-room-notice { display: none; }
+.multiplayer-modal--team-room .multiplayer-controls { grid-row: 5; margin: 0; }
+.multiplayer-modal--team-room .multiplayer-controls__panel { margin: 0; padding: 0 0 18px; border: 0; }
+.multiplayer-modal--team-room .multiplayer-controls__head { align-items: center; }
+.multiplayer-modal--team-room .multiplayer-controls__title { font-size: 12px; }
+.multiplayer-modal--team-room .multiplayer-controls__summary { font-size: 12px; }
+.multiplayer-modal--team-room .multiplayer-controls__hint { font-size: 12px; }
+.multiplayer-modal--team-room .multiplayer-pregame { margin: 0; }
+.multiplayer-modal--team-room .multiplayer-pregame-card { padding: 20px 0 0; border: 0; border-top: 1px solid var(--menu-line); border-radius: 0; }
+.team-room-section-head { display: flex; justify-content: space-between; align-items: start; gap: 16px; }
+.multiplayer-modal--team-room .multiplayer-pregame-title { font-size: 14px; letter-spacing: .04em; }
+.team-room-section-head p { margin: 6px 0 16px; font-size: 12px; color: #536074; }
+.team-room-section-head > span { flex-shrink: 0; color: #536074; font-size: 12px; }
+.multiplayer-modal--team-room .multiplayer-pregame-slots { grid-template-columns: 1fr 1fr; gap: 16px; margin: 0; }
+.team-room-team { --team-accent: #2262a7; min-width: 0; border: 1px solid #c1c8cf; border-top: 4px solid var(--team-accent); border-radius: 7px; background: #fffdf8; overflow: hidden; }
+.team-room-team--red { --team-accent: #b33f43; }
+.team-room-team__header { display: flex; justify-content: space-between; align-items: center; gap: 8px; padding: 15px 14px; border-bottom: 1px solid #07172e18; }
+.team-room-team__header h3 { margin: 0; color: var(--team-accent); font-family: "Bangers", Impact, sans-serif; font-size: 25px; font-weight: 400; letter-spacing: .04em; text-transform: uppercase; }
+.team-room-team__header > span { color: #536074; font-size: 10px; font-weight: 700; }
+.multiplayer-modal--team-room .multiplayer-slot-row { min-height: 76px; margin: 6px; padding: 8px; gap: 10px; box-sizing: border-box; border-radius: 5px; }
+.multiplayer-modal--team-room .multiplayer-slot-row--chosen { background: #eaf0f5; box-shadow: inset 3px 0 var(--team-accent); }
+.multiplayer-modal--team-room .team-room-avatar { display: grid; place-items: center; flex: 0 0 34px; height: 38px; background: var(--team-accent); color: white; font-size: 20px; font-weight: 800; border-radius: 4px; }
+.multiplayer-modal--team-room .team-room-slot--empty .team-room-avatar { background: transparent; color: #7a8594; border: 1px dashed #9aa4af; box-sizing: border-box; }
+.team-room-player { flex: 1; }
+.multiplayer-modal--team-room .team-room-player strong { font-size: 13px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.team-room-player small { font-size: 8px; color: #536074; }
+.multiplayer-modal--team-room .team-room-player span { margin-top: 4px; font-size: 11px; white-space: normal; }
+.multiplayer-modal--team-room .team-room-player .team-room-player--ready { color: #287144; font-weight: 700; }
+.multiplayer-modal--team-room .multiplayer-switch { min-height: 36px; padding: 7px 10px; font-size: 11px; border-color: #a1abb7; }
+.multiplayer-modal--team-room .multiplayer-switch:disabled { opacity: 1; color: #536074; border-color: transparent; background: transparent; box-shadow: none; }
+.multiplayer-modal--team-room .multiplayer-start-vote-wrap { display: grid; grid-template-columns: 1fr auto; align-items: center; gap: 10px 20px; margin: 20px 0 0; padding: 18px 20px; background: #e7e3d8; border-radius: 7px; }
+.multiplayer-modal--team-room .team-room-ready-count { display: block; grid-column: 1; text-align: left; font-size: 18px; font-weight: 800; }
+.multiplayer-modal--team-room .multiplayer-start-vote--big { grid-column: 2; grid-row: 1 / 3; width: auto; min-width: 210px; min-height: 48px; margin: 0; padding: 12px 20px; font-size: 14px; letter-spacing: .03em; text-transform: none; border-radius: 5px; }
+.multiplayer-modal--team-room .multiplayer-start-vote-hint { margin: 0; grid-column: 1; text-align: left; font-size: 12px; }
+.multiplayer-modal--team-room .multiplayer-start-vote:disabled { background: #d4d5cd; color: #4a5661; border-color: #aeb4b5; opacity: 1; box-shadow: none; }
+.multiplayer-modal--team-room .multiplayer-actions--leave { display: flex; align-items: center; justify-content: space-between; gap: 16px; margin-top: 22px; padding-top: 16px; }
+.multiplayer-modal--team-room .team-room-resume { display: flex; align-items: center; gap: 16px; flex: none; padding: 10px 12px; border: 1px solid #8993a0; background: transparent; color: var(--menu-navy); font-size: 12px; }
+.team-room-resume span { color: #536074; font-size: 10px; border: 1px solid #a7adb5; border-radius: 3px; padding: 2px 5px; }
+.multiplayer-modal--team-room .multiplayer-leave { padding: 10px; font-size: 12px; }
+.multiplayer-modal--team-room .multiplayer-reset-action { width: auto; min-height: 36px; padding: 8px 12px; }
+.multiplayer-modal--team-room button:hover:not(:disabled) { background-color: #e0dbce; }
+.multiplayer-modal--team-room .multiplayer-start-vote:hover:not(:disabled) { background-color: #ffda65; }
+.multiplayer-modal--team-room .multiplayer-copy:hover:not(:disabled) { background-color: #243650; }
+.multiplayer-modal--team-room :is(button, summary):focus-visible { outline: 3px solid #246fc0; outline-offset: 3px; }
+
+/* The court gets a small summary while the lineup sheet is closed. */
+.multiplayer-modal--team-room.multiplayer-modal--compact .multiplayer-panel--lobby {
+  position: fixed;
+  top: max(130px, calc(var(--sb-scoreboard-bottom, 110px) + 24px));
+  left: var(--sb-safe-x, 20px);
+  display: block;
+  width: 240px;
+  padding: 16px;
+  background: rgba(7, 23, 46, .94);
+  color: var(--menu-cream);
+  border: 1px solid #657183;
+  border-top: 3px solid var(--menu-gold);
+  border-radius: 7px;
+  box-shadow: 0 6px 24px #0003;
+}
+.multiplayer-modal--team-room.multiplayer-modal--compact .multiplayer-panel--lobby > * { display: none; }
+.multiplayer-modal--team-room.multiplayer-modal--compact .multiplayer-title { display: block; color: var(--menu-cream); font-size: 25px; margin: 0 0 8px; }
+.multiplayer-modal--team-room.multiplayer-modal--compact .team-room-compact-status { display: block; font-size: 12px; color: #c5cdd6; }
+.multiplayer-modal--team-room.multiplayer-modal--compact .team-room-manage { display: flex; justify-content: space-between; align-items: center; width: 100%; min-height: 38px; margin-top: 14px; padding: 8px 10px; border: 1px solid #768292; background: #172a43; color: var(--menu-cream); font-size: 12px; cursor: pointer; }
+.multiplayer-modal--team-room.multiplayer-modal--compact .team-room-manage:hover { background: #29415d; }
+.multiplayer-modal--team-room.multiplayer-modal--hidden { display: none; }
+.multiplayer-modal--team-room.multiplayer-modal--postmatch .multiplayer-panel--lobby { display: none; }
+
+@media (max-width: 700px) {
+  .multiplayer-modal--team-room .multiplayer-panel--lobby { width: calc(100vw - 24px); max-height: calc(100dvh - 24px); padding: 20px; gap: 0 10px; }
+  .multiplayer-modal--team-room .multiplayer-title { font-size: 34px; }
+  .multiplayer-modal--team-room .multiplayer-pregame-slots { grid-template-columns: 1fr; gap: 12px; }
+  .multiplayer-modal--team-room .multiplayer-slot-row { min-height: 60px; }
+  .multiplayer-modal--team-room .multiplayer-start-vote-wrap { grid-template-columns: 1fr; padding: 14px; }
+  .multiplayer-modal--team-room .multiplayer-start-vote--big { grid-column: 1; grid-row: 3; width: 100%; min-width: 0; }
+  .multiplayer-modal--team-room .multiplayer-settings-entry__button { padding: 8px; font-size: 10px; }
+  .multiplayer-modal--team-room .multiplayer-room-card { padding: 10px; gap: 8px; }
+  .multiplayer-modal--team-room .multiplayer-room { font-size: 15px; overflow-wrap: anywhere; }
+  .multiplayer-modal--team-room .team-room-section-head { display: block; margin-bottom: 12px; }
+  .team-room-section-head p { margin-bottom: 6px; }
+}
+@media (max-height: 740px) and (min-width: 701px) {
+  .multiplayer-modal--team-room .multiplayer-panel--lobby { padding: 20px 24px; }
+  .multiplayer-modal--team-room .team-room-intro { margin-bottom: 14px; }
+  .multiplayer-modal--team-room .multiplayer-slot-row { min-height: 60px; }
+  .multiplayer-modal--team-room .multiplayer-actions--leave { margin-top: 12px; padding-top: 10px; }
+}
+@media (prefers-reduced-motion: reduce) {
+  .multiplayer-modal--team-room *, .multiplayer-modal--team-room *::before { animation: none !important; transition: none !important; }
+}

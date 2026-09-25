@@ -14,11 +14,11 @@ function horizontalDirection(dx, dz, fallback) {
         return { x: fallback.x / fallbackDistance, z: fallback.z / fallbackDistance };
     return { x: 0, z: 1 };
 }
-/** Linear blast falloff that keeps the outer edge useful while rewarding point-blank placement. */
+/** A close blast is a movement tool; the edge still shoves without launching across the court. */
 function shockwaveFalloff(distance, radius) {
     if (!Number.isFinite(distance) || distance > radius)
         return 0;
-    return 1 - 0.5 * Math.max(0, distance) / radius;
+    return 1 - 0.65 * Math.pow(Math.max(0, distance) / radius, 1.5);
 }
 /**
  * Player shockwaves add to existing momentum. In particular, an already-rising jump contributes its

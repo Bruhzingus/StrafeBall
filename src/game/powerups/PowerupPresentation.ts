@@ -1,4 +1,4 @@
-import { Color3, DynamicTexture, Mesh, MeshBuilder, Scene, StandardMaterial, TransformNode, Vector3 } from '@babylonjs/core';
+import { Color3, DynamicTexture, FreeCamera, Mesh, MeshBuilder, Observer, Scene, StandardMaterial, TransformNode, Vector3 } from '@babylonjs/core';
 import { GAME_CONSTANTS as C } from '../../../shared/constants';
 import type { BallState, MapEffectKind, MapEffectState, PlayerState, PowerupBuffs, PowerupKind, PowerupWorldState, RoomState, Vec3 } from '../../../shared/types';
 import { isGrenadeKind } from '../../../shared/simulation/BallSim';
@@ -11,7 +11,7 @@ import type { Hud, PowerupSlotView } from '../ui/Hud';
 const ITEMS: Record<PowerupKind, { name: string; icon: string; color: string; hint: string }> = {
   adrenaline: { name: 'ADRENALINE', icon: 'ϟ', color: '#ffce65', hint: '6 dash charges · faster recharge · 15s' },
   speed: { name: 'SPEED', icon: '»', color: '#75e6ff', hint: '+30% speed · higher jumps · 15s' },
-  cannon: { name: 'CANNONBALL', icon: '●', color: '#b9c5d8', hint: 'Unblockable · pierces players · locks stamina' },
+  cannon: { name: 'CANNONBALL', icon: '●', color: '#b9c5d8', hint: 'Hits everyone · accelerates · 4 ricochets' },
   heal: { name: 'HEAL STATION', icon: '+', color: '#7fffb2', hint: 'Place with throw · stay 10s to heal' },
   magnet: { name: 'BALL MAGNET', icon: '∩', color: '#ce9aff', hint: 'Pull loose balls · up to 3 armor · 20s' },
   bomb: { name: 'BOMB BALL', icon: '✹', color: '#ffad73', hint: 'First bounce starts a 2s fuse · hits everyone' },
@@ -44,6 +44,7 @@ export interface PowerupPresentationRoom {
   /** Local practice has no replicated PlayerState, so it supplies its active timers directly. */
   practiceBuffs?: PowerupBuffs;
   practicePlayerId?: string;
+  practiceGrenade?: { kind: 'shock' | 'stun'; hand: 'left' | 'right'; remaining: number };
   settings: Pick<RoomState['settings'], 'powerupsEnabled'>;
   powerups?: PowerupWorldState;
   resetVote: Pick<RoomState['resetVote'], 'resetSerial'>;
@@ -60,6 +61,35 @@ function material(scene: Scene, name: string, hex: string, glow = 0.3): Standard
   m.diffuseColor = Color3.FromHexString(hex); m.emissiveColor = m.diffuseColor.scale(glow);
   m.specularColor = new Color3(0.35, 0.4, 0.45); m.specularPower = 64;
   return m;
+}
+function shockShellMaterial(scene: Scene): StandardMaterial {
+  const shell = material(scene, 'power_shock_shell', '#526b80', 0.38);
+  if (shell.diffuseTexture) return shell;
+  const texture = new DynamicTexture('power_shock_pattern', { width: 256, height: 128 }, scene, false);
+  const ctx = texture.getContext();
+  ctx.fillStyle = '#102536';
+  ctx.fillRect(0, 0, 256, 128);
+  // Curved, staggered energy traces wrap around the orb instead of reading as a flat grid.
+  for (let i = -1; i < 6; i++) {
+    const x = i * 52;
+    ctx.strokeStyle = i % 2 === 0 ? '#46bdd5' : '#23627d';
+    ctx.lineWidth = i % 2 === 0 ? 5 : 3;
+    ctx.beginPath();
+    for (let y = 0; y <= 128; y += 8) {
+      const traceX = x + Math.sin(y / 128 * Math.PI * 2 + i) * 22 + y * 0.18;
+      if (y === 0) ctx.moveTo(traceX, y);
+      else ctx.lineTo(traceX, y);
+    }
+    ctx.stroke();
+    ctx.fillStyle = '#a3f7ff';
+    ctx.beginPath();
+    ctx.arc(x + 8, 45 + (i % 2) * 28, 3, 0, Math.PI * 2);
+    ctx.fill();
+  }
+  texture.update();
+  shell.diffuseTexture = texture;
+  shell.emissiveTexture = texture;
+  return shell;
 }
 function attach(mesh: Mesh, parent: TransformNode, mat: StandardMaterial, position = Vector3.Zero()): Mesh {
   mesh.parent = parent; mesh.material = mat; mesh.position.copyFrom(position); mesh.isPickable = false;
@@ -91,11 +121,14 @@ export function updateSpecialBall(
     if (ball.kind === 'heal') {
       device(scene, mesh, 0.85);
     } else if (ball.kind === 'shock') {
-      // Shockwave: a squat cyan puck with a glowing rim — reads as "device", not "ball".
-      const puck = attach(MeshBuilder.CreateCylinder('shock_puck', { diameter: C.ball.radius * 2.3, height: C.ball.radius * 0.9, tessellation: 24 }, scene), mesh, material(scene, 'power_shock_body', '#20344a', 0.08));
-      puck.position.y = 0;
-      attach(MeshBuilder.CreateTorus('shock_rim', { diameter: C.ball.radius * 2.35, thickness: 0.035, tessellation: 32 }, scene), mesh, material(scene, 'power_shock_glow', '#8ef1ff', 1.1));
-      const core = attach(MeshBuilder.CreateSphere('shock_core', { diameter: C.ball.radius * 0.7, segments: 10 }, scene), mesh, material(scene, 'power_shock_glow', '#8ef1ff', 1.1));
+      // Rounded shell, printed wave traces, and canted energy rings give it its own silhouette.
+      attach(MeshBuilder.CreateSphere('shock_shell', { diameter: C.ball.radius * 2.25, segments: 24 }, scene), mesh, shockShellMaterial(scene));
+      const glow = material(scene, 'power_shock_glow', '#8ef1ff', 1.1);
+      for (const angle of [-0.55, 0.55]) {
+        const ring = attach(MeshBuilder.CreateTorus('shock_orbit', { diameter: C.ball.radius * 2.42, thickness: 0.026, tessellation: 40 }, scene), mesh, glow);
+        ring.rotation.set(angle, 0.35, angle * 0.6);
+      }
+      const core = attach(MeshBuilder.CreateSphere('shock_core', { diameter: C.ball.radius * 0.68, segments: 16 }, scene), mesh, glow, new Vector3(0, C.ball.radius * 1.08, 0));
       mesh.metadata.powerCore = core;
     } else if (ball.kind === 'stun') {
       // Stun: an upright grey canister with a yellow band and a pin — the flashbang silhouette.
@@ -192,10 +225,20 @@ export class PowerupPresentation {
   private effectCapsuleCore: Mesh | null = null;
   private stunFlashUntil = 0;
   private wasStunned = false;
+  private bombShakeStarted = 0;
+  private bombShakeStrength = 0;
+  private shakenCamera: FreeCamera | null = null;
+  private shakePitch = 0;
+  private shakeRoll = 0;
+  private readonly beforeRenderObserver: Observer<Scene>;
+  private readonly afterRenderObserver: Observer<Scene>;
   /** Mouse-look multiplier for the local player (1 = normal; dropped while stunned). */
   localLookScale = 1;
 
   constructor(private scene: Scene, private sound: SoundManager) {
+    // Apply only during rendering; the camera used for aiming and movement keeps its exact pose.
+    this.beforeRenderObserver = scene.onBeforeRenderObservable.add(() => this.applyBombShake());
+    this.afterRenderObserver = scene.onAfterRenderObservable.add(() => this.clearBombShake());
     this.neutral.className = 'neutral-zone-label'; this.neutral.textContent = 'NEUTRAL';
     this.screenFx.className = 'powerup-screen-fx'; this.screenFx.setAttribute('aria-hidden', 'true');
     this.mapBanner.className = 'map-effect-banner'; this.mapBanner.hidden = true;
@@ -266,6 +309,15 @@ export class PowerupPresentation {
       // item kind. Activations are public events and already carry the kind for every listener.
       const cueKind = resolvePowerupSoundKind(event, localId, this.heldKind);
       this.sound.powerup(event.effect, spatial ? event.position : undefined, spatial ? localPosition : undefined, local?.movement.facing, event.stage ?? 0, cueKind);
+      if (event.effect === 'explode' && !settings.reducedEffects) {
+        const distance = Math.hypot(localPosition.x - event.position.x, localPosition.y + C.player.eyeHeight - event.position.y, localPosition.z - event.position.z);
+        const strength = Math.max(0, 1 - distance / (C.powerup.blastRadius * 3));
+        if (strength > 0) {
+          const previous = this.bombShakeStrength * Math.max(0, 1 - (this.time - this.bombShakeStarted) / 0.32);
+          this.bombShakeStarted = this.time;
+          this.bombShakeStrength = Math.max(previous, strength);
+        }
+      }
       if (event.effect === 'heal' && event.playerId === localId) this.healFlashUntil = this.time + 0.45;
       if (event.effect === 'explode' || event.effect === 'heal' || event.effect === 'pickup' || event.effect === 'thud' || event.effect === 'armor' || event.effect === 'activate' || event.effect === 'shock' || event.effect === 'stun') this.burst(event);
       if (event.effect === 'stun' && local && Math.hypot(local.movement.position.x - event.position.x, local.movement.position.z - event.position.z) <= C.powerup.stunRadius + 1) this.stunFlashUntil = this.time + 0.35;
@@ -331,6 +383,7 @@ export class PowerupPresentation {
     const heldGrenade = local
       ? (['left', 'right'] as const).map(h => room.balls[local.hands[h].heldBallId ?? '']).find(b => b && isGrenadeKind(b.kind))
       : undefined;
+    const grenadeKind = heldGrenade?.kind ?? room.practiceGrenade?.kind;
     let view: PowerupSlotView;
     if (item) {
       view = {
@@ -343,10 +396,12 @@ export class PowerupPresentation {
         rolling,
         keybind: 'G'
       };
-    } else if (heldGrenade) {
-      const item = ITEMS[heldGrenade.kind as PowerupKind];
-      const left = 1 + (local?.pendingGrenades ?? 0);
-      const handKey = local?.hands.left.heldBallId === heldGrenade.id ? 'M1' : 'M2';
+    } else if (grenadeKind) {
+      const item = ITEMS[grenadeKind as PowerupKind];
+      const left = room.practiceGrenade?.remaining ?? 1 + (local?.pendingGrenades ?? 0);
+      const handKey = room.practiceGrenade
+        ? room.practiceGrenade.hand === 'left' ? 'M1' : 'M2'
+        : local?.hands.left.heldBallId === heldGrenade?.id ? 'M1' : 'M2';
       view = { glyph: item.icon, color: item.color, name: item.name, hint: `${left} throw${left === 1 ? '' : 's'} left`, progress: left / C.powerup.grenadeCharges, state: 'held', keybind: handKey };
     } else if (local?.hasPowerup) {
       view = { glyph: '?', color: ITEMS.adrenaline.color, name: 'Mystery item', hint: 'Revealing…', progress: 1, state: 'held' };
@@ -580,7 +635,31 @@ export class PowerupPresentation {
     for (const mesh of this.markers.values()) mesh.dispose(); this.markers.clear();
     for (const { mesh } of [...this.trails, ...this.bursts]) mesh.dispose(); this.trails = []; this.bursts = [];
   }
+  private applyBombShake(): void {
+    this.clearBombShake();
+    const camera = this.scene.activeCamera;
+    if (!(camera instanceof FreeCamera) || settings.reducedEffects) return;
+    const age = this.time - this.bombShakeStarted;
+    if (age < 0 || age >= 0.32 || this.bombShakeStrength <= 0) return;
+    const envelope = this.bombShakeStrength * Math.pow(1 - age / 0.32, 2);
+    this.shakePitch = Math.cos(age * 76) * 0.008 * envelope;
+    this.shakeRoll = Math.sin(age * 63 + 0.8) * 0.014 * envelope;
+    this.shakenCamera = camera;
+    camera.rotation.x += this.shakePitch;
+    camera.rotation.z += this.shakeRoll;
+  }
+  private clearBombShake(): void {
+    if (!this.shakenCamera) return;
+    this.shakenCamera.rotation.x -= this.shakePitch;
+    this.shakenCamera.rotation.z -= this.shakeRoll;
+    this.shakenCamera = null;
+    this.shakePitch = 0;
+    this.shakeRoll = 0;
+  }
   dispose(): void {
+    this.clearBombShake();
+    this.scene.onBeforeRenderObservable.remove(this.beforeRenderObserver);
+    this.scene.onAfterRenderObservable.remove(this.afterRenderObserver);
     this.clearDynamic(); this.hud?.setPowerupSlot(null); this.neutral.remove(); this.screenFx.remove(); this.stunFx.remove(); this.mapBanner.remove();
     for (const node of this.spawnNodes) node.root.dispose(); this.spawnNodes = [];
     this.lava?.dispose(); this.lava = null; this.effectCapsule?.dispose(); this.effectCapsule = null;

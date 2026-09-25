@@ -43,8 +43,11 @@ export class ScoringSystem {
         this.playerHits += 1;
         hitsThisFrame.push({ speed: ball.velocity.length() });
         dummy.metadata.hitCount = (dummy.metadata.hitCount ?? 0) + 1;
-        if (ball.powerupKind === 'cannon') ball.cannonHitDummyIds.add(dummy.name);
-        else ball.makeDead();
+        if (ball.powerupKind === 'cannon') {
+          ball.cannonHitDummyIds.add(dummy.name);
+          continue;
+        }
+        ball.makeDead();
         break;
       }
     }

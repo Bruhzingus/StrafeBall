@@ -14,6 +14,9 @@ exports.catchBall = catchBall;
 exports.deflectBall = deflectBall;
 exports.applyBallBounce = applyBallBounce;
 exports.applyMatBounce = applyMatBounce;
+exports.applyCannonBounce = applyCannonBounce;
+exports.cannonLaunchVelocity = cannonLaunchVelocity;
+exports.cannonSpeedGrowthFactor = cannonSpeedGrowthFactor;
 exports.settleBallIfSlow = settleBallIfSlow;
 exports.curveRampFactor = curveRampFactor;
 exports.advanceBall = advanceBall;
@@ -213,6 +216,22 @@ function applyBallBounce(ball, bounceRule, constants = constants_1.GAME_CONSTANT
 function applyMatBounce(ball) {
     return { ...ball, bounceCount: ball.bounceCount + 1 };
 }
+/** Cannonballs ignore ordinary/host bounce limits and instead die on their fourth non-floor hit. */
+function applyCannonBounce(ball, constants = constants_1.GAME_CONSTANTS) {
+    const bounceCount = ball.bounceCount + 1;
+    return bounceCount >= constants.powerup.cannonMaxBounces
+        ? { ...markBallDead(ball), bounceCount }
+        : { ...ball, bounceCount };
+}
+/** Authoritative/offline cannon launch: 25% below the old charged throw speed. */
+function cannonLaunchVelocity(direction, constants = constants_1.GAME_CONSTANTS) {
+    return (0, CollisionMath_1.scale)((0, CollisionMath_1.normalize)(direction, (0, CollisionMath_1.vec3)(0, 0, 1)), constants.ball.chargedThrowSpeed * constants.powerup.cannonLaunchSpeedMultiplier);
+}
+/** Continuous exponential growth: exactly +10% for each six meters traveled. */
+function cannonSpeedGrowthFactor(distanceTraveled, constants = constants_1.GAME_CONSTANTS) {
+    const distance = Number.isFinite(distanceTraveled) ? Math.max(0, distanceTraveled) : 0;
+    return Math.pow(constants.powerup.cannonSpeedGrowthMultiplier, distance / constants.powerup.cannonSpeedGrowthDistance);
+}
 function settleBallIfSlow(ball, constants = constants_1.GAME_CONSTANTS) {
     if (ball.phase !== 'dead' || (0, CollisionMath_1.length)(ball.velocity) >= constants.ball.settleSpeed)
         return ball;
@@ -247,6 +266,11 @@ function advanceBall(ball, dt, constants = constants_1.GAME_CONSTANTS) {
     let velocity = firstLiveFlight
         ? (0, CollisionMath_1.add)(velocityWithGravity, (0, CollisionMath_1.scale)(ball.curveAccel, rampFactor * dt))
         : velocityWithGravity;
+    const acceleratingCannon = ball.kind === 'cannon' && ball.phase === 'live';
+    if (acceleratingCannon) {
+        const stepDistance = (0, CollisionMath_1.length)(velocity) * dt;
+        velocity = (0, CollisionMath_1.scale)(velocity, cannonSpeedGrowthFactor(stepDistance, constants));
+    }
     // Apply floor friction to dead/loose balls resting on or near the ground so they don't
     // slide forever. Only damp the XZ plane when the ball is on the floor (y ≈ radius).
     if ((ball.phase === 'dead' || ball.phase === 'loose') && ball.position.y <= constants.ball.radius + 0.05) {
@@ -258,6 +282,8 @@ function advanceBall(ball, dt, constants = constants_1.GAME_CONSTANTS) {
         ...ball,
         velocity,
         position: (0, CollisionMath_1.add)(ball.position, (0, CollisionMath_1.scale)(velocity, dt)),
-        curveDistance: firstLiveFlight ? ball.curveDistance + (0, CollisionMath_1.length)((0, CollisionMath_1.scale)(velocity, dt)) : ball.curveDistance
+        curveDistance: firstLiveFlight || acceleratingCannon
+            ? ball.curveDistance + (0, CollisionMath_1.length)((0, CollisionMath_1.scale)(velocity, dt))
+            : ball.curveDistance
     };
 }

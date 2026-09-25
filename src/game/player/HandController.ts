@@ -10,6 +10,7 @@ import { cameraForward } from '../utils/vector';
 import { MovementSnapshot } from './MovementController';
 import { Effects } from '../effects/Effects';
 import { practiceCheats } from '../config/practiceCheats';
+import { cannonLaunchVelocity } from '../../../shared/simulation/BallSim';
 
 export interface HandState {
   ball: Ball | null;
@@ -407,6 +408,13 @@ export class HandController {
       backflipTier,
       fastDoubleThrowPenalty: rushed
     });
+    if (hand.ball.powerupKind === 'cannon') {
+      const cannonVelocity = cannonLaunchVelocity({ x: forward.x, y: forward.y, z: forward.z });
+      throwResult.velocity.set(cannonVelocity.x, cannonVelocity.y, cannonVelocity.z);
+      throwResult.curveAccel.setAll(0);
+      throwResult.dropScale = 1;
+      throwResult.isSuper = false;
+    }
 
     const origin = this.camera.globalPosition.add(forward.scale(0.8));
     this.ballManager.throwBall(hand.ball, origin, throwResult.velocity, throwResult.velocity.length(), 'player', throwResult.isSuper, throwResult.dropScale, throwResult.curveAccel);

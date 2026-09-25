@@ -1126,6 +1126,12 @@ export class ArenaScene {
         );
         if (activation.ok) this.materializePracticePowerup(activation.kind);
       }
+      const heldGrenade = (['left', 'right'] as const)
+        .map(hand => ({ hand, ball: this.player.hands.getHand(hand).ball }))
+        .find(({ ball }) => ball?.powerupKind === 'shock' || ball?.powerupKind === 'stun');
+      this.practicePowerupRoom.practiceGrenade = heldGrenade
+        ? { kind: heldGrenade.ball!.powerupKind as 'shock' | 'stun', hand: heldGrenade.hand, remaining: 1 + this.practicePowerups.pendingGrenades }
+        : undefined;
     }
     this.powerupPresentation.update(inPracticeLobby ? this.practicePowerupRoom : null, 'practice',
       this.player.root.position, this.practicePowerups.identity, this.practicePowerups.drainEvents(), dt);
@@ -3508,8 +3514,11 @@ export class ArenaScene {
       }
 
       if (kind === 'cannon') {
-        if (ball.state === BallState.Dead || (ball.state !== BallState.Held && ball.bounceCount > 0)) {
+        if (ball.bounceCount > ball.powerupBounceCount) {
           this.practicePowerups.emit('thud', vector3ToVec3(ball.mesh.position), resetSerial);
+          ball.powerupBounceCount = ball.bounceCount;
+        }
+        if (ball.state === BallState.Dead || ball.state === BallState.Loose) {
           this.player.hands.removeBall(ball);
           this.ballManager.removeBall(ball);
         }

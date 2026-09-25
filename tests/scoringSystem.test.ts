@@ -71,6 +71,19 @@ describe('ScoringSystem.updateAgainstDummies', () => {
     expect(scoring.updateAgainstDummies([ball], dummies, DT)).toHaveLength(1);
   });
 
+  it('lets a cannonball hit every overlapping dummy once', () => {
+    const scoring = new ScoringSystem();
+    const ball = makeBall(BallState.Live, 'player', new Vector3(0, 1, 0));
+    Object.assign(ball, { powerupKind: 'cannon', cannonHitDummyIds: new Set<string>() });
+    const dummies = [makeDummy(new Vector3(0, 1, 0)), makeDummy(new Vector3(0, 1, 0))];
+    Object.assign(dummies[0], { name: 'dummy-a' });
+    Object.assign(dummies[1], { name: 'dummy-b' });
+
+    expect(scoring.updateAgainstDummies([ball], dummies, DT)).toHaveLength(2);
+    expect(ball.state).toBe(BallState.Live);
+    expect(scoring.updateAgainstDummies([ball], dummies, DT)).toHaveLength(0);
+  });
+
   it('isWin becomes true at the score limit', () => {
     const scoring = new ScoringSystem();
     expect(scoring.isWin()).toBe(false);
