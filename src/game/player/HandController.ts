@@ -62,12 +62,18 @@ export class HandController {
 
   private readonly throwSystem = new ThrowSystem();
   private elapsed = 0;
+  private armorPickup: (() => Ball | null) | null = null;
 
   constructor(
     private readonly camera: FreeCamera,
     private readonly ballManager: BallManager,
     private readonly effects: Effects
   ) {}
+
+  /** Practice magnet armor takes priority over floor balls on the same E press. */
+  setArmorPickup(handler: (() => Ball | null) | null): void {
+    this.armorPickup = handler;
+  }
 
   /**
    * @param throwsSuppressed when true, normal charge/throw is disabled (used while a backflip is in
@@ -271,7 +277,7 @@ export class HandController {
     if (!input.wasKeyPressed(CONTROL_KEYS.interact)) return;
     if (this.left.ball && this.right.ball) return;
 
-    const candidate = this.ballManager.findPickupCandidate(movement.position);
+    const candidate = this.armorPickup?.() ?? this.ballManager.findPickupCandidate(movement.position);
     if (!candidate) return;
 
     // First pickup goes to the left (dominant) hand, otherwise the empty hand.

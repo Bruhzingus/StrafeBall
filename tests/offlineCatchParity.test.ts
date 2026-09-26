@@ -32,7 +32,10 @@ function setup() {
   } as unknown as MovementController;
   const dash = { addChargeFromHit: vi.fn() } as unknown as DashController;
   const catching = new CatchController(camera, manager, hands, movement, dash, effects);
-  manager.setBallAdvanceHandler((ball, from, to) => catching.resolveAdvancedBall(ball, from, to));
+  manager.setBallAdvanceHandler(
+    (ball, from, to) => catching.resolveAdvancedBall(ball, from, to),
+    () => catching.finishBallUpdate()
+  );
   const movementSnapshot = {
     position: Vector3.Zero(),
     dashingThisFrame: false
@@ -94,6 +97,36 @@ describe('offline catch order', () => {
       expect(ball.state).toBe(BallState.Held);
       ball.mesh.dispose();
     } finally {
+      rig.scene.dispose();
+      rig.engine.dispose();
+    }
+  });
+
+  it('does not reuse a prior player frame when balls update without fresh player input', () => {
+    const rig = setup();
+    try {
+      const ball = new Ball(
+        MeshBuilder.CreateSphere('creator_ball', { diameter: 0.3 }, rig.scene),
+        new Vector3(0, GAME_CONSTANTS.player.eyeHeight, -3.8)
+      );
+      ball.throw('bot', new Vector3(0, 0, 10), false, 0);
+      rig.manager.balls.push(ball);
+
+      rig.catching.update(0.05, rig.input, rig.movementSnapshot);
+      rig.manager.update(0.05);
+      expect(rig.hands.left.ball).toBeNull();
+
+      // A Creator or sandbox ball step can run with no corresponding player step. The old input
+      // must not be reused even though its catch window remains open for a future player frame.
+      rig.manager.update(0.05);
+      expect(rig.hands.left.ball).toBeNull();
+
+      const heldInput = { pointerLocked: true, wasMousePressed: () => false } as unknown as InputManager;
+      rig.catching.update(0.05, heldInput, rig.movementSnapshot);
+      rig.manager.update(0.05);
+      expect(rig.hands.left.ball).toBe(ball);
+    } finally {
+      rig.manager.clear();
       rig.scene.dispose();
       rig.engine.dispose();
     }

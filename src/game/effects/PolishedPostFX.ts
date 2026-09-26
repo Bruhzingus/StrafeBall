@@ -22,6 +22,7 @@
  */
 
 import {
+  AbstractMesh,
   Camera,
   Color3,
   DefaultRenderingPipeline,
@@ -31,6 +32,7 @@ import {
   SSAO2RenderingPipeline,
   StandardMaterial
 } from '@babylonjs/core';
+import type { GeometryBufferRenderer } from '@babylonjs/core';
 import { resolvePolishedConfig } from '../config/graphicsTuning';
 
 let activeGlow: GlowLayer | null = null;
@@ -182,6 +184,7 @@ export function addPolishedGlowOccluder(mesh: Mesh | null | undefined): void {
 export class PolishedPostFX {
   private readonly scene: Scene;
   private readonly ssao: SSAO2RenderingPipeline | null;
+  private readonly ownedGeometryBuffer: GeometryBufferRenderer | null;
   private readonly pipeline: DefaultRenderingPipeline;
   private readonly glow: GlowLayer | null;
   private readonly glowAnchor: Mesh | null;
@@ -196,6 +199,7 @@ export class PolishedPostFX {
     // --- 1. SSAO2 (before the pipeline so AO composes pre-tonemap) ---
     if (cfg.post.ssao.enabled && SSAO2RenderingPipeline.IsSupported) {
       const s = cfg.post.ssao;
+      const existingGeometryBuffer = scene.geometryBufferRenderer;
       // forceGeometryBuffer=true is CRITICAL: SSAO2 defaults to the PrePass renderer, which renders
       // the scene COLOR single-sampled — that silently nullifies the pipeline's MSAA (the reported
       // "MSAA did nothing; edges still jagged"). A separate geometry buffer gives SSAO its own
@@ -215,8 +219,10 @@ export class PolishedPostFX {
       ssao.samples = s.samples;
       ssao.expensiveBlur = s.expensiveBlur;
       this.ssao = ssao;
+      this.ownedGeometryBuffer = existingGeometryBuffer ? null : scene.geometryBufferRenderer;
     } else {
       this.ssao = null;
+      this.ownedGeometryBuffer = null;
     }
 
     // --- 2. DefaultRenderingPipeline: FXAA + the ONE image-processing (tonemap) pass ---
@@ -252,6 +258,24 @@ export class PolishedPostFX {
       // render normally with the world depth buffer still intact. This is the final compositing
       // mask that keeps cove/strip light halos from appearing to pass through dodgeballs.
       glow.renderingGroupId = POLISHED_GLOW_COMPOSITE_RENDERING_GROUP;
+      // Babylon normally prepares every active mesh for the glow RTT, then rejects nonmembers at
+      // draw time. Filter the SAME camera-visible list first, retaining ordering and occluders, so
+      // unrelated geometry never pays the second world-matrix/material/submesh preparation pass.
+      // The callback lives on Babylon's shared ObjectRenderer and survives glow target resizes.
+      const glowRenderList: AbstractMesh[] = [];
+      glow.mainTexture.forceLayerMaskCheck = true;
+      glow.mainTexture.getCustomRenderList = (_pass, meshes, count) => {
+        glowRenderList.length = 0;
+        if (meshes) {
+          for (let i = 0; i < count; i += 1) {
+            const mesh = meshes[i];
+            if (includedMeshes.has(mesh as Mesh) && mesh.renderingGroupId === glow.renderingGroupId) {
+              glowRenderList.push(mesh);
+            }
+          }
+        }
+        return glowRenderList;
+      };
       activatePostGlowBallRendering(scene);
       this.postGlowBallRenderingActive = true;
       // includedOnly mode activates on the first addIncludedOnlyMesh call; until then the layer
@@ -379,7 +403,10 @@ export class PolishedPostFX {
     this.glow?.dispose();
     this.glowAnchor?.dispose();
     this.glowOccluderMaterial?.dispose();
-    this.ssao?.dispose();
+    // SSAO2.dispose() defaults to retaining its full-scene depth/normal pass. On a live switch to
+    // Competitive that left an invisible extra geometry pass running indefinitely. Release only
+    // the buffer this stack created; an externally owned/replaced buffer belongs to its owner.
+    this.ssao?.dispose(this.ownedGeometryBuffer !== null && this.scene.geometryBufferRenderer === this.ownedGeometryBuffer);
     this.pipeline.dispose();
   }
 }

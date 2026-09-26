@@ -13,6 +13,7 @@
  *   --preset  polished | performance | neutral      (default polished)
  *   --view    gym-spawn | gym-corner | scoreboard | sandbox   (default gym-spawn)
  *   --tag     filename prefix, e.g. the phase id     (default none)
+ *   --out-dir output folder                         (default scripts/shots)
  *   --url     dev server URL                         (default http://localhost:5173/)
  *   --fps N   ALSO sample average FPS over N seconds (rAF-based). Use --headed for real numbers —
  *             headless Chromium may fall back to SwiftShader and report meaningless FPS.
@@ -39,6 +40,7 @@ const hasFlag = (name) => args.includes(`--${name}`);
 const preset = argValue('preset', 'polished');
 const view = argValue('view', 'gym-spawn');
 const tag = argValue('tag', '');
+const outDir = argValue('out-dir', 'scripts/shots');
 const url = argValue('url', 'http://localhost:5173/');
 const fpsSeconds = Number(argValue('fps', '0'));
 const headed = hasFlag('headed');
@@ -53,8 +55,8 @@ const VALID_VIEWS = ['gym-spawn', 'gym-corner', 'scoreboard', 'sandbox', 'floor'
 if (!VALID_PRESETS.includes(preset)) throw new Error(`--preset must be one of ${VALID_PRESETS.join('|')}`);
 if (!VALID_VIEWS.includes(view)) throw new Error(`--view must be one of ${VALID_VIEWS.join('|')}`);
 
-mkdirSync('scripts/shots', { recursive: true });
-const outPath = `scripts/shots/${tag ? `${tag}-` : ''}${preset}-${view}.png`;
+mkdirSync(outDir, { recursive: true });
+const outPath = `${outDir}/${tag ? `${tag}-` : ''}${preset}-${view}.png`;
 
 const browser = await chromium.launch({ headless: !headed });
 const page = await browser.newPage({ viewport: { width: 1600, height: 1000 } });

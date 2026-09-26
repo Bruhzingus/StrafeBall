@@ -2296,7 +2296,7 @@ html, body {
 }
 
 .multiplayer-create {
-  background: linear-gradient(180deg, #79f5ff, var(--electric-cyan)) !important;
+  background: linear-gradient(180deg, #79f5ff, var(--electric-cyan));
 }
 
 .multiplayer-room-card {
@@ -2566,10 +2566,10 @@ html, body {
 .multiplayer-settings-menu__close {
   width: 34px;
   height: 34px;
-  padding: 0 !important;
-  border-width: 3px !important;
-  border-radius: 9px !important;
-  font-size: 20px !important;
+  padding: 0;
+  border-width: 3px;
+  border-radius: 9px;
+  font-size: 20px;
   line-height: 1;
 }
 .multiplayer-settings-menu__meta {
@@ -4305,7 +4305,7 @@ html, body {
 }
 
 .fullscreen-request {
-  background: var(--electric-cyan) !important;
+  background: var(--electric-cyan);
 }
 
 .lobby-mode-prompt {

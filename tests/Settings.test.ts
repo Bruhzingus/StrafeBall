@@ -1,4 +1,4 @@
-import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 function createStorage(initial: Record<string, string> = {}) {
   const values = new Map(Object.entries(initial));
@@ -112,5 +112,58 @@ describe('settings music volume', () => {
       devGraphicsTuning?: boolean;
     };
     expect(stored.devGraphicsTuning).toBe(true);
+  });
+});
+
+describe('effects defaults by graphics preset', () => {
+  beforeEach(() => vi.resetModules());
+  afterEach(() => vi.unstubAllGlobals());
+
+  async function loadSettings(mode: string, saved: Record<string, unknown> = {}) {
+    vi.resetModules();
+    const storage = createStorage({
+      'strafeball.graphics.mode': mode,
+      'strafeball.settings.v1': JSON.stringify(saved)
+    });
+    vi.stubGlobal('localStorage', storage);
+    vi.stubGlobal('window', { localStorage: storage });
+    const { settings } = await import('../src/game/config/Settings');
+    return { settings, storage };
+  }
+
+  it('follows Competitive and Polished when switching presets without an effects override', async () => {
+    const { settings } = await loadSettings('performance');
+    expect(settings.reducedEffects).toBe(true);
+    settings.applyGraphicsDefaults('polished');
+    expect(settings.reducedEffects).toBe(false);
+    settings.applyGraphicsDefaults('performance');
+    expect(settings.reducedEffects).toBe(true);
+    settings.applyGraphicsDefaults('neutral');
+    expect(settings.reducedEffects).toBe(false);
+  });
+
+  it('keeps full effects when starting in Polished', async () => {
+    const { settings } = await loadSettings('polished');
+    expect(settings.reducedEffects).toBe(false);
+  });
+
+  it('does not turn an unrelated settings save into an explicit effects override', async () => {
+    const { settings, storage } = await loadSettings('performance');
+    settings.setSfxVolume(0.6);
+    const saved = JSON.parse(storage.getItem('strafeball.settings.v1') ?? '{}');
+    expect(saved).not.toHaveProperty('reducedEffects');
+    const reloaded = await loadSettings('polished', saved);
+    expect(reloaded.settings.reducedEffects).toBe(false);
+  });
+
+  it.each([true, false])('preserves an explicit effects choice of %s across presets and reloads', async (value) => {
+    const { settings, storage } = await loadSettings('performance');
+    settings.setReducedEffects(value);
+    settings.applyGraphicsDefaults('polished');
+    expect(settings.reducedEffects).toBe(value);
+    const saved = JSON.parse(storage.getItem('strafeball.settings.v1') ?? '{}');
+    expect(saved.reducedEffects).toBe(value);
+    const reloaded = await loadSettings('performance', saved);
+    expect(reloaded.settings.reducedEffects).toBe(value);
   });
 });

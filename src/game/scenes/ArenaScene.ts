@@ -27,6 +27,7 @@ import {
   setActiveGymShadowRegistrar
 } from '../map/GymShadowCasters';
 import {
+  COMPETITIVE_CONFIG,
   getGraphicsQuality,
   isNeutralModeEnabled,
   persistGraphicsPreset,
@@ -173,6 +174,7 @@ export class ArenaScene {
   private readonly practicePowerups = new PracticePowerupSpawner();
   private readonly practiceMagnetSettledSeconds = new WeakMap<Ball, number>();
   private readonly practiceMagnetDistantPulls = new WeakSet<Ball>();
+  private readonly practiceArmorBalls: Ball[] = [];
   private readonly practicePowerupRoom: PowerupPresentationRoom = {
     practiceBuffs: this.practicePowerups.buffs,
     practicePlayerId: 'practice',
@@ -199,7 +201,7 @@ export class ArenaScene {
   // which rebuilds every rendering system IN PLACE — the preset switch must never reload the page,
   // because a reload tears down the MultiplayerClient owned by this scene and dumps a connected
   // player back to the loading screen mid-match.
-  // 'polished' = the overhaul default; 'performance' = the pre-overhaul bright baseline, bit-identical;
+  // 'performance' = the default bright Competitive preset; 'polished' = the optional effects stack;
   // 'neutral' = the dev-only diagnostic truth baseline.
   private quality: GraphicsMode = getGraphicsQuality();
   // Original emissive colors of the SHARED gym light-source materials, captured before the polished
@@ -412,6 +414,7 @@ export class ArenaScene {
     this.effects = new Effects(this.scene, this.sound);
 
     this.player = new PlayerController(this.scene, this.input, this.ballManager, this.gym.collision, this.effects);
+    this.player.hands.setArmorPickup(() => this.takePracticeArmorBall());
     this.buildPostFx();
     this.quickBot = new PracticeBot(this.scene, this.ballManager, 'quick');
     this.chargeBot = new PracticeBot(this.scene, this.ballManager, 'charge');
@@ -485,6 +488,7 @@ export class ArenaScene {
     // Re-resolve rather than trusting the argument: resolveGraphicsMode is the single authority every
     // construction site reads (and it migrates legacy persisted values).
     this.quality = getGraphicsQuality();
+    settings.applyGraphicsDefaults(this.quality);
     this.neutralEnabled = isNeutralModeEnabled();
     this.buildGraphics();
 
@@ -525,7 +529,7 @@ export class ArenaScene {
     clearActiveGymShadowRegistrar();
     clearPolishedHandles();
     this.restoreGlowSourceEmissives();
-    // Polished is the only mode that supersamples — hand the engine back its native scale.
+    // Clear the outgoing preset's scale before the incoming preset applies its own value.
     this.scene.getEngine().setHardwareScalingLevel(1);
   }
 
@@ -549,12 +553,13 @@ export class ArenaScene {
   }
 
   /**
-   * Polished supersampling: render the WebGL buffer at renderScale× the canvas, then downsample
-   * (SSAA) — the AA that actually tames the thin bright light strips / center line. Engine-level, so
-   * it must be set before/independent of the pipeline. Performance/Neutral render at native 1×.
+   * Set the WebGL buffer scale before constructing the post stack. Competitive uses its budgeted
+   * resolution, Polished uses its tunable scale, and Neutral retains native resolution.
    */
   private applyRenderScale(): void {
-    const renderScale = this.quality === 'polished' ? Math.max(1, resolvePolishedConfig().renderScale) : 1;
+    const renderScale = this.quality === 'polished'
+      ? Math.max(1, resolvePolishedConfig().renderScale)
+      : this.quality === 'performance' ? COMPETITIVE_CONFIG.renderScale : 1;
     this.scene.getEngine().setHardwareScalingLevel(1 / renderScale);
   }
 
@@ -770,6 +775,12 @@ export class ArenaScene {
 
       const v = ball.velocity;
       const speed = Math.sqrt(v.x * v.x + v.y * v.y + v.z * v.z);
+      if (this.absorbPracticeArmor()) {
+        ball.makeDead();
+        ball.velocity.scaleInPlace(-0.35);
+        this.ballVisualEffects.spawnImpact(b, speed);
+        continue;
+      }
       ball.makeDead();
       this.effects.onPlayerHit(b, speed);
       this.ballVisualEffects.spawnImpact(b, speed);
@@ -1028,6 +1039,10 @@ export class ArenaScene {
   /** Bottom-middle "Hold E" / "Press E" prompt: mat restore takes priority over ball pickup since
    * both use E and a mat is the more deliberate action (and rarer to be in range of both). */
   private updateInteractPrompt(): void {
+    if (this.practiceArmorBalls.length > 0 && this.player.hands.heldBallCount() < 2) {
+      this.hud.setInteractPrompt('Press', 'to take armor ball');
+      return;
+    }
     if (this.findNearestRestorableMat()) {
       this.hud.setInteractPrompt('Hold', 'to pick up mat');
       return;
@@ -1124,6 +1139,7 @@ export class ArenaScene {
         vector3ToVec3(this.player.root.position),
         this.practicePowerupRoom.resetVote.resetSerial
       );
+      if (this.practicePowerups.buffs.magnetSeconds <= 0) this.dropPracticeArmor();
       if (this.input.wasKeyPressed(CONTROL_KEYS.activatePowerup)) {
         const activation = this.practicePowerups.activate(
           this.player.hands.heldBallCount() < 2,
@@ -2195,6 +2211,7 @@ export class ArenaScene {
     this.onlineChargeSeconds.right = 0;
     this.resetPrediction('enter-online');
     this.player.hands.clearHands();
+    this.clearPracticeArmor();
     this.quickBot.reset();
     this.chargeBot.reset();
     this.setPracticePropsEnabled(false);
@@ -2240,6 +2257,7 @@ export class ArenaScene {
     this.lastResetVoteKey = '';
     this.onlineTeamSelector.setEnabled(false);
     this.player.hands.clearHands();
+    this.clearPracticeArmor();
     this.player.resetPosition();
     this.quickBot.reset();
     this.chargeBot.reset();
@@ -2451,6 +2469,7 @@ export class ArenaScene {
     }
     this.resetBackflipQte();
     this.player.hands.clearHands();
+    this.clearPracticeArmor();
     // No stray practice balls in the sandbox (it has none); clears them from the gym.
     this.ballManager.clear();
     // Hide practice/match furniture (wall, portals, guide, bots, dummies) while in the sandbox.
@@ -3349,6 +3368,7 @@ export class ArenaScene {
 
   private resetBalls(): void {
     this.player.hands.clearHands();
+    this.clearPracticeArmor();
     this.quickBot.reset();
     this.chargeBot.reset();
     this.ballManager.spawnCenterLineBalls();
@@ -3486,6 +3506,7 @@ export class ArenaScene {
 
   private updatePracticeMagnet(dt: number): void {
     const active = this.practicePowerups.buffs.magnetSeconds > 0;
+    if (!active) this.dropPracticeArmor();
     const playerPosition = this.player.root.position;
     for (const ball of this.ballManager.balls) {
       if (ball.powerupKind || (ball.state !== BallState.Loose && ball.state !== BallState.Dead)) {
@@ -3493,6 +3514,7 @@ export class ArenaScene {
         continue;
       }
       const hasFreeHand = !this.player.hands.left.ball || !this.player.hands.right.ball;
+      const canCollect = hasFreeHand || this.practiceArmorBalls.length < GAME_CONSTANTS.powerup.armorCap;
       const next = stepPracticeMagnetBall(
         ball.mesh.position,
         ball.velocity,
@@ -3500,27 +3522,85 @@ export class ArenaScene {
         dt,
         this.practiceMagnetSettledSeconds.get(ball) ?? 0,
         this.practiceMagnetDistantPulls.has(ball),
-        active && hasFreeHand
+        active && canCollect
       );
       this.practiceMagnetSettledSeconds.set(ball, next.settledSeconds);
       if (next.distantPulling) this.practiceMagnetDistantPulls.add(ball);
       else this.practiceMagnetDistantPulls.delete(ball);
 
       if (next.reachedPlayer && this.ballManager.canPickup(ball)) {
-        const side = !this.player.hands.left.ball ? 'left' : 'right';
-        this.player.hands.forceCatchBall(side, ball);
-        const hand = this.player.hands.getHand(side);
-        hand.cooldown = 0;
-        hand.catchAnim = 0;
-        hand.pickupAnim = 1;
-        this.player.hands.lastAction = `pickup #${ball.id} (${side})`;
-        const holdPosition = playerPosition.add(new Vector3(side === 'left' ? -0.4 : 0.4, 1.2, 0.3));
-        this.ballManager.attachHeldBall(ball, side, holdPosition);
+        if (hasFreeHand) {
+          const side = !this.player.hands.left.ball ? 'left' : 'right';
+          this.player.hands.forceCatchBall(side, ball);
+          const hand = this.player.hands.getHand(side);
+          hand.cooldown = 0;
+          hand.catchAnim = 0;
+          hand.pickupAnim = 1;
+          this.player.hands.lastAction = `pickup #${ball.id} (${side})`;
+          const holdPosition = playerPosition.add(new Vector3(side === 'left' ? -0.4 : 0.4, 1.2, 0.3));
+          this.ballManager.attachHeldBall(ball, side, holdPosition);
+        } else {
+          ball.state = BallState.Held;
+          ball.owner = 'player';
+          ball.heldHand = null;
+          ball.velocity.setAll(0);
+          this.practiceArmorBalls.push(ball);
+          this.practicePowerups.emit('armor', vector3ToVec3(playerPosition), this.practicePowerupRoom.resetVote.resetSerial);
+        }
       } else if (next.pulling) {
         ball.velocity.set(next.velocity.x, next.velocity.y, next.velocity.z);
         ball.state = BallState.Dead;
       }
     }
+    this.updatePracticeArmorVisuals();
+    this.hud.setPracticeArmorCount(this.practiceArmorBalls.length);
+  }
+
+  private updatePracticeArmorVisuals(): void {
+    const player = this.player.root.position;
+    for (let i = 0; i < this.practiceArmorBalls.length; i++) {
+      const angle = performance.now() / 1000 * 1.6 + i * Math.PI * 2 / 3;
+      this.practiceArmorBalls[i].mesh.position.set(
+        player.x + Math.sin(angle) * 0.67,
+        player.y + 0.85 + Math.sin(angle * 2) * 0.12,
+        player.z + Math.cos(angle) * 0.67
+      );
+    }
+  }
+
+  private takePracticeArmorBall(): Ball | null {
+    while (this.practiceArmorBalls.length > 0) {
+      const ball = this.practiceArmorBalls.shift()!;
+      if (!this.ballManager.balls.includes(ball) || ball.state !== BallState.Held || ball.heldHand) continue;
+      this.hud.setPracticeArmorCount(this.practiceArmorBalls.length);
+      return ball;
+    }
+    return null;
+  }
+
+  private absorbPracticeArmor(): boolean {
+    const armor = this.practiceArmorBalls.shift();
+    if (!armor) return false;
+    const player = this.player.root.position;
+    armor.drop(new Vector3(player.x + 1, player.y + 1, player.z), new Vector3(5, 4, 0));
+    this.practicePowerups.emit('armor', vector3ToVec3(player), this.practicePowerupRoom.resetVote.resetSerial);
+    this.hud.setPracticeArmorCount(this.practiceArmorBalls.length);
+    return true;
+  }
+
+  private dropPracticeArmor(): void {
+    if (this.practiceArmorBalls.length === 0) return;
+    const player = this.player.root.position;
+    for (const armor of this.practiceArmorBalls) {
+      armor.drop(new Vector3(player.x, player.y + GAME_CONSTANTS.ball.radius, player.z), Vector3.Zero());
+    }
+    this.practiceArmorBalls.length = 0;
+    this.hud.setPracticeArmorCount(0);
+  }
+
+  private clearPracticeArmor(): void {
+    this.practiceArmorBalls.length = 0;
+    this.hud.setPracticeArmorCount(0);
   }
 
   private updatePracticePowerupBalls(dt: number): void {
@@ -3623,6 +3703,7 @@ export class ArenaScene {
   /** Full practice room reset: balls, bots, score, prediction buffers. Guide/control wall stays. */
   private practiceReset(): void {
     this.player.hands.clearHands();
+    this.clearPracticeArmor();
     this.quickBot.reset();
     this.chargeBot.reset();
     // Clear ALL balls (including extra) and respawn default set
@@ -3661,15 +3742,15 @@ export class ArenaScene {
       registerPolishedHandles({ hemi, key, shadowGenerator });
       return;
     }
-    // Performance/Neutral: the pre-overhaul Competitive baseline, bit-identical — one hemispheric
-    // fill + one directional key, and the single shadow generator bound to the key light. Casters
+    // Competitive/Neutral share one hemispheric fill, one directional key, and a single shadow
+    // generator bound to the key light. Casters
     // (mats / moving dummy / remote players) are registered after they exist; static geometry is
     // never a caster.
     const { key } = applyCompetitiveLighting(this.scene);
-    // Competitive shadow tier: 1024 map (High tier would be 2048 via the same option). Darkness at
-    // the most-visible end of the spec band (0.18) so player/mat/dummy shadows read clearly on the
-    // busy decal-stacked floor without darkening the room overall (only shadowed pixels are tinted).
-    createCompetitiveShadowSystem(this.scene, key, { mapSize: 1024, darkness: 0.18 });
+    // Competitive uses its smaller shadow map; Neutral keeps the original diagnostic resolution.
+    // Darkness stays at 0.18 so player/mat/dummy shadows retain their existing floor contrast.
+    const mapSize = this.quality === 'performance' ? COMPETITIVE_CONFIG.shadowMapSize : 1024;
+    createCompetitiveShadowSystem(this.scene, key, { mapSize, darkness: 0.18 });
     // Route dynamic caster registration (mats/dummies here, remote players in NetworkRenderer) to the
     // competitive single-generator system.
     setActiveGymShadowRegistrar(registerCompetitiveShadowCaster);

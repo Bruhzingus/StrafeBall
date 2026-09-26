@@ -1,4 +1,5 @@
 import { clamp } from '../utils/math';
+import { COMPETITIVE_CONFIG, getGraphicsQuality, type GraphicsMode } from './graphicsConfig';
 
 /**
  * User-adjustable settings that persist across reloads (localStorage). Kept tiny and framework-
@@ -18,7 +19,8 @@ class SettingsStore {
   public sfxVolume = SFX_VOLUME_DEFAULT;
   public lobbyMusicVolume = MUSIC_VOLUME_DEFAULT;
   public battleMusicVolume = MUSIC_VOLUME_DEFAULT;
-  public reducedEffects = false;
+  public reducedEffects = getGraphicsQuality() === 'performance' && COMPETITIVE_CONFIG.reducedEffects;
+  private reducedEffectsOverride: boolean | undefined;
   /** Show the 3D end-wall scoreboards. Off = hide them (some players find them distracting). */
   public showScoreboard = true;
   /** Planning mode: play a smaller lobby playlist instead of shuffling every lobby track. */
@@ -55,8 +57,15 @@ class SettingsStore {
   }
 
   setReducedEffects(value: boolean): void {
+    this.reducedEffectsOverride = value;
     this.reducedEffects = value;
     this.save();
+  }
+
+  /** Follow the selected preset unless the player explicitly chose an effects setting. */
+  applyGraphicsDefaults(preset: GraphicsMode): void {
+    this.reducedEffects = this.reducedEffectsOverride
+      ?? (preset === 'performance' && COMPETITIVE_CONFIG.reducedEffects);
   }
 
   setShowScoreboard(value: boolean): void {
@@ -108,6 +117,7 @@ class SettingsStore {
         this.battleMusicVolume = clamp(parsed.battleMusicVolume, 0, 1);
       }
       if (typeof parsed.reducedEffects === 'boolean') {
+        this.reducedEffectsOverride = parsed.reducedEffects;
         this.reducedEffects = parsed.reducedEffects;
       }
       if (typeof parsed.showScoreboard === 'boolean') {
@@ -131,7 +141,7 @@ class SettingsStore {
         sfxVolume: this.sfxVolume,
         lobbyMusicVolume: this.lobbyMusicVolume,
         battleMusicVolume: this.battleMusicVolume,
-        reducedEffects: this.reducedEffects,
+        reducedEffects: this.reducedEffectsOverride,
         showScoreboard: this.showScoreboard,
         loopClaudesPlan: this.loopClaudesPlan,
         devGraphicsTuning: this.devGraphicsTuning

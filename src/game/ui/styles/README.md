@@ -43,6 +43,21 @@ Reuse the primitives or an existing component class; place component-specific la
 
 Surface primitives deliberately do not set display, positioning or padding. Components own geometry and interaction state. Use `sb-surface--dark` and `sb-button--dark` together for dark tools. Use native `disabled`/`hidden`, visible focus, descriptive labels and a nearby reason when an action is unavailable.
 
+## Sizing
+
+Use the shared `--sb-dialog-gutter` and `--sb-panel-padding` for dialogs. Width follows content rather than forcing every menu into one template:
+
+| Content | Typical maximum width |
+| --- | --- |
+| Personal settings | `--sb-panel-compact` (360px) |
+| Short decisions, create/join forms | `--sb-dialog-compact` (480px) |
+| Setup and reference pages | `--sb-dialog-standard` (640px); help uses 720px |
+| Team selection and room rules | 860px / 800px |
+| Match results | `--sb-dialog-wide` (960px) |
+| Creator / graphics tools | 312px / 300px |
+
+Keep panels inside the dynamic viewport with internal scrolling. A long list must scroll rather than clip its last entries. Debug uses a compact single column offline and two columns online, collapsing on narrow screens.
+
 Change palette values in `tokens.css`. Compatibility aliases such as `--paper` and `--menu-cream` point to the same tokens; do not redefine them with new colors in components.
 
 ## Review
@@ -53,6 +68,7 @@ Start Vite on port 5173, then run:
 node scripts/theme-review.mjs
 node scripts/team-room-review.mjs
 node scripts/ui-review.mjs
+node scripts/debug-review.mjs
 npm run typecheck
 ```
 

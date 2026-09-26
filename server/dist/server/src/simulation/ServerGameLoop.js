@@ -2,7 +2,6 @@
 Object.defineProperty(exports, "__esModule", { value: true });
 exports.ServerGameLoop = void 0;
 const constants_1 = require("../../../shared/constants");
-const node_perf_hooks_1 = require("node:perf_hooks");
 const netConfig_1 = require("../../../shared/netConfig");
 const roomSettings_1 = require("../../../shared/roomSettings");
 const DefenseHistory_1 = require("./DefenseHistory");
@@ -1439,7 +1438,7 @@ class ServerGameLoop {
         });
     }
     snapshot() {
-        const startedAt = node_perf_hooks_1.performance.now();
+        const startedAt = performance.now();
         // No deep clone (#17): Colyseus serializes the message when broadcasting, so each client
         // already gets its own copy over the wire — cloning here just burned GC every tick.
         const snapshot = {
@@ -1448,7 +1447,7 @@ class ServerGameLoop {
             serverTimeMs: this.now(),
             room: this.state
         };
-        this.lastSnapshotBuildMs = node_perf_hooks_1.performance.now() - startedAt;
+        this.lastSnapshotBuildMs = performance.now() - startedAt;
         return snapshot;
     }
     playerNetWindowStats(playerId) {

@@ -37,11 +37,13 @@ describe('graphics mode resolution + migration', () => {
     vi.resetModules();
   });
 
-  it('defaults to polished with no stored key', async () => {
+  it('defaults to Competitive with no stored key', async () => {
     installWindowStorage();
-    const { resolveGraphicsMode, getGraphicsQuality } = await import('../src/game/config/graphicsConfig');
-    expect(resolveGraphicsMode()).toBe('polished');
-    expect(getGraphicsQuality()).toBe('polished');
+    const { resolveGraphicsMode, getGraphicsQuality, getGraphicsPresets } = await import('../src/game/config/graphicsConfig');
+    expect(resolveGraphicsMode()).toBe('performance');
+    expect(getGraphicsQuality()).toBe('performance');
+    expect(getGraphicsPresets()[0]).toEqual({ value: 'performance', label: 'Competitive (default · max FPS)' });
+    expect(getGraphicsPresets().find((preset) => preset.value === 'polished')?.label).toBe('Polished');
   });
 
   it('keeps valid new-scheme values as-is', async () => {
@@ -74,7 +76,7 @@ describe('graphics mode resolution + migration', () => {
   it('falls back to the compiled default on garbage values without writing back', async () => {
     const storage = installWindowStorage({ 'strafeball.graphics.mode': 'ultra-mega' });
     const { resolveGraphicsMode } = await import('../src/game/config/graphicsConfig');
-    expect(resolveGraphicsMode()).toBe('polished');
+    expect(resolveGraphicsMode()).toBe('performance');
     // Garbage is left in place (harmless) — only known legacy values are migrated.
     expect(storage.getItem('strafeball.graphics.mode')).toBe('ultra-mega');
   });
@@ -91,13 +93,13 @@ describe('graphics mode resolution + migration', () => {
   it('hides the Neutral preset from the settings list unless the graphics debug flag is set', async () => {
     installWindowStorage();
     const { getGraphicsPresets } = await import('../src/game/config/graphicsConfig');
-    expect(getGraphicsPresets().map((p) => p.value)).toEqual(['polished', 'performance']);
-    expect(getGraphicsPresets().find((p) => p.value === 'performance')?.label).toBe('Competitive (max FPS)');
+    expect(getGraphicsPresets().map((p) => p.value)).toEqual(['performance', 'polished']);
+    expect(getGraphicsPresets().find((p) => p.value === 'performance')?.label).toBe('Competitive (default · max FPS)');
 
     vi.resetModules();
     installWindowStorage({ 'strafeball.debug.graphics': '1' });
     const { getGraphicsPresets: withDebug } = await import('../src/game/config/graphicsConfig');
-    expect(withDebug().map((p) => p.value)).toEqual(['polished', 'performance', 'neutral']);
+    expect(withDebug().map((p) => p.value)).toEqual(['performance', 'polished', 'neutral']);
   });
 });
 

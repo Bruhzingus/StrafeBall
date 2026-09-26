@@ -69,10 +69,21 @@ export class SettingsPanel {
 
     this.content = document.createElement('div');
     this.content.className = 'settings-content';
+    this.content.setAttribute('role', 'region');
+    this.content.setAttribute('aria-label', 'Game settings');
 
-    const title = document.createElement('div');
+    const header = document.createElement('div');
+    header.className = 'settings-header';
+    const title = document.createElement('h2');
     title.className = 'settings-title';
     title.textContent = 'Settings';
+    const close = document.createElement('button');
+    close.type = 'button';
+    close.className = 'settings-close';
+    close.textContent = '×';
+    close.setAttribute('aria-label', 'Close settings');
+    close.addEventListener('click', () => this.closeExpanded());
+    header.append(title, close);
 
     this.howToPlay = new HowToPlay(parent);
     this.howToPlayButton = document.createElement('button');
@@ -84,21 +95,25 @@ export class SettingsPanel {
     const sensitivityLabel = this.row('Sensitivity');
     this.sensitivityReadout = sensitivityLabel.readout;
     this.sensitivitySlider = this.range(SENSITIVITY_MIN, SENSITIVITY_MAX, 0.0001, settings.mouseSensitivity);
+    this.sensitivitySlider.setAttribute('aria-label', 'Mouse sensitivity');
     this.sensitivitySlider.addEventListener('input', this.onSensitivityInput);
 
     const sfxLabel = this.row('SFX');
     this.sfxReadout = sfxLabel.readout;
     this.sfxSlider = this.range(0, 1, 0.05, settings.sfxVolume);
+    this.sfxSlider.setAttribute('aria-label', 'Sound effects volume');
     this.sfxSlider.addEventListener('input', this.onSfxInput);
 
     const lobbyMusicLabel = this.row('Lobby Music');
     this.lobbyMusicReadout = lobbyMusicLabel.readout;
     this.lobbyMusicSlider = this.range(0, 1, 0.05, settings.lobbyMusicVolume);
+    this.lobbyMusicSlider.setAttribute('aria-label', 'Lobby music volume');
     this.lobbyMusicSlider.addEventListener('input', this.onLobbyMusicInput);
 
     const battleMusicLabel = this.row('Battle Music');
     this.battleMusicReadout = battleMusicLabel.readout;
     this.battleMusicSlider = this.range(0, 1, 0.05, settings.battleMusicVolume);
+    this.battleMusicSlider.setAttribute('aria-label', 'Battle music volume');
     this.battleMusicSlider.addEventListener('input', this.onBattleMusicInput);
 
     // Planning mode: play a smaller lobby playlist instead of shuffling every lobby track.
@@ -201,21 +216,12 @@ export class SettingsPanel {
     advanced.append(advancedSummary, devGraphicsLabel, downloadTitle, downloadLink, guideLink, downloadHint);
 
     this.content.append(
-      title,
+      header,
       this.howToPlayButton,
-      sensitivityLabel.label,
-      this.sensitivitySlider,
-      sfxLabel.label,
-      this.sfxSlider,
-      lobbyMusicLabel.label,
-      this.lobbyMusicSlider,
-      battleMusicLabel.label,
-      this.battleMusicSlider,
-      claudesPlanLabel,
-      effectsLabel,
-      scoreboardLabel,
-      graphicsRow,
-      graphicsHint,
+      this.group('Controls', sensitivityLabel.label, this.sensitivitySlider),
+      this.group('Audio', sfxLabel.label, this.sfxSlider, lobbyMusicLabel.label, this.lobbyMusicSlider,
+        battleMusicLabel.label, this.battleMusicSlider, claudesPlanLabel),
+      this.group('Display', graphicsRow, graphicsHint, effectsLabel, scoreboardLabel),
       advanced
     );
     this.root.append(this.toggleButton, this.content);
@@ -322,6 +328,7 @@ export class SettingsPanel {
       // mirror, post stack, render scale) and persists the choice itself. The scene, the player and
       // the live multiplayer room all survive, so switching presets mid-match is safe.
       applyLive(preset);
+      this.reducedEffectsToggle.checked = settings.reducedEffects;
       return;
     }
     // Fallback for a panel with no owning scene wired up (nothing can rebuild the renderer here, so
@@ -374,6 +381,17 @@ export class SettingsPanel {
     readout.className = 'settings-value';
     label.append(name, readout);
     return { label, readout };
+  }
+
+  private group(title: string, ...controls: HTMLElement[]): HTMLElement {
+    const group = document.createElement('section');
+    group.className = 'settings-group';
+    group.setAttribute('aria-label', title);
+    const heading = document.createElement('h3');
+    heading.className = 'settings-group__title';
+    heading.textContent = title;
+    group.append(heading, ...controls);
+    return group;
   }
 
   private range(min: number, max: number, step: number, value: number): HTMLInputElement {

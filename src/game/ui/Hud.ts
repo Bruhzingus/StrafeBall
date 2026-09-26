@@ -38,6 +38,8 @@ export interface PowerupSlotView {
 export class Hud {
   private readonly root: HTMLDivElement;
   private readonly topLeft: HTMLDivElement;
+  private readonly debugContent: HTMLDivElement;
+  private readonly debugContext: HTMLSpanElement;
   private readonly topCenter: HTMLDivElement;
   private readonly bottomLeft: HTMLDivElement;
   private readonly bottomRight: HTMLDivElement;
@@ -86,7 +88,10 @@ export class Hud {
   private qteEventTimer: number | null = null;
   private hitMarkerTimer: number | null = null;
   private debugVisible = false;
+  private nextDebugUpdateMs = 0;
   private readonly staminaWidget: HTMLDivElement;
+  private readonly practiceArmorBadge: HTMLDivElement;
+  private practiceArmorCount = 0;
   private readonly staminaWidgetSegs: HTMLDivElement[] = [];
   private readonly staminaWidgetFills: HTMLDivElement[] = [];
   private readonly lastSegState: Array<'empty' | 'charging' | 'full'> = [];
@@ -107,6 +112,19 @@ export class Hud {
     // is never covered by the lobby panel, settings panel, or any other modal.
     this.topLeft = document.createElement('div');
     this.topLeft.className = 'hud-panel hud-debug-panel';
+    this.topLeft.setAttribute('role', 'region');
+    this.topLeft.setAttribute('aria-label', 'Debug diagnostics');
+    this.topLeft.tabIndex = 0;
+    this.topLeft.innerHTML = `
+      <header class="hud-debug__header">
+        <div><h2 class="hud-debug__title">Debug</h2><span class="hud-debug__context"></span></div>
+        <button class="hud-debug__close" type="button" aria-label="Close debug diagnostics"><kbd>Tab</kbd><span aria-hidden="true">&times;</span></button>
+      </header>
+      <div class="hud-debug__content"></div>
+    `;
+    this.debugContent = this.topLeft.querySelector<HTMLDivElement>('.hud-debug__content')!;
+    this.debugContext = this.topLeft.querySelector<HTMLSpanElement>('.hud-debug__context')!;
+    this.topLeft.querySelector('button')!.addEventListener('click', () => this.toggleDebug());
     document.body.appendChild(this.topLeft);
     this.topLeft.style.display = 'none';
     this.topCenter = this.panel('hud-top-center');
@@ -262,6 +280,10 @@ export class Hud {
       this.lastSegState.push('empty');
     }
     this.root.appendChild(this.staminaWidget);
+    this.practiceArmorBadge = document.createElement('div');
+    this.practiceArmorBadge.style.cssText = 'position:absolute;top:calc(100% + 7px);left:50%;transform:translateX(-50%);white-space:nowrap;color:#e4caff;font:700 12px sans-serif;letter-spacing:0.08em;text-shadow:0 1px 5px #140c20;';
+    this.practiceArmorBadge.hidden = true;
+    this.staminaWidget.appendChild(this.practiceArmorBadge);
 
     // Controls panel is static — write it once.
     this.bottomRight.innerHTML = `
@@ -286,11 +308,38 @@ export class Hud {
     }
     const reduced = settings.reducedEffects ? 'true' : 'false';
     if (document.body.dataset.reducedEffects !== reduced) document.body.dataset.reducedEffects = reduced;
+    this.practiceArmorBadge.hidden = mode !== 'practice' || this.practiceArmorCount === 0;
+  }
+
+  setPracticeArmorCount(count: number): void {
+    const next = Math.max(0, Math.min(GAME_CONSTANTS.powerup.armorCap, Math.floor(count)));
+    if (next === this.practiceArmorCount) return;
+    this.practiceArmorCount = next;
+    this.practiceArmorBadge.textContent = `ARMOR ${'●'.repeat(next)} (${next}/${GAME_CONSTANTS.powerup.armorCap})`;
+    this.practiceArmorBadge.hidden = this.presentationMode !== 'practice' || next === 0;
   }
 
   toggleDebug(): void {
     this.debugVisible = !this.debugVisible;
     this.topLeft.style.display = this.debugVisible ? '' : 'none';
+    this.nextDebugUpdateMs = 0;
+  }
+
+  private shouldUpdateDebug(mode: 'offline' | 'online'): boolean {
+    if (!this.debugVisible) return false;
+    const now = performance.now();
+    if (this.topLeft.dataset.mode === mode && now < this.nextDebugUpdateMs) return false;
+    // A readable diagnostic cadence also avoids rebuilding a dense panel every rendered frame.
+    this.nextDebugUpdateMs = now + 200;
+    return true;
+  }
+
+  private renderDebug(mode: 'offline' | 'online', html: string): void {
+    const scrollTop = this.topLeft.scrollTop;
+    this.topLeft.dataset.mode = mode;
+    this.debugContext.textContent = mode === 'online' ? 'Online session' : 'Local practice';
+    this.setHtml(this.debugContent, html);
+    this.topLeft.scrollTop = scrollTop;
   }
 
   /** Hide/show the entire gameplay HUD (scoreboard, hands, crosshair, speed, music, help). Used by the
@@ -500,29 +549,31 @@ export class Hud {
       maxCharges
     );
 
-    // Bhop: grace window visible while it's active so you can time re-jumps.
-    const bhopHtml = movement.bhopGraceTimer > 0
-      ? `<span class="hud-good">GRACE ${movement.bhopGraceTimer.toFixed(2)}s</span>`
-      : '<span style="opacity:0.45">—</span>';
-
-    const wallHtml = movement.wallRunning
-      ? `<span class="hud-good">${movement.wallRunTimer.toFixed(1)}s</span>`
-      : '<span style="opacity:0.45">—</span>';
-
     // Performance + movement debug overlay.
-    if (this.debugVisible) {
-      this.setHtml(this.topLeft, `
-        <div class="hud-title">Debug <span style="font-weight:400;opacity:0.45;font-size:10px">[Tab]</span></div>
-        <div>FPS <span class="hud-good">${Math.round(fps)}</span> · ${frameMs.toFixed(1)} ms</div>
-        <div>Tick rate: <span class="hud-good">${SERVER_TICK_RATE} Hz</span> &middot; Snap ${SNAPSHOT_RATE} Hz</div>
-        <div>Speed: <span class="hud-good">${movement.speed.toFixed(1)}</span> m/s</div>
-        <div>Vel: ${v.x.toFixed(1)}, ${v.y.toFixed(1)}, ${v.z.toFixed(1)}</div>
-        <div>State: ${this.movementState(player)}</div>
-        <div>${movement.grounded ? 'GROUNDED' : 'AIRBORNE'} · fric: ${movement.frictionMode}</div>
-        <div>bhop: ${bhopHtml} · wall: ${wallHtml}</div>
-        <div>Stamina: ${staminaHtml}</div>
-        <div>Backflip CD: ${player.backflip.cooldown.toFixed(1)}s</div>
-        <div>Last: ${hands.lastAction}</div>
+    if (this.shouldUpdateDebug('offline')) {
+      const bhopHtml = movement.bhopGraceTimer > 0
+        ? `<span class="hud-good">Grace ${movement.bhopGraceTimer.toFixed(2)}s</span>`
+        : 'Inactive';
+      const wallHtml = movement.wallRunning
+        ? `<span class="hud-good">${movement.wallRunTimer.toFixed(1)}s</span>`
+        : 'Inactive';
+      this.renderDebug('offline', `
+        ${debugSection('Performance', [
+          debugRow('Frame rate', `<strong>${Math.round(fps)} FPS</strong> · ${frameMs.toFixed(1)} ms`),
+          debugRow('Tick / snapshot', `${SERVER_TICK_RATE} / ${SNAPSHOT_RATE} Hz`)
+        ])}
+        ${debugSection('Movement', [
+          debugRow('Speed', `<strong>${movement.speed.toFixed(1)} m/s</strong>`),
+          debugRow('Velocity (x/y/z)', `${v.x.toFixed(1)}, ${v.y.toFixed(1)}, ${v.z.toFixed(1)}`),
+          debugRow('State', escapeHtml(this.movementState(player))),
+          debugRow('Contact', movement.grounded ? 'Grounded' : 'Airborne'),
+          debugRow('Friction', escapeHtml(movement.frictionMode)),
+          debugRow('Bunny hop', bhopHtml),
+          debugRow('Wall run', wallHtml),
+          debugRow('Stamina', staminaHtml),
+          debugRow('Backflip cooldown', `${player.backflip.cooldown.toFixed(1)}s`),
+          debugRow('Last action', escapeHtml(hands.lastAction))
+        ])}
       `);
     }
 
@@ -625,7 +676,7 @@ export class Hud {
           : ''
       : '';
 
-    if (this.debugVisible) {
+    if (this.shouldUpdateDebug('online')) {
       const desyncColor = netDebug.residualAfterReplayM > 0.15 || netDebug.desyncRecentMaxM > 0.25
         ? 'hud-bad'
         : netDebug.residualAfterReplayM > 0.05 || netDebug.desyncRecentMaxM > 0.1
@@ -644,22 +695,44 @@ export class Hud {
       const srvLoop = netDebug.serverLoopP95Ms;
       const srvBufColor = srvBuf === null ? 'hud-good' : srvBuf >= 16384 ? 'hud-bad' : srvBuf >= 4096 ? 'hud-warn' : 'hud-good';
       const srvLoopColor = srvLoop === null ? 'hud-good' : srvLoop >= 18 ? 'hud-bad' : srvLoop >= 10 ? 'hud-warn' : 'hud-good';
-      this.setHtml(this.topLeft, `
-        <div class="hud-title">Online <span style="font-weight:400;opacity:0.45;font-size:10px">[Tab]</span></div>
-        <div>FPS <span class="hud-good">${Math.round(fps)}</span> &middot; ${frameMs.toFixed(1)} ms</div>
-        <div>Room: <span class="hud-good">${escapeHtml(room.id)}</span> · Players: ${Object.keys(room.players).length}/${room.match.maxPlayers}</div>
-        <div>Ping: <span class="hud-good">${pingMs === null ? '-' : `${pingMs} ms`}</span> · ${netDebug.connectionPath === 'direct' ? 'Direct' : netDebug.connectionPath === 'relay' ? 'Relay' : netDebug.connectionPath === 'local' ? 'Local host' : 'Server'} · net RTT ~${netDebug.rttEstimateMs} ms · recent max ${netDebug.maxRecentPingMs} ms · Tick: ${snapshot.tick}</div>
-        <div>Snap recv/render: <span class="hud-good">${netDebug.snapshotRateHz.toFixed(1)}</span> / ${netDebug.renderSnapshotRateHz.toFixed(1)} Hz | Ack age: ${netDebug.ackAgeMs === null ? '-' : `${netDebug.ackAgeMs} ms`}</div>
-        <div>Jitter: ${netDebug.pingJitterMs.toFixed(1)} ms | Pong age: ${netDebug.lastPongAgeMs === null ? '-' : `${netDebug.lastPongAgeMs} ms`} | Missed: ${netDebug.missedPongs}</div>
-        <div>WS buf: <span class="${wsBufferColor(netDebug.socketBufferedPeak)}">${netDebug.socketBufferedAmount} B</span> · peak ${netDebug.socketBufferedPeak} B · @ping ${netDebug.pingSendBufferedAmount} B</div>
-        <div>Server: loop p95 <span class="${srvLoopColor}">${srvLoop === null ? '-' : `${srvLoop.toFixed(1)} ms`}</span> · out-buf <span class="${srvBufColor}">${srvBuf === null ? '-' : `${srvBuf} B`}</span></div>
-        <div>Tick rate: <span class="hud-good">${tickRateHz} Hz</span> &middot; Snap ${snapRateHz} Hz</div>
-        <div>Raw lead: ${netDebug.predictionErrorM.toFixed(3)} m / ~${netDebug.expectedLeadM.toFixed(3)} m</div>
-        <div>Desync: <span class="${desyncColor}">${netDebug.residualAfterReplayM.toFixed(3)} m</span> avg ${netDebug.desyncAverageM.toFixed(3)} max ${netDebug.desyncRecentMaxM.toFixed(3)} peak ${netDebug.desyncPeakM.toFixed(3)}</div>
-        <div>Input seq: ${netDebug.inputSeq} · Acked: ${netDebug.lastAckedSeq} · Pending: ${netDebug.pendingInputs}</div>
-        <div>Prediction: ${netDebug.predictionActive ? '<span class="hud-good">active</span>' : '<span class="hud-bad">inactive</span>'} · Desync = after replay</div>
-        <div>Interp remote: <span class="hud-good">yes (exp-20)</span> · Balls: <span class="hud-good">yes (exp-30/15)</span></div>
-        ${local ? `<div>Speed: <span class="hud-good">${local.movement.speed.toFixed(1)}</span> m/s · Vel: ${local.movement.velocity.x.toFixed(1)}, ${local.movement.velocity.y.toFixed(1)}, ${local.movement.velocity.z.toFixed(1)}</div>` : ''}
+      this.renderDebug('online', `
+        ${debugSection('Performance & session', [
+          debugRow('Frame rate', `<strong>${Math.round(fps)} FPS</strong> · ${frameMs.toFixed(1)} ms`),
+          debugRow('Room', escapeHtml(room.id)),
+          debugRow('Players', `${Object.keys(room.players).length} / ${room.match.maxPlayers}`),
+          debugRow('Tick / snapshot', `${tickRateHz} / ${snapRateHz} Hz`),
+          debugRow('Server tick', `${snapshot.tick}`),
+          debugRow('Connection', netDebug.connectionPath === 'direct' ? 'Direct' : netDebug.connectionPath === 'relay' ? 'Relay' : netDebug.connectionPath === 'local' ? 'Local host' : 'Server')
+        ])}
+        ${debugSection('Connection', [
+          debugRow('Ping', `<strong>${pingMs === null ? '—' : `${pingMs} ms`}</strong>`),
+          debugRow('Recent max / RTT', `${netDebug.maxRecentPingMs} / ~${netDebug.rttEstimateMs} ms`),
+          debugRow('Jitter', `${netDebug.pingJitterMs.toFixed(1)} ms`),
+          debugRow('Snapshot recv / render', `${netDebug.snapshotRateHz.toFixed(1)} / ${netDebug.renderSnapshotRateHz.toFixed(1)} Hz`),
+          debugRow('Ack age', netDebug.ackAgeMs === null ? '—' : `${netDebug.ackAgeMs} ms`),
+          debugRow('Pong age / missed', `${netDebug.lastPongAgeMs === null ? '—' : `${netDebug.lastPongAgeMs} ms`} / ${netDebug.missedPongs}`),
+          debugRow('Socket buffer', `<span class="${wsBufferColor(netDebug.socketBufferedPeak)}">${netDebug.socketBufferedAmount} B</span>`),
+          debugRow('Peak / at ping', `${netDebug.socketBufferedPeak} / ${netDebug.pingSendBufferedAmount} B`)
+        ])}
+        ${debugSection('Prediction & reconciliation', [
+          debugRow('Prediction', netDebug.predictionActive ? '<span class="hud-good">Active</span>' : '<span class="hud-bad">Inactive</span>'),
+          debugRow('Raw / expected lead', `${netDebug.predictionErrorM.toFixed(3)} / ~${netDebug.expectedLeadM.toFixed(3)} m`),
+          debugRow('Desync after replay', `<span class="${desyncColor}">${netDebug.residualAfterReplayM.toFixed(3)} m</span>`),
+          debugRow('Average / recent max', `${netDebug.desyncAverageM.toFixed(3)} / ${netDebug.desyncRecentMaxM.toFixed(3)} m`),
+          debugRow('Peak desync', `${netDebug.desyncPeakM.toFixed(3)} m`),
+          debugRow('Input seq / acked', `${netDebug.inputSeq} / ${netDebug.lastAckedSeq}`),
+          debugRow('Pending inputs', `${netDebug.pendingInputs}`)
+        ])}
+        ${debugSection('Server & movement', [
+          debugRow('Server loop p95', `<span class="${srvLoopColor}">${srvLoop === null ? '—' : `${srvLoop.toFixed(1)} ms`}</span>`),
+          debugRow('Server out buffer', `<span class="${srvBufColor}">${srvBuf === null ? '—' : `${srvBuf} B`}</span>`),
+          debugRow('Player interpolation', 'On · exp-20'),
+          debugRow('Ball interpolation', 'On · exp-30/15'),
+          ...(local ? [
+            debugRow('Speed', `<strong>${local.movement.speed.toFixed(1)} m/s</strong>`),
+            debugRow('Velocity (x/y/z)', `${local.movement.velocity.x.toFixed(1)}, ${local.movement.velocity.y.toFixed(1)}, ${local.movement.velocity.z.toFixed(1)}`)
+          ] : [])
+        ])}
       `);
     }
 
@@ -1136,6 +1209,15 @@ export class Hud {
     const pips = Array.from({ length: maxCharges }, (_, i) => `<span class="stamina-pip ${i < full ? 'stamina-pip--full' : ''}"></span>`).join('');
     return `<span class="stamina-meter">${pips}</span> <span class="${full > 0 ? 'hud-good' : 'hud-bad'}">${full}/${maxCharges}</span> <span class="stamina-recharge">(${escapeHtml(rechargeText)})</span>`;
   }
+}
+
+/** Debug values are formatted internally; escape any game-provided strings before passing them. */
+function debugRow(label: string, value: string): string {
+  return `<div class="hud-debug__row"><dt>${label}</dt><dd>${value}</dd></div>`;
+}
+
+function debugSection(title: string, rows: string[]): string {
+  return `<section class="hud-debug__section"><h3>${title}</h3><dl>${rows.join('')}</dl></section>`;
 }
 
 function formatHearts(lives: number, maxLives: number): string {

@@ -8,6 +8,69 @@ body { font-family: var(--sb-ui-font); }
   box-shadow: none; font: 700 11px/1.2 var(--sb-ui-font);
 }
 
+/* Diagnostics use the same dark equipment surface, with room for the current session's data. */
+.hud-debug-panel {
+  position: fixed;
+  inset: var(--sb-safe-y) auto auto var(--sb-safe-x);
+  box-sizing: border-box;
+  width: min(380px, calc(100vw - 2 * var(--sb-safe-x)));
+  max-height: calc(100vh - 2 * var(--sb-safe-y));
+  max-height: calc(100dvh - 2 * var(--sb-safe-y));
+  padding: 0;
+  overflow: auto;
+  overscroll-behavior: contain;
+  scrollbar-width: thin;
+  scrollbar-color: var(--sb-muted) var(--sb-navy);
+  border: 1px solid var(--sb-line);
+  border-top: 3px solid var(--sb-gold);
+  border-radius: var(--sb-radius-panel);
+  background: var(--sb-navy);
+  color: var(--sb-cream);
+  box-shadow: var(--sb-shadow);
+  transform: none;
+  font: 400 var(--sb-text-sm)/1.45 var(--sb-ui-font);
+  font-variant-numeric: tabular-nums;
+  pointer-events: auto;
+}
+.hud-debug-panel[data-mode='online'] { width: min(680px, calc(100vw - 2 * var(--sb-safe-x))); }
+.hud-debug-panel > div { white-space: normal; }
+.hud-debug__header {
+  position: sticky; top: 0; z-index: 1;
+  display: flex; align-items: center; justify-content: space-between; gap: var(--sb-space-3);
+  padding: var(--sb-space-3) var(--sb-space-4);
+  border-bottom: 1px solid var(--sb-line);
+  background: var(--sb-navy);
+}
+.hud-debug__title { margin: 0; font: 400 var(--sb-heading-sm)/1.05 var(--sb-display-font); letter-spacing: .03em; }
+.hud-debug__context { display: block; margin-top: var(--sb-space-1); color: var(--sb-muted); font-size: var(--sb-text-xs); }
+.hud-debug__close {
+  display: inline-flex; align-items: center; gap: var(--sb-space-2);
+  min-height: var(--sb-control-height); padding: 0 var(--sb-space-2);
+  border: 1px solid var(--sb-line); border-radius: var(--sb-radius);
+  background: var(--sb-surface-raised); color: var(--sb-cream); cursor: pointer;
+  font: 600 var(--sb-text-lg)/1 var(--sb-ui-font);
+}
+.hud-debug__close:hover { background: var(--sb-surface-hover); }
+.hud-debug__close kbd { font: 600 var(--sb-text-xs)/1 var(--sb-ui-font); }
+.hud-debug__content { display: grid; gap: var(--sb-space-3); padding: var(--sb-space-3); }
+.hud-debug-panel[data-mode='online'] .hud-debug__content { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+.hud-debug__section { min-width: 0; padding: var(--sb-space-3); border: 1px solid var(--sb-line); border-radius: var(--sb-radius-card); background: var(--sb-surface-inset); }
+.hud-debug__section h3 { margin: 0 0 var(--sb-space-2); color: var(--sb-gold); font: 700 var(--sb-text-sm)/1.4 var(--sb-ui-font); }
+.hud-debug__section dl { display: grid; gap: var(--sb-space-1); margin: 0; }
+.hud-debug__row { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1.18fr); align-items: baseline; gap: var(--sb-space-2); }
+.hud-debug__row dt, .hud-debug__row dd { min-width: 0; margin: 0; overflow-wrap: anywhere; }
+.hud-debug__row dt { color: var(--sb-muted); }
+.hud-debug__row dd { text-align: right; }
+.hud-debug__row strong { color: var(--sb-cream); font-weight: 700; }
+.hud-debug-panel .hud-good { color: var(--sb-success-light); font-weight: 600; }
+.hud-debug-panel .hud-warn { color: var(--sb-gold); font-weight: 600; }
+.hud-debug-panel .hud-bad { color: var(--sb-red-light); font-weight: 600; }
+.hud-debug-panel .stamina-meter { display: none; }
+.hud-debug-panel .stamina-recharge { color: var(--sb-muted); }
+@media (max-width: 640px) {
+  .hud-debug-panel[data-mode='online'] .hud-debug__content { grid-template-columns: minmax(0, 1fr); }
+}
+
 /* Core mechanics form one stable command dock; temporary systems cannot reflow it. */
 .ability-hud {
   bottom: var(--sb-safe-y);

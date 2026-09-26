@@ -1,5 +1,4 @@
 import { GAME_CONSTANTS, deriveCombatTimingConstants, type CombatTiming } from '../../../shared/constants';
-import { performance } from 'node:perf_hooks';
 import {
   ACTIVE_NET_MODE,
   DEBUG_DEFAULTS,

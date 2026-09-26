@@ -21,6 +21,7 @@ export class BallManager {
   private highlightedBallId: number | null = null;
   private elapsed = 0;
   private onBallAdvanced: ((ball: Ball, segmentStart: Vector3, segmentEnd: Vector3) => void) | null = null;
+  private onBallUpdateComplete: (() => void) | null = null;
 
   constructor(
     private readonly loader: ModelLoader,
@@ -62,8 +63,12 @@ export class BallManager {
   }
 
   /** Offline combat runs on each ball's real swept path, before that ball resolves world collisions. */
-  setBallAdvanceHandler(handler: ((ball: Ball, segmentStart: Vector3, segmentEnd: Vector3) => void) | null): void {
+  setBallAdvanceHandler(
+    handler: ((ball: Ball, segmentStart: Vector3, segmentEnd: Vector3) => void) | null,
+    onComplete: (() => void) | null = null
+  ): void {
     this.onBallAdvanced = handler;
+    this.onBallUpdateComplete = onComplete;
   }
 
   update(dt: number): void {
@@ -84,6 +89,7 @@ export class BallManager {
         }, this.elapsed);
       }
     }
+    this.onBallUpdateComplete?.();
   }
 
   removeBall(ball: Ball): boolean {

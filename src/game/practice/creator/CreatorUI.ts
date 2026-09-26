@@ -325,7 +325,7 @@ export class CreatorUI {
     // --- First-run help card (shown once per browser; see showOnboarding) ---
     this.onboardEl = el('div', 'creator-modal-backdrop');
     this.onboardEl.setAttribute('data-no-lock', '');
-    const onboardCard = el('div', 'creator-modal');
+    const onboardCard = el('div', 'creator-modal creator-modal--reference');
     const onboardTitle = el('div', 'creator-modal-title');
     onboardTitle.textContent = 'Welcome to the Course Creator';
     const onboardIntro = el('div', 'creator-onboard-intro');

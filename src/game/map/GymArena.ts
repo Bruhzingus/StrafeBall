@@ -16,6 +16,8 @@ import { buildBleacherEndCapCorner, createBleacherEndCapMaterials } from './Blea
 
 /** Y height (metres) of the hanging ceiling fixtures: just under the ceiling slab at wallHeight. */
 export const CEILING_FIXTURE_Y = TUNING.map.wallHeight - 0.12;
+const COURT_LINE_BASE_GLOW = new Color3(0.045, 0.03, 0.01);
+const COURT_LINE_ACTIVE_GLOW = new Color3(0.42, 0.26, 0.08);
 
 /**
  * The gym's ceiling light-fixture grid in floor (X,Z) metres: two columns (X = ±5) × three rows
@@ -583,7 +585,7 @@ export class GymArena {
 
     const suddenPulse = this.courtLineState.suddenDeath ? 0.82 + 0.18 * Math.sin(elapsed * 7.5) : 0;
     const centerBoost = this.courtLineState.negativeHalfActive || this.courtLineState.positiveHalfActive ? 0.7 : 0;
-    this.setLineGlow(center, new Color3(0.045, 0.03, 0.01), new Color3(0.42, 0.26, 0.08), Math.max(suddenPulse, centerBoost));
+    this.setLineGlow(center, COURT_LINE_BASE_GLOW, COURT_LINE_ACTIVE_GLOW, Math.max(suddenPulse, centerBoost));
   }
 
   private updateHalfCourtCones(elapsed: number): void {
@@ -607,6 +609,9 @@ export class GymArena {
 
     this.coneReleaseSeconds = Math.max(0, elapsed - this.coneReleaseStartedAt);
     for (const cone of this.halfCourtCones) {
+      // Released cones stay hidden until reset. Stop updating their transforms once the exit
+      // animation finishes, including during a long sudden-death round in either graphics preset.
+      if (!cone.mesh.isEnabled()) continue;
       const t = Math.max(0, Math.min(1, (this.coneReleaseSeconds - cone.releaseDelay) / 2.6));
       const eased = 1 - Math.pow(1 - t, 3);
       const bob = Math.sin((elapsed + cone.phase) * 8) * 0.055 * (1 - t);

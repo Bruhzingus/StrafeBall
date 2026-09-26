@@ -3,15 +3,15 @@
  *
  * This is the single switch + tunable set for the graphics modes:
  *
- *   - GRAPHICS_MODE_POLISHED     — the DEFAULT. The finished, polished look: the proven Competitive
+ *   - GRAPHICS_MODE_POLISHED     — the optional polished look: the proven Competitive
  *                                  lighting rig parameterized with POLISHED_CONFIG values, plus (added
  *                                  phase-by-phase) the gym reflection probe, full static+dynamic
  *                                  shadows, the planar floor mirror, DefaultRenderingPipeline + SSAO2,
  *                                  GlowLayer emissives, and the sandbox sun/sky/CSM atmosphere.
  *
- *   - GRAPHICS_MODE_PERFORMANCE  — the previous bright school-gym baseline (formerly 'competitive'),
- *                                  kept as the max-FPS/clarity escape hatch. One HemisphericLight +
- *                                  one DirectionalLight key + one 1024 ShadowGenerator, gradient env,
+ *   - GRAPHICS_MODE_PERFORMANCE  — the DEFAULT, displayed as Competitive: the bright school-gym
+ *                                  baseline for maximum FPS and clarity. One HemisphericLight +
+ *                                  one DirectionalLight key + one 512 ShadowGenerator, gradient env,
  *                                  ACES in-material, a single FXAA post. NEVER constructs a polished
  *                                  system.
  *
@@ -22,8 +22,8 @@
  * dimensions, networking, HUD/scoreboard behavior, or practice behavior — it only configures rendering.
  *
  * RETURN-TO-BASELINE: set localStorage 'strafeball.graphics.mode' = 'performance' (or pick the
- * Performance preset in Settings). That fully restores the pre-overhaul baseline; not one polished
- * system is created. The compiled default is 'polished'.
+ * Competitive preset in Settings). This uses the lightweight rig with reduced effects and 90%
+ * scene resolution. The compiled default is 'performance'; saved choices take precedence.
  *
  * MIGRATION: older builds persisted 'competitive' / 'showcase' (+ 'strafeball.graphics.tier').
  * resolveGraphicsMode() migrates those once (competitive→performance, showcase→polished, tier key
@@ -42,8 +42,15 @@ export const GRAPHICS_MODE_COMPETITIVE = 'competitive';
 export const GRAPHICS_MODE_SHOWCASE = 'showcase';
 export type GraphicsMode = typeof GRAPHICS_MODE_POLISHED | typeof GRAPHICS_MODE_PERFORMANCE | typeof GRAPHICS_MODE_NEUTRAL;
 
-/** THE central switch. Default = Polished; Performance is the opt-in escape hatch. */
-export const ACTIVE_GRAPHICS_MODE: GraphicsMode = GRAPHICS_MODE_POLISHED;
+/** Fresh settings default to Competitive; explicitly saved presets are preserved. */
+export const ACTIVE_GRAPHICS_MODE: GraphicsMode = GRAPHICS_MODE_PERFORMANCE;
+
+/** Competitive quality reductions; the HTML interface remains at full resolution. */
+export const COMPETITIVE_CONFIG = {
+  renderScale: 0.9,
+  shadowMapSize: 512,
+  reducedEffects: true
+} as const;
 
 const MODE_STORAGE_KEY = 'strafeball.graphics.mode';
 const LEGACY_TIER_STORAGE_KEY = 'strafeball.graphics.tier';
@@ -99,9 +106,9 @@ export function resolveGraphicsMode(): GraphicsMode {
 }
 
 /**
- * The one quality question every construction site asks. 'performance'/'neutral' take the exact
- * pre-overhaul code paths (bit-identical rendering); 'polished' layers the overhaul systems on top of
- * the Competitive rig with POLISHED_CONFIG values.
+ * The one quality question every construction site asks. 'performance'/'neutral' use the lightweight
+ * rig; 'polished' adds the overhaul systems with POLISHED_CONFIG values. Competitive also reduces
+ * scene resolution and shadow detail through COMPETITIVE_CONFIG.
  */
 export function getGraphicsQuality(): GraphicsMode {
   return resolveGraphicsMode();
@@ -131,10 +138,10 @@ export type GraphicsPreset = GraphicsMode;
 /** Presets the settings UI offers. Neutral is dev-only (graphics debug flag) — players never see it. */
 export function getGraphicsPresets(): { value: GraphicsPreset; label: string }[] {
   const presets: { value: GraphicsPreset; label: string }[] = [
-    { value: GRAPHICS_MODE_POLISHED, label: 'Polished (default)' },
     // Keep the internal `performance` value for stored-setting compatibility. Competitive is the
     // player-facing name for the flat legacy renderer: maximum clarity/FPS, no polished Creator FX.
-    { value: GRAPHICS_MODE_PERFORMANCE, label: 'Competitive (max FPS)' }
+    { value: GRAPHICS_MODE_PERFORMANCE, label: 'Competitive (default · max FPS)' },
+    { value: GRAPHICS_MODE_POLISHED, label: 'Polished' }
   ];
   if (isGraphicsDebugFlagEnabled()) {
     presets.push({ value: GRAPHICS_MODE_NEUTRAL, label: 'Neutral (diagnostic)' });
@@ -302,9 +309,8 @@ export const POLISHED_CONFIG: PolishedConfig = {
       specular: [0.2, 0.2, 0.2]
     }
   },
-  // Phase 2 shadow system (2048 PCF, backface-only against acne on the merged wall-pad panels),
-  // darkness/bias retuned in the Phase 7 calibration pass.
-  shadows: { mapSize: 2048, darkness: 0.23, bias: 0.0046, normalBias: 0.04, forceBackFacesOnly: true },
+  // 1024 PCF preserves the calibrated darkness/bias with a smaller shadow target.
+  shadows: { mapSize: 1024, darkness: 0.23, bias: 0.0046, normalBias: 0.04, forceBackFacesOnly: true },
   probe: {
     enabled: true,
     resolution: 256,
@@ -314,7 +320,7 @@ export const POLISHED_CONFIG: PolishedConfig = {
   // Phase 7 calibration: floorEnvironmentIntensity/blurKernel tuned against the reference image;
   // floorSpecularIntensity stays low so the mirror (not the analytic key/hemi highlights) owns the
   // floor's shine (see the interface comment above — this is the camera-following-blob fix).
-  mirror: { enabled: true, ratio: 0.5, blurKernel: 18, floorEnvironmentIntensity: 0.75, floorSpecularIntensity: 0.05, maxRenderListSize: 120 },
+  mirror: { enabled: true, ratio: 0.35, blurKernel: 18, floorEnvironmentIntensity: 0.75, floorSpecularIntensity: 0.05, maxRenderListSize: 120 },
   post: {
     fxaa: true,
     // MSAA 4×: 8× held 144 in open views but dropped to ~100 in dense corner views (every wall, the
@@ -329,7 +335,7 @@ export const POLISHED_CONFIG: PolishedConfig = {
       radius: 0.9,
       maxZGym: 55,
       maxZSandbox: 140,
-      samples: 12,
+      samples: 8,
       ssaoRatio: 0.5,
       blurRatio: 0.5,
       expensiveBlur: false
@@ -346,7 +352,7 @@ export const POLISHED_CONFIG: PolishedConfig = {
     sky: { zenith: [0.24, 0.44, 0.71], horizon: [0.72, 0.8, 0.88], ground: [0.55, 0.6, 0.62] },
     fog: { start: 180, end: 600 },
     csm: {
-      mapSize: 2048,
+      mapSize: 1024,
       cascades: 2,
       lambda: 0.7,
       darkness: 0.3,

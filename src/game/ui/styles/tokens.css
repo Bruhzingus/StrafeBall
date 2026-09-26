@@ -51,6 +51,12 @@
   --sb-radius-panel: 12px;
   --sb-control-height: 36px;
   --sb-primary-height: 44px;
+  --sb-dialog-gutter: clamp(12px, 2vw, 24px);
+  --sb-panel-padding: clamp(16px, 2vw, 24px);
+  --sb-panel-compact: 360px;
+  --sb-dialog-compact: 480px;
+  --sb-dialog-standard: 640px;
+  --sb-dialog-wide: 960px;
   --sb-shadow: 0 6px 24px rgba(0, 0, 0, .2);
   --sb-shadow-modal: 0 24px 80px rgba(0, 0, 0, .44);
   --sb-fast: 120ms;

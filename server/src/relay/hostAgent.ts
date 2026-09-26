@@ -115,8 +115,9 @@ export function startHostAgent(server: Server, port: number): HostTunnelClient {
   });
   agent.start();
   console.log(`[private host] Open http://localhost:${port}, enter your name and Create a match. Keep this window running.`);
-  if (process.env.HOST_OPEN_BROWSER === '1') {
-    const target = 'https://strafeball.xyz/?host=1';
+  if (process.env.HOST_OPEN_BROWSER === '1' || process.env.HOST_OPEN_BROWSER === 'local') {
+    const target = process.env.HOST_OPEN_BROWSER === 'local'
+      ? `http://localhost:${port}` : 'https://strafeball.xyz/?host=1';
     const command = process.platform === 'win32' ? 'rundll32.exe' : process.platform === 'darwin' ? 'open' : 'xdg-open';
     const args = process.platform === 'win32' ? ['url.dll,FileProtocolHandler', target] : [target];
     const child = spawn(command, args, { detached: true, stdio: 'ignore', windowsHide: true });

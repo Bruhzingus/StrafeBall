@@ -33,8 +33,19 @@
 .creator-rec-timer { background: var(--sb-surface); color: var(--sb-red-light); border-color: var(--sb-red-light); border-radius: var(--sb-radius); }
 .creator-btn-mini, .creator-outliner-mini { min-height: 28px; }
 
+/* Tool panels use the same safe margins as menus; the hotbar occupies the remaining court edge. */
+.creator-ui {
+  top: var(--sb-safe-y); right: var(--sb-safe-x); width: 312px;
+  max-width: calc(100vw - 2 * var(--sb-safe-x)); max-height: calc(100dvh - 2 * var(--sb-safe-y));
+  padding: var(--sb-space-3); gap: var(--sb-space-3); overscroll-behavior: contain; scrollbar-width: thin;
+}
+.creator-hotbar {
+  left: var(--sb-safe-x); right: calc(var(--sb-safe-x) + 312px + var(--sb-space-3)); bottom: var(--sb-safe-y);
+  padding: var(--sb-space-3); overscroll-behavior: contain; scrollbar-width: thin;
+}
+
 /* Graphics tuning uses classes, so themes also reach this previously inline-styled panel. */
-.graphics-tuning { position: absolute; top: 70px; left: var(--sb-safe-x); width: 260px; max-height: calc(100dvh - 100px); overflow-y: auto; padding: var(--sb-space-4); pointer-events: auto; z-index: 90; font-size: var(--sb-text-xs); box-sizing: border-box; }
+.graphics-tuning { position: absolute; top: 70px; left: var(--sb-safe-x); width: min(300px, calc(100vw - 2 * var(--sb-safe-x))); max-height: calc(100dvh - 70px - var(--sb-safe-y)); overflow-y: auto; padding: var(--sb-space-4); pointer-events: auto; z-index: 90; font-size: var(--sb-text-xs); box-sizing: border-box; overscroll-behavior: contain; scrollbar-width: thin; }
 .graphics-tuning__title { margin-bottom: var(--sb-space-3); color: var(--sb-gold); font: 400 var(--sb-heading-sm)/1.1 var(--sb-display-font); }
 .graphics-tuning__actions { display: flex; flex-wrap: wrap; gap: var(--sb-space-2); margin-top: var(--sb-space-2); }
 .graphics-tuning__status { min-height: 14px; margin-top: var(--sb-space-2); color: var(--sb-success-light); }
@@ -42,8 +53,7 @@
 .graphics-tuning__head { display: flex; justify-content: space-between; gap: var(--sb-space-2); }
 .graphics-tuning__value { color: var(--sb-gold); }
 .graphics-tuning input[type='range'] { width: 100%; }
-@media (max-width: 600px) {
-  .creator-ui { width: min(286px, calc(100vw - 24px)); }
-  .creator-hotbar { right: 12px; left: 12px; max-width: calc(100vw - 24px); overflow-x: auto; }
-  .graphics-tuning { width: min(260px, calc(100vw - 32px)); }
+@media (max-width: 700px) {
+  .creator-ui { max-height: calc(58dvh - 2 * var(--sb-safe-y)); }
+  .creator-hotbar { right: var(--sb-safe-x); max-width: calc(100vw - 2 * var(--sb-safe-x)); max-height: calc(38dvh - var(--sb-safe-y)); }
 }

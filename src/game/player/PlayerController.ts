@@ -48,9 +48,14 @@ export class PlayerController {
     this.movement = new MovementController(this.root, this.camera, this.dash, this.backflip, collision);
     this.hands = new HandController(this.camera, ballManager, effects);
     this.catching = new CatchController(this.camera, ballManager, this.hands, this.movement, this.dash, effects);
-    ballManager.setBallAdvanceHandler((ball, segmentStart, segmentEnd) => {
-      this.catching.resolveAdvancedBall(ball, segmentStart, segmentEnd);
-    });
+    ballManager.setBallAdvanceHandler(
+      (ball, segmentStart, segmentEnd) => this.catching.resolveAdvancedBall(ball, segmentStart, segmentEnd),
+      () => {
+        // Online catch/parry feedback reaches the viewmodel before its frame update. Do the same
+        // offline after ball movement so the newly held ball and arm react in this render frame.
+        if (this.catching.finishBallUpdate()) this.viewmodel.update(0, this.hands, this.lastMovementSnapshot);
+      }
+    );
     this.viewmodel = new Viewmodel(this.camera);
     // Seed a valid snapshot so the HUD never reads `undefined` on a frame before the first
     // sim step has run.

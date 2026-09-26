@@ -1,11 +1,62 @@
 /* Shared paper surfaces: setup, settings, reference, results, race and creator dialogs. */
 :is(.multiplayer-panel--lobby, .multiplayer-settings-menu__panel, .fullscreen-prompt__card,
     .settings-content, .htp-panel, .multiplayer-report-card, .creator-modal, .course-leaderboard) {
+  box-sizing: border-box;
   background: var(--sb-cream); color: var(--sb-navy);
   border: 1px solid var(--sb-border); border-top: 4px solid var(--sb-gold);
   border-radius: var(--sb-radius-panel); box-shadow: var(--sb-shadow-modal);
   font-family: var(--sb-ui-font); font-variant-numeric: tabular-nums;
+  line-height: 1.45;
+  scrollbar-width: thin;
+  overscroll-behavior: contain;
 }
+/* Size follows the task: short decisions, a reference page, or a full room/results sheet. */
+:is(.creator-modal-backdrop, .htp-overlay, .fullscreen-prompt, .multiplayer-settings-menu) {
+  box-sizing: border-box; padding: var(--sb-dialog-gutter);
+}
+.multiplayer-modal:not(.multiplayer-modal--connected):not(.multiplayer-modal--compact) .multiplayer-panel--lobby {
+  width: min(var(--sb-dialog-standard), calc(100vw - 2 * var(--sb-dialog-gutter)));
+  max-height: calc(100dvh - 2 * var(--sb-dialog-gutter)); padding: var(--sb-panel-padding);
+}
+.multiplayer-modal--team-room:not(.multiplayer-modal--compact) .multiplayer-panel--lobby {
+  width: min(860px, calc(100vw - 2 * var(--sb-dialog-gutter)));
+  max-height: calc(100dvh - 2 * var(--sb-dialog-gutter)); padding: var(--sb-panel-padding);
+}
+.multiplayer-settings-menu__panel {
+  width: min(800px, calc(100vw - 2 * var(--sb-dialog-gutter)));
+  max-height: calc(100dvh - 2 * var(--sb-dialog-gutter)); padding: var(--sb-panel-padding);
+}
+.fullscreen-prompt__card {
+  width: min(420px, calc(100vw - 2 * var(--sb-dialog-gutter)));
+  max-height: calc(100dvh - 2 * var(--sb-dialog-gutter)); overflow-y: auto; padding: var(--sb-panel-padding);
+}
+.settings-content {
+  width: min(var(--sb-panel-compact), calc(100vw - 2 * var(--sb-safe-x)));
+  max-height: calc(100dvh - var(--sb-safe-y) - 60px); padding: var(--sb-space-5);
+}
+.settings-panel--docked .settings-content { width: 100%; max-height: calc(100dvh - 120px); }
+.settings-panel--docked .settings-close { display: none; }
+.settings-header { display: flex; align-items: center; justify-content: space-between; gap: var(--sb-space-3); margin-bottom: var(--sb-space-4); }
+.settings-header .settings-title { margin: 0; }
+.settings-group { min-width: 0; padding: var(--sb-space-4) 0; border-top: 1px solid var(--sb-line-paper); }
+.settings-group__title { margin: 0 0 var(--sb-space-2); color: var(--sb-text-muted); font: 800 var(--sb-text-xs)/1.4 var(--sb-ui-font); text-transform: uppercase; letter-spacing: .1em; }
+.settings-group .settings-row { font-size: var(--sb-text-sm); }
+.settings-group .settings-row--select { flex-wrap: wrap; gap: var(--sb-space-2); }
+.settings-group .settings-select { width: 100%; min-height: var(--sb-control-height); }
+.settings-content .settings-advanced { margin-top: 0; }
+.settings-content .settings-link { min-height: var(--sb-control-height); }
+.htp-panel { width: min(720px, 100%); max-height: min(760px, calc(100dvh - 2 * var(--sb-dialog-gutter))); }
+:is(.htp-header, .htp-body) { padding: var(--sb-panel-padding); }
+.htp-tabs { padding: var(--sb-space-3) var(--sb-panel-padding) 0; }
+.htp-footer { padding: var(--sb-space-3) var(--sb-panel-padding); }
+:is(.htp-header, .htp-tabs, .htp-footer) { flex-shrink: 0; }
+:is(.htp-tab, .htp-nav) { min-height: var(--sb-control-height); }
+:is(.settings-close, .htp-close, .multiplayer-close, .multiplayer-settings-menu__close) {
+  width: var(--sb-control-height); height: var(--sb-control-height); min-width: var(--sb-control-height);
+  flex-shrink: 0; padding: 0; border: 1px solid var(--sb-border); border-radius: var(--sb-radius);
+  background: transparent; color: var(--sb-navy); font: 600 20px/1 var(--sb-ui-font); box-shadow: none; cursor: pointer;
+}
+:is(.settings-close, .htp-close, .multiplayer-close, .multiplayer-settings-menu__close):hover { background: var(--sb-paper-hover); }
 /* Compact in-court information retains the dark HUD surface. */
 .multiplayer-modal--team-room.multiplayer-modal--compact .multiplayer-panel--lobby {
   background: var(--sb-surface); color: var(--sb-cream); box-shadow: var(--sb-shadow);
@@ -23,7 +74,10 @@
   color: var(--sb-text-muted); font-size: var(--sb-text-xs); font-weight: 800; letter-spacing: .14em;
 }
 :is(.creator-modal-backdrop, .htp-overlay, .fullscreen-prompt) { background: var(--sb-backdrop); }
-.creator-modal { box-sizing: border-box; width: min(480px, calc(100vw - 32px)); max-height: calc(100dvh - 32px); overflow-y: auto; padding: var(--sb-space-6); gap: var(--sb-space-4); }
+.creator-modal { width: min(var(--sb-dialog-compact), 100%); max-width: 100%; max-height: calc(100dvh - 2 * var(--sb-dialog-gutter)); overflow-y: auto; padding: var(--sb-panel-padding); gap: var(--sb-space-4); }
+.creator-modal--reference { width: min(var(--sb-dialog-standard), 100%); }
+.creator-modal-actions { flex-wrap: wrap; padding-top: var(--sb-space-3); border-top: 1px solid var(--sb-line-paper); }
+.creator-modal :is(input, select, textarea) { max-width: 100%; min-width: 0; }
 .creator-modal :is(.creator-label, .creator-onboard-intro, .creator-onboard-desc, .creator-import-note, .creator-course-meta, .race-overlay-divider, .race-overlay-status) { color: var(--sb-text-muted); font-size: var(--sb-text-sm); line-height: 1.5; }
 .creator-modal :is(.creator-text, .creator-number, .creator-select) { background: var(--sb-paper-raised); color: var(--sb-navy); border-color: var(--sb-border); }
 .creator-modal :is(.creator-readonly, .creator-import-name) { color: var(--sb-navy); }
@@ -38,7 +92,7 @@
 /* Results use the same lineup-sheet hierarchy as the team room. */
 .multiplayer-modal--postmatch .multiplayer-modal__shade { background: var(--sb-backdrop); animation: none; }
 .multiplayer-modal--postmatch .multiplayer-postmatch {
-  width: min(1000px, calc(100vw - 32px)); height: auto; max-height: calc(100dvh - 32px);
+  width: min(var(--sb-dialog-wide), calc(100vw - 2 * var(--sb-dialog-gutter))); height: auto; max-height: calc(100dvh - 2 * var(--sb-dialog-gutter));
   aspect-ratio: auto; margin: 0; overflow-y: auto; scrollbar-width: thin;
   border-radius: var(--sb-radius-panel); animation: sb-report-in var(--sb-transition) var(--sb-ease) both;
 }
@@ -69,7 +123,11 @@
   box-shadow: var(--sb-shadow); font-family: var(--sb-ui-font); text-shadow: none;
 }
 .course-timer { transform: translateX(-50%); }
-.course-leaderboard { transform: none; }
+.course-leaderboard { right: var(--sb-safe-x); width: min(240px, calc(100vw - 2 * var(--sb-safe-x))); max-height: min(48dvh, calc(100dvh - 140px)); overflow-y: auto; padding: var(--sb-space-3); transform: none; }
+.course-leaderboard__time { font-family: var(--sb-ui-font); }
+.course-leaderboard__entry--new { background: var(--sb-paper-inset); box-shadow: inset 3px 0 var(--sb-gold); }
+.race-panel { left: var(--sb-safe-x); width: min(280px, calc(100vw - 2 * var(--sb-safe-x))); max-height: calc(100dvh - 96px - var(--sb-safe-y)); box-sizing: border-box; overflow-y: auto; padding: var(--sb-space-3); overscroll-behavior: contain; scrollbar-width: thin; }
+.race-panel-head, .race-panel-actions { flex-shrink: 0; }
 .course-timer__clock { color: var(--sb-cream); text-shadow: none; -webkit-text-stroke: 0; font-family: var(--sb-ui-font); }
 :is(.course-timer__hint, .course-split__label, .creator-entry-sub, .creator-entry-hint) { color: var(--sb-muted); }
 :is(.course-timer__title, .race-panel-title) { color: var(--sb-gold); }

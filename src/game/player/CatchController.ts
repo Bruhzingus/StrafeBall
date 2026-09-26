@@ -29,6 +29,7 @@ export class CatchController {
   private parryCooldown = 0;
   private elapsedMs = 0;
   private frameDefense: { movement: MovementSnapshot; origin: Vector3; forward: Vector3 } | null = null;
+  private resolvedDefenseThisFrame = false;
 
   constructor(
     private readonly camera: FreeCamera,
@@ -46,6 +47,7 @@ export class CatchController {
 
     const forward = cameraForward(this.camera);
     this.frameDefense = { movement, origin: this.camera.globalPosition.clone(), forward };
+    this.resolvedDefenseThisFrame = false;
     const threats = this.ballManager.getLiveThreatsToward(this.camera.globalPosition);
     this.updateTracking(dt, movement, forward, threats);
     this.expireCatchAttempts();
@@ -60,6 +62,14 @@ export class CatchController {
     // Match server order: the same swept segment gets auto-parry first, then each open catch hand.
     if (this.tryAutoParry(ball, segmentStart, segmentEnd, defense)) return;
     this.tryResolveCatchAttempt(ball, segmentStart, segmentEnd, defense);
+  }
+
+  /** A catch window persists across frames, but aim/movement must be supplied by this frame's input. */
+  finishBallUpdate(): boolean {
+    const resolved = this.resolvedDefenseThisFrame;
+    this.frameDefense = null;
+    this.resolvedDefenseThisFrame = false;
+    return resolved;
   }
 
   getDebugTrackingTime(): number {
@@ -152,6 +162,7 @@ export class CatchController {
       this.trackingTimeByBall.delete(ball.id);
       this.catchAttempts.delete(side);
       this.effects.onCatch(incomingVelocity.length());
+      this.resolvedDefenseThisFrame = true;
       return;
     }
   }
@@ -188,6 +199,7 @@ export class CatchController {
     this.effects.onParry(incomingSpeed, ball.mesh.position);
 
     if (wasSuper) this.hands.dropOneBall(defense.movement.position);
+    this.resolvedDefenseThisFrame = true;
     return true;
   }
 
