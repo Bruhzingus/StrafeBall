@@ -19,6 +19,13 @@ describe('shockwave launch', () => {
     expect(C.powerup.shockRadius).toBe(6);
   });
 
+  it('uses the 20% stronger player and ball launch tuning', () => {
+    expect(C.powerup.shockPlayerSpeed).toBeCloseTo(50.4 * 1.2);
+    expect(C.powerup.shockPlayerLift).toBeCloseTo(12.6 * 1.2);
+    expect(C.powerup.shockBallSpeed).toBeCloseTo(29.4 * 1.2);
+    expect(C.powerup.shockBallLift).toBeCloseTo(7.7 * 1.2);
+  });
+
   it('loses power linearly with distance and reaches zero at the blast radius', () => {
     const radius = C.powerup.shockRadius;
     expect(shockwaveFalloff(0, radius)).toBe(1);

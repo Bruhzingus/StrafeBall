@@ -5,7 +5,7 @@ import { predictStaticThrowTrajectory } from '../../../shared/simulation/Traject
 const MAX_POINTS = 32;
 const directPoints = (): Vector3[] => Array.from({ length: MAX_POINTS }, () => Vector3.Zero());
 
-/** Only ArenaScene's local online view owns this object. No network or remote-player path references it. */
+/** ArenaScene uses this for the local first-person view in online play and practice. */
 export class CoachGlassesGuide {
   private readonly direct: LinesMesh;
   private readonly after: LinesMesh;

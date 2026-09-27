@@ -73,11 +73,11 @@ export class SoundManager {
       osc.onended = () => { osc.disconnect(); amp.disconnect(); };
     };
     if (effect === 'explode') {
-      // The bomb gets its own heavier transient and longer low tail so it reads over combat.
-      note(85, 25, 0.85, 0.68);
-      note(230, 42, 0.3, 0.32, 0, 'triangle');
-      this.noiseBurst(0.43, 0.42, 1100, destination);
-      note(48, 26, 0.8, 0.2, 0.1);
+      // Keep the bomb clearly above ordinary impacts: a louder low transient, crack, and rumble.
+      note(85, 25, 0.9, 0.82);
+      note(230, 42, 0.32, 0.4, 0, 'triangle');
+      this.noiseBurst(0.46, 0.52, 1100, destination);
+      note(48, 26, 0.85, 0.25, 0.1);
     } else if (effect === 'cannon') {
       note(110, 28, 0.75, 0.42);
       note(210, 46, 0.22, 0.22, 0, 'triangle');

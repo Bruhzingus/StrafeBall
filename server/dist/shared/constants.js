@@ -380,10 +380,11 @@ exports.GAME_CONSTANTS = {
         // rising momentum, so a point-blank, correctly aligned jump can launch clear across the court.
         // Standing mats in range are knocked flat and interrupted actions are cancelled.
         shockRadius: 6,
-        shockPlayerSpeed: 50.4,
-        shockPlayerLift: 12.6,
-        shockBallSpeed: 29.4,
-        shockBallLift: 7.7,
+        // 20% stronger than the original launch tuning, applied equally to horizontal force and lift.
+        shockPlayerSpeed: 60.48,
+        shockPlayerLift: 15.12,
+        shockBallSpeed: 35.28,
+        shockBallLift: 9.24,
         // Stun: COD-style concussion. Slowed look + blurred vision (client-side) and slowed movement
         // with no dash (shared sim) for stunSeconds. Thrower included if they're in range.
         stunRadius: 4.5,

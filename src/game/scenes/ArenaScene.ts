@@ -1,5 +1,6 @@
 import { PowerupPresentation, type PowerupPresentationRoom } from '../powerups/PowerupPresentation';
 import { ballConstantsForEffect, mapEffectGravityScale, mapEffectUnlimitedBounces } from '../../../shared/simulation/MapEffectSim';
+import { BLEACHER_LAYOUT } from '../../../shared/simulation/MapGeometry';
 import { CoachGlassesGuide } from '../effects/CoachGlassesGuide';
 import { coachGlassesEligible } from '../effects/CoachGlassesEligibility';
 import { computePlayerHandAnchor } from '../../../shared/simulation/HandAnchors';
@@ -188,6 +189,10 @@ export class ArenaScene {
   private readonly practiceMagnetSettledSeconds = new WeakMap<Ball, number>();
   private readonly practiceMagnetDistantPulls = new WeakSet<Ball>();
   private readonly practiceArmorBalls: Ball[] = [];
+  private readonly practiceFrenzyBalls: Ball[] = [];
+  private practiceFrenzyTarget = 0;
+  private practiceLavaSeconds = 0;
+  private practiceLavaDamageDue = GAME_CONSTANTS.mapEffect.lavaFirstDamageSeconds;
   private readonly practicePowerupRoom: PowerupPresentationRoom = {
     practiceBuffs: this.practicePowerups.buffs,
     practicePlayerId: 'practice',
@@ -1159,6 +1164,7 @@ export class ArenaScene {
         this.practicePowerupRoom.resetVote.resetSerial,
         this.player.hands.heldBallCount() < 2
       );
+      if (inPracticeLobby) this.updatePracticeMapEffect(dt);
       for (const kind of this.practicePowerups.drainAutoActivations()) this.materializePracticePowerup(kind);
       if (this.practicePowerups.buffs.magnetSeconds <= 0) this.dropPracticeArmor();
       if (this.input.wasKeyPressed(CONTROL_KEYS.activatePowerup) && this.practicePowerups.hasPowerup) {
@@ -1182,6 +1188,11 @@ export class ArenaScene {
       });
       this.practicePowerupRoom.practiceArmorCount = this.practiceArmorBalls.length;
     }
+    if (!inPracticeLobby) {
+      this.clearPracticeMapEffect();
+      this.coachGlassesGuide.hide();
+    }
+    this.practicePowerupRoom.mapEffect = inPracticeLobby ? this.practicePowerups.mapEffects.state : null;
     this.powerupPresentation.update(localPowerupsActive ? this.practicePowerupRoom : null, 'practice',
       this.player.root.position, this.practicePowerups.identity, this.practicePowerups.drainEvents(), dt);
     this.player.lookScale = this.powerupPresentation.localLookScale;
@@ -1231,6 +1242,7 @@ export class ArenaScene {
     // Moving platforms advance (and carry their rider) BEFORE movement resolves against them.
     if (this.movementSandbox?.active) this.movementSandbox.preMovementUpdate(dt, this.player);
     this.player.update(dt, throwsSuppressed);
+    this.updatePracticeCoachGlasses(inPracticeLobby);
 
     const snap = this.player.lastMovementSnapshot;
 
@@ -1270,6 +1282,7 @@ export class ArenaScene {
     );
     this.updatePracticeMagnet(dt);
     this.ballManager.update(dt);
+    if (inPracticeLobby) this.updatePracticeLava(dt);
     this.updatePracticePowerupBalls(dt);
     this.checkBotHitsPlayer(dt);
     this.ballVisualEffects.update(dt);
@@ -3369,6 +3382,121 @@ export class ArenaScene {
     }, `${side}|${local.hands[side].heldBallId}|${boxesKey}|${room.mapEffect?.kind ?? ''}`);
   }
 
+  private updatePracticeCoachGlasses(inPracticeLobby: boolean): void {
+    if (!inPracticeLobby || (this.practicePowerups.buffs.coachGlassesSeconds ?? 0) <= 0) {
+      this.coachGlassesGuide.hide();
+      return;
+    }
+    const side = (['left', 'right'] as const).find(hand => {
+      const held = this.player.hands.getHand(hand);
+      return held.ball && !held.ball.powerupKind && held.charging &&
+        held.chargeSeconds >= GAME_CONSTANTS.ball.maxChargeSeconds - 0.001 &&
+        held.throwAnim <= 0 && held.fakeAnim <= 0;
+    });
+    if (!side) { this.coachGlassesGuide.hide(); return; }
+    const hand = this.player.hands.getHand(side);
+    const forward = cameraForward(this.player.camera);
+    const eye = this.player.camera.globalPosition;
+    const velocity = this.player.lastMovementSnapshot.velocity;
+    const throwCalc = calculateThrow({
+      hand: side,
+      forward: vector3ToVec3(forward),
+      playerVelocity: vector3ToVec3(velocity),
+      charge01: 1,
+      crouching: this.player.lastMovementSnapshot.crouching || this.player.lastMovementSnapshot.sliding,
+      fastDoubleThrowPenalty: this.player.hands.isRushedThrow()
+    });
+    const effect = this.practicePowerups.mapEffects.state;
+    const bounces = mapEffectUnlimitedBounces(effect) ? Number.MAX_SAFE_INTEGER : recommendedRoomSettings('1v1').maxLiveBallBounces;
+    const boxes = this.gym.ballCollision.boxes.filter(box => box.enabled !== false);
+    const boxesKey = this.gym.mats.map(mat => `${mat.id}:${mat.knockedOver ? 1 : 0}`).join('|');
+    this.coachGlassesGuide.update({
+      origin: { x: eye.x + forward.x * 0.8, y: eye.y + forward.y * 0.8, z: eye.z + forward.z * 0.8 },
+      velocity: throwCalc.velocity, curveAccel: throwCalc.curveAccel, dropScale: throwCalc.dropScale,
+      boxes, constants: ballConstantsForEffect(effect),
+      bounceRule: { deadAfterBounces: bounces, deflectedDeadAfterBounces: bounces },
+      stepSeconds: 1 / (1000 / SERVER_STEP_MS) / LIVE_BALL_COMBAT_SUBSTEPS,
+      maxSeconds: 1.8, maxDistance: 65
+    }, `${side}|${hand.ball!.id}|${boxesKey}|${effect?.kind ?? ''}|${effect?.phase ?? ''}`);
+  }
+
+  private updatePracticeMapEffect(dt: number): void {
+    const effect = this.practicePowerups.mapEffects.state;
+    const gravity = mapEffectGravityScale(effect);
+    const unlimited = mapEffectUnlimitedBounces(effect);
+    this.player.movement.setPracticeGravityScale(gravity);
+    for (const ball of this.ballManager.balls) {
+      ball.mapGravityScale = gravity;
+      ball.unlimitedBounces = unlimited;
+    }
+    if (effect?.kind !== 'frenzy' || effect.phase !== 'active') {
+      this.removePracticeFrenzyBalls();
+      return;
+    }
+    if (this.practiceFrenzyTarget === 0) {
+      this.practiceFrenzyTarget = Math.max(1, Math.round(this.ballManager.balls.length * (GAME_CONSTANTS.mapEffect.frenzyBallMultiplier - 1)));
+    }
+    const elapsed = GAME_CONSTANTS.mapEffect.frenzySeconds - effect.remainingSeconds;
+    const due = Math.min(this.practiceFrenzyTarget, 1 + Math.floor((elapsed + 1e-7) * (this.practiceFrenzyTarget - 1) / GAME_CONSTANTS.mapEffect.frenzySpawnSeconds));
+    while (this.practiceFrenzyBalls.length < due) {
+      const n = this.practiceFrenzyBalls.length;
+      const x = (Math.random() * 2 - 1) * GAME_CONSTANTS.map.halfWidth * 0.6;
+      const z = (Math.random() * 2 - 1) * GAME_CONSTANTS.map.halfLength * 0.6;
+      const ball = this.ballManager.createBall(`practice_frenzy_${n}`, new Vector3(x, GAME_CONSTANTS.mapEffect.frenzyDropHeight, z));
+      ball.drop(ball.mesh.position, new Vector3(0, -1, 0));
+      ball.mapGravityScale = gravity;
+      ball.unlimitedBounces = true;
+      this.ballManager.balls.push(ball);
+      this.practiceFrenzyBalls.push(ball);
+    }
+  }
+
+  private removePracticeFrenzyBalls(): void {
+    for (const ball of this.practiceFrenzyBalls) {
+      this.player.hands.removeBall(ball);
+      this.ballManager.removeBall(ball);
+    }
+    this.practiceFrenzyBalls.length = 0;
+    this.practiceFrenzyTarget = 0;
+  }
+
+  private clearPracticeMapEffect(): void {
+    this.removePracticeFrenzyBalls();
+    this.player.movement.setPracticeGravityScale(1);
+    this.practiceLavaSeconds = 0;
+    this.practiceLavaDamageDue = GAME_CONSTANTS.mapEffect.lavaFirstDamageSeconds;
+    for (const ball of this.ballManager.balls) {
+      ball.mapGravityScale = 1;
+      ball.unlimitedBounces = false;
+    }
+  }
+
+  private updatePracticeLava(dt: number): void {
+    const effect = this.practicePowerups.mapEffects.state;
+    const level = effect?.kind === 'lava' ? effect.lavaLevel : 0;
+    const inLava = level > 0.05 && this.player.root.position.y < level - 0.05;
+    this.practiceLavaSeconds = inLava ? this.practiceLavaSeconds + dt : Math.max(0, this.practiceLavaSeconds - dt * 0.5);
+    if (inLava && this.practiceLavaSeconds + 1e-7 >= this.practiceLavaDamageDue) {
+      this.practiceLavaDamageDue += GAME_CONSTANTS.mapEffect.lavaDamageIntervalSeconds;
+      this.player.resetPosition();
+      this.hud.showScoreEvent('LAVA HIT', 'Returned to spawn', 'bad');
+    }
+    if (level <= 0.05) return;
+    const floatY = level + GAME_CONSTANTS.ball.radius;
+    const innerEdge = GAME_CONSTANTS.map.halfWidth - BLEACHER_LAYOUT.wallInset - BLEACHER_LAYOUT.tierCount * BLEACHER_LAYOUT.tierRun;
+    const driestTier = Math.min(BLEACHER_LAYOUT.tierCount - 1, Math.floor(level / BLEACHER_LAYOUT.tierRise));
+    const parkX = innerEdge + driestTier * BLEACHER_LAYOUT.tierRun - GAME_CONSTANTS.ball.radius - 0.05;
+    for (const ball of this.ballManager.balls) {
+      if (ball.powerupKind || (ball.state !== BallState.Loose && ball.state !== BallState.Dead) || ball.mesh.position.y > floatY + 0.02) continue;
+      const side = ball.mesh.position.x >= 0 ? 1 : -1;
+      const parked = Math.abs(ball.mesh.position.x) >= parkX;
+      ball.mesh.position.y = floatY;
+      ball.velocity.set(parked ? 0 : side * GAME_CONSTANTS.mapEffect.lavaBallDriftSpeed, 0, ball.velocity.z * 0.85);
+      ball.state = parked ? BallState.Loose : BallState.Dead;
+      ball.bounceCount = 0;
+    }
+  }
+
   private syncOnlineViewmodelHands(local: PlayerState | null): void {
     for (const side of ['left', 'right'] as const) {
       const serverHand = local?.hands[side];
@@ -3484,6 +3612,7 @@ export class ArenaScene {
 
   private resetBalls(): void {
     this.player.hands.clearHands();
+    this.removePracticeFrenzyBalls();
     this.clearPracticeArmor();
     this.quickBot.reset();
     this.chargeBot.reset();
@@ -3828,6 +3957,7 @@ export class ArenaScene {
   /** Full practice room reset: balls, bots, score, prediction buffers. Guide/control wall stays. */
   private practiceReset(): void {
     this.player.hands.clearHands();
+    this.clearPracticeMapEffect();
     this.clearPracticeArmor();
     this.quickBot.reset();
     this.chargeBot.reset();

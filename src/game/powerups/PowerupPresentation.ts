@@ -18,6 +18,10 @@ const MAP_EFFECTS: Record<MapEffectKind, { name: string; warning: string; color:
 const PICKUP_BLUE = '#62bdff';
 const ROLL_TIMES = [0, 0.085, 0.17, 0.26, 0.36, 0.47, 0.59, 0.72, 0.87, 1.04, 1.23, 1.46];
 const ROLL_KINDS = Object.keys(ITEMS) as PowerupKind[];
+const BOMB_SHAKE_SECONDS = 0.34;
+const BOMB_SHAKE_PITCH = 0.009;
+const BOMB_SHAKE_ROLL = 0.015;
+const BOMB_SHAKE_TRANSLATION = 0.009;
 
 /**
  * Return the public kind for activations, or the local player's private item identity for a
@@ -240,6 +244,8 @@ export class PowerupPresentation {
   private shakenCamera: FreeCamera | null = null;
   private shakePitch = 0;
   private shakeRoll = 0;
+  private shakeX = 0;
+  private shakeY = 0;
   private readonly beforeRenderObserver: Observer<Scene>;
   private readonly afterRenderObserver: Observer<Scene>;
   /** Mouse-look multiplier for the local player (1 = normal; dropped while stunned). */
@@ -361,7 +367,7 @@ export class PowerupPresentation {
         const distance = Math.hypot(localPosition.x - event.position.x, localPosition.y + C.player.eyeHeight - event.position.y, localPosition.z - event.position.z);
         const strength = Math.max(0, 1 - distance / (C.powerup.blastRadius * 3));
         if (strength > 0) {
-          const previous = this.bombShakeStrength * Math.max(0, 1 - (this.time - this.bombShakeStarted) / 0.32);
+          const previous = this.bombShakeStrength * Math.max(0, 1 - (this.time - this.bombShakeStarted) / BOMB_SHAKE_SECONDS);
           this.bombShakeStarted = this.time;
           this.bombShakeStrength = Math.max(previous, strength);
         }
@@ -400,7 +406,7 @@ export class PowerupPresentation {
       this.lava?.setEnabled(false); this.effectCapsule?.setEnabled(false); this.hideMapAtmosphere(); this.setBanner('');
     }
     this.updatePlayers(room, localId, dt);
-    if (active) { this.updateHud(local, room); this.updateLocalFeedback(local, room, dt); }
+    if (active) { this.updateHud(local, room); this.updateLocalFeedback(local, room, localPosition, dt); }
     for (const fx of this.bursts) {
       fx.life -= dt; const t = 1 - Math.max(0, fx.life) / fx.duration;
       fx.mesh.scaling.setAll(0.1 + fx.radius * (1 - Math.pow(1 - t, 3)));
@@ -453,7 +459,7 @@ export class PowerupPresentation {
    * running effect's color (fades out over the last 1.5 s so you feel it ending). One tint at a
    * time, low opacity, no flashing — polish, not noise. Heal completion gets a short brighter pulse.
    */
-  private updateLocalFeedback(local: PlayerState | undefined, room: PowerupPresentationRoom, dt: number): void {
+  private updateLocalFeedback(local: PlayerState | undefined, room: PowerupPresentationRoom, localPosition: Vec3, dt: number): void {
     void dt;
     const buffs = local?.movementInternal.buffs ?? room.practiceBuffs;
     const progressPlayerId = local?.id ?? room.practicePlayerId ?? '';
@@ -479,7 +485,7 @@ export class PowerupPresentation {
     // is a danger cue and always wins.
     const effect = room.mapEffect;
     const lavaLevel = effect?.kind === 'lava' ? effect.lavaLevel : 0;
-    const inLava = !!local && lavaLevel > 0.05 && local.movement.position.y < lavaLevel - 0.05 && local.combatState === 'alive';
+    const inLava = lavaLevel > 0.05 && (local?.movement.position.y ?? localPosition.y) < lavaLevel - 0.05 && local?.combatState !== 'eliminated';
     if (inLava) this.setScreenFx('lava-danger', 1.4 + 0.5 * Math.sin(this.time * 9), '#ff3b1a');
     else if (kind) this.setScreenFx(kind, strength, ITEMS[kind].color);
     else if (effect?.phase === 'active' && effect.kind === 'moon') this.setScreenFx('moon', 0.7, MAP_EFFECTS.moon.color);
@@ -746,21 +752,29 @@ export class PowerupPresentation {
     const camera = this.scene.activeCamera;
     if (!(camera instanceof FreeCamera) || settings.reducedEffects) return;
     const age = this.time - this.bombShakeStarted;
-    if (age < 0 || age >= 0.32 || this.bombShakeStrength <= 0) return;
-    const envelope = this.bombShakeStrength * Math.pow(1 - age / 0.32, 2);
-    this.shakePitch = Math.cos(age * 76) * 0.008 * envelope;
-    this.shakeRoll = Math.sin(age * 63 + 0.8) * 0.014 * envelope;
+    if (age < 0 || age >= BOMB_SHAKE_SECONDS || this.bombShakeStrength <= 0) return;
+    const envelope = this.bombShakeStrength * Math.pow(1 - age / BOMB_SHAKE_SECONDS, 2);
+    this.shakePitch = Math.cos(age * 76) * BOMB_SHAKE_PITCH * envelope;
+    this.shakeRoll = Math.sin(age * 63 + 0.8) * BOMB_SHAKE_ROLL * envelope;
+    this.shakeX = Math.sin(age * 91 + 0.35) * BOMB_SHAKE_TRANSLATION * envelope;
+    this.shakeY = Math.cos(age * 83 + 1.1) * BOMB_SHAKE_TRANSLATION * 0.65 * envelope;
     this.shakenCamera = camera;
     camera.rotation.x += this.shakePitch;
     camera.rotation.z += this.shakeRoll;
+    camera.position.x += this.shakeX;
+    camera.position.y += this.shakeY;
   }
   private clearBombShake(): void {
     if (!this.shakenCamera) return;
     this.shakenCamera.rotation.x -= this.shakePitch;
     this.shakenCamera.rotation.z -= this.shakeRoll;
+    this.shakenCamera.position.x -= this.shakeX;
+    this.shakenCamera.position.y -= this.shakeY;
     this.shakenCamera = null;
     this.shakePitch = 0;
     this.shakeRoll = 0;
+    this.shakeX = 0;
+    this.shakeY = 0;
   }
   dispose(): void {
     this.clearBombShake();

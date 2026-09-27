@@ -3,6 +3,27 @@ import { GAME_CONSTANTS as C } from '../shared/constants';
 import { PracticePowerupSpawner } from '../src/game/practice/PracticePowerupSpawner';
 
 describe('PracticePowerupSpawner', () => {
+  it('can roll every online inventory power-up in the practice lobby', () => {
+    const kinds = ['adrenaline', 'speed', 'cannon', 'heal', 'magnet', 'bomb', 'shock', 'stun', 'coachGlasses'];
+    kinds.forEach((kind, index) => {
+      const spawner = new PracticePowerupSpawner(() => (index + 0.5) / kinds.length, () => 1);
+      spawner.update(C.powerup.respawnSeconds, { x: 0, y: 0, z: 0 });
+      expect(spawner.identity?.kind).toBe(kind);
+    });
+  });
+
+  it('activates Coach’s Glasses for the online buff duration', () => {
+    const spawner = new PracticePowerupSpawner(() => 0.99, () => 1);
+    spawner.update(C.powerup.respawnSeconds, { x: 0, y: 0, z: 0 });
+    spawner.update(C.powerup.rollSeconds);
+    expect(spawner.activate(true, { x: 0, y: 0, z: 0 })).toEqual({ ok: true, kind: 'coachGlasses' });
+    expect(spawner.buffs.coachGlassesSeconds).toBe(C.powerup.buffSeconds);
+    spawner.update(1);
+    expect(spawner.buffs.coachGlassesSeconds).toBe(C.powerup.buffSeconds - 1);
+    spawner.reset();
+    expect(spawner.buffs.coachGlassesSeconds).toBe(0);
+  });
+
   it('spawns one center-court capsule after the practice-lobby countdown', () => {
     const spawner = new PracticePowerupSpawner();
     const spawn = spawner.world.spawns[0];
@@ -68,7 +89,7 @@ describe('PracticePowerupSpawner', () => {
     const spawner = new PracticePowerupSpawner(() => 0.99);
     const spawn = spawner.world.spawns[0];
     spawner.update(C.powerup.respawnSeconds, { x: 0, y: 20, z: 0 });
-    expect(spawner.identity?.kind).toBe('stun');
+    expect(spawner.identity?.kind).toBe('coachGlasses');
 
     spawner.update(C.powerup.respawnSeconds);
     expect(spawn.spawned).toBe(true);

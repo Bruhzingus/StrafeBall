@@ -1,8 +1,9 @@
 import { GAME_CONSTANTS as C } from '../../../shared/constants';
 import type { PowerupEvent, PowerupPrivateMessage } from '../../../shared/protocol';
 import type { PowerupBuffs, PowerupKind, PowerupWorldState, Vec3 } from '../../../shared/types';
+import { PracticeMapEffects } from './PracticeMapEffects';
 
-const KINDS: PowerupKind[] = ['adrenaline', 'speed', 'cannon', 'heal', 'magnet', 'bomb', 'shock', 'stun'];
+const KINDS: PowerupKind[] = ['adrenaline', 'speed', 'cannon', 'heal', 'magnet', 'bomb', 'shock', 'stun', 'coachGlasses'];
 const HAND_ITEMS: PowerupKind[] = ['cannon', 'heal', 'bomb', 'shock', 'stun'];
 const SPAWN_HEIGHT = 1;
 type GrenadeKind = Extract<PowerupKind, 'shock' | 'stun'>;
@@ -33,6 +34,7 @@ const DEFAULT_SPAWN: PracticePowerupSpawnConfig = {
  * existing presentation can render the capsule, play pickup feedback, and reveal the held kind.
  */
 export class PracticePowerupSpawner {
+  readonly mapEffects: PracticeMapEffects;
   readonly world: PowerupWorldState = {
     spawns: [{ x: 0, z: 0, spawned: false, waitSeconds: C.powerup.respawnSeconds }],
     stations: []
@@ -51,11 +53,14 @@ export class PracticePowerupSpawner {
     speedSeconds: 0,
     adrenalineSeconds: 0,
     magnetSeconds: 0,
+    coachGlassesSeconds: 0,
     cannonLocked: false,
     stunSeconds: 0
   };
 
-  constructor(private readonly rng: () => number = Math.random) {}
+  constructor(private readonly rng: () => number = Math.random, mapRng: () => number = Math.random) {
+    this.mapEffects = new PracticeMapEffects(mapRng);
+  }
 
   get identity(): PowerupPrivateMessage | null {
     return this.privateMessage;
@@ -123,19 +128,24 @@ export class PracticePowerupSpawner {
 
   update(dt: number, playerPosition?: Vec3, resetSerial = 0, hasFreeHand = true): void {
     const elapsed = Math.max(0, dt);
+    let mapElapsed = this.mapEffects.state ? elapsed : 0;
     this.rollRemaining = Math.max(0, this.rollRemaining - elapsed);
     if (this.rollRemaining < 1e-6) this.rollRemaining = 0;
     this.buffs.speedSeconds = Math.max(0, this.buffs.speedSeconds - elapsed);
     this.buffs.adrenalineSeconds = Math.max(0, this.buffs.adrenalineSeconds - elapsed);
     this.buffs.magnetSeconds = Math.max(0, this.buffs.magnetSeconds - elapsed);
+    this.buffs.coachGlassesSeconds = Math.max(0, (this.buffs.coachGlassesSeconds ?? 0) - elapsed);
     this.buffs.stunSeconds = Math.max(0, (this.buffs.stunSeconds ?? 0) - elapsed);
     let pickedUp = false;
     for (let spawnIndex = 0; spawnIndex < this.world.spawns.length; spawnIndex += 1) {
       const spawn = this.world.spawns[spawnIndex];
       const config = this.spawnConfigs[spawnIndex] ?? DEFAULT_SPAWN;
       if (!spawn.spawned) {
+        const waitBeforeStep = spawn.waitSeconds;
         spawn.waitSeconds = Math.max(0, spawn.waitSeconds - elapsed);
         if (spawn.waitSeconds <= 1e-7) {
+          if (this.usingDefaultSpawn) this.mapEffects.tryStart(spawnIndex, this.event('spawn', spawn, resetSerial).position, resetSerial);
+          if (this.mapEffects.state && mapElapsed === 0) mapElapsed = Math.max(0, elapsed - waitBeforeStep);
           spawn.waitSeconds = 0;
           spawn.spawned = true;
           this.events.push(this.event('spawn', spawn, resetSerial));
@@ -174,6 +184,7 @@ export class PracticePowerupSpawner {
       }
     }
     this.world.stations = this.world.stations.filter(station => station.remainingSeconds > 0);
+    this.mapEffects.update(mapElapsed, resetSerial);
   }
 
   activate(hasFreeHand: boolean, position: Vec3, resetSerial = 0): { ok: true; kind: PowerupKind } | { ok: false } {
@@ -187,6 +198,7 @@ export class PracticePowerupSpawner {
     if (kind === 'adrenaline') this.buffs.adrenalineSeconds = C.powerup.buffSeconds;
     else if (kind === 'speed') this.buffs.speedSeconds = C.powerup.buffSeconds;
     else if (kind === 'magnet') this.buffs.magnetSeconds = C.powerup.magnetSeconds;
+    else if (kind === 'coachGlasses') this.buffs.coachGlassesSeconds = C.powerup.buffSeconds;
     else if (kind === 'shock' || kind === 'stun') {
       this.queuedGrenadeKind = kind;
       this.queuedGrenades = Math.max(0, C.powerup.grenadeCharges - 1);
@@ -232,7 +244,7 @@ export class PracticePowerupSpawner {
   drainEvents(): PowerupEvent[] {
     const events = this.events;
     this.events = [];
-    return events;
+    return [...events, ...this.mapEffects.drainEvents()];
   }
 
   drainAutoActivations(): PowerupKind[] {
@@ -263,9 +275,11 @@ export class PracticePowerupSpawner {
     this.buffs.speedSeconds = 0;
     this.buffs.adrenalineSeconds = 0;
     this.buffs.magnetSeconds = 0;
+    this.buffs.coachGlassesSeconds = 0;
     this.buffs.cannonLocked = false;
     this.buffs.stunSeconds = 0;
     this.world.stations = [];
+    this.mapEffects.reset();
   }
 
   private event(effect: PowerupEvent['effect'], spawn: PowerupWorldState['spawns'][number], resetSerial: number): PowerupEvent {

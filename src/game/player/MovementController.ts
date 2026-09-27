@@ -59,11 +59,16 @@ export class MovementController {
   private practiceSpeedBuff = false;
   private practiceStunned = false;
   private practiceStaminaLocked = false;
+  private practiceGravityScale = 1;
 
   setPracticePowerups(speedBuff: boolean, stunned: boolean, staminaLocked: boolean): void {
     this.practiceSpeedBuff = speedBuff;
     this.practiceStunned = stunned;
     this.practiceStaminaLocked = staminaLocked;
+  }
+
+  setPracticeGravityScale(scale: number): void {
+    this.practiceGravityScale = scale;
   }
 
   private slideTimer = 0;
@@ -659,18 +664,18 @@ export class MovementController {
       // Past the gravity-delay threshold this ramps up to runLateGravityScale so the run can't be
       // sustained forever.
       const lateGravity = this.wallRunTimer >= TUNING.wall.runGravityDelaySeconds;
-      this.velocity.y -= TUNING.player.gravity * (lateGravity ? TUNING.wall.runLateGravityScale : TUNING.wall.runGravityScale) * dt;
+      this.velocity.y -= TUNING.player.gravity * this.practiceGravityScale * (lateGravity ? TUNING.wall.runLateGravityScale : TUNING.wall.runGravityScale) * dt;
       return;
     }
     // Snappier (non-floaty) jumps: gravity is stronger on the way down than the way up.
     const fallScale = this.velocity.y < 0 ? TUNING.player.fallGravityMultiplier : 1;
-    this.velocity.y -= TUNING.player.gravity * fallScale * dt;
+    this.velocity.y -= TUNING.player.gravity * this.practiceGravityScale * fallScale * dt;
   }
 
   private applySlopeForces(dt: number): void {
     if (!this.grounded || !this.groundIsSlope) return;
     const n = this.groundNormal;
-    const gravity = TUNING.player.gravity * (this.sliding ? TUNING.slope.slideGravityScale : TUNING.slope.gravityScale);
+    const gravity = TUNING.player.gravity * this.practiceGravityScale * (this.sliding ? TUNING.slope.slideGravityScale : TUNING.slope.gravityScale);
     // Gravity projected onto the ramp plane. The horizontal part accelerates downhill and slows uphill
     // movement; the projection below keeps carried velocity tangent to the sloped top.
     this.velocity.x += gravity * n.y * n.x * dt;

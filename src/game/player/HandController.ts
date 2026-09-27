@@ -60,6 +60,10 @@ export class HandController {
   public lastThrowTime = -999;
   public lastAction = 'none';
 
+  isRushedThrow(): boolean {
+    return this.lastThrowTime > -900 && this.elapsed - this.lastThrowTime < TUNING.ball.secondThrowDelaySeconds;
+  }
+
   private readonly throwSystem = new ThrowSystem();
   private elapsed = 0;
   private armorPickup: (() => Ball | null) | null = null;
@@ -396,7 +400,7 @@ export class HandController {
     const hand = this.getHand(side);
     if (!hand.ball) return;
 
-    const rushed = this.lastThrowTime > -900 && this.elapsed - this.lastThrowTime < TUNING.ball.secondThrowDelaySeconds;
+    const rushed = this.isRushedThrow();
 
     const forward = cameraForward(this.camera);
     const throwResult = this.throwSystem.calculateThrow({

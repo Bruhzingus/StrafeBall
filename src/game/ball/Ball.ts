@@ -50,6 +50,9 @@ export class Ball {
   // ~0 = flies straight (charged/super), higher = projectile drop (quick throw). After a
   // bounce the ball uses full gravity regardless so it settles into a loose ball.
   public dropScale = 1;
+  /** Local gym map effects. Online balls use the shared server simulation instead. */
+  public mapGravityScale = 1;
+  public unlimitedBounces = false;
   // Sustained sideways acceleration (world space) for crouch curve throws; applied only
   // during the first live flight. Zero for straight throws.
   public curveAccel = Vector3.Zero();
@@ -163,7 +166,7 @@ export class Ball {
     const segmentStart = onAdvanced ? this.mesh.position.clone() : null;
     const firstFlight = this.state === BallState.Live && this.bounceCount === 0;
     const gravityScale = firstFlight ? this.dropScale : 1;
-    this.velocity.y -= TUNING.ball.gravity * gravityScale * dt;
+    this.velocity.y -= TUNING.ball.gravity * gravityScale * this.mapGravityScale * dt;
     // Crouch curve: sideways accel only bends the live ball's first flight, ramped in by
     // curveRampFactor (flat zero until curveStartDistance, smoothstep up to full strength).
     if (firstFlight) {
@@ -319,7 +322,7 @@ export class Ball {
     }
     this.bounceCount += 1;
     this.emitImpact(normalImpactSpeed);
-    if (this.bounceCount >= TUNING.ball.deadAfterBounces) {
+    if (!this.unlimitedBounces && this.bounceCount >= TUNING.ball.deadAfterBounces) {
       this.makeDead();
     }
   }
@@ -337,7 +340,7 @@ export class Ball {
 
     this.bounceCount += 1;
     this.emitImpact(normalImpactSpeed);
-    if (this.bounceCount > 1) {
+    if (!this.unlimitedBounces && this.bounceCount > 1) {
       this.makeDead();
     }
   }
