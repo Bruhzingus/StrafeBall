@@ -13,6 +13,7 @@ const ICON_PATHS: Record<PowerupIconKind, string> = {
   bomb: '<circle cx="14" cy="20" r="9" fill="currentColor" fill-opacity=".2"/><path d="m18 12 2-4 4 1M9 17a6 6 0 0 1 4-3M24 3v2m4 1-2 1m3 4-2-1"/>',
   shock: '<circle cx="16" cy="16" r="3" fill="currentColor" stroke="none"/><path d="M10 10a8.5 8.5 0 0 0 0 12m12-12a8.5 8.5 0 0 1 0 12M6 6a14 14 0 0 0 0 20M26 6a14 14 0 0 1 0 20"/>',
   stun: '<rect x="9" y="10" width="12" height="18" rx="3"/><path d="M12 10V7h6v3m-1-3 3-3a2.2 2.2 0 0 1 3 3l-2 2M4 13l-2-1m3 8H2m23-7 3-1m-3 8h3"/><path d="M10 17h10v5H10z" fill="currentColor" stroke="none"/>',
+  coachGlasses: '<rect x="2" y="11" width="12" height="10" rx="2"/><rect x="18" y="11" width="12" height="10" rx="2"/><path d="M14 14q2-2 4 0M2 13l-2-1m30 1 2-1M5 14l6 5m10-5 6 5"/>',
   moon: '<path d="M24.5 22.5A12 12 0 0 1 11 3.6 12.5 12.5 0 1 0 28.4 21a12 12 0 0 1-3.9 1.5Z" fill="currentColor" fill-opacity=".2"/>',
   lava: '<path d="M10 23c-5-6 0-11 3-14 0 4 2 4 2 4s5-5 2-10c9 6 12 15 5 20M14 23c-2-3-1-5 2-8 0 3 4 4 3 8M3 28c3-3 6 3 9 0s6 3 9 0 6 3 8 0"/>',
   frenzy: '<circle cx="16" cy="8" r="4.5" fill="currentColor" fill-opacity=".18"/><circle cx="8" cy="22" r="4.5" fill="currentColor" fill-opacity=".18"/><circle cx="24" cy="22" r="4.5" fill="currentColor" fill-opacity=".18"/><path d="m6 6-3 4m22-4 4 5M14 28h4"/>',

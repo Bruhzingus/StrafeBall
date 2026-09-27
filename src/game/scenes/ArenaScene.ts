@@ -1,5 +1,9 @@
 import { PowerupPresentation, type PowerupPresentationRoom } from '../powerups/PowerupPresentation';
-import { mapEffectGravityScale } from '../../../shared/simulation/MapEffectSim';
+import { ballConstantsForEffect, mapEffectGravityScale, mapEffectUnlimitedBounces } from '../../../shared/simulation/MapEffectSim';
+import { CoachGlassesGuide } from '../effects/CoachGlassesGuide';
+import { coachGlassesEligible } from '../effects/CoachGlassesEligibility';
+import { computePlayerHandAnchor } from '../../../shared/simulation/HandAnchors';
+import { calculateThrow } from '../../../shared/simulation/ThrowMath';
 import { shockwaveBallVelocity, shockwavePlayerVelocity } from '../../../shared/simulation/ShockwaveSim';
 import { Color3, Engine, Mesh, MeshBuilder, PBRMaterial, Scene, StandardMaterial, Vector3, type Camera } from '@babylonjs/core';
 import { FxaaPostProcess } from '@babylonjs/core/PostProcesses/fxaaPostProcess';
@@ -115,7 +119,8 @@ import {
   PERF_REPORT_INTERVAL_MS,
   SNAPSHOT_RATE
 } from '../../../shared/netConfig';
-import { createPlayerCollisionBoxes, matSpecsForPreset, MAT_SPECS, type AABB } from '../../../shared/simulation/MapGeometry';
+import { netModeConfig, LIVE_BALL_COMBAT_SUBSTEPS, SERVER_STEP_MS } from '../../../shared/netConfig';
+import { createBallCollisionBoxes, createPlayerCollisionBoxes, matSpecsForPreset, MAT_SPECS, type AABB } from '../../../shared/simulation/MapGeometry';
 import { recommendedRoomSettings } from '../../../shared/roomSettings';
 import { isIllegalHalfCourtPosition } from '../../../shared/simulation/RuleSim';
 import { sweptBallHitsBody } from '../../../shared/simulation/CollisionMath';
@@ -143,6 +148,10 @@ export class ArenaScene {
   private readonly targetDummies: Mesh[] = [];
   private readonly sound: SoundManager;
   private readonly powerupPresentation: PowerupPresentation;
+  private readonly coachGlassesGuide: CoachGlassesGuide;
+  private coachBallBoxes: AABB[] = [];
+  private coachBallBoxesKey = '';
+  private coachPreviewNextUpdateMs = 0;
   private readonly music: MusicManager;
   private readonly ballVisualEffects: BallVisualEffects;
   private readonly effects: Effects;
@@ -448,6 +457,7 @@ export class ArenaScene {
     this.multiplayerOverlay = new MultiplayerOverlay(this.multiplayer, this.input);
     if (localHostConfig() || hostSetupError()) this.multiplayerOverlay.openMode('1v1');
     this.networkRenderer = new NetworkRenderer(this.scene, this.ballVisualEffects);
+    this.coachGlassesGuide = new CoachGlassesGuide(this.scene);
     this.onlineTeamSelector = new OnlineTeamSelectorPads(this.scene);
 
     // The normal Settings preference makes this available on live builds. The old debug flag still
@@ -709,6 +719,7 @@ export class ArenaScene {
     this.multiplayerOverlay.dispose();
     this.multiplayer.dispose();
     this.networkRenderer.dispose();
+    this.coachGlassesGuide.dispose();
     this.onlineTeamSelector.dispose();
     this.settingsPanel.dispose();
     this.ballManager.clear();
@@ -1603,6 +1614,7 @@ export class ArenaScene {
       this.handleOnlineHitRevertEvents(this.multiplayer.drainHitRevertEvents());
       this.networkRenderer.update(snapshot, this.multiplayer.localPlayerId, dt, this.predictedMovement, this.multiplayer.latestSnapshotLanes ?? undefined);
       this.applyOnlineMats(snapshot);
+      this.updateCoachGlassesGuide(snapshot, local);
       this.handleOnlineScoreEvents(snapshot);
       this.flushPendingOnlineScoreEvents(snapshot);
       this.handleOnlineWinnerEvent(snapshot);
@@ -2258,6 +2270,7 @@ export class ArenaScene {
     stopGymVictoryLighting(true); // leaving the room: snap the strip lighting back immediately
     this.resetBackflipQte();
     this.networkRenderer.clear();
+    this.coachGlassesGuide.hide();
     this.onlineCharging.left = false;
     this.onlineCharging.right = false;
     this.onlineChargeSeconds.left = 0;
@@ -3309,6 +3322,53 @@ export class ArenaScene {
     this.updateOnlineHandAction('right', MOUSE_BUTTON.rightHand, dt, this.input.isMouseDown(MOUSE_BUTTON.rightHand), local);
   }
 
+  private updateCoachGlassesGuide(snapshot: ServerSnapshot, local: PlayerState | null): void {
+    const room = snapshot.room;
+    const side = (['left', 'right'] as const).find(hand => {
+      const visual = this.player.hands.getHand(hand);
+      return coachGlassesEligible(room, local, hand, this.onlineChargeSeconds[hand], this.onlineCharging[hand],
+        !!this.pendingOnlineThrowRelease[hand] || visual.throwAnim > 0 || visual.fakeAnim > 0,
+        !this.freeCamActive, this.countdownActive);
+    });
+    if (!side || !local || !this.predictedMovement) { this.coachGlassesGuide.hide(); return; }
+    const nowMs = performance.now();
+    if (nowMs < this.coachPreviewNextUpdateMs) return;
+    this.coachPreviewNextUpdateMs = nowMs + 40;
+
+    const movement = {
+      ...this.predictedMovement,
+      yawRadians: this.networkYaw,
+      pitchRadians: this.networkPitch,
+      facing: facingFromAngles(this.networkYaw, this.networkPitch)
+    };
+    const forward = movement.facing;
+    const anchor = computePlayerHandAnchor({ movement }, side);
+    const origin = { x: anchor.x + forward.x * 0.16, y: anchor.y + forward.y * 0.16, z: anchor.z + forward.z * 0.16 };
+    const throwCalc = calculateThrow({
+      hand: side, forward, playerVelocity: movement.velocity, charge01: 1,
+      crouching: movement.crouching || movement.sliding
+    });
+    const matKey = Object.values(room.mats).map(mat =>
+      `${mat.id}:${mat.knockedOver ? `${mat.knockDirection.x.toFixed(2)},${mat.knockDirection.z.toFixed(2)}` : 'up'}`).join('|');
+    const boxesKey = `${room.resetVote.resetSerial}|${room.settings.matPreset}|${matKey}`;
+    if (boxesKey !== this.coachBallBoxesKey) {
+      const down = new Set(Object.values(room.mats).filter(mat => mat.knockedOver).map(mat => mat.id));
+      const directions = new Map(Object.values(room.mats).map(mat => [mat.id, mat.knockDirection] as const));
+      this.coachBallBoxes = createBallCollisionBoxes(down, matSpecsForPreset(room.settings.matPreset), directions);
+      this.coachBallBoxesKey = boxesKey;
+    }
+    const unlimited = mapEffectUnlimitedBounces(room.mapEffect);
+    const bounces = unlimited ? Number.MAX_SAFE_INTEGER : room.settings.maxLiveBallBounces;
+    const tickRateHz = netModeConfig(room.netMode)?.serverTickRate ?? 1000 / SERVER_STEP_MS;
+    this.coachGlassesGuide.update({
+      origin, velocity: throwCalc.velocity, curveAccel: throwCalc.curveAccel, dropScale: throwCalc.dropScale,
+      boxes: this.coachBallBoxes, constants: ballConstantsForEffect(room.mapEffect),
+      bounceRule: { deadAfterBounces: bounces, deflectedDeadAfterBounces: bounces },
+      stepSeconds: 1 / tickRateHz / LIVE_BALL_COMBAT_SUBSTEPS,
+      maxSeconds: 1.8, maxDistance: 65
+    }, `${side}|${local.hands[side].heldBallId}|${boxesKey}|${room.mapEffect?.kind ?? ''}`);
+  }
+
   private syncOnlineViewmodelHands(local: PlayerState | null): void {
     for (const side of ['left', 'right'] as const) {
       const serverHand = local?.hands[side];
@@ -3536,7 +3596,7 @@ export class ArenaScene {
   }
 
   private materializePracticePowerup(kind: PowerupKind, preferredSide?: HandSide): boolean {
-    if (kind === 'adrenaline' || kind === 'speed' || kind === 'magnet') return false;
+    if (kind === 'adrenaline' || kind === 'speed' || kind === 'magnet' || kind === 'coachGlasses') return false;
     const preferredOpen = preferredSide && !this.player.hands.getHand(preferredSide).ball ? preferredSide : null;
     const side = preferredOpen ?? (!this.player.hands.left.ball ? 'left' : !this.player.hands.right.ball ? 'right' : null);
     if (!side) return false;

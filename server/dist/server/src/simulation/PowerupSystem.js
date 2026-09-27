@@ -6,7 +6,7 @@ const BallSim_1 = require("../../../shared/simulation/BallSim");
 const ShockwaveSim_1 = require("../../../shared/simulation/ShockwaveSim");
 const HandSim_1 = require("../../../shared/simulation/HandSim");
 const MapGeometry_1 = require("../../../shared/simulation/MapGeometry");
-const KINDS = ['adrenaline', 'speed', 'cannon', 'heal', 'magnet', 'bomb', 'shock', 'stun'];
+const KINDS = ['adrenaline', 'speed', 'cannon', 'heal', 'magnet', 'bomb', 'shock', 'stun', 'coachGlasses'];
 const HAND_ITEMS = ['cannon', 'bomb', 'heal', 'shock', 'stun'];
 const alive = (p) => p.connected && p.combatState === 'alive' && p.lives > 0;
 const horizontal = (a, b) => Math.hypot(a.x - b.x, a.z - b.z);
@@ -96,6 +96,8 @@ class PowerupSystem {
             buffs.speedSeconds = constants_1.GAME_CONSTANTS.powerup.buffSeconds;
         else if (kind === 'magnet')
             buffs.magnetSeconds = constants_1.GAME_CONSTANTS.powerup.magnetSeconds;
+        else if (kind === 'coachGlasses')
+            buffs.coachGlassesSeconds = constants_1.GAME_CONSTANTS.powerup.buffSeconds;
         else if (hand) {
             const id = `powerball_${++this.serial}`;
             room.balls[id] = (0, BallSim_1.holdBall)((0, BallSim_1.createBallState)(id, p.movement.position, { kind }), playerId, hand);
@@ -153,6 +155,8 @@ class PowerupSystem {
                 this.inventory.delete(p.id);
                 this.rollRemaining.delete(p.id);
                 p.hasPowerup = false;
+                if (p.movementInternal.buffs)
+                    p.movementInternal.buffs.coachGlassesSeconds = 0;
             }
             else if (this.rollRemaining.has(p.id)) {
                 const remaining = Math.max(0, this.rollRemaining.get(p.id) - dt);

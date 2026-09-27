@@ -6,7 +6,7 @@ import { shockwaveBallVelocity, shockwavePlayerVelocity } from '../../../shared/
 import { createHandState, tryPickupBall } from '../../../shared/simulation/HandSim';
 import { createBallCollisionBoxes } from '../../../shared/simulation/MapGeometry';
 
-const KINDS: PowerupKind[] = ['adrenaline', 'speed', 'cannon', 'heal', 'magnet', 'bomb', 'shock', 'stun'];
+const KINDS: PowerupKind[] = ['adrenaline', 'speed', 'cannon', 'heal', 'magnet', 'bomb', 'shock', 'stun', 'coachGlasses'];
 const HAND_ITEMS: PowerupKind[] = ['cannon', 'bomb', 'heal', 'shock', 'stun'];
 const alive = (p: PlayerState) => p.connected && p.combatState === 'alive' && p.lives > 0;
 const horizontal = (a: Vec3, b: Vec3) => Math.hypot(a.x - b.x, a.z - b.z);
@@ -79,6 +79,7 @@ export class PowerupSystem {
       p.dash.charges = C.powerup.adrenalineMaxCharges; p.dash.rechargeTimerSeconds = 0;
     } else if (kind === 'speed') buffs.speedSeconds = C.powerup.buffSeconds;
     else if (kind === 'magnet') buffs.magnetSeconds = C.powerup.magnetSeconds;
+    else if (kind === 'coachGlasses') buffs.coachGlassesSeconds = C.powerup.buffSeconds;
     else if (hand) {
       const id = `powerball_${++this.serial}`;
       room.balls[id] = holdBall(createBallState(id, p.movement.position, { kind }), playerId, hand);
@@ -123,7 +124,7 @@ export class PowerupSystem {
       spawn.waitSeconds = 0; spawn.spawned = true; this.emit(room, 'spawn', spawnPosition(spawn));
     });
     for (const p of Object.values(room.players)) {
-      if (!alive(p)) { this.inventory.delete(p.id); this.rollRemaining.delete(p.id); p.hasPowerup = false; }
+      if (!alive(p)) { this.inventory.delete(p.id); this.rollRemaining.delete(p.id); p.hasPowerup = false; if (p.movementInternal.buffs) p.movementInternal.buffs.coachGlassesSeconds = 0; }
       else if (this.rollRemaining.has(p.id)) {
         const remaining = Math.max(0, this.rollRemaining.get(p.id)! - dt);
         if (remaining > 1e-6) this.rollRemaining.set(p.id, remaining);

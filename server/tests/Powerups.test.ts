@@ -12,7 +12,7 @@ import { isIllegalHalfCourtPosition } from '../../shared/simulation/RuleSim';
 import { MAT_SPECS, createBleacherTierSpecs } from '../../shared/simulation/MapGeometry';
 import type { PlayerInput, PowerupKind, RoomState } from '../../shared/types';
 
-const kinds: PowerupKind[] = ['adrenaline', 'speed', 'cannon', 'heal', 'magnet', 'bomb', 'shock', 'stun'];
+const kinds: PowerupKind[] = ['adrenaline', 'speed', 'cannon', 'heal', 'magnet', 'bomb', 'shock', 'stun', 'coachGlasses'];
 const v = (x = 0, y = 0, z = 0) => ({ x, y, z });
 function setup(kind: PowerupKind = 'speed') {
   const room = createRoomState({ players: [createPlayerState('a', 'blue'), createPlayerState('b', 'red', 'positiveZ')] });
@@ -51,6 +51,22 @@ describe('neutral zone and expanded gym', () => {
 });
 
 describe('power-up inventory and replication', () => {
+  it('keeps Coach’s Glasses private until activation, then publishes only its timed buff', () => {
+    const { room, system } = setup('coachGlasses');
+    take(room, system);
+    const snapshot = () => ({ type: 'snapshot' as const, tick: 1, serverTimeMs: 1000, room });
+    expect(JSON.stringify(makeCompactSnapshot(snapshot()))).not.toContain('coachGlasses');
+    expect(system.identity(room, 'b').kind).toBeNull();
+    expect(system.activate(room, 'a')).toBe(true);
+    expect(room.players.a.movementInternal.buffs?.coachGlassesSeconds).toBe(15);
+    const publicRoom = inflateCompactSnapshot(makeCompactSnapshot(snapshot())).room;
+    expect(publicRoom.players.a.movementInternal.buffs?.coachGlassesSeconds).toBe(15);
+    expect(JSON.stringify(publicRoom)).not.toMatch(/trajectory|preview|sampledPoints/i);
+    for (let i = 0; i < 15; i++) stepPlayer(room, 1);
+    expect(room.players.a.movementInternal.buffs?.coachGlassesSeconds).toBe(0);
+    system.reset(room);
+    expect(room.players.a.movementInternal.buffs).toBeUndefined();
+  });
   it('locks activation throughout the pickup roll without consuming the item', () => {
     const { room, system } = setup('speed');
     room.powerups!.spawns[0].waitSeconds = 0;

@@ -490,7 +490,7 @@ gravityScale = 1) {
             speed
         },
         internal: {
-            ...(buffs ? { buffs: { ...buffs, speedSeconds: Math.max(0, buffs.speedSeconds - dt), adrenalineSeconds: Math.max(0, buffs.adrenalineSeconds - dt), magnetSeconds: Math.max(0, buffs.magnetSeconds - dt), ...(buffs.stunSeconds !== undefined ? { stunSeconds: Math.max(0, buffs.stunSeconds - dt) } : {}) } } : {}),
+            ...(buffs ? { buffs: { ...buffs, speedSeconds: Math.max(0, buffs.speedSeconds - dt), adrenalineSeconds: Math.max(0, buffs.adrenalineSeconds - dt), magnetSeconds: Math.max(0, buffs.magnetSeconds - dt), ...(buffs.stunSeconds !== undefined ? { stunSeconds: Math.max(0, buffs.stunSeconds - dt) } : {}), ...(buffs.coachGlassesSeconds !== undefined ? { coachGlassesSeconds: Math.max(0, buffs.coachGlassesSeconds - dt) } : {}) } } : {}),
             slideTimer,
             slideBufferTimer,
             jumpGraceTimer,

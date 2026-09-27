@@ -93,8 +93,8 @@ export interface MatchSettings {
   scoreLimit: number;
 }
 
-export type PowerupKind = 'adrenaline' | 'speed' | 'cannon' | 'heal' | 'magnet' | 'bomb' | 'shock' | 'stun';
-export interface PowerupBuffs { speedSeconds: number; adrenalineSeconds: number; magnetSeconds: number; cannonLocked: boolean; stunSeconds?: number }
+export type PowerupKind = 'adrenaline' | 'speed' | 'cannon' | 'heal' | 'magnet' | 'bomb' | 'shock' | 'stun' | 'coachGlasses';
+export interface PowerupBuffs { speedSeconds: number; adrenalineSeconds: number; magnetSeconds: number; cannonLocked: boolean; stunSeconds?: number; coachGlassesSeconds?: number }
 export interface HealStationState { id: string; placerId: string; teamId: string; position: Vec3; remainingSeconds: number; progress: Record<string, number> }
 /**
  * One power-up spawn point. Online matches only populate x/z and keep the item identity secret.

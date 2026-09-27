@@ -45,6 +45,7 @@ interface PlayerVisual {
   rightFoot: Mesh;
   head: Mesh;
   visor: Mesh;
+  glasses: TransformNode;
   facing: Mesh;
   hitbox: Mesh;
   leftArm: ArmVisual;
@@ -733,6 +734,7 @@ export class NetworkRenderer {
         visual.root.position.z = target.z + recoilZ - forwardZ * half * Math.sin(flip);
       }
       this.posePlayerVisual(player, visual, dt);
+      visual.glasses.setEnabled((player.movementInternal.buffs?.coachGlassesSeconds ?? 0) > 0 && player.combatState === 'alive');
 
       const dbg = this.playerDebug.get(player.id)!;
       dbg.logTimer += dt;
@@ -1083,6 +1085,26 @@ export class NetworkRenderer {
     visor.material = this.material('playerVisor');
     visor.isPickable = false;
 
+    const glasses = new TransformNode(`remotePlayerGlasses_${player.id}`, this.scene);
+    glasses.parent = visor;
+    glasses.position.z = 0.033;
+    const glassesPart = (name: string, width: number, height: number, depth: number,
+      x: number, y: number, z: number, material: string): void => {
+      const mesh = MeshBuilder.CreateBox(`remotePlayerGlasses_${player.id}_${name}`,
+        { width, height, depth }, this.scene);
+      mesh.parent = glasses;
+      mesh.position.set(x, y, z);
+      mesh.material = this.material(material);
+      mesh.isPickable = false;
+    };
+    for (const sign of [-1, 1]) {
+      glassesPart(`frame_${sign}`, 0.17, 0.115, 0.033, sign * 0.105, 0, 0, 'coachGlassesFrame');
+      glassesPart(`lens_${sign}`, 0.134, 0.082, 0.037, sign * 0.105, 0, 0.007, 'coachGlassesLens');
+      glassesPart(`sheen_${sign}`, 0.065, 0.009, 0.039, sign * 0.105 - 0.012, 0.022, 0.01, 'coachGlassesSheen');
+    }
+    glassesPart('bridge', 0.055, 0.025, 0.042, 0, 0.018, 0, 'coachGlassesFrame');
+    glasses.setEnabled(false);
+
     const facing = MeshBuilder.CreateCylinder(
       `remotePlayerFacing_${player.id}`,
       { height: 0.52, diameter: 0.07, tessellation: 10 },
@@ -1117,6 +1139,7 @@ export class NetworkRenderer {
       rightFoot,
       head,
       visor,
+      glasses,
       facing,
       hitbox,
       leftArm: this.buildArm(player.id, 'left', root),
@@ -1962,6 +1985,12 @@ function materialColor(key: string): { diffuse: Color3; emissive: Color3; metall
       return { diffuse: new Color3(1, 0.96, 0.82), emissive: new Color3(0.035, 0.028, 0.01), metallic: 0.02, roughness: 0.34 };
     case 'playerVisor':
       return { diffuse: new Color3(0.04, 0.08, 0.1), emissive: new Color3(0.0, 0.045, 0.055), metallic: 0.08, roughness: 0.28 };
+    case 'coachGlassesFrame':
+      return { diffuse: new Color3(0.014, 0.027, 0.039), emissive: new Color3(0.008, 0.026, 0.035), metallic: 0.22, roughness: 0.3 };
+    case 'coachGlassesLens':
+      return { diffuse: new Color3(0.09, 0.2, 0.24), emissive: new Color3(0.018, 0.08, 0.095), metallic: 0.2, roughness: 0.18 };
+    case 'coachGlassesSheen':
+      return { diffuse: new Color3(0.45, 0.89, 0.96), emissive: new Color3(0.12, 0.29, 0.34), metallic: 0.05, roughness: 0.16 };
     case 'leftHand':
       return { diffuse: new Color3(0.95, 0.82, 0.32), emissive: new Color3(0.04, 0.025, 0.004), metallic: 0, roughness: 0.42 };
     case 'rightHand':

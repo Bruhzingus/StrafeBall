@@ -11,7 +11,8 @@ export const POWERUP_ITEMS: Record<PowerupKind, { name: string; icon: PowerupKin
   magnet: { name: 'BALL MAGNET', icon: 'magnet', color: '#ce9aff', hint: 'Pull loose balls · up to 3 armor · 20s' },
   bomb: { name: 'BOMB BALL', icon: 'bomb', color: '#ffad73', hint: 'First bounce starts a 2s fuse · hits everyone' },
   shock: { name: 'SHOCKWAVE', icon: 'shock', color: '#8ef1ff', hint: `Sticks where it lands · launches players & balls · ×${C.powerup.grenadeCharges}` },
-  stun: { name: 'STUN', icon: 'stun', color: '#fff29a', hint: `Sticks where it lands · dazes everyone near it · ×${C.powerup.grenadeCharges}` }
+  stun: { name: 'STUN', icon: 'stun', color: '#fff29a', hint: `Sticks where it lands · dazes everyone near it · ×${C.powerup.grenadeCharges}` },
+  coachGlasses: { name: 'COACH’S GLASSES', icon: 'coachGlasses', color: '#9aeaff', hint: 'Full-charge court trajectory · 15s' }
 };
 
 const PICKUP_BLUE = '#62bdff';
@@ -51,6 +52,7 @@ export function buildPowerupHudView({ room, local, heldKind, rolling, rollKind, 
   if ((buffs?.speedSeconds ?? 0) > 0) effects.push({ kind: 'speed', label: 'Speed', seconds: buffs!.speedSeconds, max: C.powerup.buffSeconds });
   if ((buffs?.adrenalineSeconds ?? 0) > 0) effects.push({ kind: 'adrenaline', label: 'Adrenaline', seconds: buffs!.adrenalineSeconds, max: C.powerup.buffSeconds });
   if ((buffs?.magnetSeconds ?? 0) > 0) effects.push({ kind: 'magnet', label: 'Magnet', seconds: buffs!.magnetSeconds, max: C.powerup.magnetSeconds });
+  if ((buffs?.coachGlassesSeconds ?? 0) > 0) effects.unshift({ kind: 'coachGlasses', label: 'Glasses', seconds: buffs!.coachGlassesSeconds!, max: C.powerup.buffSeconds });
   const effectText = effects.map(effect => `${effect.label} ${Math.ceil(effect.seconds)}s`)
     .concat(armor > 0 ? [`Armor ${armor}/${C.powerup.armorCap}`] : [])
     .join(' · ');
