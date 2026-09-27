@@ -172,6 +172,10 @@ export class ArenaScene {
   private readonly creatorDummies: Mesh[] = [];
   private readonly practiceState: PracticeState = createPracticeState();
   private readonly practicePowerups = new PracticePowerupSpawner();
+  /** True while the local power-up runtime is configured from Creator markers instead of the gym. */
+  private creatorPowerupsActive = false;
+  /** Prevent the sandbox's G-to-fly shortcut from also firing after G was used on a held power-up. */
+  private coursePowerupKeyConsumed = false;
   private readonly practiceMagnetSettledSeconds = new WeakMap<Ball, number>();
   private readonly practiceMagnetDistantPulls = new WeakSet<Ball>();
   private readonly practiceArmorBalls: Ball[] = [];
@@ -1133,14 +1137,21 @@ export class ArenaScene {
   private step(dt: number): void {
     this.elapsed += dt;
     const inPracticeLobby = !this.creator?.isActive() && !this.movementSandbox?.active;
-    if (inPracticeLobby) {
+    const creatorPlaytest = !!this.creator?.isActive() && this.creator.getModePublic() === 'playtest';
+    const inCreatorPowerupCourse = this.creatorPowerupsActive && (!!this.movementSandbox?.active || creatorPlaytest);
+    const localPowerupsActive = inPracticeLobby || inCreatorPowerupCourse;
+    this.coursePowerupKeyConsumed = false;
+    if (localPowerupsActive) {
       this.practicePowerups.update(
         dt,
         vector3ToVec3(this.player.root.position),
-        this.practicePowerupRoom.resetVote.resetSerial
+        this.practicePowerupRoom.resetVote.resetSerial,
+        this.player.hands.heldBallCount() < 2
       );
+      for (const kind of this.practicePowerups.drainAutoActivations()) this.materializePracticePowerup(kind);
       if (this.practicePowerups.buffs.magnetSeconds <= 0) this.dropPracticeArmor();
-      if (this.input.wasKeyPressed(CONTROL_KEYS.activatePowerup)) {
+      if (this.input.wasKeyPressed(CONTROL_KEYS.activatePowerup) && this.practicePowerups.hasPowerup) {
+        this.coursePowerupKeyConsumed = inCreatorPowerupCourse;
         const activation = this.practicePowerups.activate(
           this.player.hands.heldBallCount() < 2,
           vector3ToVec3(this.player.root.position),
@@ -1154,10 +1165,25 @@ export class ArenaScene {
       this.practicePowerupRoom.practiceGrenade = heldGrenade
         ? { kind: heldGrenade.ball!.powerupKind as 'shock' | 'stun', hand: heldGrenade.hand, remaining: 1 + this.practicePowerups.pendingGrenades }
         : undefined;
+      this.practicePowerupRoom.practiceHandItems = (['left', 'right'] as const).flatMap(hand => {
+        const kind = this.player.hands.getHand(hand).ball?.powerupKind;
+        return kind ? [{ kind, hand, remaining: kind === 'shock' || kind === 'stun' ? 1 + this.practicePowerups.pendingGrenades : undefined }] : [];
+      });
+      this.practicePowerupRoom.practiceArmorCount = this.practiceArmorBalls.length;
     }
-    this.powerupPresentation.update(inPracticeLobby ? this.practicePowerupRoom : null, 'practice',
+    this.powerupPresentation.update(localPowerupsActive ? this.practicePowerupRoom : null, 'practice',
       this.player.root.position, this.practicePowerups.identity, this.practicePowerups.drainEvents(), dt);
     this.player.lookScale = this.powerupPresentation.localLookScale;
+    const practiceBuffs = this.practicePowerups.buffs;
+    const cannonHeld = [this.player.hands.left.ball, this.player.hands.right.ball]
+      .some(ball => ball?.powerupKind === 'cannon');
+    practiceBuffs.cannonLocked = cannonHeld;
+    this.player.dash.setAdrenalineActive(localPowerupsActive && practiceBuffs.adrenalineSeconds > 0);
+    this.player.movement.setPracticePowerups(
+      localPowerupsActive && practiceBuffs.speedSeconds > 0,
+      localPowerupsActive && (practiceBuffs.stunSeconds ?? 0) > 0,
+      localPowerupsActive && (cannonHeld || (practiceBuffs.stunSeconds ?? 0) > 0)
+    );
 
     // Offline testing toggle (all offline modes incl. creator playtest): strip cooldowns from
     // catches / stamina / backflip / parry so abilities can be spammed while iterating.
@@ -1180,7 +1206,7 @@ export class ArenaScene {
     // Snapshot previous states before the update so we can detect edges.
     const wasSliding = this.prevSliding;
     const wasBackflipActive = this.prevBackflipActive;
-    const heldBeforeUpdate = inPracticeLobby ? {
+    const heldBeforeUpdate = localPowerupsActive ? {
       left: this.player.hands.left.ball,
       right: this.player.hands.right.ball
     } : null;
@@ -1191,16 +1217,6 @@ export class ArenaScene {
     // (jump pending after `active` clears mid-air), until the landing QTE resolves. The backflip
     // throw is released only by the QTE click.
     const throwsSuppressed = this.player.backflip.active || this.backflipJumpPending || this.backflipQte.isActive();
-    const practiceBuffs = this.practicePowerups.buffs;
-    const cannonHeld = [this.player.hands.left.ball, this.player.hands.right.ball]
-      .some(ball => ball?.powerupKind === 'cannon');
-    practiceBuffs.cannonLocked = cannonHeld;
-    this.player.dash.setAdrenalineActive(inPracticeLobby && practiceBuffs.adrenalineSeconds > 0);
-    this.player.movement.setPracticePowerups(
-      inPracticeLobby && practiceBuffs.speedSeconds > 0,
-      inPracticeLobby && (practiceBuffs.stunSeconds ?? 0) > 0,
-      inPracticeLobby && (cannonHeld || (practiceBuffs.stunSeconds ?? 0) > 0)
-    );
     // Moving platforms advance (and carry their rider) BEFORE movement resolves against them.
     if (this.movementSandbox?.active) this.movementSandbox.preMovementUpdate(dt, this.player);
     this.player.update(dt, throwsSuppressed);
@@ -2263,6 +2279,8 @@ export class ArenaScene {
     this.chargeBot.reset();
     this.setPracticePropsEnabled(true);
     this.ballManager.spawnCenterLineBalls();
+    this.practicePowerups.configureDefaultSpawn();
+    this.practicePowerupRoom.resetVote.resetSerial += 1;
     // Restore the practice layout after a host preset may have changed visible cover online.
     this.gym.resetMats();
     this.applyPracticeMatPreset();
@@ -2479,7 +2497,7 @@ export class ArenaScene {
     this.spawnCreatorActors(this.movementSandbox.getSpawnerMarkers(), this.movementSandbox.ballWorld());
     // Tee course-run events to the online race relay (a cheap no-op while no race is live).
     this.movementSandbox.setRunEventListener((event) => this.courseRace?.reportRunEvent(event));
-    this.movementSandbox.setRunRestartListener(() => this.resetCreatorBalls());
+    this.movementSandbox.setRunRestartListener(() => this.resetCreatorCourseActors());
     this.ensureCreator();
     this.creator?.setEntrySignVisible(true);
     this.creatorEntryHold = 0;
@@ -2501,6 +2519,8 @@ export class ArenaScene {
     this.courseRace?.leaveSession('left-yard');
     this.setPracticePropsEnabled(true);
     this.ballManager.spawnCenterLineBalls();
+    this.practicePowerups.configureDefaultSpawn();
+    this.practicePowerupRoom.resetVote.resetSerial += 1;
     this.player.hands.clearHands();
     this.player.teleportTo(ret.position, ret.yaw, 0);
     // Live refresh (#1): dispose the yard so the NEXT entry rebuilds it from the current course —
@@ -2543,7 +2563,7 @@ export class ArenaScene {
     this.movementSandbox.enter(this.player);
     this.spawnCreatorActors(this.movementSandbox.getSpawnerMarkers(), this.movementSandbox.ballWorld());
     this.movementSandbox.setRunEventListener((event) => this.courseRace?.reportRunEvent(event));
-    this.movementSandbox.setRunRestartListener(() => this.resetCreatorBalls());
+    this.movementSandbox.setRunRestartListener(() => this.resetCreatorCourseActors());
   }
 
   /**
@@ -2591,7 +2611,7 @@ export class ArenaScene {
           this.movementSandbox = new MovementSandbox(this.scene, this.gym);
           this.movementSandbox.enter(this.player);
           this.movementSandbox.setRunEventListener((event) => this.courseRace?.reportRunEvent(event));
-    this.movementSandbox.setRunRestartListener(() => this.resetCreatorBalls());
+    this.movementSandbox.setRunRestartListener(() => this.resetCreatorCourseActors());
         } else {
           old?.resume(this.player);
         }
@@ -2610,7 +2630,7 @@ export class ArenaScene {
       // to the course they're about to be played in.
       onPlaytestStart: (markers) => this.spawnCreatorActors(markers, this.creator?.ballWorld() ?? null),
       onPlaytestEnd: () => this.clearCreatorActors(),
-      onRunRestart: () => this.resetCreatorBalls()
+      onRunRestart: () => this.resetCreatorCourseActors()
     });
   }
 
@@ -2621,6 +2641,8 @@ export class ArenaScene {
    */
   private spawnCreatorActors(markers: CreatorSpawnerMarkers, ballWorld: BallWorld | null): void {
     this.clearCreatorActors();
+    this.practicePowerups.configureSpawns(markers.powerups);
+    this.creatorPowerupsActive = markers.powerups.length > 0;
     const ballR = TUNING.ball.radius;
     const floorY = ballWorld?.floorY ?? 0;
     // Markers keep their placed height so spawners on raised platforms spawn their actors up there
@@ -2698,8 +2720,29 @@ export class ArenaScene {
     }
   }
 
+  /** Reset authored balls and power-up spawners together so each timed attempt is deterministic. */
+  private resetCreatorCourseActors(): void {
+    if (this.creatorPowerupsActive) {
+      this.clearCreatorPowerupBalls();
+      this.dropPracticeArmor();
+      this.practicePowerups.reset();
+      this.practicePowerupRoom.resetVote.resetSerial += 1;
+    }
+    this.resetCreatorBalls();
+  }
+
+  private clearCreatorPowerupBalls(): void {
+    for (const ball of [...this.ballManager.balls]) {
+      if (!ball.powerupKind) continue;
+      this.player.hands.removeBall(ball);
+      this.ballManager.removeBall(ball);
+    }
+  }
+
   /** Despawn everything spawnCreatorActors created (idempotent; safe to call when nothing is spawned). */
   private clearCreatorActors(): void {
+    const hadCreatorPowerups = this.creatorPowerupsActive;
+    this.creatorPowerupsActive = false;
     for (const ball of this.creatorBalls) {
       const idx = this.ballManager.balls.indexOf(ball);
       if (idx >= 0) this.ballManager.balls.splice(idx, 1);
@@ -2715,6 +2758,12 @@ export class ArenaScene {
     this.creatorBots.length = 0;
     for (const dummy of this.creatorDummies) dummy.dispose();
     this.creatorDummies.length = 0;
+    if (hadCreatorPowerups) {
+      this.clearCreatorPowerupBalls();
+      this.dropPracticeArmor();
+    }
+    this.practicePowerups.configureSpawns([]);
+    this.practicePowerupRoom.resetVote.resetSerial += 1;
   }
 
   private creatorDummyMat: StandardMaterial | null = null;
@@ -2730,11 +2779,13 @@ export class ArenaScene {
 
   /** Per-frame update of the Creator playtest actors (balls physics + pickup, bots, dummy scoring). */
   private updateCreatorActors(dt: number): void {
-    if (this.creatorBalls.length === 0 && this.creatorBots.length === 0 && this.creatorDummies.length === 0) return;
+    if (this.creatorBalls.length === 0 && this.creatorBots.length === 0 && this.creatorDummies.length === 0 && !this.creatorPowerupsActive) return;
     this.ballManager.setPickupHighlight(
       this.ballManager.findPickupLookCandidate(this.player.camera.globalPosition, cameraForward(this.player.camera))
     );
+    if (this.creatorPowerupsActive) this.updatePracticeMagnet(dt);
     this.ballManager.update(dt);
+    if (this.creatorPowerupsActive) this.updatePracticePowerupBalls(dt);
     // Parity with the practice path: without these, Creator balls were silently pickup-able with no
     // prompt telling you so, and threw with no trail/impact visuals.
     this.updateCreatorInteractPrompt();
@@ -2766,7 +2817,12 @@ export class ArenaScene {
         // Real local first-person movement against the editor's collision/world. Moving platforms
         // advance (and carry the player) first, so movement resolves against their new positions.
         creator.preMovementUpdate(dt);
+        const heldBeforeUpdate = this.creatorPowerupsActive ? {
+          left: this.player.hands.left.ball,
+          right: this.player.hands.right.ball
+        } : null;
         this.player.update(dt, false);
+        if (heldBeforeUpdate) this.materializeQueuedPracticeGrenade(heldBeforeUpdate);
         const snap = this.player.lastMovementSnapshot;
         this.updateCreatorActors(dt);
         this.updateLocalMovementFoley(dt, vector3ToVec3(snap.velocity), snap.grounded, snap.sliding, snap.dashingThisFrame, snap.wallRunning);
@@ -2833,7 +2889,7 @@ export class ArenaScene {
     const sandbox = this.movementSandbox;
     if (!sandbox) return;
     // Free-fly toggle (yard / Race Online): fly where you look to skip sections. Hold dash to boost.
-    if (this.input.wasKeyPressed(CONTROL_KEYS.sandboxFly)) {
+    if (this.input.wasKeyPressed(CONTROL_KEYS.sandboxFly) && !this.coursePowerupKeyConsumed) {
       const flying = !this.player.movement.flying;
       this.player.movement.setFlying(flying);
       this.hud.showScoreEvent(flying ? 'FLY MODE ON' : 'FLY MODE OFF', flying ? 'Look + WASD to fly · G to land' : 'Back on foot', 'neutral');
@@ -3486,6 +3542,11 @@ export class ArenaScene {
     if (!side) return false;
     const position = this.player.root.position.add(new Vector3(side === 'left' ? -0.4 : 0.4, 1.2, 0.3));
     const ball = this.ballManager.createPowerupBall(`practice_${kind}_${Date.now()}`, position, kind);
+    if (this.creatorPowerupsActive) {
+      ball.setWorld(this.creator?.isActive()
+        ? this.creator.ballWorld()
+        : this.movementSandbox?.ballWorld() ?? null);
+    }
     this.ballManager.attachHeldBall(ball, side, position);
     this.player.hands.forceCatchBall(side, ball);
     return true;
@@ -3610,7 +3671,11 @@ export class ArenaScene {
       if (!kind) continue;
 
       if (kind === 'heal' && ball.state !== BallState.Held) {
-        this.practicePowerups.placeHeal(vector3ToVec3(ball.mesh.position), resetSerial);
+        this.practicePowerups.placeHeal({
+          x: ball.mesh.position.x,
+          y: ball.mesh.position.y - GAME_CONSTANTS.ball.radius,
+          z: ball.mesh.position.z
+        }, resetSerial);
         this.player.hands.removeBall(ball);
         this.ballManager.removeBall(ball);
         continue;

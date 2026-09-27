@@ -15,6 +15,10 @@ const neutralInput = (): PlayerInput => ({
 } as PlayerInput);
 
 describe('shockwave launch', () => {
+  it('uses the expanded six-unit blast radius', () => {
+    expect(C.powerup.shockRadius).toBe(6);
+  });
+
   it('loses power linearly with distance and reaches zero at the blast radius', () => {
     const radius = C.powerup.shockRadius;
     expect(shockwaveFalloff(0, radius)).toBe(1);

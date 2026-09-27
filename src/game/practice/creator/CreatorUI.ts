@@ -18,6 +18,7 @@ import {
   CREATOR_LABEL_SIZES,
   CREATOR_MATERIALS,
   CREATOR_MODULES,
+  CREATOR_POWERUP_KINDS,
   CREATOR_TEXTURES,
   TRIGGER_ACTIVATORS,
   TRIGGER_FIRE_MODES,
@@ -168,6 +169,18 @@ const LABEL_SIZE_LABELS: Record<string, string> = {
   small: 'Small',
   medium: 'Medium',
   large: 'Large'
+};
+
+const POWERUP_KIND_LABELS: Record<string, string> = {
+  random: 'Random (mystery)',
+  adrenaline: 'Adrenaline',
+  speed: 'Speed',
+  cannon: 'Cannonball',
+  heal: 'Heal Station',
+  magnet: 'Ball Magnet',
+  bomb: 'Bomb Ball',
+  shock: 'Shockwave',
+  stun: 'Stun'
 };
 
 const TRIGGER_ACTIVATOR_LABELS: Record<string, string> = {
@@ -1158,6 +1171,49 @@ export class CreatorUI {
       powerRow.appendChild(label(obj.type === 'bounce_pad' ? 'Bounce Power ×' : 'Boost Power ×'));
       powerRow.appendChild(this.numberInput(meta.padStrength ?? 1, 0.25, (v) => this.bridge.setSelectedMetadata({ padStrength: v })));
       wrap.appendChild(powerRow);
+    }
+
+    if (obj.type === 'powerup_spawn') {
+      const spec = meta.powerupSpawner ?? {
+        kind: 'random' as const,
+        initialDelaySeconds: 0,
+        respawnSeconds: 20,
+        autoActivate: false
+      };
+      const readSpec = () => this.bridge.getSelectedObject()?.metadata?.powerupSpawner ?? spec;
+      const patch = (next: Partial<NonNullable<CreatorObjectMetadata['powerupSpawner']>>) => {
+        this.bridge.setSelectedMetadata({ powerupSpawner: { ...readSpec(), ...next } });
+      };
+
+      const title = el('div', 'creator-section-title');
+      title.textContent = 'Power-up Spawner';
+      wrap.appendChild(title);
+      wrap.appendChild(this.optionRow(
+        'Power-up',
+        CREATOR_POWERUP_KINDS,
+        spec.kind,
+        POWERUP_KIND_LABELS,
+        (v) => patch({ kind: v as NonNullable<CreatorObjectMetadata['powerupSpawner']>['kind'] })
+      ));
+      wrap.appendChild(this.checkbox('Spawn instantly', spec.initialDelaySeconds <= 0, (instant) => {
+        patch({ initialDelaySeconds: instant ? 0 : Math.max(1, readSpec().respawnSeconds) });
+      }));
+      if (spec.initialDelaySeconds > 0) {
+        wrap.appendChild(this.compactNumberRow('Initial delay s', spec.initialDelaySeconds, 0.5, (v) => {
+          patch({ initialDelaySeconds: Math.max(0, Math.min(600, v)) });
+        }));
+      }
+      wrap.appendChild(this.compactNumberRow('Respawn s', spec.respawnSeconds, 0.5, (v) => {
+        patch({ respawnSeconds: Math.max(0.25, Math.min(600, v)) });
+      }));
+      wrap.appendChild(this.checkbox('Auto-activate on pickup', spec.autoActivate, (v) => {
+        patch({ autoActivate: v });
+      }));
+      const note = el('div', 'creator-meta-note');
+      note.textContent = spec.kind === 'random'
+        ? 'Random boxes keep the question mark and reveal an item after pickup.'
+        : 'Fixed boxes show this item on every face.';
+      wrap.appendChild(note);
     }
 
     this.inspectorEl.appendChild(wrap);

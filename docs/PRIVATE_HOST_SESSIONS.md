@@ -6,8 +6,16 @@ the existing byte relay takes over if negotiation fails or reaches five seconds.
 
 ## Play with a friend
 
-1. Download the [Windows host app](https://github.com/Bruhzingus/StrafeBall/releases/download/private-host-latest/strafeball-host-win32-x64.zip),
-   unzip it, and double-click **Start Private Host.cmd**. The archive includes Node and dependencies.
+1. From the StrafeBall project folder, start the private game server and keep that terminal and your
+   computer running while you play:
+
+   ```sh
+   npm --prefix server run host:private
+   ```
+
+   If this is a fresh download, follow [LOCALHOST_SETUP.md](../LOCALHOST_SETUP.md) first to install
+   Node and the server dependencies. This private-host command works across different networks; it
+   is not the LAN-only local-play command.
 2. The website opens in host mode. Use Chrome and allow local network access when prompted.
    If the browser cannot connect, open **http://localhost:2567** instead. This fallback serves the
    same website through the agent and also requires internet access.

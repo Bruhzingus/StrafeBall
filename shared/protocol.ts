@@ -351,7 +351,13 @@ export type ServerMessage =
     };
 
 /** Identity is sent on a targeted message, never in RoomState. */
-export interface PowerupPrivateMessage { kind: import('./types').PowerupKind | null; resetSerial: number; reason?: string }
+export interface PowerupPrivateMessage {
+  kind: import('./types').PowerupKind | null;
+  resetSerial: number;
+  reason?: string;
+  /** Local fixed-item Creator boxes set this to zero; omitted keeps the normal mystery roulette. */
+  revealSeconds?: number;
+}
 export type PowerupEventEffect =
   | 'spawn' | 'pickup' | 'activate' | 'cannon' | 'thud' | 'beep' | 'explode' | 'heal' | 'armor' | 'place'
   // Grenades: landed/stuck, and the two detonations.

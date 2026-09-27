@@ -96,8 +96,20 @@ export interface MatchSettings {
 export type PowerupKind = 'adrenaline' | 'speed' | 'cannon' | 'heal' | 'magnet' | 'bomb' | 'shock' | 'stun';
 export interface PowerupBuffs { speedSeconds: number; adrenalineSeconds: number; magnetSeconds: number; cannonLocked: boolean; stunSeconds?: number }
 export interface HealStationState { id: string; placerId: string; teamId: string; position: Vec3; remainingSeconds: number; progress: Record<string, number> }
-/** One center-line power-up spawn point. 1v1 has one at (0,0); 2v2 has two, one per side of center. */
-export interface PowerupSpawnState { x: number; z: number; spawned: boolean; waitSeconds: number }
+/**
+ * One power-up spawn point. Online matches only populate x/z and keep the item identity secret.
+ * Local Creator courses may additionally publish their placed height, fixed item identity, and
+ * per-spawner interval so the shared presentation can draw the authored box and countdown.
+ */
+export interface PowerupSpawnState {
+  x: number;
+  z: number;
+  spawned: boolean;
+  waitSeconds: number;
+  y?: number;
+  kind?: PowerupKind;
+  respawnSeconds?: number;
+}
 export interface PowerupWorldState { spawns: PowerupSpawnState[]; stations: HealStationState[] }
 
 /**

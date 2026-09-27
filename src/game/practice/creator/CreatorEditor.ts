@@ -3126,7 +3126,8 @@ function cloneMetadata(metadata: CreatorObjectMetadata | undefined): CreatorObje
   if (!metadata) return undefined;
   return {
     ...metadata,
-    trigger: metadata.trigger ? { ...metadata.trigger } : undefined
+    trigger: metadata.trigger ? { ...metadata.trigger } : undefined,
+    powerupSpawner: metadata.powerupSpawner ? { ...metadata.powerupSpawner } : undefined
   };
 }
 

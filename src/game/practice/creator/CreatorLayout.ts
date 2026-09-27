@@ -25,6 +25,7 @@ import {
 // The committed course layout — the single source of truth the editor opens on AND the live
 // Movement Sandbox renders. Edited locally, then promoted into this file (see committedCourseLayout).
 import committedCourseJson from './layouts/movementCourseLayout.json';
+import type { PowerupKind } from '../../../../shared/types';
 
 // ---------------------------------------------------------------------------------------------
 // Schema
@@ -33,6 +34,23 @@ import committedCourseJson from './layouts/movementCourseLayout.json';
 export const CREATOR_SCHEMA_VERSION = 1;
 
 export type Vec3Tuple = [number, number, number];
+
+export const CREATOR_POWERUP_KINDS = [
+  'random', 'adrenaline', 'speed', 'cannon', 'heal', 'magnet', 'bomb', 'shock', 'stun'
+] as const;
+export type CreatorPowerupKind = typeof CREATOR_POWERUP_KINDS[number];
+
+/** Safe, serializable settings carried by a placed Creator power-up spawner. */
+export interface CreatorPowerupSpawnerSpec {
+  /** Random preserves the normal mystery-box behavior; a concrete kind is shown on the box. */
+  kind: CreatorPowerupKind;
+  /** Zero means the box exists as soon as play starts. */
+  initialDelaySeconds: number;
+  /** Time after pickup before this individual box returns. */
+  respawnSeconds: number;
+  /** Immediately use the selected item on pickup instead of putting it in the G-key slot. */
+  autoActivate: boolean;
+}
 
 /** Creator-picked difficulty preset carried by a course (shown in the project list + exports). */
 export const COURSE_DIFFICULTIES = ['beginner', 'intermediate', 'advanced', 'expert'] as const;
@@ -195,6 +213,8 @@ export interface CreatorObjectMetadata {
   enabled?: boolean;
   /** Ability-pad strength multiplier (bounce launch / speed boost). 1 = default; clamped on apply. */
   padStrength?: number;
+  /** Power-up spawner behavior (powerup_spawn only). */
+  powerupSpawner?: CreatorPowerupSpawnerSpec;
   /**
    * Moving platform (solid terrain only): a deterministic linear ping-pong between the placed
    * position and position+(dx,dy,dz), at `speed` m/s with `pauseSeconds` dwell at each end.
@@ -243,7 +263,9 @@ export const CREATOR_LIMITS = {
   maxLabelOffsetY: 30,
   // Ability-pad strength multiplier bounds (bounce launch / speed boost).
   minPadStrength: 0.1,
-  maxPadStrength: 20
+  maxPadStrength: 20,
+  minPowerupRespawnSeconds: 0.25,
+  maxPowerupSeconds: 600
 } as const;
 
 /** Modern visual alpha for a Creator object. Old `visible:false` layouts migrate to 0 opacity. */
@@ -416,7 +438,8 @@ export type CreatorModuleType =
   | 'trigger_volume'
   | 'bot_spawn'
   | 'target_dummy'
-  | 'ball_spawn';
+  | 'ball_spawn'
+  | 'powerup_spawn';
 
 export const CREATOR_MODULES: readonly CreatorModuleDef[] = [
   // --- Terrain / structure ---
@@ -464,10 +487,12 @@ export const CREATOR_MODULES: readonly CreatorModuleDef[] = [
   // action in the inspector. Purely local/offline, like every other functional module here.
   { type: 'trigger_volume', label: 'Trigger Volume', category: 'pad', shape: 'box', baseSize: [4, 4, 4], material: 'marker_cyan', collision: false, defaultMetadata: { label: 'TRIGGER', triggerSpec: { by: 'player', fire: 'once', action: 'show' } } },
 
-  // --- Optional future-ready markers (metadata only; ignored by the normal sandbox) ---
+  // --- Optional gameplay actors / spawners ---
   { type: 'bot_spawn', label: 'Bot Spawn Marker', category: 'optional', shape: 'pad', baseSize: [2, 0.1, 2], material: 'marker_red', collision: false, defaultMetadata: { yawDeg: 0, label: 'BOT' } },
   { type: 'target_dummy', label: 'Target Dummy Marker', category: 'optional', shape: 'pad', baseSize: [2, 0.1, 2], material: 'marker_red', collision: false, defaultMetadata: { label: 'DUMMY' } },
-  { type: 'ball_spawn', label: 'Ball Spawn Marker', category: 'optional', shape: 'pad', baseSize: [1.6, 0.1, 1.6], material: 'marker_gold', collision: false, defaultMetadata: { label: 'BALL' } }
+  { type: 'ball_spawn', label: 'Ball Spawn Marker', category: 'optional', shape: 'pad', baseSize: [1.6, 0.1, 1.6], material: 'marker_gold', collision: false, defaultMetadata: { label: 'BALL' } },
+  { type: 'powerup_spawn', label: 'Power-up Spawner', category: 'optional', shape: 'pad', baseSize: [1.8, 0.1, 1.8], material: 'marker_cyan', collision: false,
+    defaultMetadata: { label: 'POWER-UP', powerupSpawner: { kind: 'random', initialDelaySeconds: 0, respawnSeconds: 20, autoActivate: false } } }
 ];
 
 const MODULE_BY_TYPE = new Map<string, CreatorModuleDef>(CREATOR_MODULES.map((m) => [m.type, m]));
@@ -851,6 +876,27 @@ function sanitizeMetadata(raw: unknown, def: CreatorModuleDef): CreatorObjectMet
   if (typeof m.padStrength === 'number' && Number.isFinite(m.padStrength)) {
     out.padStrength = clampNumber(m.padStrength, CREATOR_LIMITS.minPadStrength, CREATOR_LIMITS.maxPadStrength, 1);
   }
+  if (m.powerupSpawner && typeof m.powerupSpawner === 'object') {
+    const p = m.powerupSpawner as Record<string, unknown>;
+    out.powerupSpawner = {
+      kind: (CREATOR_POWERUP_KINDS as readonly string[]).includes(String(p.kind))
+        ? p.kind as CreatorPowerupKind
+        : 'random',
+      initialDelaySeconds: clampNumber(
+        p.initialDelaySeconds,
+        0,
+        CREATOR_LIMITS.maxPowerupSeconds,
+        0
+      ),
+      respawnSeconds: clampNumber(
+        p.respawnSeconds,
+        CREATOR_LIMITS.minPowerupRespawnSeconds,
+        CREATOR_LIMITS.maxPowerupSeconds,
+        20
+      ),
+      autoActivate: p.autoActivate === true
+    };
+  }
   if (m.triggerType === 'start' || m.triggerType === 'checkpoint' || m.triggerType === 'finish' || m.triggerType === 'none') {
     out.triggerType = m.triggerType;
   }
@@ -1225,22 +1271,46 @@ export function layoutCourseSpawn(layout: CreatorLayout): { x: number; y: number
   return { x: SANDBOX_CENTER.x, y: Math.max(floorY, 0), z: SANDBOX_CENTER.z, yaw: 0 };
 }
 
-/** World-space positions of a layout's functional spawner markers (balls / bots / target dummies).
+/** World-space positions and settings of a layout's functional spawner markers.
  *  Pure + Babylon-free — shared by the Creator editor's Playtest AND the live Movement Sandbox so a
  *  published course spawns exactly the same actors as a playtest run. */
 export interface CreatorSpawnerMarkers {
   balls: Array<{ x: number; y: number; z: number }>;
   bots: Array<{ x: number; y: number; z: number; charge: boolean }>;
   dummies: Array<{ x: number; y: number; z: number }>;
+  powerups: Array<{
+    x: number;
+    y: number;
+    z: number;
+    kind: PowerupKind | null;
+    initialDelaySeconds: number;
+    respawnSeconds: number;
+    autoActivate: boolean;
+  }>;
 }
 
 export function collectSpawnerMarkers(layout: CreatorLayout): CreatorSpawnerMarkers {
-  const markers: CreatorSpawnerMarkers = { balls: [], bots: [], dummies: [] };
+  const markers: CreatorSpawnerMarkers = { balls: [], bots: [], dummies: [], powerups: [] };
   for (const o of layout.objects) {
     const [x, y, z] = o.position;
     if (o.type === 'ball_spawn') markers.balls.push({ x, y, z });
     else if (o.type === 'bot_spawn') markers.bots.push({ x, y, z, charge: /charge/i.test(o.metadata?.label ?? '') });
     else if (o.type === 'target_dummy') markers.dummies.push({ x, y, z });
+    else if (o.type === 'powerup_spawn') {
+      const spec = o.metadata?.powerupSpawner ?? {
+        kind: 'random' as const,
+        initialDelaySeconds: 0,
+        respawnSeconds: 20,
+        autoActivate: false
+      };
+      markers.powerups.push({
+        x, y, z,
+        kind: spec.kind === 'random' ? null : spec.kind,
+        initialDelaySeconds: Math.max(0, Math.min(CREATOR_LIMITS.maxPowerupSeconds, spec.initialDelaySeconds)),
+        respawnSeconds: Math.max(CREATOR_LIMITS.minPowerupRespawnSeconds, Math.min(CREATOR_LIMITS.maxPowerupSeconds, spec.respawnSeconds)),
+        autoActivate: spec.autoActivate
+      });
+    }
   }
   return markers;
 }

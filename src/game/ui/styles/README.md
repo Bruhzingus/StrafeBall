@@ -68,6 +68,7 @@ Start Vite on port 5173, then run:
 node scripts/theme-review.mjs
 node scripts/team-room-review.mjs
 node scripts/ui-review.mjs
+node scripts/powerup-review.mjs
 node scripts/debug-review.mjs
 npm run typecheck
 ```

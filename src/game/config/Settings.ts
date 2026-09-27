@@ -94,6 +94,7 @@ class SettingsStore {
         lobbyMusicVolume?: unknown;
         battleMusicVolume?: unknown;
         reducedEffects?: unknown;
+        reducedEffectsCustomized?: unknown;
         showScoreboard?: unknown;
         loopClaudesPlan?: unknown;
         devGraphicsTuning?: unknown;
@@ -116,7 +117,10 @@ class SettingsStore {
       if (typeof parsed.battleMusicVolume === 'number' && Number.isFinite(parsed.battleMusicVolume)) {
         this.battleMusicVolume = clamp(parsed.battleMusicVolume, 0, 1);
       }
-      if (typeof parsed.reducedEffects === 'boolean') {
+      // Older saves wrote the default `false` even when the player only changed audio or controls.
+      // Treat that legacy value as unset so the new Competitive default can take effect.
+      if (typeof parsed.reducedEffects === 'boolean'
+        && (parsed.reducedEffectsCustomized === true || parsed.reducedEffects)) {
         this.reducedEffectsOverride = parsed.reducedEffects;
         this.reducedEffects = parsed.reducedEffects;
       }
@@ -142,6 +146,7 @@ class SettingsStore {
         lobbyMusicVolume: this.lobbyMusicVolume,
         battleMusicVolume: this.battleMusicVolume,
         reducedEffects: this.reducedEffectsOverride,
+        reducedEffectsCustomized: this.reducedEffectsOverride === undefined ? undefined : true,
         showScoreboard: this.showScoreboard,
         loopClaudesPlan: this.loopClaudesPlan,
         devGraphicsTuning: this.devGraphicsTuning

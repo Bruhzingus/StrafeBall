@@ -411,7 +411,7 @@ export const GAME_CONSTANTS = {
     // Shockwave: pure displacement, no damage. The player impulse ADDS to existing horizontal and
     // rising momentum, so a point-blank, correctly aligned jump can launch clear across the court.
     // Standing mats in range are knocked flat and interrupted actions are cancelled.
-    shockRadius: 5,
+    shockRadius: 6,
     shockPlayerSpeed: 50.4,
     shockPlayerLift: 12.6,
     shockBallSpeed: 29.4,

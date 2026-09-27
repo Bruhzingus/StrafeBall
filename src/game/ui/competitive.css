@@ -175,12 +175,13 @@ body { font-family: var(--sb-ui-font); }
 /* Item label is deliberately separate from permanent controls. */
 .powerup-dock {
   --power-color: #62bdff;
+  --power-edge: 3px;
   position: absolute; right: var(--sb-safe-x); bottom: var(--sb-safe-y);
-  display: flex; align-items: center; gap: 10px; width: 236px;
+  display: flex; align-items: center; gap: 10px; width: 236px; min-height: 56px;
   padding: 10px 12px; border-radius: var(--sb-radius);
-  background: var(--sb-surface); border-left: 3px solid var(--power-color);
+  background: var(--sb-surface); border-left: var(--power-edge) solid var(--power-color);
   color: var(--sb-cream); box-shadow: var(--sb-shadow);
-  transition: width 160ms ease, border-color 160ms ease;
+  transition: border-color 160ms ease;
 }
 .powerup-dock[hidden] { display: none; }
 .powerup-dock .ability-hud-card { width: 44px; height: 56px; padding: 0; display: flex; flex-direction: column; gap: 3px; flex: 0 0 44px; border: 0; background: none; box-shadow: none; }
@@ -191,29 +192,56 @@ body { font-family: var(--sb-ui-font); }
 }
 .powerup-dock .ability-icon { width: 36px; height: 36px; border-radius: 50%; background: var(--sb-navy); }
 .powerup-dock .ability-powerup-glyph { font-size: 31px; line-height: 1; color: var(--power-color); animation: none; filter: none; }
+.powerup-icon { display: inline-block; width: 32px; height: 32px; flex: none; vertical-align: middle; }
+.ability-powerup-glyph { display: grid; place-items: center; }
+.ability-powerup-glyph .powerup-icon { width: 28px; height: 28px; }
 .powerup-dock .ability-keybind { align-self: center; }
 .powerup-dock .ability-keybind:empty, .powerup-dock .ability-status { display: none; }
 .powerup-dock .ability-powerup-text { width: auto; min-width: 0; padding: 0; border: 0; flex: 1; }
 .powerup-dock .ability-powerup-name { color: var(--sb-cream); font: 750 13px/1.25 var(--sb-ui-font); letter-spacing: .035em; text-shadow: none; }
 .powerup-dock .ability-powerup-hint { margin-top: 4px; color: #c2c9d2; font: 400 12px/1.4 var(--sb-ui-font); }
-.powerup-dock[data-state='waiting'], .powerup-dock[data-state='empty'] { width: auto; min-width: 140px; border-left-color: var(--sb-muted); padding: 8px 12px; }
+.powerup-dock[data-state='waiting'], .powerup-dock[data-state='empty'] { width: auto; min-width: 140px; min-height: 0; border-left-color: var(--sb-muted); padding: 8px 12px; }
 .powerup-dock[data-state='empty'] { border-left-color: #62bdff; }
 .powerup-dock[data-state='waiting'] .ability-hud-card, .powerup-dock[data-state='empty'] .ability-hud-card { display: none; }
 .powerup-dock[data-state='waiting'] .ability-powerup-name, .powerup-dock[data-state='empty'] .ability-powerup-name { color: var(--sb-muted); font-size: 10px; text-transform: uppercase; }
-.powerup-dock--acquired { animation: sb-item-in 200ms var(--sb-ease); }
-.powerup-dock[data-state='rolling'] { width: min(282px, calc(100vw - 20px)); min-height: 82px; border-left-width: 5px; box-shadow: var(--sb-shadow), 0 0 23px color-mix(in srgb, var(--power-color), transparent 72%); }
-.powerup-dock[data-state='rolling'] .ability-hud-card { width: 60px; height: 66px; flex-basis: 60px; }
-.powerup-dock[data-state='rolling'] .ability-ring { width: 56px; height: 56px; padding: 3px; }
-.powerup-dock[data-state='rolling'] .ability-icon { width: 50px; height: 50px; }
-.powerup-dock[data-state='rolling'] .ability-powerup-glyph { font-size: 39px; animation: sb-roulette-pop 90ms ease-out; }
-.powerup-dock[data-state='rolling'] .ability-powerup-name { color: #91d5ff; }
-@keyframes sb-roulette-pop { from { transform: translateY(-7px) scale(.85); opacity: .45; } to { transform: translateY(0) scale(1); opacity: 1; } }
-@media (prefers-reduced-motion: reduce) {
-  .powerup-dock, .powerup-dock[data-state='rolling'] .ability-powerup-glyph { transition: none; animation: none; }
+.powerup-roulette {
+  --slot-color: #62bdff;
+  position: absolute; right: calc(100% + var(--power-edge)); top: 0; bottom: 0;
+  box-sizing: border-box; width: 0; overflow: hidden;
+  border: 0 solid transparent; border-radius: var(--sb-radius) 0 0 var(--sb-radius);
+  background: var(--sb-surface); box-shadow: 0 5px 16px rgba(0, 0, 0, .2);
+  opacity: 0; pointer-events: none;
+  transition: width 220ms var(--sb-ease), opacity 170ms ease, border-color 170ms ease;
 }
-.powerup-dock--expiring { border-left-width: 5px; }
+.powerup-dock[data-selection-state='rolling'] .powerup-roulette,
+.powerup-dock[data-selection-state='held'] .powerup-roulette {
+  width: 64px; border-width: 1px 0 1px 2px; border-color: var(--slot-color); opacity: 1;
+}
+.powerup-dock[data-selection-state='rolling'], .powerup-dock[data-selection-state='held'] {
+  border-top-left-radius: 0; border-bottom-left-radius: 0;
+}
+.powerup-roulette__reel {
+  position: absolute; top: 50%; left: 50%; width: 44px; height: 44px;
+  transform: translate(-50%, -50%); overflow: hidden;
+}
+.powerup-dock[data-selection-state='held'] .powerup-roulette__reel { top: calc(50% - 7px); }
+.powerup-roulette__key {
+  position: absolute; bottom: 7px; left: 50%; transform: translateX(-50%);
+  min-width: 17px; padding: 1px 3px; border: 1px solid var(--sb-muted); border-radius: 3px;
+  color: var(--sb-cream); text-align: center; font: 700 9px/1.1 var(--sb-ui-font);
+}
+.powerup-roulette__key:empty { display: none; }
+.powerup-roulette__glyph {
+  position: absolute; display: grid; place-items: center; width: 44px; height: 44px;
+  color: var(--slot-color);
+}
+.powerup-roulette__glyph .powerup-icon { width: 34px; height: 34px; }
+.powerup-roulette__glyph--previous { opacity: 0; }
+@media (prefers-reduced-motion: reduce) {
+  .powerup-roulette { transition: none !important; }
+}
+.powerup-dock--expiring { --power-edge: 5px; }
 .powerup-dock--expiring .ability-powerup-hint { color: var(--sb-gold); }
-@keyframes sb-item-in { from { opacity: 0; transform: translateY(6px); } to { opacity: 1; transform: translateY(0); } }
 
 /* The reticle keeps its aim point and size in every state. */
 .crosshair { width: 14px; height: 14px; filter: none; transition: none; }
@@ -301,6 +329,7 @@ body[data-hud-mode='practice']:not([data-playing='true']) .hud-bottom-right {
 .qte-label { font: 700 11px var(--sb-ui-font); color: var(--sb-cream); background: var(--sb-surface); border-radius: 3px; padding: 4px; -webkit-text-stroke: 0; }
 .neutral-zone-label { top: auto; bottom: calc(var(--sb-safe-y) + 104px); right: var(--sb-safe-x); left: auto; transform: none; color: var(--sb-cream); background: var(--sb-surface); padding: 4px 8px; border-radius: 3px; font: 600 10px var(--sb-ui-font); text-shadow: none; }
 .map-effect-banner { top: calc(var(--sb-scoreboard-bottom, 150px) + 56px); border: 0; border-left: 3px solid var(--sb-gold); border-radius: 3px; box-shadow: none; background: var(--sb-surface); font-family: var(--sb-ui-font); }
+.map-effect-banner .powerup-icon { width: 25px; height: 25px; margin-right: 6px; }
 .powerup-screen-fx[data-kind='moon'] { animation: powerup-fx-breathe 3.5s ease-in-out infinite; }
 .powerup-screen-fx[data-kind='frenzy'] { animation: powerup-fx-breathe .8s ease-in-out infinite; }
 .nametag { font-family: var(--sb-ui-font); font-size: 12px; max-width: 180px; overflow: hidden; text-overflow: ellipsis; box-shadow: none; border-radius: 3px; }
@@ -326,7 +355,15 @@ body[data-hud-mode='practice']:not([data-playing='true']) .hud-bottom-right {
   .half-court-warning { bottom: calc(var(--sb-safe-y) + 103px); }
   .hud-bottom-right { display: none !important; }
 }
+@media (max-width: 380px) {
+  /* Give the full-height item extension its own row above the permanent controls. */
+  .ability-speed { bottom: calc(var(--sb-safe-y) + 190px); }
+}
 body[data-reduced-effects='true'] .hud *, body[data-reduced-effects='true'] .hud *::before, body[data-reduced-effects='true'] .hud *::after { animation: none !important; transition: none !important; }
+body[data-reduced-effects='true'] .hud .powerup-roulette {
+  transition: width 220ms var(--sb-ease), opacity 170ms ease, border-color 170ms ease !important;
+}
 @media (prefers-reduced-motion: reduce) {
+  body[data-reduced-effects='true'] .hud .powerup-roulette { transition: none !important; }
   *, *::before, *::after { animation-duration: .01ms !important; animation-iteration-count: 1 !important; transition-duration: .01ms !important; }
 }

@@ -140,4 +140,36 @@ describe('PracticePowerupSpawner', () => {
     }
     expect(spawner.takeGrenadeAfterThrow('shock')).toBeNull();
   });
+
+  it('supports fixed, elevated course spawners with independent initial and respawn delays', () => {
+    const spawner = new PracticePowerupSpawner(() => 0.99);
+    spawner.configureSpawns([{
+      x: 10, y: 5, z: 20, kind: 'speed', initialDelaySeconds: 2, respawnSeconds: 3, autoActivate: false
+    }]);
+    const spawn = spawner.world.spawns[0];
+    expect(spawn).toMatchObject({ x: 10, y: 5, z: 20, kind: 'speed', spawned: false, waitSeconds: 2 });
+
+    spawner.update(2, { x: 10, y: 0, z: 20 });
+    expect(spawn.spawned).toBe(true);
+    expect(spawner.identity).toBeNull();
+
+    spawner.update(0, { x: 10, y: 5, z: 20 }, 8);
+    expect(spawner.identity).toEqual({ kind: 'speed', resetSerial: 8, revealSeconds: 0 });
+    expect(spawn).toMatchObject({ spawned: false, waitSeconds: 3, respawnSeconds: 3 });
+  });
+
+  it('can start instantly and auto-activate the selected power-up on pickup', () => {
+    const spawner = new PracticePowerupSpawner();
+    spawner.configureSpawns([{
+      x: 2, y: 0, z: 4, kind: 'adrenaline', initialDelaySeconds: 0, respawnSeconds: 6, autoActivate: true
+    }]);
+    expect(spawner.world.spawns[0].spawned).toBe(true);
+
+    spawner.update(0, { x: 2, y: 0, z: 4 }, 9);
+
+    expect(spawner.hasPowerup).toBe(false);
+    expect(spawner.buffs.adrenalineSeconds).toBe(C.powerup.buffSeconds);
+    expect(spawner.drainAutoActivations()).toEqual(['adrenaline']);
+    expect(spawner.drainEvents().map(event => event.effect)).toEqual(['pickup', 'activate']);
+  });
 });

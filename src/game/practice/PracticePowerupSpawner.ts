@@ -7,6 +7,26 @@ const HAND_ITEMS: PowerupKind[] = ['cannon', 'heal', 'bomb', 'shock', 'stun'];
 const SPAWN_HEIGHT = 1;
 type GrenadeKind = Extract<PowerupKind, 'shock' | 'stun'>;
 
+export interface PracticePowerupSpawnConfig {
+  x: number;
+  y?: number;
+  z: number;
+  /** Null means the normal random mystery roll. */
+  kind: PowerupKind | null;
+  initialDelaySeconds: number;
+  respawnSeconds: number;
+  autoActivate: boolean;
+}
+
+const DEFAULT_SPAWN: PracticePowerupSpawnConfig = {
+  x: 0,
+  z: 0,
+  kind: null,
+  initialDelaySeconds: C.powerup.respawnSeconds,
+  respawnSeconds: C.powerup.respawnSeconds,
+  autoActivate: false
+};
+
 /**
  * Local practice has no authoritative room, so this owns its spawn clock and walk-over inventory.
  * Its public state and pickup messages deliberately mirror the online PowerupSystem contract so the
@@ -20,6 +40,9 @@ export class PracticePowerupSpawner {
   private heldKind: PowerupKind | null = null;
   private rollRemaining = 0;
   private respawnSeconds: number = C.powerup.respawnSeconds;
+  private spawnConfigs: PracticePowerupSpawnConfig[] = [{ ...DEFAULT_SPAWN }];
+  private usingDefaultSpawn = true;
+  private autoActivatedKinds: PowerupKind[] = [];
   private queuedGrenadeKind: GrenadeKind | null = null;
   private queuedGrenades = 0;
   private privateMessage: PowerupPrivateMessage | null = null;
@@ -42,19 +65,63 @@ export class PracticePowerupSpawner {
     return this.queuedGrenades;
   }
 
+  get hasPowerup(): boolean {
+    return this.heldKind !== null;
+  }
+
+  /** Replace center court with the authored course spawners. An empty list disables local spawns. */
+  configureSpawns(configs: readonly PracticePowerupSpawnConfig[]): void {
+    this.usingDefaultSpawn = false;
+    this.spawnConfigs = configs.map(config => ({
+      x: Number.isFinite(config.x) ? config.x : 0,
+      y: config.y !== undefined && Number.isFinite(config.y) ? config.y : undefined,
+      z: Number.isFinite(config.z) ? config.z : 0,
+      kind: config.kind,
+      initialDelaySeconds: Math.max(0, Number.isFinite(config.initialDelaySeconds) ? config.initialDelaySeconds : 0),
+      respawnSeconds: Math.max(0.25, Number.isFinite(config.respawnSeconds) ? config.respawnSeconds : C.powerup.respawnSeconds),
+      autoActivate: config.autoActivate === true
+    }));
+    this.clearRuntimeState();
+    this.world.spawns = this.spawnConfigs.map(config => ({
+      x: config.x,
+      ...(config.y !== undefined ? { y: config.y } : {}),
+      z: config.z,
+      ...(config.kind ? { kind: config.kind } : {}),
+      respawnSeconds: config.initialDelaySeconds > 0 ? config.initialDelaySeconds : config.respawnSeconds,
+      spawned: config.initialDelaySeconds <= 0,
+      waitSeconds: config.initialDelaySeconds
+    }));
+  }
+
+  /** Restore the ordinary delayed random center-court box used by the practice gym. */
+  configureDefaultSpawn(): void {
+    this.usingDefaultSpawn = true;
+    const config = {
+      ...DEFAULT_SPAWN,
+      initialDelaySeconds: this.respawnSeconds,
+      respawnSeconds: this.respawnSeconds
+    };
+    this.spawnConfigs = [config];
+    this.clearRuntimeState();
+    this.world.spawns = [{ x: 0, z: 0, spawned: false, waitSeconds: this.respawnSeconds }];
+  }
+
   /**
    * Practice lobby setting for quick iteration. It affects this countdown immediately and all
    * subsequent respawns, but never removes a power-up that is already waiting at center court.
    */
   setFastRespawnEnabled(enabled: boolean): void {
     this.respawnSeconds = enabled ? 2 : C.powerup.respawnSeconds;
+    if (!this.usingDefaultSpawn) return;
+    this.spawnConfigs[0].respawnSeconds = this.respawnSeconds;
+    this.spawnConfigs[0].initialDelaySeconds = this.respawnSeconds;
     if (!enabled) return;
     for (const spawn of this.world.spawns) {
       if (!spawn.spawned) spawn.waitSeconds = Math.min(spawn.waitSeconds, this.respawnSeconds);
     }
   }
 
-  update(dt: number, playerPosition?: Vec3, resetSerial = 0): void {
+  update(dt: number, playerPosition?: Vec3, resetSerial = 0, hasFreeHand = true): void {
     const elapsed = Math.max(0, dt);
     this.rollRemaining = Math.max(0, this.rollRemaining - elapsed);
     if (this.rollRemaining < 1e-6) this.rollRemaining = 0;
@@ -62,7 +129,10 @@ export class PracticePowerupSpawner {
     this.buffs.adrenalineSeconds = Math.max(0, this.buffs.adrenalineSeconds - elapsed);
     this.buffs.magnetSeconds = Math.max(0, this.buffs.magnetSeconds - elapsed);
     this.buffs.stunSeconds = Math.max(0, (this.buffs.stunSeconds ?? 0) - elapsed);
-    for (const spawn of this.world.spawns) {
+    let pickedUp = false;
+    for (let spawnIndex = 0; spawnIndex < this.world.spawns.length; spawnIndex += 1) {
+      const spawn = this.world.spawns[spawnIndex];
+      const config = this.spawnConfigs[spawnIndex] ?? DEFAULT_SPAWN;
       if (!spawn.spawned) {
         spawn.waitSeconds = Math.max(0, spawn.waitSeconds - elapsed);
         if (spawn.waitSeconds <= 1e-7) {
@@ -71,22 +141,31 @@ export class PracticePowerupSpawner {
           this.events.push(this.event('spawn', spawn, resetSerial));
         }
       }
-      if (!spawn.spawned || this.heldKind || !playerPosition) continue;
+      if (!spawn.spawned || this.heldKind || !playerPosition || pickedUp) continue;
       if (Math.hypot(playerPosition.x - spawn.x, playerPosition.z - spawn.z) > C.powerup.pickupRadius) continue;
+      if (config.y !== undefined && Math.abs(playerPosition.y - config.y) > C.powerup.pickupRadius * 1.5) continue;
 
       const index = Math.min(KINDS.length - 1, Math.floor(this.rng() * KINDS.length));
-      this.heldKind = KINDS[Math.max(0, index)];
-      this.rollRemaining = C.powerup.rollSeconds;
-      this.privateMessage = { kind: this.heldKind, resetSerial };
+      this.heldKind = config.kind ?? KINDS[Math.max(0, index)];
+      // A labelled fixed box has nothing to reveal. Random boxes retain the normal roulette delay.
+      this.rollRemaining = config.kind ? 0 : C.powerup.rollSeconds;
+      this.privateMessage = { kind: this.heldKind, resetSerial, ...(config.kind ? { revealSeconds: 0 } : {}) };
       spawn.spawned = false;
-      spawn.waitSeconds = this.respawnSeconds;
+      spawn.waitSeconds = config.respawnSeconds;
+      spawn.respawnSeconds = config.respawnSeconds;
       this.events.push(this.event('pickup', spawn, resetSerial));
+      pickedUp = true;
+      if (config.autoActivate) {
+        this.rollRemaining = 0;
+        const activation = this.activate(hasFreeHand, playerPosition, resetSerial);
+        if (activation.ok) this.autoActivatedKinds.push(activation.kind);
+      }
     }
 
     for (const station of this.world.stations) {
       station.remainingSeconds = Math.max(0, station.remainingSeconds - elapsed);
       const inRange = !!playerPosition
-        && playerPosition.y < 0.1
+        && Math.abs(playerPosition.y - station.position.y) <= 1.25
         && Math.hypot(playerPosition.x - station.position.x, playerPosition.z - station.position.z) <= C.powerup.healRadius;
       station.progress.practice = inRange ? (station.progress.practice ?? 0) + elapsed : 0;
       if (station.progress.practice + 1e-7 >= C.powerup.healSeconds && station.remainingSeconds > 0) {
@@ -135,11 +214,11 @@ export class PracticePowerupSpawner {
       id: 'practice_heal_station',
       placerId: 'practice',
       teamId: 'practice',
-      position: { x: position.x, y: 0, z: position.z },
+      position: { ...position },
       remainingSeconds: C.powerup.stationLifetimeSeconds,
       progress: {}
     }];
-    this.events.push({ type: 'powerup-event', effect: 'place', position: { ...position, y: 0 }, playerId: 'practice', resetSerial });
+    this.events.push({ type: 'powerup-event', effect: 'place', position: { ...position }, playerId: 'practice', resetSerial });
   }
 
   applyStun(seconds = C.powerup.stunSeconds): void {
@@ -156,11 +235,29 @@ export class PracticePowerupSpawner {
     return events;
   }
 
+  drainAutoActivations(): PowerupKind[] {
+    const kinds = this.autoActivatedKinds;
+    this.autoActivatedKinds = [];
+    return kinds;
+  }
+
   reset(): void {
+    this.clearRuntimeState();
+    for (let i = 0; i < this.world.spawns.length; i += 1) {
+      const spawn = this.world.spawns[i];
+      const config = this.spawnConfigs[i] ?? DEFAULT_SPAWN;
+      spawn.spawned = config.initialDelaySeconds <= 0;
+      spawn.waitSeconds = config.initialDelaySeconds;
+      spawn.respawnSeconds = config.initialDelaySeconds > 0 ? config.initialDelaySeconds : config.respawnSeconds;
+    }
+  }
+
+  private clearRuntimeState(): void {
     this.heldKind = null;
     this.rollRemaining = 0;
     this.privateMessage = null;
     this.events = [];
+    this.autoActivatedKinds = [];
     this.queuedGrenadeKind = null;
     this.queuedGrenades = 0;
     this.buffs.speedSeconds = 0;
@@ -169,17 +266,13 @@ export class PracticePowerupSpawner {
     this.buffs.cannonLocked = false;
     this.buffs.stunSeconds = 0;
     this.world.stations = [];
-    for (const spawn of this.world.spawns) {
-      spawn.spawned = false;
-      spawn.waitSeconds = this.respawnSeconds;
-    }
   }
 
   private event(effect: PowerupEvent['effect'], spawn: PowerupWorldState['spawns'][number], resetSerial: number): PowerupEvent {
     return {
       type: 'powerup-event',
       effect,
-      position: { x: spawn.x, y: SPAWN_HEIGHT, z: spawn.z },
+      position: { x: spawn.x, y: (spawn.y ?? 0) + SPAWN_HEIGHT, z: spawn.z },
       playerId: effect === 'pickup' ? 'practice' : undefined,
       resetSerial
     };

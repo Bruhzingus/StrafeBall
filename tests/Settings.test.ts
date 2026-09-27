@@ -147,6 +147,13 @@ describe('effects defaults by graphics preset', () => {
     expect(settings.reducedEffects).toBe(false);
   });
 
+  it('migrates a previously saved default false to the selected preset default', async () => {
+    const { settings } = await loadSettings('performance', { reducedEffects: false, sfxVolume: 0.6 });
+    expect(settings.reducedEffects).toBe(true);
+    settings.applyGraphicsDefaults('polished');
+    expect(settings.reducedEffects).toBe(false);
+  });
+
   it('does not turn an unrelated settings save into an explicit effects override', async () => {
     const { settings, storage } = await loadSettings('performance');
     settings.setSfxVolume(0.6);
@@ -163,6 +170,7 @@ describe('effects defaults by graphics preset', () => {
     expect(settings.reducedEffects).toBe(value);
     const saved = JSON.parse(storage.getItem('strafeball.settings.v1') ?? '{}');
     expect(saved.reducedEffects).toBe(value);
+    expect(saved.reducedEffectsCustomized).toBe(true);
     const reloaded = await loadSettings('performance', saved);
     expect(reloaded.settings.reducedEffects).toBe(value);
   });

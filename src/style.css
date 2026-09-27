@@ -6099,6 +6099,18 @@ html, body {
 .multiplayer-host-help summary, .multiplayer-connection-options summary { cursor: pointer; }
 .multiplayer-host-help a { color: #2152b3; text-decoration: underline; }
 .multiplayer-host-help p, .multiplayer-connection-options p { margin: 8px 0; }
+.multiplayer-host-command {
+  display: block;
+  padding: 7px 9px;
+  overflow-x: auto;
+  border: 1px solid rgba(24, 43, 77, 0.22);
+  border-radius: 4px;
+  background: rgba(24, 43, 77, 0.07);
+  color: inherit;
+  font: 600 11px/1.4 monospace;
+  white-space: nowrap;
+  user-select: text;
+}
 .multiplayer-connection-options input { width: auto; }
 .multiplayer-modal--host-session .multiplayer-room {
   font-family: monospace;
@@ -6138,15 +6150,6 @@ html, body {
 
 .ability-hud-card--powerup-empty .ability-ring {
   --ability-ring-color: rgba(255, 207, 46, 0.55);
-}
-
-.ability-hud-card--powerup-rolling .ability-powerup-glyph {
-  animation: ability-powerup-roll 0.12s steps(2) infinite;
-}
-
-@keyframes ability-powerup-roll {
-  from { transform: translateY(-2px); opacity: 0.7; }
-  to { transform: translateY(2px); opacity: 1; }
 }
 
 .ability-powerup-text {

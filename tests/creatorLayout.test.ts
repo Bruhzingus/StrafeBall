@@ -424,6 +424,9 @@ describe('CreatorLayout — collectSpawnerMarkers (shared playtest ↔ live-yard
         { type: 'bot_spawn', position: [7, 5, 9], metadata: { label: 'Charge Bot' } },
         { type: 'bot_spawn', position: [10, 0, 12], metadata: { label: 'quick' } },
         { type: 'target_dummy', position: [13, 8, 15] },
+        { type: 'powerup_spawn', position: [16, 4, 18], metadata: { powerupSpawner: {
+          kind: 'speed', initialDelaySeconds: 3, respawnSeconds: 7.5, autoActivate: true
+        } } },
         { type: 'long_wall', position: [0, 0, 20] } // non-spawner: ignored
       ]
     }).layout;
@@ -438,11 +441,26 @@ describe('CreatorLayout — collectSpawnerMarkers (shared playtest ↔ live-yard
       { x: 10, y: 0, z: 12, charge: false }
     ]);
     expect(markers.dummies).toEqual([{ x: 13, y: 8, z: 15 }]);
+    expect(markers.powerups).toEqual([{
+      x: 16, y: 4, z: 18, kind: 'speed', initialDelaySeconds: 3, respawnSeconds: 7.5, autoActivate: true
+    }]);
   });
 
   it('returns empty marker sets for a layout with no spawners', () => {
     const markers = collectSpawnerMarkers(defaultCreatorLayout());
-    expect(markers.balls.length + markers.bots.length + markers.dummies.length).toBe(0);
+    expect(markers.balls.length + markers.bots.length + markers.dummies.length + markers.powerups.length).toBe(0);
+  });
+
+  it('sanitizes power-up spawner settings and preserves random as an anonymous box', () => {
+    const layout = validateLayout({ objects: [
+      { type: 'powerup_spawn', position: [1, 2, 3], metadata: { powerupSpawner: {
+        kind: 'not-real', initialDelaySeconds: -5, respawnSeconds: 9999, autoActivate: 'yes'
+      } } }
+    ] }).layout;
+    const marker = collectSpawnerMarkers(layout).powerups[0];
+    expect(marker).toEqual({
+      x: 1, y: 2, z: 3, kind: null, initialDelaySeconds: 0, respawnSeconds: 600, autoActivate: false
+    });
   });
 });
 

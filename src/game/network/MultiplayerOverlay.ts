@@ -158,9 +158,11 @@ export class MultiplayerOverlay {
               <button class="multiplayer-create">CREATE ROOM</button>
               <details class="multiplayer-host-help" data-no-lock>
                 <summary>Host on your computer</summary>
-                <p>Download and unzip the Windows host app, then run <b>Start Private Host.cmd</b>. Keep it running while you play. Your friends only need this website.</p>
-                <p><a href="https://github.com/Bruhzingus/StrafeBall/releases/download/private-host-latest/strafeball-host-win32-x64.zip" target="_blank" rel="noopener">Download host app (Windows)</a></p>
-                <p><a href="https://strafeball.xyz/?host=1">Connect to my host app</a> · <a href="http://localhost:2567/" target="_blank" rel="noopener">Open localhost fallback</a></p>
+                <p>Run the private game server from the StrafeBall folder on your computer:</p>
+                <code class="multiplayer-host-command">npm --prefix server run host:private</code>
+                <p>Keep that terminal and your computer running while you play. Then connect below, create a match, and send the <b>HOST-...</b> code to your friends. They can join from any network using this website&mdash;this is not limited to your LAN.</p>
+                <p><a href="https://github.com/Bruhzingus/StrafeBall/archive/refs/heads/main.zip">Download StrafeBall (.zip)</a> &middot; <a href="https://github.com/Bruhzingus/StrafeBall/blob/main/LOCALHOST_SETUP.md" target="_blank" rel="noopener">Setup guide</a></p>
+                <p><a href="https://strafeball.xyz/?host=1">Connect to my private server</a> · <a href="http://localhost:2567/" target="_blank" rel="noopener">Open localhost fallback</a></p>
                 <p class="multiplayer-host-status"></p>
               </details>
             </div>

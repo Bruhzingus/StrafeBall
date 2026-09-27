@@ -6,23 +6,14 @@ import { lavaMaxHeight } from '../../../shared/simulation/MapEffectSim';
 import type { PowerupEvent, PowerupPrivateMessage } from '../../../shared/protocol';
 import { SoundManager } from '../audio/SoundManager';
 import { settings } from '../config/Settings';
-import type { Hud, PowerupSlotView } from '../ui/Hud';
+import type { Hud } from '../ui/Hud';
+import { powerupIconMarkup } from '../ui/PowerupIcons';
+import { buildPowerupHudView, POWERUP_ITEMS as ITEMS } from './PowerupHudView';
 
-const ITEMS: Record<PowerupKind, { name: string; icon: string; color: string; hint: string }> = {
-  adrenaline: { name: 'ADRENALINE', icon: 'ϟ', color: '#ffce65', hint: '6 dash charges · faster recharge · 15s' },
-  speed: { name: 'SPEED', icon: '»', color: '#75e6ff', hint: '+30% speed · higher jumps · 15s' },
-  cannon: { name: 'CANNONBALL', icon: '●', color: '#b9c5d8', hint: 'Hold to full charge for range · weak if released early' },
-  heal: { name: 'HEAL STATION', icon: '+', color: '#7fffb2', hint: 'Place with throw · stay 10s to heal' },
-  magnet: { name: 'BALL MAGNET', icon: '∩', color: '#ce9aff', hint: 'Pull loose balls · up to 3 armor · 20s' },
-  bomb: { name: 'BOMB BALL', icon: '✹', color: '#ffad73', hint: 'First bounce starts a 2s fuse · hits everyone' },
-  shock: { name: 'SHOCKWAVE', icon: '◎', color: '#8ef1ff', hint: `Sticks where it lands · launches players & balls · ×${C.powerup.grenadeCharges}` },
-  stun: { name: 'STUN', icon: '✦', color: '#fff29a', hint: `Sticks where it lands · dazes everyone near it · ×${C.powerup.grenadeCharges}` }
-};
-
-const MAP_EFFECTS: Record<MapEffectKind, { name: string; warning: string; color: string; icon: string }> = {
-  moon: { name: 'MOON GRAVITY', warning: 'Gravity is about to drop', color: '#c9d6ff', icon: '☾' },
-  lava: { name: "DON'T TOUCH THE LAVA", warning: 'Lava is rising — get to high ground!', color: '#ff6a2a', icon: '♨' },
-  frenzy: { name: 'BALL FRENZY', warning: 'Triple balls · nothing dies on a bounce', color: '#ffd24a', icon: '※' }
+const MAP_EFFECTS: Record<MapEffectKind, { name: string; warning: string; color: string }> = {
+  moon: { name: 'MOON GRAVITY', warning: 'Gravity is about to drop', color: '#c9d6ff' },
+  lava: { name: "DON'T TOUCH THE LAVA", warning: 'Lava is rising — get to high ground!', color: '#ff6a2a' },
+  frenzy: { name: 'BALL FRENZY', warning: 'Triple balls · nothing dies on a bounce', color: '#ffd24a' }
 };
 const PICKUP_BLUE = '#62bdff';
 const ROLL_TIMES = [0, 0.085, 0.17, 0.26, 0.36, 0.47, 0.59, 0.72, 0.87, 1.04, 1.23, 1.46];
@@ -48,6 +39,8 @@ export interface PowerupPresentationRoom {
   practiceBuffs?: PowerupBuffs;
   practicePlayerId?: string;
   practiceGrenade?: { kind: 'shock' | 'stun'; hand: 'left' | 'right'; remaining: number };
+  practiceHandItems?: { kind: PowerupKind; hand: 'left' | 'right'; remaining?: number }[];
+  practiceArmorCount?: number;
   settings: Pick<RoomState['settings'], 'powerupsEnabled'>;
   powerups?: PowerupWorldState;
   resetVote: Pick<RoomState['resetVote'], 'resetSerial'>;
@@ -197,7 +190,15 @@ export function bombBeepFlash(fuseSeconds: number): number {
   return Math.max(0, 1 - sinceBeep / 0.18);
 }
 
-interface SpawnNode { root: TransformNode; box: TransformNode; ring: Mesh[]; waitEstimate: number; lastWait: number }
+interface SpawnNode {
+  root: TransformNode;
+  box: TransformNode;
+  faces: Mesh[];
+  ring: Mesh[];
+  waitEstimate: number;
+  lastWait: number;
+  displayKind?: PowerupKind;
+}
 
 export class PowerupPresentation {
   private spawnNodes: SpawnNode[] = [];
@@ -267,16 +268,13 @@ export class PowerupPresentation {
     const shell = attach(MeshBuilder.CreateBox('mystery_shell', { size: 0.62 }, scene), box, dark);
     shell.enableEdgesRendering(); shell.edgesWidth = 2; shell.edgesColor.set(0.38, 0.74, 1, 1);
     for (const y of [-0.31, 0.31]) attach(MeshBuilder.CreateBox('mystery_trim', { width: 0.68, height: 0.045, depth: 0.68 }, scene), box, blue, new Vector3(0, y, 0));
-    const faceMat = material(scene, 'power_question', '#ffffff', 0.8);
-    if (!faceMat.diffuseTexture) {
-      const tex = new DynamicTexture('mystery_question', { width: 128, height: 128 }, scene, false);
-      tex.drawText('?', null, 102, 'bold 110px sans-serif', '#a7e4ff', '#182c46', true);
-      faceMat.diffuseTexture = tex; faceMat.emissiveTexture = tex;
-    }
+    const faceMat = this.spawnFaceMaterial();
+    const faces: Mesh[] = [];
     for (let i = 0; i < 4; i++) {
       const face = attach(MeshBuilder.CreatePlane('mystery_face', { size: 0.48 }, scene), box, faceMat);
       face.position.set(Math.sin(i * Math.PI / 2) * 0.315, 0, Math.cos(i * Math.PI / 2) * 0.315);
       face.rotation.y = i * Math.PI / 2 + Math.PI;
+      faces.push(face);
     }
     const grey = material(scene, 'power_ring_wait', '#566171', 0.1);
     const ring: Mesh[] = [];
@@ -286,7 +284,31 @@ export class PowerupPresentation {
       segment.rotation.y = angle; ring.push(segment);
     }
     root.setEnabled(false);
-    return { root, box, ring, waitEstimate: C.powerup.respawnSeconds, lastWait: -1 };
+    return { root, box, faces, ring, waitEstimate: C.powerup.respawnSeconds, lastWait: -1 };
+  }
+
+  /** Fixed Creator boxes share the HUD icon; random pickups retain the mystery symbol. */
+  private spawnFaceMaterial(kind?: PowerupKind): StandardMaterial {
+    const key = kind ?? 'question';
+    const item = kind ? ITEMS[kind] : null;
+    const mat = material(this.scene, `power_spawn_face_${key}`, '#ffffff', 0.8);
+    if (mat.diffuseTexture) return mat;
+    const tex = new DynamicTexture(`power_spawn_face_tex_${key}`, { width: 128, height: 128 }, this.scene, false);
+    const ctx = tex.getContext();
+    ctx.fillStyle = '#182c46';
+    ctx.fillRect(0, 0, 128, 128);
+    tex.update();
+    const image = new Image();
+    image.onload = () => {
+      if (this.scene.isDisposed) return;
+      ctx.drawImage(image, 12, 12, 104, 104);
+      tex.update();
+    };
+    const svg = powerupIconMarkup(kind ?? 'mystery').replace('<svg ', `<svg style="color:${item?.color ?? PICKUP_BLUE}" `);
+    image.src = `data:image/svg+xml;charset=utf-8,${encodeURIComponent(svg)}`;
+    mat.diffuseTexture = tex;
+    mat.emissiveTexture = tex;
+    return mat;
   }
 
   update(room: PowerupPresentationRoom | null, localId: string, localPosition: Vec3, privateMessage: PowerupPrivateMessage | null, events: PowerupEvent[], dt: number): void {
@@ -308,10 +330,16 @@ export class PowerupPresentation {
     const local = room.players[localId];
     if (privateMessage && privateMessage !== this.lastPrivate && privateMessage.resetSerial === room.resetVote.resetSerial) {
       if (privateMessage.kind && privateMessage.kind !== this.heldKind) {
-        this.rouletteStart = this.time;
-        this.rouletteUntil = this.time + C.powerup.rollSeconds;
-        this.rouletteStep = -1;
-        this.sound.powerup('roll-start');
+        const revealSeconds = Math.max(0, privateMessage.revealSeconds ?? C.powerup.rollSeconds);
+        if (revealSeconds > 0) {
+          this.rouletteStart = this.time;
+          this.rouletteUntil = this.time + revealSeconds;
+          this.rouletteStep = -1;
+          this.sound.powerup('roll-start');
+        } else {
+          this.rouletteUntil = 0;
+          this.rouletteStep = -1;
+        }
       }
       this.heldKind = privateMessage.kind; this.lastPrivate = privateMessage;
       if (privateMessage.reason) { this.nudgeUntil = this.time + 2.5; this.sound.powerup('refuse'); }
@@ -327,7 +355,7 @@ export class PowerupPresentation {
       // item kind. Activations are public events and already carry the kind for every listener.
       const cueKind = resolvePowerupSoundKind(event, localId, this.heldKind);
       // The local pickup is scored by the roll and reveal cues; remote pickups stay anonymous.
-      if (!(event.effect === 'pickup' && event.playerId === localId))
+      if (!(event.effect === 'pickup' && event.playerId === localId && this.rouletteUntil > this.time))
         this.sound.powerup(event.effect, spatial ? event.position : undefined, spatial ? localPosition : undefined, local?.movement.facing, event.stage ?? 0, cueKind);
       if (event.effect === 'explode' && !settings.reducedEffects) {
         const distance = Math.hypot(localPosition.x - event.position.x, localPosition.y + C.player.eyeHeight - event.position.y, localPosition.z - event.position.z);
@@ -349,13 +377,19 @@ export class PowerupPresentation {
       world.spawns.forEach((spawn, i) => {
         const node = this.spawnNodes[i] ??= this.createSpawnNode(i);
         node.root.setEnabled(true);
-        node.root.position.set(spawn.x, 0, spawn.z);
+        node.root.position.set(spawn.x, spawn.y ?? 0, spawn.z);
+        if (node.displayKind !== spawn.kind) {
+          const faceMaterial = this.spawnFaceMaterial(spawn.kind);
+          for (const face of node.faces) face.material = faceMaterial;
+          node.displayKind = spawn.kind;
+        }
         if (spawn.waitSeconds !== node.lastWait) { node.waitEstimate = spawn.waitSeconds; node.lastWait = spawn.waitSeconds; }
         else if ((room.match.status === 'playing' || room.match.status === 'warmup') && !spawn.spawned) node.waitEstimate = Math.max(0, node.waitEstimate - dt);
         node.box.setEnabled(spawn.spawned);
         node.box.position.y = 1.05 + (settings.reducedEffects ? 0 : Math.sin(this.time * 2.7) * 0.1);
         node.box.rotation.set(0.09, this.time * 0.65, settings.reducedEffects ? 0 : Math.sin(this.time * 1.8) * 0.06);
-        const filled = spawn.spawned ? 60 : Math.floor((1 - node.waitEstimate / C.powerup.respawnSeconds) * 60);
+        const interval = Math.max(0.001, spawn.respawnSeconds ?? C.powerup.respawnSeconds);
+        const filled = spawn.spawned ? 60 : Math.max(0, Math.min(60, Math.floor((1 - node.waitEstimate / interval) * 60)));
         node.ring.forEach((m, j) => { m.material = material(this.scene, j < filled ? 'power_pickup_blue' : 'power_ring_wait', j < filled ? PICKUP_BLUE : '#566171', j < filled ? 0.7 : 0.1); });
       });
       for (let i = world.spawns.length; i < this.spawnNodes.length; i++) this.spawnNodes[i].root.setEnabled(false);
@@ -395,73 +429,24 @@ export class PowerupPresentation {
   }
 
   /**
-   * One card + two text lines, in priority order: a refusal nudge, then the held item (what G does),
-   * then a running effect, then the spawn state. The ring shows whichever timer matters right now.
+   * Keep the inventory selection separate from equipped items and running effects, so a new roll
+   * cannot conceal their identities or timers.
    */
   private updateHud(local: PlayerState | undefined, room: PowerupPresentationRoom): void {
     if (!this.hud) return;
     const rolling = !!this.heldKind && this.time < this.rouletteUntil;
-    const kind = this.heldKind;
-    const item = kind ? ITEMS[kind] : null;
-    const buffs = local?.movementInternal.buffs ?? room.practiceBuffs;
-    const progressPlayerId = local?.id ?? room.practicePlayerId ?? '';
-    const healing = Math.max(0, ...(room.powerups?.stations ?? []).map(s => s.progress[progressPlayerId] ?? 0));
-    const armor = local?.armorBallIds?.length ?? 0;
-    const effects: { kind: PowerupKind; label: string; seconds: number; max: number; color: string }[] = [];
-    if ((buffs?.speedSeconds ?? 0) > 0) effects.push({ kind: 'speed', label: 'Speed', seconds: buffs!.speedSeconds, max: C.powerup.buffSeconds, color: ITEMS.speed.color });
-    if ((buffs?.adrenalineSeconds ?? 0) > 0) effects.push({ kind: 'adrenaline', label: 'Adrenaline', seconds: buffs!.adrenalineSeconds, max: C.powerup.buffSeconds, color: ITEMS.adrenaline.color });
-    if ((buffs?.magnetSeconds ?? 0) > 0) effects.push({ kind: 'magnet', label: 'Magnet', seconds: buffs!.magnetSeconds, max: C.powerup.magnetSeconds, color: ITEMS.magnet.color });
-    const effectText = effects.map(e => `${e.label} ${Math.ceil(e.seconds)}s`)
-      .concat(armor ? [`Armor ${'●'.repeat(armor)}`] : [], buffs?.cannonLocked ? ['Stamina locked'] : [])
-      .join(' · ');
-    const world = room.powerups;
-    const heldGrenade = local
-      ? (['left', 'right'] as const).map(h => room.balls[local.hands[h].heldBallId ?? '']).find(b => b && isGrenadeKind(b.kind))
-      : undefined;
-    const grenadeKind = heldGrenade?.kind ?? room.practiceGrenade?.kind;
-    let view: PowerupSlotView;
-    if (rolling) {
-      const rollKind = ROLL_KINDS[(Math.max(0, this.rouletteStep) * 5 + 2) % ROLL_KINDS.length];
-      const candidate = ITEMS[rollKind];
-      view = { glyph: candidate.icon, color: PICKUP_BLUE, name: 'ITEM ROULETTE',
-        hint: 'Rolling · activation locked', progress: Math.min(1, (this.time - this.rouletteStart) / C.powerup.rollSeconds),
-        state: 'rolling', rolling: true, keybind: '' };
-    } else if (item) {
-      view = {
-        glyph: item.icon,
-        color: item.color,
-        name: item.name,
-        hint: item.hint,
-        progress: 1,
-        state: 'held',
-        keybind: 'G'
-      };
-    } else if (grenadeKind) {
-      const item = ITEMS[grenadeKind as PowerupKind];
-      const left = room.practiceGrenade?.remaining ?? 1 + (local?.pendingGrenades ?? 0);
-      const handKey = room.practiceGrenade
-        ? room.practiceGrenade.hand === 'left' ? 'M1' : 'M2'
-        : local?.hands.left.heldBallId === heldGrenade?.id ? 'M1' : 'M2';
-      view = { glyph: item.icon, color: item.color, name: item.name, hint: `${left} throw${left === 1 ? '' : 's'} left`, progress: left / C.powerup.grenadeCharges, state: 'held', keybind: handKey };
-    } else if (local?.hasPowerup) {
-      view = { glyph: '?', color: PICKUP_BLUE, name: 'Mystery item', hint: 'Revealing…', progress: 0, state: 'rolling', rolling: true, keybind: '' };
-    } else if (effects.length > 0 || armor > 0 || buffs?.cannonLocked) {
-      const lead = effects[0];
-      view = { glyph: lead ? ITEMS[lead.kind].icon : armor ? ITEMS.magnet.icon : ITEMS.cannon.icon, color: lead?.color ?? (armor ? ITEMS.magnet.color : ITEMS.cannon.color), name: 'Active effects', hint: effectText, progress: lead ? lead.seconds / lead.max : 1, state: 'active', expiring: effects.some(e => e.seconds <= 3) };
-    } else if (healing > 0) {
-      view = { glyph: ITEMS.heal.icon, color: ITEMS.heal.color, name: 'Healing', hint: `Stay put · ${Math.min(C.powerup.healSeconds, Math.floor(healing))}/${C.powerup.healSeconds}s`, progress: healing / C.powerup.healSeconds, state: 'active' };
-    } else if (world?.spawns.some(s => s.spawned)) {
-      view = { glyph: '?', color: PICKUP_BLUE, name: 'Center court', hint: 'Power-up available', progress: 1, state: 'empty' };
-    } else {
-      const soonest = Math.min(C.powerup.respawnSeconds, ...this.spawnNodes.filter((n, i) => world?.spawns[i]).map(n => n.waitEstimate));
-      if (soonest > 10) { this.hud.setPowerupSlot(null); return; }
-      view = { glyph: '?', color: PICKUP_BLUE, name: 'Center court', hint: `Power-up in ${Math.ceil(soonest)}s`, progress: 1 - soonest / C.powerup.respawnSeconds, state: 'waiting' };
-    }
-    // A refusal ("free a hand") overrides the hint line briefly.
-    if (this.nudgeUntil > this.time && this.lastPrivate?.reason) view = { ...view, hint: this.lastPrivate.reason };
-    // Keep the running effect visible in the hint even while an item is held (it's the shorter-lived info).
-    else if (item && !rolling && effectText) view = { ...view, hint: effectText };
-    this.hud.setPowerupSlot(view);
+    const rollKind = ROLL_KINDS[(Math.max(0, this.rouletteStep) * 5 + 2) % ROLL_KINDS.length];
+    const waitSeconds = (room.powerups?.spawns ?? []).reduce<number>((soonest, spawn, i) =>
+      Math.min(soonest, this.spawnNodes[i]?.waitEstimate ?? spawn.waitSeconds), Number(C.powerup.respawnSeconds));
+    this.hud.setPowerupSlot(buildPowerupHudView({
+      room,
+      local,
+      heldKind: this.heldKind,
+      rolling,
+      rollKind,
+      waitSeconds,
+      refusal: this.nudgeUntil > this.time ? this.lastPrivate?.reason : undefined
+    }));
   }
   /**
    * Local-only feedback: a soft tick for each second of heal dwell, and a faint edge tint in the
@@ -541,7 +526,7 @@ export class PowerupPresentation {
     const info = MAP_EFFECTS[effect.kind];
     const secs = Math.max(0, Math.ceil(effect.remainingSeconds));
     if (effect.phase === 'warning') {
-      this.setBanner(`<b>${info.icon} ${info.name}</b><span>${info.warning}</span><i>${secs}</i>`, info.color);
+      this.setBanner(`<b>${powerupIconMarkup(effect.kind)} ${info.name}</b><span>${info.warning}</span><i>${secs}</i>`, info.color);
       // Show the capsule at the spawn that rolled it, in the effect's color, spinning up.
       const spawn = spawns[effect.spawnIndex] ?? spawns[0];
       if (!this.effectCapsule) {
@@ -564,7 +549,7 @@ export class PowerupPresentation {
       this.effectCapsule.scaling.setAll(1 + 0.12 * Math.sin(this.time * 10));
     } else {
       this.effectCapsule?.setEnabled(false);
-      this.setBanner(`<b>${info.icon} ${info.name}</b><i>${effect.phase === 'ending' ? 'clearing' : secs}</i>`, info.color);
+      this.setBanner(`<b>${powerupIconMarkup(effect.kind)} ${info.name}</b><i>${effect.phase === 'ending' ? 'clearing' : secs}</i>`, info.color);
     }
 
     // Lava sheet.
@@ -689,7 +674,7 @@ export class PowerupPresentation {
         }
         this.stations.set(station.id, root);
       }
-      root.position.copyFromFloats(station.position.x, 0, station.position.z);
+      root.position.copyFromFloats(station.position.x, station.position.y, station.position.z);
       const progress = Math.max(0, ...Object.values(station.progress)) / C.powerup.healSeconds;
       for (const child of root.getChildMeshes()) {
         if (child.metadata?.healProgressIndex !== undefined) child.visibility = child.metadata.healProgressIndex / 40 < progress ? 1 : 0.12;

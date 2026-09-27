@@ -13,11 +13,21 @@ import { SERVER_TICK_RATE, SNAPSHOT_RATE, netModeConfig } from '../../../shared/
 import type { MusicHudState } from '../audio/MusicManager';
 import { CONTROL_KEYS } from '../config/controls';
 import { settings } from '../config/Settings';
+import { powerupIconMarkup, type PowerupIconKind } from './PowerupIcons';
+
+export interface PowerupSelectionView {
+  icon: PowerupIconKind;
+  color: string;
+  name: string;
+  state: 'rolling' | 'held';
+  keybind?: string;
+}
 
 /** What the ability bar's power-up slot shows. See Hud.setPowerupSlot. */
 export interface PowerupSlotView {
   /** Icon glyph (unicode). */
   glyph: string;
+  icon?: PowerupIconKind;
   /** Accent color for the ring/icon/name. */
   color: string;
   /** Top text line (item name, or a generic label). */
@@ -28,11 +38,14 @@ export interface PowerupSlotView {
   progress: number;
   /** empty = no item; rolling = pickup reveal and activation lock; held = ready; active = running. */
   state: 'empty' | 'waiting' | 'rolling' | 'held' | 'active';
-  /** Mario-Kart roulette flicker right after pickup. */
+  /** The pickup reel is currently animating. */
   rolling?: boolean;
   /** Actual action for the item: inventory activation or a hand throw. */
   keybind?: string;
   expiring?: boolean;
+  /** Inventory reveal/held item, independent of equipped items and running effects. */
+  selection?: PowerupSelectionView;
+  hideMainIcon?: boolean;
 }
 
 export class Hud {
@@ -63,6 +76,10 @@ export class Hud {
   private readonly powerupName: HTMLDivElement;
   private readonly powerupHint: HTMLDivElement;
   private readonly powerupDock: HTMLDivElement;
+  private readonly powerupRoulette: HTMLDivElement;
+  private readonly powerupRoulettePrevious: HTMLSpanElement;
+  private readonly powerupRouletteCurrent: HTMLSpanElement;
+  private readonly powerupRouletteKey: HTMLSpanElement;
   private lastPowerupSlotKey = '';
   private readonly leftPowerBar: HTMLDivElement;
   private readonly rightPowerBar: HTMLDivElement;
@@ -248,7 +265,20 @@ export class Hud {
     this.powerupDock = document.createElement('div');
     this.powerupDock.className = 'powerup-dock';
     this.powerupDock.hidden = true;
-    this.powerupDock.append(this.powerupCard, this.powerupText);
+    this.powerupRoulette = document.createElement('div');
+    this.powerupRoulette.className = 'powerup-roulette';
+    this.powerupRoulette.setAttribute('aria-hidden', 'true');
+    this.powerupRoulettePrevious = document.createElement('span');
+    this.powerupRoulettePrevious.className = 'powerup-roulette__glyph powerup-roulette__glyph--previous';
+    this.powerupRouletteCurrent = document.createElement('span');
+    this.powerupRouletteCurrent.className = 'powerup-roulette__glyph powerup-roulette__glyph--current';
+    const reel = document.createElement('div');
+    reel.className = 'powerup-roulette__reel';
+    reel.append(this.powerupRoulettePrevious, this.powerupRouletteCurrent);
+    this.powerupRouletteKey = document.createElement('span');
+    this.powerupRouletteKey.className = 'powerup-roulette__key';
+    this.powerupRoulette.append(reel, this.powerupRouletteKey);
+    this.powerupDock.append(this.powerupRoulette, this.powerupCard, this.powerupText);
     this.root.append(this.powerupDock, this.speedValue.parentElement!);
     this.leftCatchCard.append(this.leftPowerBar.parentElement!);
     this.rightCatchCard.append(this.rightPowerBar.parentElement!);
@@ -954,28 +984,68 @@ export class Hud {
         this.powerupCard.hidden = true;
         this.powerupText.hidden = true;
         this.powerupDock.hidden = true;
+        this.powerupDock.dataset.selectionState = 'none';
+        this.powerupRoulettePrevious.getAnimations().forEach((animation) => animation.cancel());
+        this.powerupRouletteCurrent.getAnimations().forEach((animation) => animation.cancel());
         this.lastPowerupSlotKey = '';
       }
       return;
     }
     const progress = Math.max(0, Math.min(1, Number.isFinite(view.progress) ? view.progress : 0));
-    const key = `${view.state}|${view.glyph}|${view.name}|${view.hint}|${progress.toFixed(2)}|${view.rolling ? 1 : 0}|${view.keybind ?? ''}|${!!view.expiring}`;
+    const selection = view.selection ?? (view.rolling
+      ? { icon: view.icon ?? 'mystery', color: view.color, name: view.name, state: 'rolling' as const }
+      : undefined);
+    const key = `${view.state}|${view.icon ?? view.glyph}|${view.color}|${view.name}|${view.hint}|${progress.toFixed(2)}|${view.keybind ?? ''}|${!!view.expiring}|${!!view.hideMainIcon}|${JSON.stringify(selection)}`;
     if (key === this.lastPowerupSlotKey) return;
     this.lastPowerupSlotKey = key;
-    this.powerupCard.hidden = false;
+    this.powerupCard.hidden = !!view.hideMainIcon;
     this.powerupText.hidden = false;
     this.powerupDock.hidden = false;
+    const previousSelectionState = this.powerupDock.dataset.selectionState;
     this.powerupDock.dataset.state = view.state;
-    this.powerupDock.classList.toggle('powerup-dock--acquired', !!view.rolling);
+    this.powerupDock.dataset.selectionState = selection?.state ?? 'none';
     this.powerupDock.classList.toggle('powerup-dock--expiring', !!view.expiring);
+    this.powerupRoulette.setAttribute('aria-hidden', selection ? 'false' : 'true');
+    this.powerupRoulette.setAttribute('role', 'img');
+    this.powerupRoulette.setAttribute('aria-label', selection?.state === 'rolling' ? 'Selecting power-up' : selection?.name ?? '');
+    this.powerupRoulette.title = selection?.state === 'held' ? selection.name : '';
+    this.powerupRouletteKey.textContent = selection?.state === 'held' ? selection.keybind ?? 'G' : '';
+    if (selection) this.powerupRoulette.style.setProperty('--slot-color', selection.color);
+    if (selection && (this.powerupRouletteCurrent.dataset.icon !== selection.icon || previousSelectionState !== selection.state)) {
+      const previous = this.powerupRouletteCurrent.innerHTML;
+      const previousColor = this.powerupRouletteCurrent.style.color;
+      this.powerupRoulettePrevious.getAnimations().forEach((animation) => animation.cancel());
+      this.powerupRouletteCurrent.getAnimations().forEach((animation) => animation.cancel());
+      this.powerupRoulettePrevious.innerHTML = previous;
+      this.powerupRoulettePrevious.style.color = previousColor;
+      if (this.powerupRouletteCurrent.dataset.icon !== selection.icon) {
+        this.powerupRouletteCurrent.innerHTML = powerupIconMarkup(selection.icon);
+        this.powerupRouletteCurrent.dataset.icon = selection.icon;
+      }
+      this.powerupRouletteCurrent.style.color = selection.color;
+      if (selection.state === 'rolling' && previous && !window.matchMedia('(prefers-reduced-motion: reduce)').matches) {
+        const timing: KeyframeAnimationOptions = { duration: 130, easing: 'cubic-bezier(.2,.7,.2,1)', fill: 'forwards' };
+        this.powerupRoulettePrevious.animate([
+          { transform: 'translateY(0)', opacity: 1 }, { transform: 'translateY(24px)', opacity: 0 }
+        ], timing);
+        this.powerupRouletteCurrent.animate([
+          { transform: 'translateY(-24px)', opacity: 0 }, { transform: 'translateY(0)', opacity: 1 }
+        ], timing);
+      }
+    }
     this.powerupCard.style.setProperty('--ability-progress', `${(progress * 360).toFixed(1)}deg`);
     this.powerupDock.style.setProperty('--power-color', view.color);
     this.powerupCard.style.setProperty('--power-color', view.color);
     this.powerupCard.classList.toggle('ability-hud-card--ready', view.state === 'held');
     this.powerupCard.classList.toggle('ability-hud-card--cooldown', view.state === 'waiting');
     this.powerupCard.classList.toggle('ability-hud-card--powerup-empty', view.state === 'empty');
-    this.powerupCard.classList.toggle('ability-hud-card--powerup-rolling', !!view.rolling);
-    this.powerupGlyph.textContent = view.glyph;
+    const iconKey = view.icon ?? view.glyph;
+    if (this.powerupGlyph.dataset.icon !== iconKey) {
+      if (view.icon) this.powerupGlyph.innerHTML = powerupIconMarkup(view.icon);
+      else this.powerupGlyph.textContent = view.glyph;
+      this.powerupGlyph.dataset.icon = iconKey;
+    }
+    this.powerupCard.querySelector('.ability-icon')!.setAttribute('aria-label', view.name);
     this.powerupName.textContent = view.name;
     this.powerupName.style.color = '';
     this.powerupHint.textContent = view.hint;

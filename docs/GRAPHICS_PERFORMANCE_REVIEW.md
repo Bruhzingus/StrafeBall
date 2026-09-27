@@ -13,7 +13,7 @@ Following the user's selection of **1, 2 and 3**, both presets now use these def
 | Competitive | Reduced FX on by default, 512 shadow map, 90% scene resolution. |
 | Polished | 35% floor reflection resolution, 8 AO samples, 1024 gym and outdoor shadow maps. |
 
-The interface stays at full resolution. An explicitly saved Reduced FX choice takes precedence over the preset default; changing another setting does not lock that default to the old preset. Live preset switching updates scene resolution, shadows and the default effects choice. Existing developer tuning overrides continue to take precedence in Polished.
+The interface stays at full resolution. A Reduced FX choice made in the updated Settings menu takes precedence over the preset default. Historical saves that merely recorded the old `false` default migrate to the new preset default. Live preset switching updates scene resolution, shadows and the default effects choice. Existing developer tuning overrides continue to take precedence in Polished.
 
 The tables below retain the original assessment of all five options. Options 4 and 5 remain suggestions.
 
@@ -58,6 +58,8 @@ No quantitative FPS gain is claimed for these changes. Regression tests cover gr
 
 - Competitive capture before the selected reductions: [gym spawn](../tmp/graphics-review/current-performance-gym-spawn.png).
 - Polished capture before the selected reductions: [gym corner](../tmp/graphics-review/current-polished-gym-corner.png).
+- Competitive capture after the selected reductions: [gym spawn](../tmp/graphics-review/reduced-performance-gym-spawn.png).
+- Polished capture after the selected reductions: [gym corner](../tmp/graphics-review/reduced-polished-gym-corner.png).
 - Preset settings: [graphicsConfig.ts](../src/game/config/graphicsConfig.ts).
 - Rendering passes and teardown: [PolishedPostFX.ts](../src/game/effects/PolishedPostFX.ts).
 - Floor reflection design: [GymFloorMirror.ts](../src/game/map/GymFloorMirror.ts).
