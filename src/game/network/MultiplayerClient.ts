@@ -1,4 +1,5 @@
 import type { PowerupPrivateMessage, PowerupEvent } from '../../../shared/protocol';
+import { mapEffectForPresentation } from '../../../shared/simulation/MapEffectSim';
 import { Client, Room } from '@colyseus/sdk';
 import { isHostCode, RELAY_ERRORS, relayErrorMessage } from '../../../shared/relayTunnel';
 import { HostSessionClient, localHostConfig, localHostRoomId, publishHostRoom, hostSetupError } from './hostSession';
@@ -89,6 +90,7 @@ export class MultiplayerClient {
   public localPlayerId = '';
   public pingMs: number | null = null;
   public latestSnapshot: ServerSnapshot | null = null;
+  private mapEffectSampleTimeMs: number | null = null;
   public powerupPrivate: PowerupPrivateMessage | null = null;
   private powerupEvents: PowerupEvent[] = [];
   drainPowerupEvents(): PowerupEvent[] { const events = this.powerupEvents; this.powerupEvents = []; return events; }
@@ -588,6 +590,8 @@ export class MultiplayerClient {
       }
       this.latestSnapshot = snapshot;
       this.latestSnapshotLanes = decoded.lanes;
+      // Fast packets retain the previous world state, so its timer is still older.
+      if (decoded.lanes.worldLane) this.mapEffectSampleTimeMs = snapshot.serverTimeMs;
       this.recordServerTimeSample(snapshot.serverTimeMs);
     });
 
@@ -636,6 +640,7 @@ export class MultiplayerClient {
         room: message.room
       };
       this.latestSnapshotLanes = laneInfoFromFullSnapshot(this.latestSnapshot);
+      this.mapEffectSampleTimeMs = null;
       this.snapshotTierMode = 'baseline';
     });
 
@@ -743,6 +748,15 @@ export class MultiplayerClient {
   estimateServerTimeMs(): number | null {
     if (this.lastServerTimeSampleMs === null || this.lastServerTimeSampleReceivedAtMs <= 0) return null;
     return this.lastServerTimeSampleMs + Math.max(0, Date.now() - this.lastServerTimeSampleReceivedAtMs);
+  }
+
+  get presentedMapEffect() {
+    const room = this.latestSnapshot?.room;
+    const now = this.estimateServerTimeMs();
+    const running = room?.match.status === 'playing' || room?.match.status === 'warmup';
+    const age = running && now !== null && this.mapEffectSampleTimeMs !== null
+      ? (now - this.mapEffectSampleTimeMs) / 1000 : 0;
+    return mapEffectForPresentation(room?.mapEffect, age);
   }
 
   private recordSnapshotReceived(message: ServerSnapshot): void {

@@ -71,6 +71,24 @@ body { font-family: var(--sb-ui-font); }
   .hud-debug-panel[data-mode='online'] .hud-debug__content { grid-template-columns: minmax(0, 1fr); }
 }
 
+/* Tab defaults to a small readout that lets court interactions pass through. */
+.hud-debug-panel[data-detail='compact'] {
+  width: min(252px, calc(100vw - 2 * var(--sb-safe-x)));
+  border-top-width: 1px;
+  border-radius: var(--sb-radius);
+  background: var(--sb-surface);
+  box-shadow: none;
+  pointer-events: none;
+}
+.hud-debug-panel[data-detail='compact'] .hud-debug__header { display: none; }
+.hud-debug-panel[data-detail='compact'] .hud-debug__content {
+  display: block;
+  padding: var(--sb-space-2);
+}
+.hud-debug__compact { display: grid; gap: 2px; margin: 0; }
+.hud-debug__compact .hud-debug__row { grid-template-columns: auto minmax(0, 1fr); }
+.hud-debug__compact dt, .hud-debug__compact dd { white-space: nowrap; overflow-wrap: normal; }
+
 /* Core mechanics form one stable command dock; temporary systems cannot reflow it. */
 .ability-hud {
   bottom: var(--sb-safe-y);

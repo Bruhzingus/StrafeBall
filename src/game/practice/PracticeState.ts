@@ -1,8 +1,7 @@
 export type BotDifficulty = 'easy' | 'normal' | 'hard';
 
 export interface PracticeState {
-  quickThrowBotEnabled: boolean;
-  chargeThrowBotEnabled: boolean;
+  opponentEnabled: boolean;
   botDifficulty: BotDifficulty;
   /** Practice lobby only: shorten future power-up respawns to two seconds. */
   fastPowerupRespawnEnabled: boolean;
@@ -15,8 +14,8 @@ export interface PracticeState {
 
 export function createPracticeState(): PracticeState {
   return {
-    quickThrowBotEnabled: false,
-    chargeThrowBotEnabled: false,
+    // The opponent replaces the default practice dummies, so it starts visible.
+    opponentEnabled: true,
     botDifficulty: 'normal',
     fastPowerupRespawnEnabled: false,
     practiceScore: 0,
@@ -25,9 +24,3 @@ export function createPracticeState(): PracticeState {
     buttonCooldowns: {}
   };
 }
-
-export const BOT_DIFFICULTY_CONFIG = {
-  easy: { intervalSeconds: 3.5, throwSpeed: 13, windupSeconds: 0.8, chargeThrowSpeed: 17, arc: 0.22, aimSpread: 0.28 },
-  normal: { intervalSeconds: 2.0, throwSpeed: 17, windupSeconds: 0.55, chargeThrowSpeed: 24, arc: 0.14, aimSpread: 0.14 },
-  hard: { intervalSeconds: 1.1, throwSpeed: 21, windupSeconds: 0.32, chargeThrowSpeed: 30, arc: 0.06, aimSpread: 0.04 }
-} as const;

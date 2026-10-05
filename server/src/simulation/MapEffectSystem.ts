@@ -4,7 +4,7 @@ import type { PowerupEvent } from '../../../shared/protocol';
 import { createBallState, markBallDead } from '../../../shared/simulation/BallSim';
 import { createHandState } from '../../../shared/simulation/HandSim';
 import { BLEACHER_LAYOUT } from '../../../shared/simulation/MapGeometry';
-import { lavaLevelFor } from '../../../shared/simulation/MapEffectSim';
+import { isInLava, LavaExposure, lavaLevelFor, mapEffectWarningSeconds } from '../../../shared/simulation/MapEffectSim';
 
 const KINDS: MapEffectKind[] = ['moon', 'lava', 'frenzy'];
 const alive = (p: PlayerState) => p.connected && p.combatState === 'alive' && p.lives > 0;
@@ -25,8 +25,7 @@ export interface MapEffectEnv {
  */
 export class MapEffectSystem {
   private events: PowerupEvent[] = [];
-  private lavaSeconds = new Map<string, number>();
-  private lavaDamageDue = new Map<string, number>();
+  private lavaExposure = new Map<string, LavaExposure>();
   private frenzyBallIds: string[] = [];
   private frenzyTargetBalls = 0;
   private serial = 0;
@@ -46,8 +45,7 @@ export class MapEffectSystem {
   reset(room: RoomState): void {
     room.mapEffect = null;
     this.events = [];
-    this.lavaSeconds.clear();
-    this.lavaDamageDue.clear();
+    this.lavaExposure.clear();
     this.frenzyBallIds = [];
     this.frenzyTargetBalls = 0;
   }
@@ -60,7 +58,7 @@ export class MapEffectSystem {
     if (room.mapEffect) return false;
     if (this.rng() >= C.mapEffect.chance) return false;
     const kind = KINDS[Math.min(KINDS.length - 1, Math.floor(this.rng() * KINDS.length))];
-    room.mapEffect = { kind, phase: 'warning', remainingSeconds: C.mapEffect.warningSeconds, spawnIndex, lavaLevel: 0 };
+    room.mapEffect = { kind, phase: 'warning', remainingSeconds: mapEffectWarningSeconds(kind), spawnIndex, lavaLevel: 0 };
     this.emit(room, 'map-warning', spawnPosition, kind);
     return true;
   }
@@ -109,8 +107,7 @@ export class MapEffectSystem {
     const effect = room.mapEffect;
     if (!effect) return;
     if (effect.kind === 'frenzy') this.removeFrenzyBalls(room, env);
-    this.lavaSeconds.clear();
-    this.lavaDamageDue.clear();
+    this.lavaExposure.clear();
     this.emit(room, 'map-end', { x: 0, y: 1, z: 0 }, effect.kind);
     room.mapEffect = null;
   }
@@ -119,19 +116,15 @@ export class MapEffectSystem {
 
   private stepLava(room: RoomState, dt: number, env: MapEffectEnv, lavaLevel: number): void {
     const m = C.mapEffect;
+    const effect = room.mapEffect;
     for (const p of Object.values(room.players)) {
-      if (!alive(p)) { this.lavaSeconds.delete(p.id); this.lavaDamageDue.delete(p.id); continue; }
-      const inLava = lavaLevel > 0.05 && p.movement.position.y < lavaLevel - 0.05;
-      // Time in lava accrues; time out of it only bleeds off at half speed, so hopping in place
-      // doesn't reset the clock — you have to actually get up and stay up.
-      const before = this.lavaSeconds.get(p.id) ?? 0;
-      const after = inLava ? before + dt : Math.max(0, before - dt * 0.5);
-      this.lavaSeconds.set(p.id, after);
-      if (!inLava) continue;
-      const due = this.lavaDamageDue.get(p.id) ?? m.lavaFirstDamageSeconds;
-      if (after + 1e-7 >= due) {
+      if (!alive(p)) { this.lavaExposure.delete(p.id); continue; }
+      const exposure = this.lavaExposure.get(p.id) ?? new LavaExposure();
+      this.lavaExposure.set(p.id, exposure);
+      if (exposure.step(isInLava(p.movement.position, lavaLevel), dt)) {
         env.damage(p);
-        this.lavaDamageDue.set(p.id, due + m.lavaDamageIntervalSeconds);
+        // Damage callbacks can reset the world. Never continue an old hazard into a new round.
+        if (room.mapEffect !== effect) return;
       }
     }
 
@@ -182,7 +175,7 @@ export class MapEffectSystem {
       const id = `frenzy_${++this.serial}`;
       const x = (this.rng() * 2 - 1) * C.map.halfWidth * 0.6;
       const z = (this.rng() * 2 - 1) * C.map.halfLength * 0.6;
-      // A zero-speed dead ball settles into the stationary loose phase before gravity can act.
+      // Spawn in flight with a small downward velocity; surface support decides when it settles.
       room.balls[id] = markBallDead(createBallState(id, { x, y: C.mapEffect.frenzyDropHeight, z }), { x: 0, y: -1, z: 0 });
       this.frenzyBallIds.push(id);
     }

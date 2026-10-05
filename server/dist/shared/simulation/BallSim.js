@@ -18,6 +18,7 @@ exports.applyCannonBounce = applyCannonBounce;
 exports.cannonLaunchVelocity = cannonLaunchVelocity;
 exports.cannonDropScale = cannonDropScale;
 exports.cannonSpeedGrowthFactor = cannonSpeedGrowthFactor;
+exports.isBallSupported = isBallSupported;
 exports.settleBallIfSlow = settleBallIfSlow;
 exports.curveRampFactor = curveRampFactor;
 exports.advanceBall = advanceBall;
@@ -241,8 +242,22 @@ function cannonSpeedGrowthFactor(distanceTraveled, constants = constants_1.GAME_
     const distance = Number.isFinite(distanceTraveled) ? Math.max(0, distanceTraveled) : 0;
     return Math.pow(constants.powerup.cannonSpeedGrowthMultiplier, distance / constants.powerup.cannonSpeedGrowthDistance);
 }
-function settleBallIfSlow(ball, constants = constants_1.GAME_CONSTANTS) {
+/** A slow ball can rest on the floor or a box top, but never at a flight apex. */
+function isBallSupported(ball, boxes = [], constants = constants_1.GAME_CONSTANTS, floorY = 0) {
+    const radius = constants.ball.radius * (ball.kind === 'cannon' ? constants.powerup.cannonFlightScale : 1);
+    const bottomY = ball.position.y - radius;
+    const epsilon = 1e-4;
+    if (bottomY <= floorY + epsilon)
+        return true;
+    return boxes.some(box => box.enabled !== false &&
+        Math.abs(bottomY - box.maxY) <= epsilon &&
+        ball.position.x >= box.minX - radius && ball.position.x <= box.maxX + radius &&
+        ball.position.z >= box.minZ - radius && ball.position.z <= box.maxZ + radius);
+}
+function settleBallIfSlow(ball, constants = constants_1.GAME_CONSTANTS, boxes = []) {
     if (ball.phase !== 'dead' || (0, CollisionMath_1.length)(ball.velocity) >= constants.ball.settleSpeed)
+        return ball;
+    if (!isBallSupported(ball, boxes, constants))
         return ball;
     return {
         ...ball,

@@ -72,16 +72,31 @@ export function startHostAgent(server: Server, port: number): HostTunnelClient {
       // Small portable archives use the deployed UI. The localhost fallback serves the same
       // assets through this fixed HTTPS origin, so browsers without LNA support still work.
       if (!existsSync(indexPath)) {
-        if (pathname !== '/' && pathname !== '/index.html' && !pathname.startsWith('/assets/') && pathname !== '/favicon.svg') {
+        if (
+          pathname !== '/' &&
+          pathname !== '/index.html' &&
+          !pathname.startsWith('/assets/') &&
+          !pathname.startsWith('/audio/') &&
+          pathname !== '/favicon.svg'
+        ) {
           json(res, 404, {}); return;
         }
         const controller = new AbortController();
         const timeout = setTimeout(() => controller.abort(), 30_000);
         res.once('close', () => { clearTimeout(timeout); controller.abort(); });
         try {
-          const upstream = await fetch(`https://strafeball.xyz${pathname}`, { signal: controller.signal, redirect: 'error' });
+          const upstream = await fetch(`https://strafeball.xyz${pathname}`, {
+            signal: controller.signal,
+            redirect: 'error',
+            headers: req.headers.range ? { Range: req.headers.range } : undefined
+          });
           if (!upstream.ok) { json(res, 502, { error: 'Game website unavailable. Please try again.' }); return; }
           res.setHeader('Content-Type', upstream.headers.get('content-type') ?? 'application/octet-stream');
+          for (const header of ['accept-ranges', 'content-range', 'content-length']) {
+            const value = upstream.headers.get(header);
+            if (value) res.setHeader(header, value);
+          }
+          res.statusCode = upstream.status;
           if (pathname === '/' || pathname === '/index.html') {
             const config = JSON.stringify({ code: agent.code, serverUrl: `ws://${req.headers.host}`, brokerUrl }).replace(/</g, '\\u003c');
             const html = (await upstream.text()).replace('<head>', `<head><script>window.__STRAFEBALL_HOST__=${config}</script>`);
@@ -102,9 +117,28 @@ export function startHostAgent(server: Server, port: number): HostTunnelClient {
         res.end(req.method === 'HEAD' ? undefined : html);
       } else {
         const mime: Record<string, string> = { '.js': 'text/javascript', '.css': 'text/css', '.json': 'application/json', '.svg': 'image/svg+xml', '.png': 'image/png', '.jpg': 'image/jpeg', '.webp': 'image/webp', '.mp3': 'audio/mpeg', '.ogg': 'audio/ogg', '.mp4': 'video/mp4', '.webm': 'video/webm', '.wav': 'audio/wav', '.woff2': 'font/woff2', '.wasm': 'application/wasm', '.glb': 'model/gltf-binary' };
-        res.writeHead(200, { 'Content-Type': mime[extname(file)] ?? 'application/octet-stream', 'Content-Length': statSync(file).size });
+        const size = statSync(file).size;
+        const byteRange = parseSingleByteRange(req.headers.range, size);
+        if (byteRange === 'invalid') {
+          res.writeHead(416, { 'Content-Range': `bytes */${size}` });
+          res.end();
+          return;
+        }
+
+        const headers: Record<string, string | number> = {
+          'Content-Type': mime[extname(file)] ?? 'application/octet-stream',
+          'Accept-Ranges': 'bytes'
+        };
+        if (byteRange) {
+          headers['Content-Range'] = `bytes ${byteRange.start}-${byteRange.end}/${size}`;
+          headers['Content-Length'] = byteRange.end - byteRange.start + 1;
+          res.writeHead(206, headers);
+        } else {
+          headers['Content-Length'] = size;
+          res.writeHead(200, headers);
+        }
         if (req.method === 'HEAD') res.end();
-        else createReadStream(file).on('error', () => res.destroy()).pipe(res);
+        else createReadStream(file, byteRange ?? undefined).on('error', () => res.destroy()).pipe(res);
       }
     })().catch(() => { json(res, 400, {}); if (!req.complete) res.once('finish', () => req.destroy()); });
   }, (_req, socket) => socket.destroy(), (req) => {
@@ -125,4 +159,33 @@ export function startHostAgent(server: Server, port: number): HostTunnelClient {
     child.unref();
   }
   return agent;
+}
+
+/**
+ * Media elements seek by requesting byte ranges. Serving a full file for those requests makes
+ * Chromium restart decoding from byte zero, which was audible as a ~1 second lobby-music loop on
+ * the locally hosted fallback page.
+ */
+function parseSingleByteRange(
+  rangeHeader: string | undefined,
+  size: number
+): { start: number; end: number } | 'invalid' | null {
+  if (!rangeHeader) return null;
+  const match = /^bytes=(\d*)-(\d*)$/.exec(rangeHeader.trim());
+  if (!match || size <= 0) return 'invalid';
+
+  const [, startText, endText] = match;
+  if (!startText && !endText) return 'invalid';
+
+  if (!startText) {
+    const suffixLength = Number(endText);
+    if (!Number.isSafeInteger(suffixLength) || suffixLength <= 0) return 'invalid';
+    return { start: Math.max(0, size - suffixLength), end: size - 1 };
+  }
+
+  const start = Number(startText);
+  if (!Number.isSafeInteger(start) || start < 0 || start >= size) return 'invalid';
+  const requestedEnd = endText ? Number(endText) : size - 1;
+  if (!Number.isSafeInteger(requestedEnd) || requestedEnd < start) return 'invalid';
+  return { start, end: Math.min(size - 1, requestedEnd) };
 }

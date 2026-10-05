@@ -45,6 +45,7 @@ import {
   createBallState,
   deflectBall,
   isBallCatchableInFlight,
+  isBallSupported,
   isGrenadeKind,
   markBallDead,
   settleBallIfSlow
@@ -90,7 +91,7 @@ import {
 import { resolveBallBounds, resolveBallStaticBoxes } from '../../../shared/simulation/StaticBallCollision';
 import { PowerupSystem } from './PowerupSystem';
 import { MapEffectSystem } from './MapEffectSystem';
-import { ballConstantsForEffect, mapEffectGravityScale, mapEffectUnlimitedBounces } from '../../../shared/simulation/MapEffectSim';
+import { ballConstantsForEffect, lavaLevelFor, mapEffectGravityScale, mapEffectUnlimitedBounces } from '../../../shared/simulation/MapEffectSim';
 import { facingFromAngles, stepMovement } from '../../../shared/simulation/MovementSim';
 import { clampLookPitch } from '../../../shared/simulation/AimMath';
 import { computePlayerHandAnchor } from '../../../shared/simulation/HandAnchors';
@@ -1943,7 +1944,7 @@ export class ServerGameLoop {
     const bounceRule = mapEffectUnlimitedBounces(this.state.mapEffect) ? UNLIMITED_BOUNCE_RULE : this.bounceRule;
 
     for (const ballId in this.state.balls) {
-      const ball = this.state.balls[ballId];
+      let ball = this.state.balls[ballId];
       if (ball.phase === 'held' && ball.heldByPlayerId && ball.heldHand) {
         const owner = this.state.players[ball.heldByPlayerId];
         this.state.balls[ball.id] = owner
@@ -1952,7 +1953,14 @@ export class ServerGameLoop {
         continue;
       }
 
-      if (ball.phase === 'loose' || ball.phase === 'armor' || ball.phase === 'stuck') continue;
+      if (ball.phase === 'armor' || ball.phase === 'stuck') continue;
+      if (ball.phase === 'loose') {
+        // Recheck support so suspended balls and balls whose supporting mat moved resume falling.
+        // Loose spawn slots have 5 cm of floor clearance; lava balls rest on its current surface.
+        const restingFloorY = Math.max(0, lavaLevelFor(this.state.mapEffect)) + 0.05;
+        if (isBallSupported(ball, this.ballCollisionBoxesWithEliminatedCover(), ballConstants, restingFloorY)) continue;
+        ball = markBallDead(ball);
+      }
 
       // Run LIVE_BALL_COMBAT_SUBSTEPS sub-steps per tick. Each sub-step advances the ball by
       // subDt, then runs the full parry→catch→hit pipeline against that sub-tick swept segment.
@@ -2007,7 +2015,8 @@ export class ServerGameLoop {
         // World collision per substep so fast balls bounce correctly at sub-tick positions. The
         // settings-driven bounce rule decides when a live/deflected ball dies on these contacts.
         const bounded = resolveBallBounds(resolved, bounceRule);
-        const collided = resolveBallStaticBoxes(bounded, this.ballCollisionBoxesWithEliminatedCover(),
+        const boxes = this.ballCollisionBoxesWithEliminatedCover();
+        const collided = resolveBallStaticBoxes(bounded, boxes,
           this.debug.COLLISION_DEBUG ? this.logger : undefined, bounceRule);
         if (isGrenadeKind(collided.kind) && collided.bounceCount > current.bounceCount) {
           // First surface contact: no bounce, it stays right where it landed.
@@ -2016,7 +2025,7 @@ export class ServerGameLoop {
           break;
         }
         if (collided.bounceCount > current.bounceCount) this.powerupSystem.contact(this.state, collided, this.stepNowMs);
-        current = settleBallIfSlow(collided);
+        current = settleBallIfSlow(collided, ballConstants, boxes);
 
         if (
           !combatDone &&

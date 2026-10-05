@@ -8,7 +8,7 @@ import { createPlayerState } from '../../shared/simulation/PlayerSim';
 import { createBallState, isBallCatchableInFlight, isBallPickupEligible } from '../../shared/simulation/BallSim';
 import { autoParryBall, createHandState } from '../../shared/simulation/HandSim';
 import { stepMovement } from '../../shared/simulation/MovementSim';
-import { lavaLevelFor, lavaMaxHeight, mapEffectGravityScale } from '../../shared/simulation/MapEffectSim';
+import { lavaLevelFor, lavaMaxHeight, mapEffectGravityScale, mapEffectWarningSeconds } from '../../shared/simulation/MapEffectSim';
 import { BLEACHER_LAYOUT } from '../../shared/simulation/MapGeometry';
 import type { PlayerInput, PowerupKind, RoomState } from '../../shared/types';
 
@@ -136,6 +136,37 @@ describe('grenades: shock + stun', () => {
     expect(loop.state.balls.ball_1.phase).toBe('dead');
   });
 
+  it('shockwave launches the thrower, a teammate, and an opponent, but leaves distant players alone', () => {
+    const thrower = createPlayerState('thrower', 'blue');
+    const teammate = createPlayerState('teammate', 'blue');
+    const opponent = createPlayerState('opponent', 'red', 'positiveZ');
+    const distant = createPlayerState('distant', 'red', 'positiveZ');
+    thrower.movement.position = v(0, 0, 1);
+    teammate.movement.position = v(-2, 0, 0);
+    opponent.movement.position = v(2, 0, 0);
+    distant.movement.position = v(C.powerup.shockRadius + 2, 0, 0);
+    const grenade = createBallState('team-shock', v(0, C.player.height / 2, 0), {
+      kind: 'shock', phase: 'stuck', ownerKind: 'player', ownerId: thrower.id,
+      fuseSeconds: 0.01, stuckAtMs: 0
+    });
+    const room = createRoomState({ players: [thrower, teammate, opponent, distant], balls: [grenade] });
+
+    new PowerupSystem().afterBalls(room, 0.02, () => {
+      throw new Error('Shockwaves must not deal damage');
+    });
+
+    expect(room.balls[grenade.id]).toBeUndefined();
+    expect(room.players.thrower.movement.velocity.z).toBeGreaterThan(0);
+    expect(room.players.teammate.movement.velocity.x).toBeLessThan(0);
+    expect(room.players.opponent.movement.velocity.x).toBeGreaterThan(0);
+    for (const id of ['thrower', 'teammate', 'opponent']) {
+      expect(room.players[id].movement.velocity.y).toBeGreaterThan(0);
+      expect(room.players[id].movement.grounded).toBe(false);
+    }
+    expect(room.players.distant.movement.velocity).toEqual(v());
+    expect(room.players.distant.movement.grounded).toBe(true);
+  });
+
   it('stun applies to everyone in range including the thrower; stunned players are slowed and cannot dash', () => {
     const loop = loopWith('stun');
     const id = giveGrenade(loop, 'stun');
@@ -232,9 +263,13 @@ describe('map effects', () => {
     expect(system.tryStart(room, 0, v())).toBe(true);
     expect(room.mapEffect?.kind).toBe('lava');
     system.step(room, C.mapEffect.warningSeconds, env, 6);
+    expect(room.mapEffect?.phase).toBe('warning');
+    expect(room.mapEffect?.lavaLevel).toBe(0);
+    system.step(room, C.mapEffect.lavaWarningExtraSeconds, env, 6);
     expect(room.mapEffect?.phase).toBe('active');
     expect(lavaLevelFor(room.mapEffect)).toBe(0);
     // Fully risen: below the top tier, above the one beneath it.
+    for (const player of Object.values(room.players)) player.movement.position.y = 3;
     system.step(room, C.mapEffect.lavaRiseSeconds, env, 6);
     const level = room.mapEffect!.lavaLevel;
     expect(level).toBeCloseTo(lavaMaxHeight(), 5);
@@ -267,6 +302,74 @@ describe('map effects', () => {
     expect(room.mapEffect?.phase).toBe('ending');
     system.step(room, C.mapEffect.lavaRecedeSeconds + 0.01, env, 6);
     expect(room.mapEffect).toBeNull();
+  });
+
+  it('requires fresh contact after escaping and never damages above or outside the lava sheet', () => {
+    const room = playingRoom();
+    const system = new MapEffectSystem(rollEffect(1));
+    system.tryStart(room, 0, v());
+    system.step(room, mapEffectWarningSeconds('lava'), env, 6);
+    for (const player of Object.values(room.players)) player.movement.position.y = 3;
+    system.step(room, C.mapEffect.lavaRiseSeconds, env, 6);
+    const player = room.players.a;
+    const lives = player.lives;
+    player.movement.position = v();
+    system.step(room, 0.30, env, 6);
+    player.movement.position.y = lavaMaxHeight() + 0.01;
+    system.step(room, 0.02, env, 6);
+    player.movement.position.y = 0;
+    system.step(room, 0.06, env, 6);
+    expect(player.lives).toBe(lives); // Previously retained 0.29 s and hit immediately.
+    system.step(room, 0.30, env, 6);
+    expect(player.lives).toBe(lives - 1);
+    for (const safe of [v(0, lavaMaxHeight(), 0), v(C.map.halfWidth + 1, 0, 0), v(0, 0, C.map.halfLength + 1)]) {
+      player.movement.position = safe;
+      system.step(room, 1, env, 6);
+      expect(player.lives).toBe(lives - 1);
+    }
+  });
+
+  it('stops applying a stale lava effect if a damage callback resets the world', () => {
+    const room = playingRoom();
+    const system = new MapEffectSystem(rollEffect(1));
+    system.tryStart(room, 0, v());
+    system.step(room, mapEffectWarningSeconds('lava'), env, 6);
+    for (const player of Object.values(room.players)) player.movement.position.y = 3;
+    system.step(room, C.mapEffect.lavaRiseSeconds, env, 6);
+    for (const player of Object.values(room.players)) player.movement.position.y = 0;
+    const damaged: string[] = [];
+    system.step(room, C.mapEffect.lavaFirstDamageSeconds, {
+      damage: player => { damaged.push(player.id); system.reset(room); },
+      forgetBall: () => {}
+    }, 6);
+    expect(damaged).toEqual(['a']);
+    expect(room.mapEffect).toBeNull();
+  });
+
+  it('keeps fighters on the top bleacher tier safe in the actual game loop', () => {
+    const loop = new ServerGameLoop('lava-safe-tier');
+    loop.addPlayer('a', 'A'); loop.addPlayer('b', 'B');
+    loop.state.match.status = 'playing';
+    loop.state.match.boundary.noBoundaries = true;
+    const top = BLEACHER_LAYOUT.tierCount * BLEACHER_LAYOUT.tierRise;
+    const topX = C.map.halfWidth - BLEACHER_LAYOUT.wallInset - BLEACHER_LAYOUT.tierRun / 2;
+    for (const [id, side] of [['a', -1], ['b', 1]] as const) {
+      const player = loop.state.players[id];
+      player.movement.position = v(side * topX, top, side * 6);
+      player.movement.velocity = v();
+      player.movementInternal.groundHeight = top;
+    }
+    loop.state.mapEffect = { kind: 'lava', phase: 'active', remainingSeconds: C.mapEffect.lavaHoldSeconds, lavaLevel: lavaMaxHeight(), spawnIndex: 0 };
+    const lives = loop.state.players.a.lives;
+    advanceSeconds(loop, 2);
+    expect(loop.state.players.a.lives).toBe(lives);
+    expect(loop.state.players.b.lives).toBe(lives);
+
+    loop.state.players.a.movement.position = v(0, 0, -6);
+    loop.state.players.a.movementInternal.groundHeight = 0;
+    advanceSeconds(loop, C.mapEffect.lavaFirstDamageSeconds + 0.05);
+    expect(loop.state.players.a.lives).toBe(lives - 1);
+    expect(loop.state.players.b.lives).toBe(lives);
   });
 
   it('frenzy drops extra balls one at a time over five seconds, keeps live bounces, then cleans up', () => {

@@ -13,8 +13,7 @@ const BUTTON_COOLDOWN = 0.6;
 export type ButtonId =
   | 'addBall' | 'removeBall' | 'clearExtra' | 'giveTwoBalls'
   | 'resetScore' | 'resetMap'
-  | 'toggleQuickBot' | 'toggleChargeBot' | 'stopBots'
-  | 'difficulty' | 'spawnPowerup';
+  | 'toggleOpponent' | 'spawnPowerup';
 
 interface ButtonDef {
   id: ButtonId;
@@ -26,7 +25,7 @@ interface ButtonDef {
 }
 
 // 2 rows × 5 columns, spanning the full west wall above the bleachers (see diagram in the design).
-// Row 0 (top) = ball controls + map/score; row 1 (bottom) = bot controls.
+// Row 0 (top) = ball controls + score; row 1 (bottom) = map reset + opponent toggle.
 const BUTTON_DEFS: ButtonDef[] = [
   { id: 'addBall',         label: 'ADD BALL',    row: 0, col: 0 },
   { id: 'removeBall',      label: 'REMOVE BALL', row: 0, col: 1 },
@@ -34,10 +33,7 @@ const BUTTON_DEFS: ButtonDef[] = [
   { id: 'giveTwoBalls',    label: 'GIVE 2 BALLS',row: 0, col: 3 },
   { id: 'resetScore',      label: 'RESET SCORE', row: 0, col: 4 },
   { id: 'resetMap',        label: 'RESET MAP',   row: 1, col: 0 },
-  { id: 'toggleQuickBot',  label: 'QUICK BOT',   row: 1, col: 1 },
-  { id: 'toggleChargeBot', label: 'CHARGE BOT',  row: 1, col: 2 },
-  { id: 'stopBots',        label: 'STOP BOTS',   row: 1, col: 3 },
-  { id: 'difficulty',      label: 'DIFFICULTY',  row: 1, col: 4 },
+  { id: 'toggleOpponent',  label: 'OPPONENT',    row: 1, col: 2 },
 ];
 
 const COLS = 5;
@@ -62,7 +58,7 @@ const BTN_H = ROW_GAP - 0.55;  // height runs along Y
 const WALL_X = -TUNING.map.halfWidth + BTN_D / 2 + 0.04;
 
 // The north end of the wall is intentionally clear of the main control grid. Keep this timed
-// practice shortcut there so it is easy to find without reshuffling established ball/bot buttons.
+// practice shortcut there so it is easy to find without reshuffling established controls.
 BUTTON_DEFS.push({
   id: 'spawnPowerup',
   label: 'POWER-UP',
@@ -202,18 +198,14 @@ export class PracticeControlWall {
   }
 
   refreshLabels(): void {
-    const diff = this.state.botDifficulty.toUpperCase();
     const updates: Partial<Record<ButtonId, [string, string]>> = {
-      toggleQuickBot:  ['QUICK BOT',  this.state.quickThrowBotEnabled  ? 'ON' : 'OFF'],
-      toggleChargeBot: ['CHARGE BOT', this.state.chargeThrowBotEnabled ? 'ON' : 'OFF'],
-      difficulty:      ['DIFFICULTY', diff],
-      spawnPowerup:    ['POWER-UP',   this.state.fastPowerupRespawnEnabled ? '2 SEC: ON' : '2 SEC: OFF'],
+      toggleOpponent: ['OPPONENT', this.state.opponentEnabled ? 'ON' : 'OFF'],
+      spawnPowerup:   ['POWER-UP', this.state.fastPowerupRespawnEnabled ? '2 SEC: ON' : '2 SEC: OFF'],
     };
     for (const [id, [l1, l2]] of Object.entries(updates) as [ButtonId, [string, string]][]) {
       const tex = this.labelTextures.get(id);
       if (!tex) continue;
-      const active = (id === 'toggleQuickBot' && this.state.quickThrowBotEnabled) ||
-                     (id === 'toggleChargeBot' && this.state.chargeThrowBotEnabled) ||
+      const active = (id === 'toggleOpponent' && this.state.opponentEnabled) ||
                      (id === 'spawnPowerup' && this.state.fastPowerupRespawnEnabled);
       const stateKey = `${l1}|${l2}|${active ? 1 : 0}`;
       if (this.lastLabelState.get(id) === stateKey) continue;

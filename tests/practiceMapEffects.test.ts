@@ -25,6 +25,9 @@ describe('PracticeMapEffects', () => {
     const effects = new PracticeMapEffects(() => values.shift() ?? 1);
     effects.tryStart(0, { x: 0, y: 1, z: 0 }, 3);
     effects.update(C.mapEffect.warningSeconds, 3);
+    expect(effects.state?.phase).toBe('warning');
+    expect(effects.state?.lavaLevel).toBe(0);
+    effects.update(C.mapEffect.lavaWarningExtraSeconds, 3);
     expect(effects.state).toMatchObject({ kind: 'lava', phase: 'active', remainingSeconds: C.mapEffect.lavaRiseSeconds + C.mapEffect.lavaHoldSeconds });
     effects.update(C.mapEffect.lavaRiseSeconds, 3);
     expect(effects.state?.lavaLevel).toBeGreaterThan(0);

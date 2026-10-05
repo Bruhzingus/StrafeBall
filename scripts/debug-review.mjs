@@ -22,9 +22,10 @@ try {
   await page.goto('http://127.0.0.1:5173/debug-review');
   await page.evaluate(async () => {
     const { Hud } = await import('/src/game/ui/Hud.ts');
+    const { SettingsPanel } = await import('/src/game/ui/SettingsPanel.ts');
     const { createRoomState } = await import('/shared/simulation/MatchSim.ts');
     const { createPlayerState } = await import('/shared/simulation/PlayerSim.ts');
-    const room = createRoomState({ id: 'diagnostics-room-with-long-identifier', netMode: 'high',
+    const room = createRoomState({ id: 'diagnostics-room-with-long-identifier', netMode: 'A_60_60_48',
       players: [createPlayerState('p0', 'blue'), createPlayerState('p1', 'red')] });
     room.match.status = 'playing';
     room.players.p0.movement.speed = 12.4;
@@ -47,9 +48,10 @@ try {
       dash: { maxCharges: 3, rechargeSeconds: 2, charges: 2, rechargeTimer: .5 },
       catching: { getParryCooldown: () => 0 }
     };
-    const rules = { boundary: { elapsed: 0, noBoundaries: false, illegalCountdownActive: false, illegalCountdownSeconds: 0, illegalCrossWarnings: 0, opponentPenaltyHits: 0 }, scoring: { playerHits: 0 } };
+    const rules = { boundary: { elapsed: 0, noBoundaries: false, illegalCountdownActive: false, illegalCountdownSeconds: 0, illegalCrossWarnings: 0, opponentPenaltyHits: 0 }, scoring: { playerHits: 0, opponentHits: 0 } };
     document.body.style.background = '#29415d';
     window.debugHud = new Hud(document.body);
+    window.debugSettings = new SettingsPanel(document.body);
     window.debugHud.setVisible(false);
     window.debugHud.toggleDebug();
     window.debugUpdate = (mode, fps = 120) => {
@@ -60,6 +62,35 @@ try {
   });
   await page.evaluate(() => document.fonts.ready);
   const panel = page.locator('.hud-debug-panel');
+  check('Tab debug defaults to compact gameplay stats', await panel.evaluate(el =>
+    el.dataset.detail === 'compact' && el.querySelectorAll('dt').length === 5 && el.textContent.includes('N/A')));
+  check('Compact overlay lets gameplay clicks pass through', await panel.evaluate(el =>
+    getComputedStyle(el).pointerEvents === 'none' && el.tabIndex === -1));
+  for (const mode of ['offline', 'online']) {
+    await page.evaluate(mode => window.debugUpdate(mode), mode);
+    for (const [width, height] of [[1440, 900], [800, 600], [390, 844], [1280, 600]]) {
+      await page.setViewportSize({ width, height });
+      check(`Compact ${mode} stays small and fits ${width}x${height}`, await panel.evaluate(el => {
+        const r = el.getBoundingClientRect();
+        return r.width <= 252 && r.height <= 125 && r.left >= 0 && r.top >= 0 &&
+          r.right <= innerWidth && r.bottom <= innerHeight && el.scrollWidth <= el.clientWidth &&
+          [...el.querySelectorAll('dt, dd')].every(value => value.scrollWidth <= value.clientWidth + 1);
+      }));
+      await page.screenshot({ path: `${out}/compact-${mode}-${width}x${height}.png` });
+    }
+  }
+  check('Compact network stats include actual room rates and reconciliation error', await panel.evaluate(el =>
+    el.textContent.includes('60 / 48 Hz') && el.textContent.includes('47 / 4.2 ms') && el.textContent.includes('0.085 / 0.115 m')));
+  await page.setViewportSize({ width: 1440, height: 900 });
+  await page.getByRole('button', { name: 'Open settings and controls' }).click();
+  const detailToggle = page.getByRole('checkbox', { name: 'Detailed debug overlay' });
+  await detailToggle.check();
+  await page.evaluate(() => window.debugUpdate('offline'));
+  check('Settings switch the visible overlay to full diagnostics immediately', await panel.evaluate(el =>
+    el.dataset.detail === 'detailed' && el.querySelectorAll('.hud-debug__section').length === 2));
+  check('Detailed debug preference is saved', await page.evaluate(() =>
+    JSON.parse(localStorage.getItem('strafeball.settings.v1')).detailedDebugOverlay === true));
+  await page.getByRole('button', { name: 'Close settings', exact: true }).click();
   check('Debug uses the shared dark surface and readable text', await panel.evaluate(el => {
     const style = getComputedStyle(el);
     return style.backgroundColor === 'rgb(7, 23, 46)' && style.color === 'rgb(243, 240, 231)' && style.transform === 'none';
@@ -119,6 +150,25 @@ try {
   }));
   await page.evaluate(() => { window.debugHud.toggleDebug(); window.debugUpdate('online', 99); });
   check('Reopening refreshes diagnostics immediately', (await panel.textContent()).includes('99 FPS'));
+  await page.setViewportSize({ width: 1440, height: 900 });
+  await page.getByRole('button', { name: 'Open settings and controls' }).click();
+  await detailToggle.uncheck();
+  await page.evaluate(() => window.debugUpdate('online', 99));
+  check('Disabling full diagnostics immediately restores compact stats', await panel.evaluate(el =>
+    el.dataset.detail === 'compact' && el.querySelectorAll('dt').length === 5 && el.scrollTop === 0));
+  await page.evaluate(() => window.debugHud.toggleDebug());
+  check('Tab toggle hides compact stats', await panel.isHidden());
+  await page.evaluate(() => { window.debugHud.toggleDebug(); window.debugUpdate('online', 101); });
+  check('Reopening compact stats refreshes immediately', await panel.locator('strong').textContent() === '101');
+  await detailToggle.check();
+  await page.reload();
+  check('Detailed preference survives a page reload', await page.evaluate(async () => {
+    const { settings } = await import('/src/game/config/Settings.ts');
+    const { Hud } = await import('/src/game/ui/Hud.ts');
+    const hud = new Hud(document.body);
+    hud.toggleDebug();
+    return settings.detailedDebugOverlay && document.querySelector('.hud-debug-panel').dataset.detail === 'detailed';
+  }));
   check('No browser runtime errors', errors.length === 0);
 } finally {
   writeFileSync(`${out}/results.json`, JSON.stringify({ checks, bounds, errors }, null, 2));

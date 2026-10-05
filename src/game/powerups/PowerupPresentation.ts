@@ -2,13 +2,14 @@ import { Color3, DynamicTexture, FreeCamera, Mesh, MeshBuilder, Observer, Scene,
 import { GAME_CONSTANTS as C } from '../../../shared/constants';
 import type { BallState, MapEffectKind, MapEffectState, PlayerState, PowerupBuffs, PowerupKind, PowerupWorldState, RoomState, Vec3 } from '../../../shared/types';
 import { isGrenadeKind } from '../../../shared/simulation/BallSim';
-import { lavaMaxHeight } from '../../../shared/simulation/MapEffectSim';
+import { isInLava, lavaMaxHeight, mapEffectWarningSeconds } from '../../../shared/simulation/MapEffectSim';
 import type { PowerupEvent, PowerupPrivateMessage } from '../../../shared/protocol';
 import { SoundManager } from '../audio/SoundManager';
 import { settings } from '../config/Settings';
 import type { Hud } from '../ui/Hud';
 import { powerupIconMarkup } from '../ui/PowerupIcons';
 import { buildPowerupHudView, POWERUP_ITEMS as ITEMS } from './PowerupHudView';
+import { LavaSurface } from './LavaSurface';
 
 const MAP_EFFECTS: Record<MapEffectKind, { name: string; warning: string; color: string }> = {
   moon: { name: 'MOON GRAVITY', warning: 'Gravity is about to drop', color: '#c9d6ff' },
@@ -230,7 +231,7 @@ export class PowerupPresentation {
   private mapBanner = document.createElement('div');
   private stunFx = document.createElement('div');
   private lastBannerHtml = '';
-  private lava: Mesh | null = null;
+  private lava: LavaSurface | null = null;
   private mapField: Mesh | null = null;
   private mapRings: Mesh[] = [];
   private mapBeacons: Mesh[] = [];
@@ -329,7 +330,7 @@ export class PowerupPresentation {
     }
     if (!room) {
       this.hud?.setPowerupSlot(null); this.setScreenFx(null, 0); this.setStun(0); this.setBanner(''); this.clearDynamic();
-      this.lava?.setEnabled(false); this.effectCapsule?.setEnabled(false); this.hideMapAtmosphere();
+      this.lava?.hide(); this.effectCapsule?.setEnabled(false); this.hideMapAtmosphere();
       for (const node of this.spawnNodes) node.root.setEnabled(false);
       this.heldKind = null; this.lastPrivate = null; this.rouletteUntil = 0; this.activationLocked = false; this.lastSerial = -1; return;
     }
@@ -403,7 +404,7 @@ export class PowerupPresentation {
       this.updateMapEffect(room);
     } else {
       for (const node of this.spawnNodes) node.root.setEnabled(false);
-      this.lava?.setEnabled(false); this.effectCapsule?.setEnabled(false); this.hideMapAtmosphere(); this.setBanner('');
+      this.lava?.hide(); this.effectCapsule?.setEnabled(false); this.hideMapAtmosphere(); this.setBanner('');
     }
     this.updatePlayers(room, localId, dt);
     if (active) { this.updateHud(local, room); this.updateLocalFeedback(local, room, localPosition, dt); }
@@ -485,7 +486,7 @@ export class PowerupPresentation {
     // is a danger cue and always wins.
     const effect = room.mapEffect;
     const lavaLevel = effect?.kind === 'lava' ? effect.lavaLevel : 0;
-    const inLava = lavaLevel > 0.05 && (local?.movement.position.y ?? localPosition.y) < lavaLevel - 0.05 && local?.combatState !== 'eliminated';
+    const inLava = isInLava(localPosition, lavaLevel) && local?.combatState !== 'eliminated';
     if (inLava) this.setScreenFx('lava-danger', 1.4 + 0.5 * Math.sin(this.time * 9), '#ff3b1a');
     else if (kind) this.setScreenFx(kind, strength, ITEMS[kind].color);
     else if (effect?.phase === 'active' && effect.kind === 'moon') this.setScreenFx('moon', 0.7, MAP_EFFECTS.moon.color);
@@ -525,7 +526,7 @@ export class PowerupPresentation {
     if (!effect) {
       this.setBanner('');
       this.effectCapsule?.setEnabled(false);
-      this.lava?.setEnabled(false);
+      this.lava?.hide();
       this.hideMapAtmosphere();
       return;
     }
@@ -551,29 +552,20 @@ export class PowerupPresentation {
       }
       this.effectCapsule.setEnabled(true);
       this.effectCapsule.position.set(spawn?.x ?? 0, 1.05 + Math.sin(this.time * 3) * 0.08, spawn?.z ?? 0);
-      this.effectCapsule.rotation.y = this.time * (2 + 4 * (1 - effect.remainingSeconds / C.mapEffect.warningSeconds));
+      this.effectCapsule.rotation.y = this.time * (2 + 4 * (1 - effect.remainingSeconds / mapEffectWarningSeconds(effect.kind)));
       this.effectCapsule.scaling.setAll(1 + 0.12 * Math.sin(this.time * 10));
     } else {
       this.effectCapsule?.setEnabled(false);
       this.setBanner(`<b>${powerupIconMarkup(effect.kind)} ${info.name}</b><i>${effect.phase === 'ending' ? 'clearing' : secs}</i>`, info.color);
     }
 
-    // Lava sheet.
+    // Opaque magma surface; the flat sheet matches the damage height.
     if (effect.kind === 'lava') {
-      if (!this.lava) {
-        this.lava = MeshBuilder.CreateGround('lava_sheet', { width: C.map.halfWidth * 2, height: C.map.halfLength * 2, subdivisions: 1 }, this.scene);
-        const mat = material(this.scene, 'map_lava', '#ff5a1f', 0.9);
-        mat.alpha = 0.9; mat.specularColor = new Color3(0.9, 0.5, 0.2); mat.specularPower = 24;
-        this.lava.material = mat; this.lava.isPickable = false;
-      }
+      this.lava ??= new LavaSurface(this.scene);
       const level = Math.min(effect.lavaLevel, lavaMaxHeight());
-      this.lava.setEnabled(level > 0.01);
-      this.lava.position.y = level + 0.01;
-      const mat = this.lava.material as StandardMaterial;
-      const glow = 0.75 + 0.25 * Math.sin(this.time * 2.4);
-      mat.emissiveColor.copyFromFloats(1.0 * glow, 0.36 * glow, 0.1 * glow);
+      this.lava.update(level, this.time);
     } else {
-      this.lava?.setEnabled(false);
+      this.lava?.hide();
     }
     this.updateMapAtmosphere(effect);
   }
@@ -612,7 +604,8 @@ export class PowerupPresentation {
     const surface = effect.kind === 'lava' ? effect.lavaLevel : 0;
     this.mapField.setEnabled(true);
     this.mapField.position.y = surface + 0.028;
-    floor.alpha = settings.reducedEffects ? 0.045 : warning ? 0.055 : effect.kind === 'frenzy' ? 0.115 : 0.085;
+    floor.alpha = effect.kind === 'lava' && !warning ? 0.02
+      : settings.reducedEffects ? 0.045 : warning ? 0.055 : effect.kind === 'frenzy' ? 0.115 : 0.085;
     const animated = !settings.reducedEffects;
     const period = effect.kind === 'moon' ? 4.2 : effect.kind === 'frenzy' ? 1.45 : 2.25;
     this.mapRings.forEach((ring, index) => {

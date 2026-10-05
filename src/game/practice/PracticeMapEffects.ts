@@ -1,5 +1,5 @@
 import { GAME_CONSTANTS as C } from '../../../shared/constants';
-import { lavaLevelFor } from '../../../shared/simulation/MapEffectSim';
+import { lavaLevelFor, mapEffectWarningSeconds } from '../../../shared/simulation/MapEffectSim';
 import type { PowerupEvent } from '../../../shared/protocol';
 import type { MapEffectKind, MapEffectState, Vec3 } from '../../../shared/types';
 
@@ -16,7 +16,7 @@ export class PracticeMapEffects {
   tryStart(spawnIndex: number, position: Vec3, resetSerial: number): void {
     if (this.state || this.rng() >= C.mapEffect.chance) return;
     const kind = KINDS[Math.min(KINDS.length - 1, Math.max(0, Math.floor(this.rng() * KINDS.length)))];
-    this.state = { kind, phase: 'warning', remainingSeconds: C.mapEffect.warningSeconds, spawnIndex, lavaLevel: 0 };
+    this.state = { kind, phase: 'warning', remainingSeconds: mapEffectWarningSeconds(kind), spawnIndex, lavaLevel: 0 };
     this.emit('map-warning', position, kind, resetSerial);
   }
 

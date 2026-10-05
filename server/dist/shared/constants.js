@@ -398,6 +398,7 @@ exports.GAME_CONSTANTS = {
         // another effect is already running.
         chance: 0.2,
         warningSeconds: 3,
+        lavaWarningExtraSeconds: 0.5,
         // Moon gravity: everyone (and every ball) at this fraction of normal gravity.
         moonSeconds: 12,
         moonGravityScale: 0.45,

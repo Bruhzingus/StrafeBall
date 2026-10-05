@@ -131,7 +131,8 @@ export class Hud {
     this.topLeft.className = 'hud-panel hud-debug-panel';
     this.topLeft.setAttribute('role', 'region');
     this.topLeft.setAttribute('aria-label', 'Debug diagnostics');
-    this.topLeft.tabIndex = 0;
+    this.topLeft.setAttribute('data-no-lock', '');
+    this.syncDebugDetail();
     this.topLeft.innerHTML = `
       <header class="hud-debug__header">
         <div><h2 class="hud-debug__title">Debug</h2><span class="hud-debug__context"></span></div>
@@ -351,17 +352,28 @@ export class Hud {
 
   toggleDebug(): void {
     this.debugVisible = !this.debugVisible;
+    this.syncDebugDetail();
     this.topLeft.style.display = this.debugVisible ? '' : 'none';
     this.nextDebugUpdateMs = 0;
   }
 
   private shouldUpdateDebug(mode: 'offline' | 'online'): boolean {
     if (!this.debugVisible) return false;
+    this.syncDebugDetail();
     const now = performance.now();
     if (this.topLeft.dataset.mode === mode && now < this.nextDebugUpdateMs) return false;
     // A readable diagnostic cadence also avoids rebuilding a dense panel every rendered frame.
     this.nextDebugUpdateMs = now + 200;
     return true;
+  }
+
+  private syncDebugDetail(): void {
+    const detail = settings.detailedDebugOverlay ? 'detailed' : 'compact';
+    if (this.topLeft.dataset.detail === detail) return;
+    this.topLeft.dataset.detail = detail;
+    this.topLeft.tabIndex = settings.detailedDebugOverlay ? 0 : -1;
+    this.topLeft.scrollTop = 0;
+    this.nextDebugUpdateMs = 0;
   }
 
   private renderDebug(mode: 'offline' | 'online', html: string): void {
@@ -587,7 +599,7 @@ export class Hud {
       const wallHtml = movement.wallRunning
         ? `<span class="hud-good">${movement.wallRunTimer.toFixed(1)}s</span>`
         : 'Inactive';
-      this.renderDebug('offline', `
+      this.renderDebug('offline', settings.detailedDebugOverlay ? `
         ${debugSection('Performance', [
           debugRow('Frame rate', `<strong>${Math.round(fps)} FPS</strong> · ${frameMs.toFixed(1)} ms`),
           debugRow('Tick / snapshot', `${SERVER_TICK_RATE} / ${SNAPSHOT_RATE} Hz`)
@@ -604,7 +616,13 @@ export class Hud {
           debugRow('Backflip cooldown', `${player.backflip.cooldown.toFixed(1)}s`),
           debugRow('Last action', escapeHtml(hands.lastAction))
         ])}
-      `);
+      ` : `<dl class="hud-debug__compact">
+        ${debugRow('FPS / frame', `<strong>${Math.round(fps)}</strong> / ${frameMs.toFixed(1)} ms`)}
+        ${debugRow('Tick / snapshot', 'Local practice')}
+        ${debugRow('Ping', 'Local')}
+        ${debugRow('Desync', 'N/A')}
+        ${debugRow('Speed', `${movement.speed.toFixed(1)} m/s`)}
+      </dl>`);
     }
 
     // Practice uses the same whiteboard scoreboard as real matches (consistent UI everywhere).
@@ -619,7 +637,7 @@ export class Hud {
         halfDropSecondsRemaining: rules.boundary.noBoundaries ? 0 : noBoundariesTime,
         noBoundaries: rules.boundary.noBoundaries,
         blueTeam: { name: 'BLUE TEAM', color: 'blue', score: rules.scoring.playerHits, players: ['You'] },
-        redTeam: { name: 'RED TEAM', color: 'red', score: rules.boundary.opponentPenaltyHits, players: ['Player 2'] }
+        redTeam: { name: 'RED TEAM', color: 'red', score: rules.scoring.opponentHits + rules.boundary.opponentPenaltyHits, players: ['Opponent'] }
       });
     } else {
       this.teamScoreboard.setVisible(false);
@@ -725,7 +743,7 @@ export class Hud {
       const srvLoop = netDebug.serverLoopP95Ms;
       const srvBufColor = srvBuf === null ? 'hud-good' : srvBuf >= 16384 ? 'hud-bad' : srvBuf >= 4096 ? 'hud-warn' : 'hud-good';
       const srvLoopColor = srvLoop === null ? 'hud-good' : srvLoop >= 18 ? 'hud-bad' : srvLoop >= 10 ? 'hud-warn' : 'hud-good';
-      this.renderDebug('online', `
+      this.renderDebug('online', settings.detailedDebugOverlay ? `
         ${debugSection('Performance & session', [
           debugRow('Frame rate', `<strong>${Math.round(fps)} FPS</strong> · ${frameMs.toFixed(1)} ms`),
           debugRow('Room', escapeHtml(room.id)),
@@ -763,7 +781,13 @@ export class Hud {
             debugRow('Velocity (x/y/z)', `${local.movement.velocity.x.toFixed(1)}, ${local.movement.velocity.y.toFixed(1)}, ${local.movement.velocity.z.toFixed(1)}`)
           ] : [])
         ])}
-      `);
+      ` : `<dl class="hud-debug__compact">
+        ${debugRow('FPS / frame', `<strong>${Math.round(fps)}</strong> / ${frameMs.toFixed(1)} ms`)}
+        ${debugRow('Tick / snapshot', `${tickRateHz} / ${snapRateHz} Hz`)}
+        ${debugRow('Ping / jitter', `${pingMs === null ? '—' : pingMs} / ${netDebug.pingJitterMs.toFixed(1)} ms`)}
+        ${debugRow('Desync / max', `<span class="${desyncColor}">${netDebug.residualAfterReplayM.toFixed(3)} / ${netDebug.desyncRecentMaxM.toFixed(3)} m</span>`)}
+        ${debugRow('Speed', local ? `${local.movement.speed.toFixed(1)} m/s` : '—')}
+      </dl>`);
     }
 
     const winner = room.match.winnerTeamId

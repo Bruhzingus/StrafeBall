@@ -41,6 +41,7 @@ export class SettingsPanel {
   private readonly reducedEffectsToggle: HTMLInputElement;
   private readonly scoreboardToggle: HTMLInputElement;
   private readonly devGraphicsTuningToggle: HTMLInputElement;
+  private readonly detailedDebugToggle: HTMLInputElement;
   private readonly graphicsSelect: HTMLSelectElement;
   private readonly howToPlayButton: HTMLButtonElement;
   private readonly howToPlay: HowToPlay;
@@ -151,6 +152,22 @@ export class SettingsPanel {
     this.scoreboardToggle.addEventListener('keydown', this.preventKeySteal);
     scoreboardLabel.append(scoreboardName, this.scoreboardToggle);
 
+    const debugLabel = document.createElement('label');
+    debugLabel.className = 'settings-row settings-row--toggle';
+    const debugName = document.createElement('span');
+    debugName.textContent = 'Detailed debug overlay';
+    this.detailedDebugToggle = document.createElement('input');
+    this.detailedDebugToggle.type = 'checkbox';
+    this.detailedDebugToggle.checked = settings.detailedDebugOverlay;
+    this.detailedDebugToggle.addEventListener('input', () => {
+      settings.setDetailedDebugOverlay(this.detailedDebugToggle.checked);
+    });
+    this.detailedDebugToggle.addEventListener('keydown', this.preventKeySteal);
+    debugLabel.append(debugName, this.detailedDebugToggle);
+    const debugHint = document.createElement('div');
+    debugHint.className = 'settings-hint';
+    debugHint.textContent = 'Tab toggles debug. Enable for full diagnostics; disable for compact gameplay stats.';
+
     // Graphics preset selector. Applied LIVE by the owning scene — never with a page reload, which
     // used to drop the multiplayer connection and dump players in a match back to the load screen.
     const graphicsRow = document.createElement('label');
@@ -221,7 +238,7 @@ export class SettingsPanel {
       this.group('Controls', sensitivityLabel.label, this.sensitivitySlider),
       this.group('Audio', sfxLabel.label, this.sfxSlider, lobbyMusicLabel.label, this.lobbyMusicSlider,
         battleMusicLabel.label, this.battleMusicSlider, claudesPlanLabel),
-      this.group('Display', graphicsRow, graphicsHint, effectsLabel, scoreboardLabel),
+      this.group('Display', graphicsRow, graphicsHint, effectsLabel, scoreboardLabel, debugLabel, debugHint),
       advanced
     );
     this.root.append(this.toggleButton, this.content);

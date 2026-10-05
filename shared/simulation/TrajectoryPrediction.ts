@@ -79,7 +79,7 @@ export function predictStaticThrowTrajectory(input: StaticThrowTrajectoryInput):
     traveled += stepDistance;
     ball = advanced;
     ball = resolveBallStaticBoxes(resolveBallBounds(ball, input.bounceRule), input.boxes as AABB[], undefined, input.bounceRule);
-    ball = settleBallIfSlow(ball, constants);
+    ball = settleBallIfSlow(ball, constants, input.boxes);
     const collision = ball.bounceCount > bounceCount;
     if (collision || i % sampleEvery === 0 || i === maxSteps || traveled >= maxDistance) put(collision, i);
     if (ball.bounceCount >= 2 || traveled >= maxDistance || ball.phase === 'loose') break;

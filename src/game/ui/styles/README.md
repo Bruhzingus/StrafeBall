@@ -56,7 +56,7 @@ Use the shared `--sb-dialog-gutter` and `--sb-panel-padding` for dialogs. Width 
 | Match results | `--sb-dialog-wide` (960px) |
 | Creator / graphics tools | 312px / 300px |
 
-Keep panels inside the dynamic viewport with internal scrolling. A long list must scroll rather than clip its last entries. Debug uses a compact single column offline and two columns online, collapsing on narrow screens.
+Keep panels inside the dynamic viewport with internal scrolling. A long list must scroll rather than clip its last entries. Tab debug defaults to a small, non-interactive gameplay readout. Settings > Display > Detailed debug overlay enables the full panel: single column offline and two columns online, collapsing on narrow screens.
 
 Change palette values in `tokens.css`. Compatibility aliases such as `--paper` and `--menu-cream` point to the same tokens; do not redefine them with new colors in components.
 

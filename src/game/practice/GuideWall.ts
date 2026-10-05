@@ -79,7 +79,7 @@ const GUIDE_PANELS: readonly GuidePanelSpec[] = [
       {
         heading: 'Practice Room',
         items: [
-          { label: 'WEST WALL', text: 'Spawn balls, add bots, reset the map, and tune bot difficulty.' },
+          { label: 'WEST WALL', text: 'Spawn balls, toggle the practice opponent, and reset the map.' },
           { label: 'PORTALS', text: 'Hold E at match stations to queue 1v1 or 2v2.' },
           { text: 'Use the gym to practice catches, wall routes, backflip throws, and live return fire.' }
         ]

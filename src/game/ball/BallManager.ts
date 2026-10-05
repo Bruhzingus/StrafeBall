@@ -21,6 +21,7 @@ export class BallManager {
   private highlightedBallId: number | null = null;
   private elapsed = 0;
   private onBallAdvanced: ((ball: Ball, segmentStart: Vector3, segmentEnd: Vector3) => void) | null = null;
+  private onBallAdvancedObserver: ((ball: Ball, segmentStart: Vector3, segmentEnd: Vector3) => void) | null = null;
   private onBallUpdateComplete: (() => void) | null = null;
 
   constructor(
@@ -71,11 +72,22 @@ export class BallManager {
     this.onBallUpdateComplete = onComplete;
   }
 
+  /** A second offline combat check, run after local player catch/parry on the same swept path. */
+  setBallAdvanceObserver(handler: ((ball: Ball, segmentStart: Vector3, segmentEnd: Vector3) => void) | null): void {
+    this.onBallAdvancedObserver = handler;
+  }
+
   update(dt: number): void {
     this.elapsed += dt;
+    const onAdvanced = this.onBallAdvanced || this.onBallAdvancedObserver
+      ? (advanced: Ball, start: Vector3, end: Vector3) => {
+        this.onBallAdvanced?.(advanced, start, end);
+        if (advanced.state === BallState.Live) this.onBallAdvancedObserver?.(advanced, start, end);
+      }
+      : undefined;
     // Swap shared material/effect state only from ball state; gameplay physics stays in Ball.
     for (const ball of this.balls) {
-      ball.update(dt, this.collision, this.onBallAdvanced ?? undefined);
+      ball.update(dt, this.collision, onAdvanced);
       this.updateBallVisual(ball, dt);
       if (ball.powerupKind) {
         ball.mesh.scaling.setAll(1);

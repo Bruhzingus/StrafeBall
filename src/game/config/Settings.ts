@@ -27,6 +27,8 @@ class SettingsStore {
   public loopClaudesPlan = false;
   /** Expose the live polished-renderer tuning panel. Off by default, available in production. */
   public devGraphicsTuning = false;
+  /** Use the full Tab diagnostics panel instead of the compact gameplay overlay. */
+  public detailedDebugOverlay = false;
 
   constructor() {
     this.load();
@@ -83,6 +85,11 @@ class SettingsStore {
     this.save();
   }
 
+  setDetailedDebugOverlay(value: boolean): void {
+    this.detailedDebugOverlay = value;
+    this.save();
+  }
+
   private load(): void {
     try {
       const raw = localStorage.getItem(STORAGE_KEY);
@@ -98,6 +105,7 @@ class SettingsStore {
         showScoreboard?: unknown;
         loopClaudesPlan?: unknown;
         devGraphicsTuning?: unknown;
+        detailedDebugOverlay?: unknown;
       };
       if (typeof parsed.mouseSensitivity === 'number' && Number.isFinite(parsed.mouseSensitivity)) {
         this.mouseSensitivity = clamp(parsed.mouseSensitivity, SENSITIVITY_MIN, SENSITIVITY_MAX);
@@ -133,6 +141,9 @@ class SettingsStore {
       if (typeof parsed.devGraphicsTuning === 'boolean') {
         this.devGraphicsTuning = parsed.devGraphicsTuning;
       }
+      if (typeof parsed.detailedDebugOverlay === 'boolean') {
+        this.detailedDebugOverlay = parsed.detailedDebugOverlay;
+      }
     } catch {
       // Corrupt/unavailable storage — fall back to defaults silently.
     }
@@ -149,7 +160,8 @@ class SettingsStore {
         reducedEffectsCustomized: this.reducedEffectsOverride === undefined ? undefined : true,
         showScoreboard: this.showScoreboard,
         loopClaudesPlan: this.loopClaudesPlan,
-        devGraphicsTuning: this.devGraphicsTuning
+        devGraphicsTuning: this.devGraphicsTuning,
+        detailedDebugOverlay: this.detailedDebugOverlay
       }));
     } catch {
       // Storage may be unavailable (private mode); ignore.

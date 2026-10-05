@@ -61,7 +61,7 @@ function predictStaticThrowTrajectory(input) {
         traveled += stepDistance;
         ball = advanced;
         ball = (0, StaticBallCollision_1.resolveBallStaticBoxes)((0, StaticBallCollision_1.resolveBallBounds)(ball, input.bounceRule), input.boxes, undefined, input.bounceRule);
-        ball = (0, BallSim_1.settleBallIfSlow)(ball, constants);
+        ball = (0, BallSim_1.settleBallIfSlow)(ball, constants, input.boxes);
         const collision = ball.bounceCount > bounceCount;
         if (collision || i % sampleEvery === 0 || i === maxSteps || traveled >= maxDistance)
             put(collision, i);

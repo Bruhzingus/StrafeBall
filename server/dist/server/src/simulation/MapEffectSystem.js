@@ -17,8 +17,7 @@ const alive = (p) => p.connected && p.combatState === 'alive' && p.lives > 0;
 class MapEffectSystem {
     rng;
     events = [];
-    lavaSeconds = new Map();
-    lavaDamageDue = new Map();
+    lavaExposure = new Map();
     frenzyBallIds = [];
     frenzyTargetBalls = 0;
     serial = 0;
@@ -36,8 +35,7 @@ class MapEffectSystem {
     reset(room) {
         room.mapEffect = null;
         this.events = [];
-        this.lavaSeconds.clear();
-        this.lavaDamageDue.clear();
+        this.lavaExposure.clear();
         this.frenzyBallIds = [];
         this.frenzyTargetBalls = 0;
     }
@@ -51,7 +49,7 @@ class MapEffectSystem {
         if (this.rng() >= constants_1.GAME_CONSTANTS.mapEffect.chance)
             return false;
         const kind = KINDS[Math.min(KINDS.length - 1, Math.floor(this.rng() * KINDS.length))];
-        room.mapEffect = { kind, phase: 'warning', remainingSeconds: constants_1.GAME_CONSTANTS.mapEffect.warningSeconds, spawnIndex, lavaLevel: 0 };
+        room.mapEffect = { kind, phase: 'warning', remainingSeconds: (0, MapEffectSim_1.mapEffectWarningSeconds)(kind), spawnIndex, lavaLevel: 0 };
         this.emit(room, 'map-warning', spawnPosition, kind);
         return true;
     }
@@ -105,32 +103,26 @@ class MapEffectSystem {
             return;
         if (effect.kind === 'frenzy')
             this.removeFrenzyBalls(room, env);
-        this.lavaSeconds.clear();
-        this.lavaDamageDue.clear();
+        this.lavaExposure.clear();
         this.emit(room, 'map-end', { x: 0, y: 1, z: 0 }, effect.kind);
         room.mapEffect = null;
     }
     // --- lava -------------------------------------------------------------------------------------
     stepLava(room, dt, env, lavaLevel) {
         const m = constants_1.GAME_CONSTANTS.mapEffect;
+        const effect = room.mapEffect;
         for (const p of Object.values(room.players)) {
             if (!alive(p)) {
-                this.lavaSeconds.delete(p.id);
-                this.lavaDamageDue.delete(p.id);
+                this.lavaExposure.delete(p.id);
                 continue;
             }
-            const inLava = lavaLevel > 0.05 && p.movement.position.y < lavaLevel - 0.05;
-            // Time in lava accrues; time out of it only bleeds off at half speed, so hopping in place
-            // doesn't reset the clock — you have to actually get up and stay up.
-            const before = this.lavaSeconds.get(p.id) ?? 0;
-            const after = inLava ? before + dt : Math.max(0, before - dt * 0.5);
-            this.lavaSeconds.set(p.id, after);
-            if (!inLava)
-                continue;
-            const due = this.lavaDamageDue.get(p.id) ?? m.lavaFirstDamageSeconds;
-            if (after + 1e-7 >= due) {
+            const exposure = this.lavaExposure.get(p.id) ?? new MapEffectSim_1.LavaExposure();
+            this.lavaExposure.set(p.id, exposure);
+            if (exposure.step((0, MapEffectSim_1.isInLava)(p.movement.position, lavaLevel), dt)) {
                 env.damage(p);
-                this.lavaDamageDue.set(p.id, due + m.lavaDamageIntervalSeconds);
+                // Damage callbacks can reset the world. Never continue an old hazard into a new round.
+                if (room.mapEffect !== effect)
+                    return;
             }
         }
         // Loose balls float on the surface and drift out toward the bleacher fronts.
@@ -181,7 +173,7 @@ class MapEffectSystem {
             const id = `frenzy_${++this.serial}`;
             const x = (this.rng() * 2 - 1) * constants_1.GAME_CONSTANTS.map.halfWidth * 0.6;
             const z = (this.rng() * 2 - 1) * constants_1.GAME_CONSTANTS.map.halfLength * 0.6;
-            // A zero-speed dead ball settles into the stationary loose phase before gravity can act.
+            // Spawn in flight with a small downward velocity; surface support decides when it settles.
             room.balls[id] = (0, BallSim_1.markBallDead)((0, BallSim_1.createBallState)(id, { x, y: constants_1.GAME_CONSTANTS.mapEffect.frenzyDropHeight, z }), { x: 0, y: -1, z: 0 });
             this.frenzyBallIds.push(id);
         }

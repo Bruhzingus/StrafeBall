@@ -1,5 +1,6 @@
 import { GAME_CONSTANTS, type GameConstants } from '../constants';
 import type { BallPhase, BallState, HandSide, Vec3, ValidationResult } from '../types';
+import type { AABB } from './MapGeometry';
 import {
   add,
   cloneVec3,
@@ -290,8 +291,30 @@ export function cannonSpeedGrowthFactor(distanceTraveled: number, constants: Gam
   );
 }
 
-export function settleBallIfSlow(ball: BallState, constants: GameConstants = GAME_CONSTANTS): BallState {
+/** A slow ball can rest on the floor or a box top, but never at a flight apex. */
+export function isBallSupported(
+  ball: Pick<BallState, 'position' | 'kind'>,
+  boxes: readonly (AABB & { enabled?: boolean })[] = [],
+  constants: GameConstants = GAME_CONSTANTS,
+  floorY = 0
+): boolean {
+  const radius = constants.ball.radius * (ball.kind === 'cannon' ? constants.powerup.cannonFlightScale : 1);
+  const bottomY = ball.position.y - radius;
+  const epsilon = 1e-4;
+  if (bottomY <= floorY + epsilon) return true;
+  return boxes.some(box => box.enabled !== false &&
+    Math.abs(bottomY - box.maxY) <= epsilon &&
+    ball.position.x >= box.minX - radius && ball.position.x <= box.maxX + radius &&
+    ball.position.z >= box.minZ - radius && ball.position.z <= box.maxZ + radius);
+}
+
+export function settleBallIfSlow(
+  ball: BallState,
+  constants: GameConstants = GAME_CONSTANTS,
+  boxes: readonly AABB[] = []
+): BallState {
   if (ball.phase !== 'dead' || length(ball.velocity) >= constants.ball.settleSpeed) return ball;
+  if (!isBallSupported(ball, boxes, constants)) return ball;
   return {
     ...ball,
     phase: 'loose',

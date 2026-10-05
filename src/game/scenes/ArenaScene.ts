@@ -1,5 +1,5 @@
 import { PowerupPresentation, type PowerupPresentationRoom } from '../powerups/PowerupPresentation';
-import { ballConstantsForEffect, mapEffectGravityScale, mapEffectUnlimitedBounces } from '../../../shared/simulation/MapEffectSim';
+import { ballConstantsForEffect, isInLava, LavaExposure, mapEffectGravityScale, mapEffectUnlimitedBounces } from '../../../shared/simulation/MapEffectSim';
 import { BLEACHER_LAYOUT } from '../../../shared/simulation/MapGeometry';
 import { CoachGlassesGuide } from '../effects/CoachGlassesGuide';
 import { coachGlassesEligible } from '../effects/CoachGlassesEligibility';
@@ -82,7 +82,7 @@ import { settings } from '../config/Settings';
 import { SoundManager } from '../audio/SoundManager';
 import { MusicManager } from '../audio/MusicManager';
 import { Effects } from '../effects/Effects';
-import { PracticeBot } from '../bot/PracticeBot';
+import { PracticeOpponent, type PracticeOpponentBallEvent } from '../bot/PracticeOpponent';
 import { PracticeControlWall } from '../practice/PracticeControlWall';
 import { LobbyModePortals } from '../practice/LobbyModePortals';
 import type { LobbyMode, LobbyPortalAction } from '../practice/LobbyModePortals';
@@ -146,7 +146,6 @@ export class ArenaScene {
   private readonly hud: Hud;
   private readonly nametags: Nametags;
   private readonly rules = new MatchRules();
-  private readonly targetDummies: Mesh[] = [];
   private readonly sound: SoundManager;
   private readonly powerupPresentation: PowerupPresentation;
   private readonly coachGlassesGuide: CoachGlassesGuide;
@@ -156,8 +155,7 @@ export class ArenaScene {
   private readonly music: MusicManager;
   private readonly ballVisualEffects: BallVisualEffects;
   private readonly effects: Effects;
-  private readonly quickBot: PracticeBot;
-  private readonly chargeBot: PracticeBot;
+  private readonly practiceOpponent: PracticeOpponent;
   private readonly practiceWall: PracticeControlWall;
   private readonly lobbyModePortals: LobbyModePortals;
   private readonly guideWall: GuideWall;
@@ -178,7 +176,7 @@ export class ArenaScene {
   // Where each creator ball started, so a run restart returns it there — otherwise attempt #2 of a
   // ball-triggered course begins with the balls wherever attempt #1 happened to leave them.
   private readonly creatorBallSpawns: Array<{ ball: Ball; x: number; y: number; z: number }> = [];
-  private readonly creatorBots: PracticeBot[] = [];
+  private readonly creatorBots: PracticeOpponent[] = [];
   private readonly creatorDummies: Mesh[] = [];
   private readonly practiceState: PracticeState = createPracticeState();
   private readonly practicePowerups = new PracticePowerupSpawner();
@@ -191,8 +189,7 @@ export class ArenaScene {
   private readonly practiceArmorBalls: Ball[] = [];
   private readonly practiceFrenzyBalls: Ball[] = [];
   private practiceFrenzyTarget = 0;
-  private practiceLavaSeconds = 0;
-  private practiceLavaDamageDue = GAME_CONSTANTS.mapEffect.lavaFirstDamageSeconds;
+  private practiceLavaExposure = new LavaExposure();
   private readonly practicePowerupRoom: PowerupPresentationRoom = {
     practiceBuffs: this.practicePowerups.buffs,
     practicePlayerId: 'practice',
@@ -415,8 +412,6 @@ export class ArenaScene {
     if (this.quality === 'polished') createGymCoveLighting(this.scene);
     this.setupGymShadows();
     this.setupGymEnvironmentResponse();
-    // All meshes with targetDummy metadata — includes both static and the moving dummy.
-    this.targetDummies = this.scene.meshes.filter((mesh): mesh is Mesh => mesh instanceof Mesh && !!mesh.metadata?.targetDummy);
     this.sound = new SoundManager();
     this.powerupPresentation = new PowerupPresentation(this.scene, this.sound);
     this.music = new MusicManager(() => this.multiplayer.estimateServerTimeMs());
@@ -434,8 +429,12 @@ export class ArenaScene {
     this.player = new PlayerController(this.scene, this.input, this.ballManager, this.gym.collision, this.effects);
     this.player.hands.setArmorPickup(() => this.takePracticeArmorBall());
     this.buildPostFx();
-    this.quickBot = new PracticeBot(this.scene, this.ballManager, 'quick');
-    this.chargeBot = new PracticeBot(this.scene, this.ballManager, 'charge');
+    this.practiceOpponent = new PracticeOpponent(this.scene, this.ballManager, { collision: this.gym.collision });
+    this.practiceOpponent.setDifficulty(this.practiceState.botDifficulty);
+    this.practiceOpponent.setEnabled(this.practiceState.opponentEnabled);
+    registerGymShadowCaster(this.practiceOpponent.mesh, true);
+    registerGymMirrorMesh(this.practiceOpponent.mesh, true);
+    this.ballManager.setBallAdvanceObserver((ball, start, end) => this.resolvePracticeOpponentBall(ball, start, end));
     this.practiceWall = new PracticeControlWall(this.scene, this.practiceState, this.ballManager, (id) => this.handleButtonPress(id));
     this.lobbyModePortals = new LobbyModePortals(this.scene);
     // Polished Phase 3: the lobby portal arches stand ON the court, so their reflection in the
@@ -733,8 +732,7 @@ export class ArenaScene {
     disposeSandboxAtmosphere(this.scene);
     this.polishedPostFx?.dispose();
     disposeGymCoveLighting();
-    this.quickBot.dispose();
-    this.chargeBot.dispose();
+    this.practiceOpponent.dispose();
     this.practiceWall.dispose();
     this.lobbyModePortals.dispose();
     this.guideWall.dispose();
@@ -801,11 +799,74 @@ export class ArenaScene {
         this.ballVisualEffects.spawnImpact(b, speed);
         continue;
       }
+      const wasBotThrow = ball.owner === 'bot';
       ball.makeDead();
       this.effects.onPlayerHit(b, speed);
       this.ballVisualEffects.spawnImpact(b, speed);
       this.hud.showHitMarker('bad');
+      if (wasBotThrow) {
+        this.rules.scoring.recordOpponentHit();
+        this.hud.showScoreEvent('HIT TAKEN', `Opponent ${this.rules.scoring.opponentHits} / ${TUNING.match.scoreLimit}`, 'bad');
+        this.practiceOpponent.notifyBallHitPlayer(ball);
+        for (const bot of this.creatorBots) bot.notifyBallHitPlayer(ball);
+      }
     }
+  }
+
+  /** Resolve bot catches and player hits on the ball's real swept path, after local catches. */
+  private resolvePracticeOpponentBall(ball: Ball, start: Vector3, end: Vector3): void {
+    if (this.onlineModeActive) return;
+    let result = !this.movementSandbox?.active && this.practiceOpponent.mesh.isEnabled()
+      ? this.practiceOpponent.resolveAdvancedBall(ball, start, end)
+      : null;
+    if (!result) {
+      for (const bot of this.creatorBots) {
+        result = bot.resolveAdvancedBall(ball, start, end);
+        if (result) break;
+      }
+    }
+    const kind = ball.powerupKind;
+    if ((kind === 'shock' || kind === 'stun' || kind === 'bomb') &&
+        ball.state === BallState.Dead && ball.fuseSeconds === undefined) {
+      // A bot contact can kill and stop the projectile in this swept callback. Ball.update then
+      // converts zero-speed Dead balls to Loose before the ordinary fuse pass sees them.
+      this.armPracticePowerupBall(ball, kind, this.practicePowerupRoom.resetVote.resetSerial);
+    }
+    if (result) this.reportPracticeOpponentBallEvent(result);
+  }
+
+  private reportPracticeOpponentBallEvent(result: PracticeOpponentBallEvent): void {
+    if (result.kind === 'catch') {
+      this.hud.showScoreEvent('OPPONENT CATCH', '', 'neutral');
+      return;
+    }
+    this.rules.scoring.recordPlayerHit();
+    this.player.dash.addChargeFromHit();
+    this.effects.onDummyHit(result.speed);
+    this.hud.showHitMarker('good');
+    this.hud.showScoreEvent('HIT +1', `${this.rules.scoring.playerHits} / ${TUNING.match.scoreLimit}`, 'good');
+  }
+
+  private practiceOpponentPowerupContext() {
+    const buffs = this.practicePowerups.buffs;
+    return {
+      speedActive: buffs.speedSeconds > 0,
+      adrenalineActive: buffs.adrenalineSeconds > 0,
+      magnetActive: buffs.magnetSeconds > 0,
+      armorCount: this.practiceArmorBalls.length
+    };
+  }
+
+  private practiceOpponentPlayerObservation() {
+    const left = this.player.hands.left;
+    const right = this.player.hands.right;
+    const visibleCatch = (hand: typeof left) => !hand.ball && (hand.catchStance || hand.catchAttemptAnim > 0);
+    const movement = this.player.lastMovementSnapshot;
+    return {
+      catching: visibleCatch(left) || visibleCatch(right),
+      charging: (!!left.ball && left.charging) || (!!right.ball && right.charging),
+      dashing: movement.dashingThisFrame || movement.frictionMode === 'dashSuppressed'
+    };
   }
 
   /**
@@ -1264,10 +1325,10 @@ export class ArenaScene {
       return;
     }
 
-    // Practice bots — only active when enabled via control wall
+    // The practice opponent is only active when enabled via the control wall.
     const playerPos = this.player.camera.globalPosition;
-    if (this.quickBot.update(dt, playerPos)) this.effects.botThrow();
-    if (this.chargeBot.update(dt, playerPos)) this.effects.botThrow();
+    if (this.practiceOpponent.update(dt, playerPos, this.player.root.position,
+      this.practiceOpponentPowerupContext(), this.practiceOpponentPlayerObservation()).threw) this.effects.botThrow();
     this.practiceWall.update(dt);
     this.lobbyModePortals.update(
       dt,
@@ -1290,17 +1351,6 @@ export class ArenaScene {
     this.updateInteractPrompt();
     this.updateLocalMovementFoley(dt, vector3ToVec3(snap.velocity), snap.grounded, snap.sliding, snap.dashingThisFrame, snap.wallRunning);
 
-    // Each landed hit grants the thrower one dash charge (locked rule).
-    const hits = this.rules.scoring.updateAgainstDummies(this.ballManager.balls, this.targetDummies, dt);
-    for (const hit of hits) {
-      this.player.dash.addChargeFromHit();
-      this.effects.onDummyHit(hit.speed);
-      this.hud.showHitMarker('good');
-    }
-    if (hits.length > 0) {
-      this.hud.showScoreEvent(`HIT +${hits.length}`, `${this.rules.scoring.playerHits} / ${TUNING.match.scoreLimit}`, 'good');
-    }
-
     const enteredPracticeRestrictedHalf = this.rules.boundary.updatePractice(dt, this.player.root.position);
     if (enteredPracticeRestrictedHalf && !this.practiceBoundaryHintShown) {
       this.practiceBoundaryHintShown = true;
@@ -1313,10 +1363,9 @@ export class ArenaScene {
     this.updateOfflineCourtLines();
     this.effects.update(dt);
 
-    // Advance the moving dummy's oscillation + the live 3D scoreboards (offline shows practice score:
-    // your dummy hits as BLUE, opponent penalty as RED; setScores buzzes them when a number ticks up).
+    // Advance court props and the live practice scoreboards.
     this.gym.update(this.elapsed);
-    this.gym.setScoreboardScores(this.rules.scoring.playerHits, this.rules.boundary.opponentPenaltyHits);
+    this.gym.setScoreboardScores(this.rules.scoring.playerHits, this.rules.scoring.opponentHits + this.rules.boundary.opponentPenaltyHits);
     this.gym.updateScoreboards(dt);
 
     if (this.rules.scoring.isWin()) {
@@ -1339,7 +1388,8 @@ export class ArenaScene {
   private stepOnline(dt: number, rawFrameMs: number): void {
     this.elapsed += dt;
     const powerupSnapshot = this.multiplayer.latestSnapshot;
-    this.powerupPresentation.update(powerupSnapshot?.room ?? null, this.multiplayer.localPlayerId,
+    const powerupRoom = powerupSnapshot ? { ...powerupSnapshot.room, mapEffect: this.multiplayer.presentedMapEffect } : null;
+    this.powerupPresentation.update(powerupRoom, this.multiplayer.localPlayerId,
       this.player.root.position, this.multiplayer.powerupPrivate, this.multiplayer.drainPowerupEvents(), dt);
     this.player.lookScale = this.powerupPresentation.localLookScale;
     this.onlineRateLogFrameCount += 1;
@@ -2253,8 +2303,7 @@ export class ArenaScene {
     this.resetPrediction('enter-online');
     this.player.hands.clearHands();
     this.clearPracticeArmor();
-    this.quickBot.reset();
-    this.chargeBot.reset();
+    this.practiceOpponent.reset();
     this.setPracticePropsEnabled(false);
     this.ballManager.clear();
     // Mats start upright online; server mat state then drives them via applyOnlineMats (including
@@ -2301,8 +2350,7 @@ export class ArenaScene {
     this.player.hands.clearHands();
     this.clearPracticeArmor();
     this.player.resetPosition();
-    this.quickBot.reset();
-    this.chargeBot.reset();
+    this.practiceOpponent.reset();
     this.setPracticePropsEnabled(true);
     this.ballManager.spawnCenterLineBalls();
     this.practicePowerups.configureDefaultSpawn();
@@ -2688,7 +2736,11 @@ export class ArenaScene {
     });
     this.publishCarriedBalls();
     for (const m of markers.bots) {
-      const bot = new PracticeBot(this.scene, this.ballManager, m.charge ? 'charge' : 'quick', new Vector3(m.x, Math.max(0, m.y), m.z));
+      const bot = new PracticeOpponent(this.scene, this.ballManager, {
+        position: new Vector3(m.x, Math.max(floorY, m.y), m.z),
+        collision: ballWorld?.collision
+      });
+      bot.setDifficulty(this.practiceState.botDifficulty);
       bot.setEnabled(true);
       this.creatorBots.push(bot);
     }
@@ -2754,6 +2806,7 @@ export class ArenaScene {
       this.practicePowerups.reset();
       this.practicePowerupRoom.resetVote.resetSerial += 1;
     }
+    for (const bot of this.creatorBots) bot.reset();
     this.resetCreatorBalls();
   }
 
@@ -2811,6 +2864,7 @@ export class ArenaScene {
     );
     if (this.creatorPowerupsActive) this.updatePracticeMagnet(dt);
     this.ballManager.update(dt);
+    this.checkBotHitsPlayer(dt);
     if (this.creatorPowerupsActive) this.updatePracticePowerupBalls(dt);
     // Parity with the practice path: without these, Creator balls were silently pickup-able with no
     // prompt telling you so, and threw with no trail/impact visuals.
@@ -2818,7 +2872,8 @@ export class ArenaScene {
     this.ballVisualEffects.update(dt);
     const eye = this.player.camera.globalPosition;
     for (const bot of this.creatorBots) {
-      if (bot.update(dt, eye)) this.effects.botThrow();
+      if (bot.update(dt, eye, this.player.root.position,
+        this.practiceOpponentPowerupContext(), this.practiceOpponentPlayerObservation()).threw) this.effects.botThrow();
     }
     if (this.creatorDummies.length > 0) {
       const hits = this.rules.scoring.updateAgainstDummies(this.ballManager.balls, this.creatorDummies, dt);
@@ -3022,27 +3077,13 @@ export class ArenaScene {
   }
 
   private setPracticePropsEnabled(enabled: boolean): void {
-    // Practice-only wall props, bots, and target dummies should disappear in the connected
+    // Practice-only wall props and the opponent disappear in the connected
     // lobby/duel arena, leaving only the live scoreboards on the end walls.
     this.practiceWall.setEnabled(enabled);
     this.lobbyModePortals.setEnabled(enabled);
     this.guideWall.setEnabled(enabled);
 
-    // Bots are individually gated by their own enabled flag (practice state), not the online/offline toggle.
-    // When going online, force both off. When returning to practice, restore from practiceState.
-    if (!enabled) {
-      this.quickBot.setEnabled(false);
-      this.chargeBot.setEnabled(false);
-    } else {
-      this.quickBot.setEnabled(this.practiceState.quickThrowBotEnabled);
-      this.chargeBot.setEnabled(this.practiceState.chargeThrowBotEnabled);
-    }
-    for (const dummy of this.targetDummies) {
-      dummy.setEnabled(enabled);
-      for (const child of dummy.getChildMeshes(false)) {
-        child.setEnabled(enabled);
-      }
-    }
+    this.practiceOpponent.setEnabled(enabled && this.practiceState.opponentEnabled);
   }
 
   // Build one network input packet for a fixed-step tick. Edge-triggered fields come from
@@ -3463,8 +3504,7 @@ export class ArenaScene {
   private clearPracticeMapEffect(): void {
     this.removePracticeFrenzyBalls();
     this.player.movement.setPracticeGravityScale(1);
-    this.practiceLavaSeconds = 0;
-    this.practiceLavaDamageDue = GAME_CONSTANTS.mapEffect.lavaFirstDamageSeconds;
+    this.practiceLavaExposure.reset();
     for (const ball of this.ballManager.balls) {
       ball.mapGravityScale = 1;
       ball.unlimitedBounces = false;
@@ -3474,10 +3514,7 @@ export class ArenaScene {
   private updatePracticeLava(dt: number): void {
     const effect = this.practicePowerups.mapEffects.state;
     const level = effect?.kind === 'lava' ? effect.lavaLevel : 0;
-    const inLava = level > 0.05 && this.player.root.position.y < level - 0.05;
-    this.practiceLavaSeconds = inLava ? this.practiceLavaSeconds + dt : Math.max(0, this.practiceLavaSeconds - dt * 0.5);
-    if (inLava && this.practiceLavaSeconds + 1e-7 >= this.practiceLavaDamageDue) {
-      this.practiceLavaDamageDue += GAME_CONSTANTS.mapEffect.lavaDamageIntervalSeconds;
+    if (this.practiceLavaExposure.step(isInLava(this.player.root.position, level), dt)) {
       this.player.resetPosition();
       this.hud.showScoreEvent('LAVA HIT', 'Returned to spawn', 'bad');
     }
@@ -3614,17 +3651,13 @@ export class ArenaScene {
     this.player.hands.clearHands();
     this.removePracticeFrenzyBalls();
     this.clearPracticeArmor();
-    this.quickBot.reset();
-    this.chargeBot.reset();
+    this.practiceOpponent.reset();
     this.ballManager.spawnCenterLineBalls();
     this.practiceState.spawnedExtraBalls = 0;
   }
 
   private resetMatch(): void {
     this.rules.reset();
-    for (const dummy of this.targetDummies) {
-      if (dummy.metadata) dummy.metadata.hitCount = 0;
-    }
   }
 
   private handleButtonPress(id: import('../practice/PracticeControlWall').ButtonId): void {
@@ -3653,44 +3686,16 @@ export class ArenaScene {
       case 'resetScore':
         this.practiceState.practiceScore = 0;
         this.rules.reset();
-        for (const dummy of this.targetDummies) {
-          if (dummy.metadata) dummy.metadata.hitCount = 0;
-        }
         this.hud.showScoreEvent('RESET SCORE', 'Practice score cleared', 'neutral');
         break;
       case 'resetMap':
         this.practiceReset();
         break;
-      case 'toggleQuickBot':
-        s.quickThrowBotEnabled = !s.quickThrowBotEnabled;
-        this.quickBot.setEnabled(s.quickThrowBotEnabled);
-        this.hud.showScoreEvent(
-          s.quickThrowBotEnabled ? 'QUICK BOT ON' : 'QUICK BOT OFF', '', 'neutral'
-        );
+      case 'toggleOpponent':
+        s.opponentEnabled = !s.opponentEnabled;
+        this.practiceOpponent.setEnabled(s.opponentEnabled);
+        this.hud.showScoreEvent(s.opponentEnabled ? 'OPPONENT ON' : 'OPPONENT OFF', '', 'neutral');
         break;
-      case 'toggleChargeBot':
-        s.chargeThrowBotEnabled = !s.chargeThrowBotEnabled;
-        this.chargeBot.setEnabled(s.chargeThrowBotEnabled);
-        this.hud.showScoreEvent(
-          s.chargeThrowBotEnabled ? 'CHARGE BOT ON' : 'CHARGE BOT OFF', '', 'neutral'
-        );
-        break;
-      case 'stopBots':
-        s.quickThrowBotEnabled = false;
-        s.chargeThrowBotEnabled = false;
-        this.quickBot.setEnabled(false);
-        this.chargeBot.setEnabled(false);
-        this.hud.showScoreEvent('BOTS STOPPED', '', 'neutral');
-        break;
-      case 'difficulty': {
-        const order = ['easy', 'normal', 'hard'] as const;
-        const next = order[(order.indexOf(s.botDifficulty) + 1) % order.length];
-        s.botDifficulty = next;
-        this.quickBot.setDifficulty(next);
-        this.chargeBot.setDifficulty(next);
-        this.hud.showScoreEvent(`DIFFICULTY: ${next.toUpperCase()}`, '', 'neutral');
-        break;
-      }
       case 'spawnPowerup':
         s.fastPowerupRespawnEnabled = !s.fastPowerupRespawnEnabled;
         this.practicePowerups.setFastRespawnEnabled(s.fastPowerupRespawnEnabled);
@@ -3885,12 +3890,8 @@ export class ArenaScene {
       const grenade = kind === 'shock' || kind === 'stun';
       const shouldArm = ball.state !== BallState.Held && ball.fuseSeconds === undefined
         && (ball.bounceCount > ball.powerupBounceCount || ball.state === BallState.Dead);
-      if (shouldArm && (kind === 'bomb' || grenade)) {
-        ball.fuseSeconds = grenade ? GAME_CONSTANTS.powerup.grenadeFuseSeconds : GAME_CONSTANTS.powerup.bombFuseSeconds;
-        ball.armedAtMs = performance.now();
-        ball.velocity.setAll(0);
-        ball.makeDead();
-        this.practicePowerups.emit(grenade ? 'stick' : 'beep', vector3ToVec3(ball.mesh.position), resetSerial, 0);
+      if (shouldArm && (kind === 'bomb' || kind === 'shock' || kind === 'stun')) {
+        this.armPracticePowerupBall(ball, kind, resetSerial);
       }
       ball.powerupBounceCount = ball.bounceCount;
       if (ball.fuseSeconds === undefined) continue;
@@ -3912,6 +3913,15 @@ export class ArenaScene {
       if (ball.fuseSeconds > 0) continue;
       this.detonatePracticePowerupBall(ball, kind, resetSerial);
     }
+  }
+
+  private armPracticePowerupBall(ball: Ball, kind: 'bomb' | 'shock' | 'stun', resetSerial: number): void {
+    const grenade = kind === 'shock' || kind === 'stun';
+    ball.fuseSeconds = grenade ? GAME_CONSTANTS.powerup.grenadeFuseSeconds : GAME_CONSTANTS.powerup.bombFuseSeconds;
+    ball.armedAtMs = performance.now();
+    ball.velocity.setAll(0);
+    ball.makeDead();
+    this.practicePowerups.emit(grenade ? 'stick' : 'beep', vector3ToVec3(ball.mesh.position), resetSerial, 0);
   }
 
   private detonatePracticePowerupBall(ball: Ball, kind: PowerupKind, resetSerial: number): void {
@@ -3950,6 +3960,17 @@ export class ArenaScene {
     } else {
       this.practicePowerups.emit('explode', vector3ToVec3(position), resetSerial);
     }
+    if (kind === 'bomb' || kind === 'shock' || kind === 'stun') {
+      if (!this.movementSandbox?.active && this.practiceOpponent.mesh.isEnabled()) {
+        const result = this.practiceOpponent.applyPowerupBlast(kind, position);
+        if (result) this.reportPracticeOpponentBallEvent(result);
+      }
+      for (const bot of this.creatorBots) {
+        if (!bot.mesh.isEnabled()) continue;
+        const result = bot.applyPowerupBlast(kind, position);
+        if (result) this.reportPracticeOpponentBallEvent(result);
+      }
+    }
     this.player.hands.removeBall(ball);
     this.ballManager.removeBall(ball);
   }
@@ -3959,8 +3980,7 @@ export class ArenaScene {
     this.player.hands.clearHands();
     this.clearPracticeMapEffect();
     this.clearPracticeArmor();
-    this.quickBot.reset();
-    this.chargeBot.reset();
+    this.practiceOpponent.reset();
     // Clear ALL balls (including extra) and respawn default set
     this.ballManager.spawnCenterLineBalls();
     this.practiceState.spawnedExtraBalls = 0;
@@ -3968,9 +3988,6 @@ export class ArenaScene {
     this.practicePowerups.reset();
     this.practicePowerupRoom.resetVote.resetSerial += 1;
     this.rules.reset();
-    for (const dummy of this.targetDummies) {
-      if (dummy.metadata) dummy.metadata.hitCount = 0;
-    }
     this.gym.resetMats();
     this.applyPracticeMatPreset();
     this.hud.showScoreEvent('MAP RESET', 'Practice reset', 'neutral');
@@ -4006,35 +4023,20 @@ export class ArenaScene {
     // Darkness stays at 0.18 so player/mat/dummy shadows retain their existing floor contrast.
     const mapSize = this.quality === 'performance' ? COMPETITIVE_CONFIG.shadowMapSize : 1024;
     createCompetitiveShadowSystem(this.scene, key, { mapSize, darkness: 0.18 });
-    // Route dynamic caster registration (mats/dummies here, remote players in NetworkRenderer) to the
+    // Route dynamic caster registration (mats here, practice opponent below, remote players in NetworkRenderer) to the
     // competitive single-generator system.
     setActiveGymShadowRegistrar(registerCompetitiveShadowCaster);
   }
 
   /**
-   * Make the floor a shadow receiver and register the gym's dynamic shadow casters. Only the three
-   * allowed dynamic categories cast: tipping cover mats, target dummies (the moving dummy AND the
-   * three static ones), and — registered separately in NetworkRenderer — remote player bodies. Each
-   * dummy is registered with descendants so its parented head/torso/limb submeshes cast too (the bare
-   * root capsule alone would otherwise drop most of the silhouette). Static gym geometry (walls,
-   * bleachers, ceiling, props, cones) is never a caster, and balls keep their cheap blob shadows.
+   * Make the floor a shadow receiver and register the gym's dynamic cover casters.
+   * The practice opponent and remote players register after their visuals are constructed.
    */
   private setupGymShadows(): void {
     const floor = this.scene.getMeshByName('gym_floor');
     if (floor) floor.receiveShadows = true;
-    // Dynamic casters route through the mode-agnostic facade (the active system was wired in
-    // createLighting): tipping cover mats + every target dummy. Remote player bodies register the same
-    // way from NetworkRenderer.
+    // Dynamic casters route through the mode-agnostic facade.
     for (const mat of this.gym.mats) registerGymShadowCaster(mat.mesh);
-    if (this.gym.movingDummy) registerGymShadowCaster(this.gym.movingDummy, true);
-    // Static target dummies (name 'target_dummy', metadata.targetDummy) — register with descendants.
-    // setEnabled() toggling between practice/online is respected automatically: a disabled caster is
-    // simply skipped when the shadow map renders, so this is safe even while they are hidden online.
-    for (const mesh of this.scene.meshes) {
-      if (mesh instanceof Mesh && mesh.metadata?.targetDummy && mesh !== this.gym.movingDummy) {
-        registerGymShadowCaster(mesh, true);
-      }
-    }
 
     if (this.quality === 'polished') this.setupPolishedStaticShadows();
   }

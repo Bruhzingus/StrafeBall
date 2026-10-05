@@ -21,7 +21,7 @@ function compareWithLive(input: StaticThrowTrajectoryInput): ReturnType<typeof p
     while (index < point.stepIndex) {
       ball = advanceBall(ball, step, input.constants);
       ball = resolveBallStaticBoxes(resolveBallBounds(ball, input.bounceRule), input.boxes as AABB[], undefined, input.bounceRule);
-      ball = settleBallIfSlow(ball, input.constants);
+      ball = settleBallIfSlow(ball, input.constants, input.boxes);
       index++;
     }
     for (const axis of ['x', 'y', 'z'] as const) {

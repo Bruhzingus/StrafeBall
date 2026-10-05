@@ -4,7 +4,7 @@ import { TUNING } from '../config/tuning';
 import { CollisionWorld } from '../map/Collider';
 import { BLEACHER_LAYOUT } from '../../../shared/simulation/MapGeometry';
 import { GAME_CONSTANTS } from '../../../shared/constants';
-import { cannonSpeedGrowthFactor, curveRampFactor } from '../../../shared/simulation/BallSim';
+import { cannonSpeedGrowthFactor, curveRampFactor, isBallSupported } from '../../../shared/simulation/BallSim';
 import type { BallState as SharedBallState } from '../../../shared/types';
 
 let nextBallId = 1;
@@ -208,7 +208,8 @@ export class Ball {
     const boxes = this.world?.collision ?? collision;
     if (boxes) this.resolveBoxCollisions(boxes);
 
-    if (this.state === BallState.Dead && this.velocity.length() < 0.2) {
+    if (this.state === BallState.Dead && this.velocity.length() < TUNING.ball.settleSpeed &&
+      isBallSupported({ position: this.mesh.position, kind: this.powerupKind ?? undefined }, boxes?.boxes, GAME_CONSTANTS, this.floorY())) {
       this.state = BallState.Loose;
       this.velocity.setAll(0);
     }

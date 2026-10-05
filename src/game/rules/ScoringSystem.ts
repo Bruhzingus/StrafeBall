@@ -17,6 +17,15 @@ export interface DummyHitResult {
 
 export class ScoringSystem {
   public playerHits = 0;
+  public opponentHits = 0;
+
+  recordPlayerHit(): void {
+    this.playerHits += 1;
+  }
+
+  recordOpponentHit(): void {
+    this.opponentHits += 1;
+  }
 
   /**
    * Detects player-thrown live balls striking target dummies. Uses a SWEPT CAPSULE test — the
@@ -40,7 +49,7 @@ export class ScoringSystem {
         const base = { x: d.x, y: DUMMY_BODY_BASE_Y, z: d.z };
         const top = { x: d.x, y: DUMMY_BODY_TOP_Y, z: d.z };
         if (!sweptBallHitsBody(prev, curr, base, top, radius)) continue;
-        this.playerHits += 1;
+        this.recordPlayerHit();
         hitsThisFrame.push({ speed: ball.velocity.length() });
         dummy.metadata.hitCount = (dummy.metadata.hitCount ?? 0) + 1;
         if (ball.powerupKind === 'cannon') {
@@ -60,5 +69,6 @@ export class ScoringSystem {
 
   reset(): void {
     this.playerHits = 0;
+    this.opponentHits = 0;
   }
 }

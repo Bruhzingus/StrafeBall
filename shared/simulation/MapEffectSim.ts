@@ -1,5 +1,5 @@
 import { GAME_CONSTANTS, type GameConstants } from '../constants';
-import type { MapEffectState } from '../types';
+import type { MapEffectKind, MapEffectState, Vec3 } from '../types';
 import { BLEACHER_LAYOUT } from './MapGeometry';
 
 /**
@@ -7,6 +7,42 @@ import { BLEACHER_LAYOUT } from './MapGeometry';
  * client (prediction + visuals) so both derive gravity, lava height, etc. from the same replicated
  * MapEffectState.
  */
+
+export function mapEffectWarningSeconds(kind: MapEffectKind): number {
+  return GAME_CONSTANTS.mapEffect.warningSeconds
+    + (kind === 'lava' ? GAME_CONSTANTS.mapEffect.lavaWarningExtraSeconds : 0);
+}
+
+/** Movement positions are at the feet. Match the finite court sheet, with a contact tolerance. */
+export function isInLava(position: Vec3, level: number): boolean {
+  return level > 0.05 && position.y < level - 0.05
+    && Math.abs(position.x) <= GAME_CONSTANTS.map.halfWidth
+    && Math.abs(position.z) <= GAME_CONSTANTS.map.halfLength;
+}
+
+/** Each entry gets a fresh grace period; safe ground never retains pending damage. */
+export class LavaExposure {
+  private untilDamage: number = GAME_CONSTANTS.mapEffect.lavaFirstDamageSeconds;
+
+  reset(): void { this.untilDamage = GAME_CONSTANTS.mapEffect.lavaFirstDamageSeconds; }
+
+  step(inLava: boolean, dt: number): boolean {
+    if (!inLava) { this.reset(); return false; }
+    this.untilDamage -= Math.max(0, dt);
+    if (this.untilDamage > 1e-7) return false;
+    // At most one hit per simulation step, with a full interval after it (no catch-up hits).
+    this.untilDamage = GAME_CONSTANTS.mapEffect.lavaDamageIntervalSeconds;
+    return true;
+  }
+}
+
+/** Extrapolate only the confirmed phase, bounded so a stalled connection cannot run the effect away. */
+export function mapEffectForPresentation(effect: MapEffectState | null | undefined, ageSeconds: number): MapEffectState | null {
+  if (!effect) return null;
+  const view = { ...effect, remainingSeconds: Math.max(0, effect.remainingSeconds - Math.max(0, Math.min(0.5, ageSeconds))) };
+  view.lavaLevel = lavaLevelFor(view);
+  return view;
+}
 
 /** World gravity multiplier for players. 1 unless moon gravity is running. */
 export function mapEffectGravityScale(effect: MapEffectState | null | undefined): number {

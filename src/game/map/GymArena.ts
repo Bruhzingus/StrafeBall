@@ -1,4 +1,4 @@
-import { Color3, Material, Mesh, MeshBuilder, PBRMaterial, Scene, StandardMaterial, Vector3 } from '@babylonjs/core';
+import { Color3, Mesh, MeshBuilder, Scene, StandardMaterial, Vector3 } from '@babylonjs/core';
 import { GAME_CONSTANTS } from '../../../shared/constants';
 import { TUNING } from '../config/tuning';
 import { MatObstacle, MAT_DIMENSIONS } from './MatObstacle';
@@ -45,12 +45,8 @@ export class GymArena {
   // thrown ball passes straight through a mat (mats are cover that affects players, not balls).
   public readonly collision = new CollisionWorld();
   public readonly ballCollision = new CollisionWorld();
-  /** The 4th target dummy; oscillates side-to-side each frame for catch/throw practice. */
-  public movingDummy: Mesh | null = null;
   /** Live 3D scoreboards (one per end wall). Driven from match state; buzz on score change. */
   public readonly scoreboards: Scoreboard3D[] = [];
-  private readonly movingDummyAmplitude = 4.5 / 13 * TUNING.map.halfWidth; // meters from center
-  private readonly movingDummyPeriod = 3.8;    // seconds per full oscillation
   private courtLineCenterMat: StandardMaterial | null = null;
   private courtLineState = {
     negativeHalfActive: false,
@@ -79,35 +75,27 @@ export class GymArena {
     this.createHalfCourtCones();
     this.createBleachers();
     this.createMats();
-    this.createTargetDummies();
     this.createCeiling();
     this.createCeilingFixtures();
     applyGymVisualRevamp(this.scene);
     this.scoreboards.push(...createSideScoreboards(this.scene));
 
-    // The gym is a fixed stage: every mesh built above is static except the moving dummy and the
-    // mats (which tip over). Freeze the rest so Babylon stops recomputing their world matrices and
+    // The gym is a fixed stage: every mesh built above is static except the mats
+    // (which tip over). Freeze the rest so Babylon stops recomputing their world matrices and
     // re-evaluating them for picking/culling every frame — a large per-frame CPU + GC win on a
     // scene with this many boxes (walls, pads, lines, bleacher tiers/seats/panels, scoreboard).
     this.freezeStaticMeshes();
   }
 
   /**
-   * Freeze world matrices + disable picking on every static mesh in the gym. Skips the moving
-   * dummy and the mat visuals, which animate. `freezeWorldMatrix` stops the per-frame matrix
+   * Freeze world matrices + disable picking on every static mesh in the gym. Skips
+   * the mat visuals, which animate. `freezeWorldMatrix` stops the per-frame matrix
    * recompute; `doNotSyncBoundingInfo`/`alwaysSelectAsActiveMesh` skip redundant culling work for
    * geometry that is always on screen-adjacent and never moves.
    */
   private freezeStaticMeshes(): void {
     const dynamic = new Set<Mesh>();
-    // The moving dummy translates every frame; exclude it AND its parented child parts (a frozen
-    // child of a moving parent would not follow). Mat visuals tip/reset, so exclude those too.
-    if (this.movingDummy) {
-      dynamic.add(this.movingDummy);
-      for (const child of this.movingDummy.getChildMeshes(false)) {
-        if (child instanceof Mesh) dynamic.add(child);
-      }
-    }
+    // Mat visuals tip/reset, so exclude those from world-matrix freezing.
     for (const mat of this.mats) dynamic.add(mat.mesh);
     for (const cone of this.halfCourtCones) dynamic.add(cone.mesh);
     // Scoreboards shake on a buzz (their parented meshes move with the root), so never freeze them.
@@ -117,8 +105,6 @@ export class GymArena {
 
     for (const mesh of this.scene.meshes) {
       if (!(mesh instanceof Mesh) || dynamic.has(mesh)) continue;
-      // Static target dummies + their child parts get toggled (setEnabled) between practice/online
-      // but never move, so freezing their matrices is safe and they still hide/show correctly.
       mesh.isPickable = false;
       mesh.doNotSyncBoundingInfo = true;
       mesh.freezeWorldMatrix();
@@ -427,87 +413,10 @@ export class GymArena {
     }
   }
 
-  private createTargetDummies(): void {
-    const positions = [new Vector3(-3, 0.9, 8), new Vector3(0, 0.9, 9.5), new Vector3(3, 0.9, 8)].map(p => new Vector3(p.x / 13 * TUNING.map.halfWidth, p.y, p.z / 18 * TUNING.map.halfLength));
-    const dummyMat = this.loader.material('dummy');
-    const dummyTrimMat = createPbrMaterial(this.scene, 'dummy_trim_mat', new Color3(0.09, 0.11, 0.16), {
-      metallic: 0.12,
-      roughness: 0.38
-    });
-
-    for (const pos of positions) {
-      const dummy = this.loader.createVisual('dummy', { name: 'target_dummy', position: pos });
-      dummy.metadata = { targetDummy: true, hitCount: 0 };
-
-      this.buildTargetDummyDetails(dummy, dummyMat, dummyTrimMat, `static_${pos.x}`);
-    }
-
-    // Moving dummy — oscillates left-right at the back of the opponent's side.
-    // Bright teal material so it's visually distinct from the static ones.
-    const movingMat = createPbrMaterial(this.scene, 'moving_dummy_mat', new Color3(0.0, 0.78, 0.72), {
-      roughness: 0.34,
-      emissive: new Color3(0.0, 0.08, 0.07)
-    });
-    const movingTrimMat = createPbrMaterial(this.scene, 'moving_dummy_trim_mat', new Color3(0.02, 0.14, 0.16), {
-      metallic: 0.12,
-      roughness: 0.32,
-      emissive: new Color3(0, 0.02, 0.025)
-    });
-    const movingMesh = this.loader.createVisual('dummy', { name: 'moving_dummy', position: new Vector3(0, 0.9, 7.5 / 18 * TUNING.map.halfLength) });
-    movingMesh.material = movingMat;
-    movingMesh.metadata = { targetDummy: true, hitCount: 0 };
-    this.buildTargetDummyDetails(movingMesh, movingMat, movingTrimMat, 'moving');
-    this.movingDummy = movingMesh;
-  }
-
-  private buildTargetDummyDetails(root: Mesh, bodyMat: Material, trimMat: Material, suffix: string): void {
-    const head = MeshBuilder.CreateSphere(`dummy_head_${suffix}`, { diameter: 0.44, segments: 14 }, this.scene);
-    head.parent = root;
-    head.position.set(0, 1.08, 0);
-    head.scaling.set(1.0, 0.86, 0.95);
-    head.material = bodyMat;
-    head.isPickable = false;
-
-    const torso = MeshBuilder.CreateBox(`dummy_torso_${suffix}`, { width: 0.58, height: 0.62, depth: 0.18 }, this.scene);
-    torso.parent = root;
-    torso.position.set(0, 0.2, -0.27);
-    torso.material = trimMat;
-    torso.isPickable = false;
-
-    const hips = MeshBuilder.CreateBox(`dummy_hips_${suffix}`, { width: 0.5, height: 0.18, depth: 0.34 }, this.scene);
-    hips.parent = root;
-    hips.position.set(0, -0.48, 0);
-    hips.material = trimMat;
-    hips.isPickable = false;
-
-    for (const sign of [-1, 1]) {
-      const shoulder = MeshBuilder.CreateBox(`dummy_shoulder_${suffix}_${sign}`, { width: 0.34, height: 0.14, depth: 0.34 }, this.scene);
-      shoulder.parent = root;
-      shoulder.position.set(sign * 0.44, 0.48, -0.02);
-      shoulder.rotation.z = -sign * 0.16;
-      shoulder.material = trimMat;
-      shoulder.isPickable = false;
-
-      const leg = MeshBuilder.CreateCapsule(`dummy_leg_${suffix}_${sign}`, { height: 0.68, radius: 0.085 }, this.scene);
-      leg.parent = root;
-      leg.position.set(sign * 0.16, -0.8, 0);
-      leg.material = bodyMat;
-      leg.isPickable = false;
-
-      const foot = MeshBuilder.CreateBox(`dummy_foot_${suffix}_${sign}`, { width: 0.24, height: 0.09, depth: 0.36 }, this.scene);
-      foot.parent = root;
-      foot.position.set(sign * 0.16, -1.16, -0.08);
-      foot.material = trimMat;
-      foot.isPickable = false;
-    }
-  }
-
   /** Call once per frame with the scene's accumulated elapsed time (seconds). */
   update(elapsed: number): void {
     this.updateCourtLines(elapsed);
     this.updateHalfCourtCones(elapsed);
-    if (!this.movingDummy) return;
-    this.movingDummy.position.x = Math.sin((elapsed / this.movingDummyPeriod) * Math.PI * 2) * this.movingDummyAmplitude;
   }
 
   setCourtLineState(state: { negativeHalfActive: boolean; positiveHalfActive: boolean; suddenDeath: boolean }): void {
@@ -639,18 +548,4 @@ export class GymArena {
       base.b + (peak.b - base.b) * amount
     );
   }
-}
-
-function createPbrMaterial(
-  scene: Scene,
-  name: string,
-  albedo: Color3,
-  options: { metallic?: number; roughness?: number; emissive?: Color3 } = {}
-): PBRMaterial {
-  const material = new PBRMaterial(name, scene);
-  material.albedoColor = albedo;
-  material.metallic = options.metallic ?? 0;
-  material.roughness = options.roughness ?? 0.5;
-  if (options.emissive) material.emissiveColor = options.emissive;
-  return material;
 }
