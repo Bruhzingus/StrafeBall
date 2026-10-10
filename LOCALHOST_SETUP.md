@@ -116,10 +116,10 @@ about "deprecated" packages are normal; only red `ERR!` lines matter.
 npm run play:local
 ```
 
-This launches both halves:
+This starts private hosting:
 
 - the **server** on `ws://localhost:2567`
-- the **client** on `http://localhost:4173`, which should open in your default browser
+- the **client** on `http://localhost:2567`, which should open in your default browser
   automatically. If it doesn't, open that address yourself.
 
 Leave the terminal window open — closing it stops the game. Press `Ctrl+C` in the terminal to stop.
@@ -127,10 +127,14 @@ Leave the terminal window open — closing it stops the game. Press `Ctrl+C` in 
 ### 4.3 Play
 
 - **Practice / Movement Course / Creator** work immediately.
-- **Online duel**: enter a name in the multiplayer panel (top-left) and click **Host** or
-  **Join**. Because you're the only server, you'll see only rooms that you or people on your
-  network created — see [section 6](#6-play-with-friends-on-the-same-network-lan).
-- The ping display will say **Server** and show sub-millisecond latency; that's your own machine.
+- **Online duel**: enter a name, select 1v1/2v2 and a tick preset, and click **Host**.
+  Friends open https://strafeball.xyz and join with your `HOST-...` code.
+- Your ping display says **Local host**. The guest sees **Direct** or **Relay**, depending on
+  the connection that succeeded. Your local ping does not measure their connection.
+- For LAN-only hosting, use `npm run play:lan -- --host`; friends open your IP on port 4173.
+  See [section 6](#6-play-with-friends-on-the-same-network-lan).
+
+For jitter, delayed actions, or poor ping, use the [latency audit and playtest procedure](docs/NETWORK_LATENCY_AUDIT.md).
 
 Use **Chrome or Edge** for the best experience — pointer lock, WebGL2 and audio all behave best
 there. Firefox works; Safari is untested.

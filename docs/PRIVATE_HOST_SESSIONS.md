@@ -26,6 +26,10 @@ the existing byte relay takes over if negotiation fails or reaches five seconds.
 
 The ping display identifies **Direct**, **Relay**, or **Local host**. The host's own browser uses
 loopback. Public server rooms still use their existing connection and display **Server**.
+The detailed **Tab** diagnostics show the reason for a relay fallback and, on Direct, the selected
+candidate types/protocol and network RTT from ICE checks. Compare that estimate with application
+ping to investigate routing versus game-processing delays. See the
+[latency audit and comparison procedure](NETWORK_LATENCY_AUDIT.md).
 For a comparison, the guest can leave, enable **Use relay for this join** under Connection options,
 and join again. Use a fresh match with matching settings if the old one has ended or is locked.
 
@@ -80,9 +84,10 @@ automatic direct joins, a five-second ICE failure followed by relay, explicit re
 live snapshots, acknowledged input, consented leave, and host death. It writes a local integration
 report to ignored `tmp/direct-integration.json`. These checks do not establish internet latency.
 
-WebRTC gameplay uses one reliable ordered channel. The conditional unreliable snapshot work is
-still deferred: tiered snapshots are not safe to drop, and there is no measured loss/stall result
-justifying that change. DuelRoom and ServerGameLoop are unmodified.
+WebRTC gameplay uses one reliable ordered channel. A separate unreliable snapshot path remains
+future work: tiered snapshots and trimmed inputs require explicit loss recovery and ordering.
+The current improvements preserve the existing delivery contract; the latency audit details the
+client presentation, input coalescing, encoding, and diagnostic changes.
 
 The cross-network performance gate remains **unverified**. Compare a full match through Direct
 and Relay with the same pair, preset and duration, and record typical/max ping, jitter, server

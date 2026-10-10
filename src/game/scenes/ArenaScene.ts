@@ -688,6 +688,11 @@ export class ArenaScene {
             ackAgeMs: this.ackAgeMs(),
             pingJitterMs: connectionDebug.pingJitterMs,
             connectionPath: connectionDebug.connectionPath,
+            relayReason: connectionDebug.relayReason,
+            networkRttMs: connectionDebug.networkRttMs,
+            networkProtocol: connectionDebug.networkProtocol,
+            localCandidateType: connectionDebug.localCandidateType,
+            remoteCandidateType: connectionDebug.remoteCandidateType,
             lastPongAgeMs: connectionDebug.lastPongAgeMs,
             missedPongs: connectionDebug.missedPongs,
             socketBufferedAmount: connectionDebug.socketBufferedAmount,
@@ -1666,13 +1671,20 @@ export class ArenaScene {
       this.handleOnlineResetEvents(snapshot);
       this.handleOnlineTeamChoiceEvents(snapshot);
       this.handleOnlineBallBounceAudio(snapshot);
+      // Capture all received lanes before rendering; at 128Hz several can arrive in one frame.
+      // Ingest first so a round reset clears old predictions before fresh throw events seed them.
+      for (const received of this.multiplayer.drainReceivedSnapshots()) {
+        this.networkRenderer.ingestSnapshot(received.snapshot, received.lanes, received.receivedAtMs);
+      }
       // Seed live-ball visual prediction from any throw events that arrived this frame BEFORE the
       // renderer update so a freshly-thrown ball predicts from its very first rendered frame.
       this.networkRenderer.applyThrowEvents(this.multiplayer.drainThrowEvents());
       const catchEvents = this.multiplayer.drainCatchEvents();
       this.handleOnlineCatchEvents(catchEvents);
       this.networkRenderer.applyCatchEvents(catchEvents);
-      this.handleOnlineParryEvents(this.multiplayer.drainParryEvents(), snapshot);
+      const parryEvents = this.multiplayer.drainParryEvents();
+      this.networkRenderer.applyParryEvents(parryEvents);
+      this.handleOnlineParryEvents(parryEvents, snapshot);
       this.handleOnlineHitEvents(this.multiplayer.drainHitEvents(), snapshot);
       this.handleOnlineHitRevertEvents(this.multiplayer.drainHitRevertEvents());
       this.networkRenderer.update(snapshot, this.multiplayer.localPlayerId, dt, this.predictedMovement, this.multiplayer.latestSnapshotLanes ?? undefined);
@@ -1984,7 +1996,7 @@ export class ArenaScene {
     if (!local || local.combatState === 'eliminated') return 1;
     const snapshot = this.multiplayer.latestSnapshot;
     if (snapshot?.room.match.mode !== '2v2') return 1;
-    return (local.lastPlayerBuffUntilMs ?? 0) > Date.now()
+    return (local.lastPlayerBuffUntilMs ?? 0) > (this.multiplayer.estimateServerTimeMs() ?? snapshot.serverTimeMs)
       ? TUNING.match.lastPlayerBuffMultiplier
       : 1;
   }
@@ -1998,7 +2010,7 @@ export class ArenaScene {
     if (!local || local.combatState === 'eliminated') return 1;
     const snapshot = this.multiplayer.latestSnapshot;
     if (snapshot?.room.match.mode !== '2v2') return 1;
-    return (local.lastPlayerBuffUntilMs ?? 0) > Date.now()
+    return (local.lastPlayerBuffUntilMs ?? 0) > (this.multiplayer.estimateServerTimeMs() ?? snapshot.serverTimeMs)
       ? TUNING.match.lastPlayerBuffCooldownRateMultiplier
       : 1;
   }

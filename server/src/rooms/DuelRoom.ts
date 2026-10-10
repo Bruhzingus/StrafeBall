@@ -80,6 +80,7 @@ import {
 } from '../network/NetworkRateLimits';
 import { ServerGameLoop, type PlayerNetworkDebugStats } from '../simulation/ServerGameLoop';
 import { advanceSnapshotDeadline } from './snapshotScheduler';
+import { EVENT_LOOP_SAMPLE_RESOLUTION_MS, eventLoopExcessDelayMs } from '../network/eventLoopMetrics';
 
 export interface DuelRoomOptions {
   name?: string;
@@ -226,8 +227,8 @@ export class DuelRoom extends Room {
   // tick presets (one starved, the other under-throttled).
   private rateLimits = buildInboundRateLimits(CLIENT_INPUT_RATE);
   private snapshotCoupledToTick = SNAPSHOT_RATE === SERVER_TICK_RATE;
-  private readonly eventLoopDelay = monitorEventLoopDelay({ resolution: 20 });
-  private readonly flightRecorderEventLoopDelay = monitorEventLoopDelay({ resolution: 20 });
+  private readonly eventLoopDelay = monitorEventLoopDelay({ resolution: EVENT_LOOP_SAMPLE_RESOLUTION_MS });
+  private readonly flightRecorderEventLoopDelay = monitorEventLoopDelay({ resolution: EVENT_LOOP_SAMPLE_RESOLUTION_MS });
   private incomingMessagesThisWindow = 0;
   private readonly incomingMessagesByType = new Map<string, number>();
   private readonly incomingMessagesByPlayerId = new Map<string, number>();
@@ -430,7 +431,7 @@ export class DuelRoom extends Room {
         clientTimeMs: message?.clientTimeMs ?? 0,
         serverTimeMs: Date.now(),
         ...(buffered !== null ? { outBufferedB: buffered } : {}),
-        ...(loopP95Ns > 0 ? { loopP95Ms: Math.round(loopP95Ns / 1e5) / 10 } : {})
+        ...(loopP95Ns > 0 ? { loopP95Ms: Math.round(eventLoopExcessDelayMs(loopP95Ns) * 10) / 10 } : {})
       } satisfies ServerMessage);
     });
 
@@ -593,6 +594,8 @@ export class DuelRoom extends Room {
     if (elapsedMs < PERF_REPORT_INTERVAL_MS) return;
 
     if (this.debug.PERF_DEBUG) this.emitPerfReport(elapsedMs);
+    // Pong diagnostics must describe a recent window even when verbose perf logging is disabled.
+    this.eventLoopDelay.reset();
 
     this.rateWindowStartedAtMs = now;
     this.simTicksThisWindow = 0;
@@ -701,9 +704,9 @@ export class DuelRoom extends Room {
     const avgSnapshotBuildMs = this.snapshotsThisWindow > 0 ? this.snapshotBuildMsTotal / this.snapshotsThisWindow : 0;
     const avgSnapshotBroadcastMs = this.snapshotsThisWindow > 0 ? this.snapshotBroadcastMsTotal / this.snapshotsThisWindow : 0;
     const avgSnapshotLateMs = this.snapshotsThisWindow > 0 ? this.snapshotLateMsTotal / this.snapshotsThisWindow : 0;
-    const eventLoopDelayAvgMs = this.eventLoopDelay.mean > 0 ? this.eventLoopDelay.mean / 1e6 : 0;
-    const eventLoopDelayP95Ms = this.eventLoopDelay.percentile(95) > 0 ? this.eventLoopDelay.percentile(95) / 1e6 : 0;
-    const eventLoopDelayMaxMs = this.eventLoopDelay.max > 0 ? this.eventLoopDelay.max / 1e6 : 0;
+    const eventLoopDelayAvgMs = eventLoopExcessDelayMs(this.eventLoopDelay.mean);
+    const eventLoopDelayP95Ms = eventLoopExcessDelayMs(this.eventLoopDelay.percentile(95));
+    const eventLoopDelayMaxMs = eventLoopExcessDelayMs(this.eventLoopDelay.max);
     const cpuUsage = process.cpuUsage(this.lastCpuUsage);
     const cpuMs = (cpuUsage.user + cpuUsage.system) / 1000;
     const cpuPct = elapsedMs > 0 ? (cpuMs / elapsedMs) * 100 : 0;
@@ -805,7 +808,6 @@ export class DuelRoom extends Room {
       );
     }
 
-    this.eventLoopDelay.reset();
   }
 
   /**
@@ -929,8 +931,12 @@ export class DuelRoom extends Room {
     const snapshotBuildMs = this.game.getLastSnapshotBuildMs();
     const encodeStartedAt = performance.now();
     const payload = this.encodeSnapshot(snapshot, cadence);
+    // Every recipient receives the same immutable Colyseus frame. Encoding once avoids doing
+    // the same MessagePack work up to five times per 2v2 snapshot (four peers + diagnostics).
+    // enqueueRaw preserves Colyseus' joining/reconnecting message queue, just like client.send.
+    const frame = getMessageBytes.raw(Protocol.ROOM_DATA, 'snapshot', payload);
     const buildMs = snapshotBuildMs + (performance.now() - encodeStartedAt);
-    const frameBytesEstimate = this.netFlightRecorderEnabled ? encodedRoomMessageBytes('snapshot', payload) : 0;
+    const frameBytesEstimate = frame.byteLength;
     const broadcastStartedAt = performance.now();
     for (const client of sendableClients) {
       this.recordSnapshotClientSend(client.sessionId);
@@ -939,7 +945,7 @@ export class DuelRoom extends Room {
         stats.outboundBytes += frameBytesEstimate;
         this.flightRecorderSecond.outboundBytes += frameBytesEstimate;
       }
-      client.send('snapshot', payload);
+      client.enqueueRaw(frame);
     }
     const broadcastMs = performance.now() - broadcastStartedAt;
     this.lastSnapshotTickSent = snapshot.tick;
@@ -1182,9 +1188,9 @@ export class DuelRoom extends Room {
     const playerStatsById = new Map(playerStats.map((entry) => [entry.playerId, entry]));
     const room = this.game.snapshot().room;
     const connectedPlayers = Object.values(room.players).filter((player) => player.connected);
-    const eventLoopAvgMs = nsToMs(this.flightRecorderEventLoopDelay.mean);
-    const eventLoopP95Ms = nsToMs(this.flightRecorderEventLoopDelay.percentile(95));
-    const eventLoopMaxMs = nsToMs(this.flightRecorderEventLoopDelay.max);
+    const eventLoopAvgMs = Number(eventLoopExcessDelayMs(this.flightRecorderEventLoopDelay.mean).toFixed(2));
+    const eventLoopP95Ms = Number(eventLoopExcessDelayMs(this.flightRecorderEventLoopDelay.percentile(95)).toFixed(2));
+    const eventLoopMaxMs = Number(eventLoopExcessDelayMs(this.flightRecorderEventLoopDelay.max).toFixed(2));
     const sampleClients: NetFlightRecorderServerClientSample[] = connectedPlayers.map((player) => {
       const stats = playerStatsById.get(player.id);
       const second = this.flightRecorderClientSecondStats.get(player.id);
@@ -1504,10 +1510,6 @@ function createFlightRecorderSecondAccumulator(startedAtMs = Date.now()): Flight
     snapshotFrameByteSamples: 0,
     inputMessages: 0
   };
-}
-
-function nsToMs(value: number): number {
-  return Number((value / 1_000_000).toFixed(2));
 }
 
 function summarizeServerSample(sample: NetFlightRecorderServerSample): Record<string, number> {

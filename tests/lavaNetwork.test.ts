@@ -12,6 +12,7 @@ describe('online lava clock', () => {
   it('keeps the world timer age across fast packets, then reanchors on a world packet', () => {
     let now = 100000;
     vi.spyOn(Date, 'now').mockImplementation(() => now);
+    vi.spyOn(performance, 'now').mockImplementation(() => now);
     const client = new MultiplayerClient('ws://test');
     const handlers = new Map<string, (message: SnapshotPayload) => void>();
     const fakeRoom = {

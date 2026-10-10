@@ -1,5 +1,13 @@
 # Strafeball Netcode Investigation — Handoff Context
 
+> **Correction — 2026-10-05:** The hosting diagnosis and purchase recommendations below are
+> superseded by [the current latency audit](docs/NETWORK_LATENCY_AUDIT.md). This code used
+> `monitorEventLoopDelay({ resolution: 20 })`; the raw histogram includes that sampling interval.
+> A mean near 20 ms does **not** establish 20 ms of excess scheduling delay, CPU steal, or a
+> throttled droplet. Historical logs cannot prove the asserted root cause or rule out client,
+> transport, and routing problems. The new diagnostics report excess above the sampling interval.
+> Keep the old observations as historical context, not as a verified infrastructure diagnosis.
+>
 > Purpose: give another LLM chat (or developer) everything needed to understand the "ping spike"
 > investigation without re-deriving it. Read this top-to-bottom before proposing changes.
 > Last updated: 2026-06-20.

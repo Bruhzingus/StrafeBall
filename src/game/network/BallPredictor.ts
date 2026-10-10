@@ -1,6 +1,6 @@
 import type { ThrowEvent } from '../../../shared/protocol';
 import type { BallState, Vec3 } from '../../../shared/types';
-import { LIVE_BALL_COMBAT_SUBSTEPS, SERVER_FIXED_DT } from '../../../shared/netConfig';
+import { EXTRAPOLATION_LIMIT_MS, LIVE_BALL_COMBAT_SUBSTEPS, SERVER_FIXED_DT } from '../../../shared/netConfig';
 import { advanceBall, createBallState } from '../../../shared/simulation/BallSim';
 import { GAME_CONSTANTS, type GameConstants } from '../../../shared/constants';
 
@@ -10,7 +10,7 @@ import { GAME_CONSTANTS, type GameConstants } from '../../../shared/constants';
  * It never decides hits, catches, parries, score, ownership, or rules.
  */
 const DEFAULT_PREDICTION_FIXED_DT = SERVER_FIXED_DT / Math.max(1, LIVE_BALL_COMBAT_SUBSTEPS);
-const PREDICTION_MAX_CATCHUP_MS = 500;
+const PREDICTION_MAX_CATCHUP_MS = EXTRAPOLATION_LIMIT_MS;
 const SOFT_CORRECT_PER_FRAME = 0.2;
 const MEDIUM_BLEND_PER_FRAME = 0.5;
 const MEDIUM_ERROR_M = 0.6;
@@ -21,9 +21,13 @@ interface PredictedBall {
   throwId: number;
   ballId: string;
   ownerId: string;
+  throwTimeMs: number;
   sim: BallState;
   simTimeMs: number;
   render: Vec3;
+  renderOffset: Vec3;
+  lastRenderTimeMs: number | null;
+  lastSnapshotTimeMs: number | null;
   correctionCount: number;
 }
 
@@ -87,9 +91,13 @@ export class BallPredictor {
       throwId: event.throwId,
       ballId: event.ballId,
       ownerId: event.ownerId,
+      throwTimeMs: event.serverTimeMs,
       sim,
       simTimeMs: event.serverTimeMs,
       render: { ...event.origin },
+      renderOffset: { x: 0, y: 0, z: 0 },
+      lastRenderTimeMs: null,
+      lastSnapshotTimeMs: null,
       correctionCount: 0
     });
   }
@@ -99,17 +107,32 @@ export class BallPredictor {
     this.balls.delete(ballId);
   }
 
+  /** Event queues are drained by type; an older catch/parry must not cancel a later rethrow. */
+  forgetThrough(ballId: string, serverTimeMs: number): void {
+    const entry = this.balls.get(ballId);
+    if (entry && entry.throwTimeMs <= serverTimeMs) this.forget(ballId);
+  }
+
   /**
-   * Advance a seeded prediction to `renderServerTimeMs` and return its position without reconciling
-   * against the authoritative snapshot. Used only to bridge the brief local-throw detach window.
+   * Advance a seeded prediction to `renderServerTimeMs`. When supplied, a fresh authoritative
+   * sample refreshes the baseline or ends the flight, even while the visible pose is still held.
    */
-  advanceVisualOnly(ballId: string, renderServerTimeMs: number): Vec3 | null {
+  advanceVisualOnly(
+    ballId: string,
+    renderServerTimeMs: number,
+    authoritative?: BallState,
+    snapshotServerTimeMs?: number
+  ): Vec3 | null {
     const entry = this.balls.get(ballId);
     if (!entry) return null;
-    this.advancePrediction(entry, renderServerTimeMs);
-    entry.render.x = entry.sim.position.x;
-    entry.render.y = entry.sim.position.y;
-    entry.render.z = entry.sim.position.z;
+    if (authoritative && snapshotServerTimeMs !== undefined) {
+      return this.predict(authoritative, renderServerTimeMs, snapshotServerTimeMs)?.position ?? null;
+    }
+    const predicted = this.advancePrediction(entry, renderServerTimeMs);
+    entry.render.x = predicted.position.x;
+    entry.render.y = predicted.position.y;
+    entry.render.z = predicted.position.z;
+    entry.lastRenderTimeMs = renderServerTimeMs;
     return entry.render;
   }
 
@@ -145,75 +168,80 @@ export class BallPredictor {
 
   /**
    * Produce the predicted render position for a live ball at `renderServerTimeMs`, reconciled to the
-   * authoritative `snapshotBall`. Returns null when prediction no longer owns this visual.
+   * authoritative `snapshotBall` at its own timestamp. Returns null when prediction no longer
+   * owns this visual. Reconciliation compares states at the SAME server time; comparing a future
+   * prediction to an old packet position would drag the ball backward on every rendered frame.
    */
-  predict(snapshotBall: BallState, renderServerTimeMs: number): BallPredictionResult | null {
+  predict(
+    snapshotBall: BallState,
+    renderServerTimeMs: number,
+    snapshotServerTimeMs = renderServerTimeMs
+  ): BallPredictionResult | null {
     const entry = this.balls.get(snapshotBall.id);
     if (!entry) return null;
 
-    if (snapshotBall.throwId !== entry.throwId || snapshotBall.ownerId !== entry.ownerId) {
+    // An immediate throw can arrive while the newest ball lane still describes an earlier held,
+    // loose, or live state. Only a snapshot at/after our baseline can invalidate that throw.
+    const canReconcile = snapshotServerTimeMs >= entry.simTimeMs;
+    if (canReconcile && (snapshotBall.throwId !== entry.throwId || snapshotBall.ownerId !== entry.ownerId)) {
       this.recordSnap('identity-change');
       this.balls.delete(snapshotBall.id);
       return null;
     }
 
-    if (snapshotBall.phase !== 'live' && snapshotBall.phase !== 'deflected') {
+    if (canReconcile && snapshotBall.phase !== 'live' && snapshotBall.phase !== 'deflected') {
       this.balls.delete(snapshotBall.id);
       return null;
     }
 
-    if (snapshotBall.bounceCount !== entry.sim.bounceCount) {
-      entry.sim = {
-        ...snapshotBall,
-        position: { ...snapshotBall.position },
-        velocity: { ...snapshotBall.velocity },
-        curveAccel: { ...snapshotBall.curveAccel }
-      };
-      entry.simTimeMs = renderServerTimeMs;
-      entry.render.x = snapshotBall.position.x;
-      entry.render.y = snapshotBall.position.y;
-      entry.render.z = snapshotBall.position.z;
-      this.recordEntryCorrection(entry);
-      this.recordSnap('bounce');
-      return {
-        position: entry.render,
-        snapped: true,
-        errorM: 0,
-        correctionCount: entry.correctionCount,
-        throwId: entry.throwId,
-        snapReason: 'bounce'
-      };
-    }
-
-    this.advancePrediction(entry, renderServerTimeMs);
-
-    const predicted = entry.sim.position;
-    const target = snapshotBall.position;
-    const errorM = distance(predicted, target);
-    this.recordError(errorM);
-
+    let errorM = 0;
     let snapReason = '';
-    if (errorM > SNAP_ERROR_M) {
-      entry.sim = { ...entry.sim, position: { ...target }, velocity: { ...snapshotBall.velocity } };
-      entry.render.x = target.x;
-      entry.render.y = target.y;
-      entry.render.z = target.z;
-      this.recordEntryCorrection(entry);
-      this.recordSnap('large-error');
-      snapReason = 'large-error';
-    } else {
-      const k = errorM > MEDIUM_ERROR_M ? MEDIUM_BLEND_PER_FRAME : SOFT_CORRECT_PER_FRAME;
-      entry.render.x = predicted.x + (target.x - predicted.x) * k;
-      entry.render.y = predicted.y + (target.y - predicted.y) * k;
-      entry.render.z = predicted.z + (target.z - predicted.z) * k;
-      if (errorM > MEDIUM_ERROR_M) {
-        this.mediumCorrectionCount += 1;
+    if (canReconcile && (entry.lastSnapshotTimeMs === null || snapshotServerTimeMs > entry.lastSnapshotTimeMs)) {
+      const atSnapshot = this.advancePrediction(entry, snapshotServerTimeMs);
+      const before = this.advancePrediction(entry, renderServerTimeMs);
+      errorM = distance(atSnapshot.position, snapshotBall.position);
+      this.recordError(errorM);
+      const bounced = snapshotBall.bounceCount !== entry.sim.bounceCount;
+
+      // Refresh the complete simulation baseline, including velocity and curve progress. Small
+      // position-only corrections used to leave a wrong trajectory alive for the entire throw.
+      entry.sim = createBallState(snapshotBall.id, snapshotBall.position, snapshotBall);
+      entry.simTimeMs = snapshotServerTimeMs;
+      entry.lastSnapshotTimeMs = snapshotServerTimeMs;
+      const after = this.advancePrediction(entry, renderServerTimeMs);
+      if (bounced || errorM > SNAP_ERROR_M) {
+        snapReason = bounced ? 'bounce' : 'large-error';
+        entry.renderOffset = { x: 0, y: 0, z: 0 };
         this.recordEntryCorrection(entry);
-      } else if (errorM > CORRECTION_COUNT_EPSILON_M) {
-        this.softCorrectionCount += 1;
-        this.recordEntryCorrection(entry);
+        this.recordSnap(snapReason);
+      } else {
+        if (entry.lastRenderTimeMs !== null) {
+          entry.renderOffset.x += before.position.x - after.position.x;
+          entry.renderOffset.y += before.position.y - after.position.y;
+          entry.renderOffset.z += before.position.z - after.position.z;
+        }
+        if (errorM > CORRECTION_COUNT_EPSILON_M) {
+          if (errorM > MEDIUM_ERROR_M) this.mediumCorrectionCount += 1;
+          else this.softCorrectionCount += 1;
+          this.recordEntryCorrection(entry);
+        }
       }
     }
+
+    const predicted = this.advancePrediction(entry, renderServerTimeMs).position;
+    const elapsedSeconds = entry.lastRenderTimeMs === null
+      ? 1 / 60
+      : Math.max(0, renderServerTimeMs - entry.lastRenderTimeMs) / 1000;
+    const offsetM = Math.hypot(entry.renderOffset.x, entry.renderOffset.y, entry.renderOffset.z);
+    const correction = offsetM > MEDIUM_ERROR_M ? MEDIUM_BLEND_PER_FRAME : SOFT_CORRECT_PER_FRAME;
+    const retained = Math.pow(1 - correction, elapsedSeconds * 60);
+    entry.renderOffset.x *= retained;
+    entry.renderOffset.y *= retained;
+    entry.renderOffset.z *= retained;
+    entry.render.x = predicted.x + entry.renderOffset.x;
+    entry.render.y = predicted.y + entry.renderOffset.y;
+    entry.render.z = predicted.z + entry.renderOffset.z;
+    entry.lastRenderTimeMs = renderServerTimeMs;
 
     return {
       position: entry.render,
@@ -225,15 +253,18 @@ export class BallPredictor {
     };
   }
 
-  private advancePrediction(entry: PredictedBall, renderServerTimeMs: number): void {
-    if (renderServerTimeMs <= entry.simTimeMs) return;
+  private advancePrediction(entry: PredictedBall, renderServerTimeMs: number): BallState {
+    // Replay from the authoritative baseline each time. Carrying fractional render-frame steps
+    // into the next frame makes semi-implicit gravity/curve integration depend on monitor Hz.
+    let sim = entry.sim;
+    if (renderServerTimeMs <= entry.simTimeMs) return sim;
     let remaining = Math.min(renderServerTimeMs - entry.simTimeMs, PREDICTION_MAX_CATCHUP_MS);
     while (remaining > 0) {
       const step = Math.min(this.fixedDt, remaining / 1000);
-      entry.sim = advanceBall(entry.sim, step, this.ballConstants);
+      sim = advanceBall(sim, step, this.ballConstants);
       remaining -= step * 1000;
     }
-    entry.simTimeMs = renderServerTimeMs;
+    return sim;
   }
 
   private recordEntryCorrection(entry: PredictedBall): void {

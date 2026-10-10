@@ -12,6 +12,7 @@ const snapshotCodec_1 = require("../../../shared/snapshotCodec");
 const NetworkRateLimits_1 = require("../network/NetworkRateLimits");
 const ServerGameLoop_1 = require("../simulation/ServerGameLoop");
 const snapshotScheduler_1 = require("./snapshotScheduler");
+const eventLoopMetrics_1 = require("../network/eventLoopMetrics");
 // All timing/rate constants now come from the centralized netConfig — never hardcode a rate here.
 // Visual state is sent through explicit `snapshot` messages, not Colyseus Schema patches, so we
 // keep the manual snapshot cadence (SNAPSHOT_RATE) explicit and decoupled from the sim tick.
@@ -107,8 +108,8 @@ class DuelRoom extends colyseus_1.Room {
     // tick presets (one starved, the other under-throttled).
     rateLimits = (0, NetworkRateLimits_1.buildInboundRateLimits)(netConfig_1.CLIENT_INPUT_RATE);
     snapshotCoupledToTick = netConfig_1.SNAPSHOT_RATE === netConfig_1.SERVER_TICK_RATE;
-    eventLoopDelay = (0, node_perf_hooks_1.monitorEventLoopDelay)({ resolution: 20 });
-    flightRecorderEventLoopDelay = (0, node_perf_hooks_1.monitorEventLoopDelay)({ resolution: 20 });
+    eventLoopDelay = (0, node_perf_hooks_1.monitorEventLoopDelay)({ resolution: eventLoopMetrics_1.EVENT_LOOP_SAMPLE_RESOLUTION_MS });
+    flightRecorderEventLoopDelay = (0, node_perf_hooks_1.monitorEventLoopDelay)({ resolution: eventLoopMetrics_1.EVENT_LOOP_SAMPLE_RESOLUTION_MS });
     incomingMessagesThisWindow = 0;
     incomingMessagesByType = new Map();
     incomingMessagesByPlayerId = new Map();
@@ -320,7 +321,7 @@ class DuelRoom extends colyseus_1.Room {
                 clientTimeMs: message?.clientTimeMs ?? 0,
                 serverTimeMs: Date.now(),
                 ...(buffered !== null ? { outBufferedB: buffered } : {}),
-                ...(loopP95Ns > 0 ? { loopP95Ms: Math.round(loopP95Ns / 1e5) / 10 } : {})
+                ...(loopP95Ns > 0 ? { loopP95Ms: Math.round((0, eventLoopMetrics_1.eventLoopExcessDelayMs)(loopP95Ns) * 10) / 10 } : {})
             });
         });
         this.onMessage('net-anomaly-report', (client, message) => {
@@ -472,6 +473,8 @@ class DuelRoom extends colyseus_1.Room {
             return;
         if (this.debug.PERF_DEBUG)
             this.emitPerfReport(elapsedMs);
+        // Pong diagnostics must describe a recent window even when verbose perf logging is disabled.
+        this.eventLoopDelay.reset();
         this.rateWindowStartedAtMs = now;
         this.simTicksThisWindow = 0;
         this.snapshotsThisWindow = 0;
@@ -579,9 +582,9 @@ class DuelRoom extends colyseus_1.Room {
         const avgSnapshotBuildMs = this.snapshotsThisWindow > 0 ? this.snapshotBuildMsTotal / this.snapshotsThisWindow : 0;
         const avgSnapshotBroadcastMs = this.snapshotsThisWindow > 0 ? this.snapshotBroadcastMsTotal / this.snapshotsThisWindow : 0;
         const avgSnapshotLateMs = this.snapshotsThisWindow > 0 ? this.snapshotLateMsTotal / this.snapshotsThisWindow : 0;
-        const eventLoopDelayAvgMs = this.eventLoopDelay.mean > 0 ? this.eventLoopDelay.mean / 1e6 : 0;
-        const eventLoopDelayP95Ms = this.eventLoopDelay.percentile(95) > 0 ? this.eventLoopDelay.percentile(95) / 1e6 : 0;
-        const eventLoopDelayMaxMs = this.eventLoopDelay.max > 0 ? this.eventLoopDelay.max / 1e6 : 0;
+        const eventLoopDelayAvgMs = (0, eventLoopMetrics_1.eventLoopExcessDelayMs)(this.eventLoopDelay.mean);
+        const eventLoopDelayP95Ms = (0, eventLoopMetrics_1.eventLoopExcessDelayMs)(this.eventLoopDelay.percentile(95));
+        const eventLoopDelayMaxMs = (0, eventLoopMetrics_1.eventLoopExcessDelayMs)(this.eventLoopDelay.max);
         const cpuUsage = process.cpuUsage(this.lastCpuUsage);
         const cpuMs = (cpuUsage.user + cpuUsage.system) / 1000;
         const cpuPct = elapsedMs > 0 ? (cpuMs / elapsedMs) * 100 : 0;
@@ -662,7 +665,6 @@ class DuelRoom extends colyseus_1.Room {
                 `socket={avgBuffered=${socketBuffer.avgBytes} maxBuffered=${socketBuffer.maxBytes}} ` +
                 `runtime={clients=${this.clients.length} messageBuckets=${this.buckets.size} listeners=${this.clients.length * 7 + 1}}`);
         }
-        this.eventLoopDelay.reset();
     }
     /**
      * Record one snapshot broadcast for the [perf] summary (decoupled from sim ticks in mode B).
@@ -781,8 +783,12 @@ class DuelRoom extends colyseus_1.Room {
         const snapshotBuildMs = this.game.getLastSnapshotBuildMs();
         const encodeStartedAt = node_perf_hooks_1.performance.now();
         const payload = this.encodeSnapshot(snapshot, cadence);
+        // Every recipient receives the same immutable Colyseus frame. Encoding once avoids doing
+        // the same MessagePack work up to five times per 2v2 snapshot (four peers + diagnostics).
+        // enqueueRaw preserves Colyseus' joining/reconnecting message queue, just like client.send.
+        const frame = colyseus_1.getMessageBytes.raw(colyseus_1.Protocol.ROOM_DATA, 'snapshot', payload);
         const buildMs = snapshotBuildMs + (node_perf_hooks_1.performance.now() - encodeStartedAt);
-        const frameBytesEstimate = this.netFlightRecorderEnabled ? encodedRoomMessageBytes('snapshot', payload) : 0;
+        const frameBytesEstimate = frame.byteLength;
         const broadcastStartedAt = node_perf_hooks_1.performance.now();
         for (const client of sendableClients) {
             this.recordSnapshotClientSend(client.sessionId);
@@ -791,7 +797,7 @@ class DuelRoom extends colyseus_1.Room {
                 stats.outboundBytes += frameBytesEstimate;
                 this.flightRecorderSecond.outboundBytes += frameBytesEstimate;
             }
-            client.send('snapshot', payload);
+            client.enqueueRaw(frame);
         }
         const broadcastMs = node_perf_hooks_1.performance.now() - broadcastStartedAt;
         this.lastSnapshotTickSent = snapshot.tick;
@@ -1026,9 +1032,9 @@ class DuelRoom extends colyseus_1.Room {
         const playerStatsById = new Map(playerStats.map((entry) => [entry.playerId, entry]));
         const room = this.game.snapshot().room;
         const connectedPlayers = Object.values(room.players).filter((player) => player.connected);
-        const eventLoopAvgMs = nsToMs(this.flightRecorderEventLoopDelay.mean);
-        const eventLoopP95Ms = nsToMs(this.flightRecorderEventLoopDelay.percentile(95));
-        const eventLoopMaxMs = nsToMs(this.flightRecorderEventLoopDelay.max);
+        const eventLoopAvgMs = Number((0, eventLoopMetrics_1.eventLoopExcessDelayMs)(this.flightRecorderEventLoopDelay.mean).toFixed(2));
+        const eventLoopP95Ms = Number((0, eventLoopMetrics_1.eventLoopExcessDelayMs)(this.flightRecorderEventLoopDelay.percentile(95)).toFixed(2));
+        const eventLoopMaxMs = Number((0, eventLoopMetrics_1.eventLoopExcessDelayMs)(this.flightRecorderEventLoopDelay.max).toFixed(2));
         const sampleClients = connectedPlayers.map((player) => {
             const stats = playerStatsById.get(player.id);
             const second = this.flightRecorderClientSecondStats.get(player.id);
@@ -1336,9 +1342,6 @@ function createFlightRecorderSecondAccumulator(startedAtMs = Date.now()) {
         snapshotFrameByteSamples: 0,
         inputMessages: 0
     };
-}
-function nsToMs(value) {
-    return Number((value / 1_000_000).toFixed(2));
 }
 function summarizeServerSample(sample) {
     return {

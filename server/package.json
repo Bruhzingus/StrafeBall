@@ -6,6 +6,7 @@
     "dev": "tsx src/index.ts",
     "build": "tsc -p tsconfig.json",
     "diagnose:network": "tsx scripts/networkLoadHarness.ts",
+    "diagnose:timing": "node scripts/timerCadenceProbe.mjs",
     "typecheck": "tsc -p tsconfig.json --noEmit",
     "start": "node dist/server/src/index.js",
     "host:private": "node dist/server/src/index.js --private-host",

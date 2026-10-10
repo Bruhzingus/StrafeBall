@@ -1,7 +1,9 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { DirectRoom, WebRTCTransport, negotiateDirect, type DirectLink } from '../src/game/network/directSession';
+import type { Room } from '@colyseus/sdk';
+import { DirectRoom, WebRTCTransport, joinPrivateHost, negotiateDirect, roomConnectionDiagnostics, roomConnectionPath, type DirectLink } from '../src/game/network/directSession';
+import { HostSessionClient } from '../src/game/network/hostSession';
 
-afterEach(() => { vi.clearAllTimers(); vi.useRealTimers(); vi.unstubAllGlobals(); });
+afterEach(() => { vi.clearAllTimers(); vi.useRealTimers(); vi.unstubAllGlobals(); vi.restoreAllMocks(); });
 
 function link() {
   const channel = { readyState: 'open', bufferedAmount: 0, send: vi.fn(), close: vi.fn(), onmessage: null as any };
@@ -60,5 +62,91 @@ describe('browser direct transport', () => {
     expect(closePeer).toHaveBeenCalledOnce(); expect(closeSocket).toHaveBeenCalledOnce();
     await vi.advanceTimersByTimeAsync(5000);
     expect(closePeer).toHaveBeenCalledOnce();
+  });
+  it('reports the selected network route and ICE RTT independently of the live send queue', async () => {
+    vi.useFakeTimers();
+    const peer = link();
+    const report = new Map([
+      ['transport', { type: 'transport', selectedCandidatePairId: 'active' }],
+      ['active', { type: 'candidate-pair', state: 'succeeded', nominated: true,
+        currentRoundTripTime: 0.012, localCandidateId: 'local', remoteCandidateId: 'remote' }],
+      ['other', { type: 'candidate-pair', state: 'succeeded', nominated: true, currentRoundTripTime: 0.1 }],
+      ['local', { type: 'local-candidate', candidateType: 'srflx', protocol: 'udp' }],
+      ['remote', { type: 'remote-candidate', candidateType: 'host', address: 'do-not-expose-addresses' }]
+    ]);
+    peer.peer.getStats = vi.fn().mockResolvedValue(report);
+    const room = new DirectRoom('duel', peer);
+    room.connect('ws://host/process/room?sessionId=seat');
+    await Promise.resolve();
+    Object.assign(peer.channel, { bufferedAmount: 240 });
+    expect(roomConnectionDiagnostics(room)).toEqual({ networkRttMs: 12, bufferedBytes: 240,
+      localCandidateType: 'srflx', remoteCandidateType: 'host', networkProtocol: 'udp' });
+    report.delete('transport'); report.delete('active'); report.delete('other');
+    await vi.advanceTimersByTimeAsync(1000);
+    expect(roomConnectionDiagnostics(room).networkRttMs).toBeNull();
+    room.connection.close();
+  });
+  it('does not overlap slow stats calls or close gameplay when diagnostics fail', async () => {
+    vi.useFakeTimers();
+    const peer = link();
+    let rejectStats!: (error: Error) => void;
+    peer.peer.getStats = vi.fn().mockReturnValue(new Promise((_resolve, reject) => { rejectStats = reject; }));
+    const transport = new WebRTCTransport(peer, {});
+    transport.connect('ws://host/process/room?sessionId=seat');
+    await vi.advanceTimersByTimeAsync(3000);
+    expect(peer.peer.getStats).toHaveBeenCalledOnce();
+    rejectStats(new Error('Statistics unavailable')); await Promise.resolve();
+    expect(transport.isOpen).toBe(true);
+    transport.close();
+    await vi.advanceTimersByTimeAsync(3000);
+    expect(peer.peer.getStats).toHaveBeenCalledOnce();
+  });
+  it('distinguishes requested relay from unsupported WebRTC without reserving extra seats', async () => {
+    vi.stubGlobal('RTCPeerConnection', undefined);
+    const rooms = [{}, {}] as Room[];
+    const join = vi.spyOn(HostSessionClient.prototype, 'joinById').mockResolvedValueOnce(rooms[0]).mockResolvedValueOnce(rooms[1]);
+    const signal = new AbortController().signal;
+    const requested = await joinPrivateHost('ws://broker', 'HOST-code', 'Guest', signal, { relayOnly: true });
+    const unsupported = await joinPrivateHost('ws://broker', 'HOST-code', 'Guest', signal);
+    expect(roomConnectionPath(requested)).toBe('relay');
+    expect(roomConnectionDiagnostics(requested).relayReason).toBe('requested');
+    expect(roomConnectionDiagnostics(unsupported).relayReason).toBe('unsupported');
+    expect(join).toHaveBeenCalledTimes(2);
+  });
+  it('falls back immediately when ICE explicitly fails and preserves why the relay was needed', async () => {
+    vi.useFakeTimers();
+    let peer: any;
+    const closePeer = vi.fn(); const closeSocket = vi.fn();
+    vi.stubGlobal('RTCPeerConnection', class {
+      iceConnectionState = 'checking';
+      constructor() { peer = this; }
+      createDataChannel() { return { close: vi.fn() }; }
+      close = closePeer;
+    });
+    vi.stubGlobal('WebSocket', class { close = closeSocket; });
+    const room = {} as Room;
+    const join = vi.spyOn(HostSessionClient.prototype, 'joinById').mockResolvedValue(room);
+    const pending = joinPrivateHost('ws://broker', 'HOST-code', 'Guest', new AbortController().signal);
+    peer.iceConnectionState = 'failed'; peer.oniceconnectionstatechange();
+    expect(await pending).toBe(room);
+    expect(roomConnectionDiagnostics(room).relayReason).toBe('ice');
+    expect(join).toHaveBeenCalledOnce();
+    expect(closePeer).toHaveBeenCalledOnce(); expect(closeSocket).toHaveBeenCalledOnce();
+    await vi.advanceTimersByTimeAsync(5000);
+    expect(join).toHaveBeenCalledOnce();
+  });
+  it('records the timeout fallback and releases a peer when signaling cannot be constructed', async () => {
+    vi.useFakeTimers();
+    const closePeer = vi.fn();
+    vi.stubGlobal('RTCPeerConnection', class { createDataChannel() { return { close: vi.fn() }; } close = closePeer; });
+    vi.stubGlobal('WebSocket', class { close = vi.fn(); });
+    const room = {} as Room;
+    vi.spyOn(HostSessionClient.prototype, 'joinById').mockResolvedValue(room);
+    const pending = joinPrivateHost('ws://broker', 'HOST-code', 'Guest', new AbortController().signal);
+    await vi.advanceTimersByTimeAsync(5000);
+    expect(roomConnectionDiagnostics(await pending).relayReason).toBe('timeout');
+    vi.stubGlobal('WebSocket', class { constructor() { throw new Error('Blocked by browser policy'); } });
+    await expect(negotiateDirect('ws://broker', new AbortController().signal)).rejects.toThrow('Direct negotiation unavailable');
+    expect(closePeer).toHaveBeenCalledTimes(2);
   });
 });

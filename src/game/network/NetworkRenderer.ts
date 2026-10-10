@@ -1,7 +1,7 @@
 import { updateSpecialBall } from '../powerups/PowerupPresentation';
 import { ballConstantsForEffect } from '../../../shared/simulation/MapEffectSim';
 import { Color3, Mesh, MeshBuilder, PBRMaterial, Quaternion, Scene, TransformNode, Vector3 } from '@babylonjs/core';
-import type { CatchEvent, ServerSnapshot, ThrowEvent } from '../../../shared/protocol';
+import type { CatchEvent, ParryEvent, ServerSnapshot, ThrowEvent } from '../../../shared/protocol';
 import type { SnapshotLaneInfo } from '../../../shared/snapshotCodec';
 import type { BallState, HandSide, PlayerState, Vec3 } from '../../../shared/types';
 import { BallPredictor } from './BallPredictor';
@@ -110,7 +110,7 @@ type RemotePlayerDebug = { logTimer: number };
 interface BufferedPlayerSnapshot {
   tick: number;
   resetSerial: number;
-  /** Wall-clock arrival time (Date.now). Used ONLY for buffer aging, never for interpolation. */
+  /** Monotonic arrival time (performance.now), captured by the network receive callback. */
   receivedAtMs: number;
   /**
    * Monotonic server timeline for this snapshot, in ms. Interpolation samples against THIS, not
@@ -124,7 +124,7 @@ interface BufferedPlayerSnapshot {
 interface BufferedBallSnapshot {
   tick: number;
   resetSerial: number;
-  /** Wall-clock arrival time (Date.now). Used ONLY for buffer aging, never for interpolation. */
+  /** Monotonic arrival time (performance.now), captured by the network receive callback. */
   receivedAtMs: number;
   /**
    * Monotonic server timeline for this snapshot, in ms. Interpolation samples against THIS, not
@@ -216,7 +216,7 @@ export class NetworkRenderer {
   private lastBufferedPlayerTick = -1;
   private lastBufferedBallTick = -1;
   private lastBufferedResetSerial = -1;
-  private latestPlayerSampleReceivedAtMs = 0;
+  private latestPlayerSampleReceivedAtMs: number | null = null;
 
   // Smoothed render clock. `renderServerTime` is the point on the SERVER timeline we are currently
   // displaying; it advances by real dt every frame and is gently nudged toward
@@ -235,6 +235,7 @@ export class NetworkRenderer {
   // Rolling debug-metric window (reset ~every 1s).
   private metricWindowStartMs = 0;
   private metricUnderruns = 0;
+  private frameUnderrun = false;
   private metricOverruns = 0;
   private metricIntervalTotalMs = 0;
   private metricIntervalCount = 0;
@@ -292,11 +293,13 @@ export class NetworkRenderer {
     localPredicted?: PlayerState['movement'] | null,
     lanes: SnapshotLaneInfo = FULL_RENDER_LANES
   ): void {
-    this.bufferSnapshot(snapshot, lanes);
+    this.ingestSnapshot(snapshot, lanes);
     const targetTimeMs = this.advanceRenderClock(dt);
     if (targetTimeMs === null) return;
+    this.frameUnderrun = false;
     const renderPlayers = this.samplePlayerSnapshot(targetTimeMs);
     const renderBalls = this.sampleBallSnapshot(targetTimeMs);
+    if (this.frameUnderrun) this.metricUnderruns += 1;
     if (!renderPlayers && !renderBalls) return;
     this.refreshDebugStats(dt);
     if (renderPlayers) this.updatePlayers(renderPlayers.players, localPlayerId, dt);
@@ -312,6 +315,7 @@ export class NetworkRenderer {
   /** Seed/refresh live-ball visual prediction from authoritative throw events (called by the scene). */
   applyThrowEvents(events: readonly ThrowEvent[]): void {
     for (const event of events) {
+      if (event.resetSerial < this.lastBufferedResetSerial) continue;
       this.ballPredictor.applyThrowEvent(event);
       const anim = this.ensureRemoteArmAnimations(event.ownerId);
       anim[event.hand].throwAnim = 1;
@@ -324,6 +328,7 @@ export class NetworkRenderer {
 
   applyCatchEvents(events: readonly CatchEvent[]): void {
     for (const event of events) {
+      this.ballPredictor.forgetThrough(event.ballId, event.serverTimeMs);
       const recoil = catchRecoilForVelocity(event.incomingVelocity);
       if (!recoil) continue;
       this.catchRecoilByPlayerId.set(event.catcherId, {
@@ -336,6 +341,10 @@ export class NetworkRenderer {
     }
   }
 
+  applyParryEvents(events: readonly ParryEvent[]): void {
+    for (const event of events) this.ballPredictor.forgetThrough(event.ballId, event.serverTimeMs);
+  }
+
   getDebugStats(): NetworkRendererDebugStats {
     // Keep the live buffer size / age fields fresh; rate-style metrics come from the rolling window.
     this.debugStats.remoteInterpolationBufferSize = this.playerSnapshotBuffer.length;
@@ -346,8 +355,8 @@ export class NetworkRenderer {
       this.playerSnapshotBuffer[this.playerSnapshotBuffer.length - 1],
       this.ballSnapshotBuffer[this.ballSnapshotBuffer.length - 1]
     );
-    const now = Date.now();
-    // Buffer age is a local wall-clock metric; use receive time so server/client clock skew cannot
+    const now = performance.now();
+    // Buffer age is a local monotonic-clock metric; use receive time so server/client clock skew cannot
     // make the perf HUD report negative or wildly inflated snapshot ages.
     this.debugStats.latestSnapshotAgeMs = newest ? Math.max(0, now - newest.receivedAtMs) : 0;
     this.debugStats.oldestSnapshotAgeMs = oldest ? Math.max(0, now - oldest.receivedAtMs) : 0;
@@ -394,7 +403,7 @@ export class NetworkRenderer {
     this.lastBufferedPlayerTick = -1;
     this.lastBufferedBallTick = -1;
     this.lastBufferedResetSerial = -1;
-    this.latestPlayerSampleReceivedAtMs = 0;
+    this.latestPlayerSampleReceivedAtMs = null;
     this.resetRenderClock();
     this.resetMetrics();
     this.adaptiveDelay.reset();
@@ -414,7 +423,12 @@ export class NetworkRenderer {
     this.wallLeanByPlayerId.clear();
   }
 
-  private bufferSnapshot(snapshot: ServerSnapshot, lanes: SnapshotLaneInfo): void {
+  /** Preserve every received lane, even when several packets arrive between rendered frames. */
+  ingestSnapshot(
+    snapshot: ServerSnapshot,
+    lanes: SnapshotLaneInfo = FULL_RENDER_LANES,
+    receivedAtMs = performance.now()
+  ): void {
     const resetSerial = snapshot.room.resetVote.resetSerial;
     // Keep live-ball prediction on the same gravity the server is using (moon gravity map effect).
     this.ballPredictor.ballConstants = ballConstantsForEffect(snapshot.room.mapEffect);
@@ -431,15 +445,16 @@ export class NetworkRenderer {
       this.ballPredictor.clear();
       this.lastBufferedPlayerTick = -1;
       this.lastBufferedBallTick = -1;
+      this.latestPlayerSampleReceivedAtMs = null;
       this.lastBufferedResetSerial = resetSerial;
       this.resetRenderClock();
     }
 
-    const now = Date.now();
+    const now = receivedAtMs;
     const serverTimeMs = this.deriveServerTime(snapshot);
     if (lanes.playerLane && snapshot.tick > this.lastBufferedPlayerTick) {
-      if (this.latestPlayerSampleReceivedAtMs > 0) {
-        const interval = now - this.latestPlayerSampleReceivedAtMs;
+      if (this.latestPlayerSampleReceivedAtMs !== null) {
+        const interval = Math.max(0, now - this.latestPlayerSampleReceivedAtMs);
         this.metricIntervalTotalMs += interval;
         this.metricIntervalCount += 1;
         this.metricIntervalMaxMs = Math.max(this.metricIntervalMaxMs, interval);
@@ -538,7 +553,10 @@ export class NetworkRenderer {
     );
     if (!newest) return null;
 
-    const target = newest.serverTimeMs - this.interpolationDelayMs;
+    // Continue the delivery timeline between packets. Targeting a fixed packet timestamp makes
+    // cursor correction fight forward motion and adds a frame-rate-dependent sawtooth delay.
+    const ageMs = Math.min(EXTRAPOLATION_LIMIT_MS, Math.max(0, performance.now() - newest.receivedAtMs));
+    const target = newest.serverTimeMs + ageMs - this.interpolationDelayMs;
 
     if (!this.renderClockInitialized) {
       this.renderServerTime = target;
@@ -554,7 +572,8 @@ export class NetworkRenderer {
       // Hard resync after a large stall so we don't crawl back over many seconds.
       this.renderServerTime = target;
     } else {
-      this.renderServerTime += error * NetworkRenderer.CURSOR_CORRECTION_PER_FRAME;
+      const alpha = 1 - Math.pow(1 - NetworkRenderer.CURSOR_CORRECTION_PER_FRAME, Math.max(0, dt) * 60);
+      this.renderServerTime += error * alpha;
     }
     return this.renderServerTime;
   }
@@ -566,8 +585,9 @@ export class NetworkRenderer {
     const oldest = this.playerSnapshotBuffer[0];
     const newest = this.playerSnapshotBuffer[this.playerSnapshotBuffer.length - 1];
     if (targetTimeMs <= oldest.serverTimeMs) return oldest;
-    if (targetTimeMs >= newest.serverTimeMs) {
-      this.metricUnderruns += 1;
+    if (targetTimeMs === newest.serverTimeMs) return newest;
+    if (targetTimeMs > newest.serverTimeMs) {
+      this.frameUnderrun = true;
       return extrapolatePlayerSnapshot(newest, targetTimeMs - newest.serverTimeMs);
     }
 
@@ -596,8 +616,9 @@ export class NetworkRenderer {
     const oldest = this.ballSnapshotBuffer[0];
     const newest = this.ballSnapshotBuffer[this.ballSnapshotBuffer.length - 1];
     if (targetTimeMs <= oldest.serverTimeMs) return oldest;
-    if (targetTimeMs >= newest.serverTimeMs) {
-      this.metricUnderruns += 1;
+    if (targetTimeMs === newest.serverTimeMs) return newest;
+    if (targetTimeMs > newest.serverTimeMs) {
+      this.frameUnderrun = true;
       return extrapolateBallSnapshot(newest, targetTimeMs - newest.serverTimeMs);
     }
 
@@ -640,7 +661,7 @@ export class NetworkRenderer {
 
   /** Roll the debug-metric window roughly once per second, computing per-second rates. */
   private refreshDebugStats(_dt: number): void {
-    const now = Date.now();
+    const now = performance.now();
     if (this.metricWindowStartMs === 0) this.metricWindowStartMs = now;
     const elapsed = now - this.metricWindowStartMs;
     if (elapsed < 1000) return;
@@ -872,7 +893,9 @@ export class NetworkRenderer {
   ): void {
     const seen = this.seenBalls;
     seen.clear();
-    const presentTimeMs = newest ? newest.serverTimeMs : 0;
+    const presentTimeMs = newest
+      ? newest.serverTimeMs + Math.min(EXTRAPOLATION_LIMIT_MS, Math.max(0, performance.now() - newest.receivedAtMs))
+      : 0;
     const highlightedBallId = localPredicted ? findPickupLookBallId(balls, localPredicted) : null;
 
     for (const ball of balls) {
@@ -889,18 +912,26 @@ export class NetworkRenderer {
       target.x = ball.position.x;
       target.y = ball.position.y;
       target.z = ball.position.z;
-      // Instant local throw detach (Phase 3): if this (interpolation-delayed) render snapshot still
-      // shows the ball HELD but a throw event already seeded prediction, the ball has LEFT the hand
-      // on the server. Bridge with a visual-only advance so the thrower's ball detaches immediately
-      // on release rather than staying glued for ~half-RTT. The normal live branch takes over the
-      // instant the authoritative snapshot flips to live.
-      const heldBridge = newest && ball.heldByPlayerId !== null && this.ballPredictor.has(ball.id)
-        ? this.ballPredictor.advanceVisualOnly(ball.id, presentTimeMs)
+      // A throw event can be newer than the delayed visible pose, including a loose ball picked
+      // up and thrown within the interpolation window. Reconcile every seeded flight against the
+      // newest ball lane regardless of that old pose's phase. This also keeps a long held-pose
+      // bridge refreshed with new velocity/curve samples instead of freezing at the prediction cap.
+      const authoritative = newest ? findById(newest.balls, ball.id) : undefined;
+      const result = newest && authoritative
+        ? this.ballPredictor.predict(authoritative, presentTimeMs, newest.serverTimeMs)
         : null;
-      if (heldBridge) {
-        target.x = heldBridge.x;
-        target.y = heldBridge.y;
-        target.z = heldBridge.z;
+      if (result) {
+        target.x = result.position.x;
+        target.y = result.position.y;
+        target.z = result.position.z;
+        if (result.snapped) this.recordCorrection(`ball-predict-${result.snapReason || 'snap'}`);
+        if (isBallPredictDebugEnabled() && (result.snapped || result.errorM > 0.5)) {
+          console.log(
+            `[ball/predict] id=${ball.id} throwId=${result.throwId} mode=${ball.phase}` +
+            ` err=${result.errorM.toFixed(2)}m corrections=${result.correctionCount}` +
+            `${result.snapReason ? ` snap=${result.snapReason}` : ''}`
+          );
+        }
       } else if (ball.heldByPlayerId && ball.heldHand) {
         // Held ball never predicts; forget any stale prediction so a re-throw reseeds cleanly.
         this.ballPredictor.forget(ball.id);
@@ -928,28 +959,8 @@ export class NetworkRenderer {
           target.y = anchor.y;
           target.z = anchor.z;
         }
-      } else if ((ball.phase === 'live' || ball.phase === 'deflected') && newest) {
-        // Live/deflected balls: render the deterministic prediction at PRESENT server time when one
-        // is seeded (reconciled against the newest authoritative ball state), else fall back to the
-        // interpolated snapshot position. Prediction is visual only — gameplay outcomes are the
-        // server's. The predictor reconciles against the newest snapshot, not the delayed interp one.
-        const authoritative = findById(newest.balls, ball.id) ?? ball;
-        const result = this.ballPredictor.predict(authoritative, presentTimeMs);
-        if (result) {
-          target.x = result.position.x;
-          target.y = result.position.y;
-          target.z = result.position.z;
-          if (result.snapped) this.recordCorrection(`ball-predict-${result.snapReason || 'snap'}`);
-          if (isBallPredictDebugEnabled() && (result.snapped || result.errorM > 0.5)) {
-            console.log(
-              `[ball/predict] id=${ball.id} throwId=${result.throwId} mode=${ball.phase}` +
-              ` err=${result.errorM.toFixed(2)}m corrections=${result.correctionCount}` +
-              `${result.snapReason ? ` snap=${result.snapReason}` : ''}`
-            );
-          }
-        }
       } else {
-        // Loose/dead/resting: no prediction; drop any stale entry.
+        // Prediction ended or the ball disappeared from the newest lane.
         this.ballPredictor.forget(ball.id);
       }
 

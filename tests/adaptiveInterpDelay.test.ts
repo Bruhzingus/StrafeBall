@@ -87,6 +87,14 @@ describe('AdaptiveInterpDelay', () => {
     expect(controller.observeWindow(3000, 500)).toBe(testOptions.maxDelayMs);
   });
 
+  it('starts reclaiming delay immediately after a long outage recovers', () => {
+    const controller = new AdaptiveInterpDelay(testOptions);
+    controller.observeWindow(30000, 500);
+    expect(controller.observeWindow(CLEAN_GAP_MS, 0)).toBe(145);
+    for (let i = 0; i < 30; i += 1) controller.observeWindow(CLEAN_GAP_MS, 0);
+    expect(controller.currentDelayMs).toBe(testOptions.minDelayMs);
+  });
+
   it('decays a spike back down over subsequent clean windows', () => {
     const controller = new AdaptiveInterpDelay(testOptions);
     controller.observeWindow(120, 0);

@@ -688,6 +688,11 @@ export class Hud {
       ackAgeMs: number | null;
       pingJitterMs: number;
       connectionPath?: string;
+      relayReason?: string | null;
+      networkRttMs?: number | null;
+      networkProtocol?: string | null;
+      localCandidateType?: string | null;
+      remoteCandidateType?: string | null;
       lastPongAgeMs: number | null;
       missedPongs: number;
       socketBufferedAmount: number;
@@ -743,6 +748,10 @@ export class Hud {
       const srvLoop = netDebug.serverLoopP95Ms;
       const srvBufColor = srvBuf === null ? 'hud-good' : srvBuf >= 16384 ? 'hud-bad' : srvBuf >= 4096 ? 'hud-warn' : 'hud-good';
       const srvLoopColor = srvLoop === null ? 'hud-good' : srvLoop >= 18 ? 'hud-bad' : srvLoop >= 10 ? 'hud-warn' : 'hud-good';
+      const connectionLabel = netDebug.connectionPath === 'direct' ? 'Direct' : netDebug.connectionPath === 'relay' ? 'Relay' : netDebug.connectionPath === 'local' ? 'Local host' : 'Server';
+      const relayReasons: Record<string, string> = { requested: 'Selected in connection options', unsupported: 'WebRTC unavailable',
+        timeout: 'Direct connection timed out', signaling: 'Direct signaling unavailable', ice: 'Direct route unavailable',
+        channel: 'Direct channel failed', negotiation: 'Direct negotiation failed' };
       this.renderDebug('online', settings.detailedDebugOverlay ? `
         ${debugSection('Performance & session', [
           debugRow('Frame rate', `<strong>${Math.round(fps)} FPS</strong> · ${frameMs.toFixed(1)} ms`),
@@ -750,12 +759,20 @@ export class Hud {
           debugRow('Players', `${Object.keys(room.players).length} / ${room.match.maxPlayers}`),
           debugRow('Tick / snapshot', `${tickRateHz} / ${snapRateHz} Hz`),
           debugRow('Server tick', `${snapshot.tick}`),
-          debugRow('Connection', netDebug.connectionPath === 'direct' ? 'Direct' : netDebug.connectionPath === 'relay' ? 'Relay' : netDebug.connectionPath === 'local' ? 'Local host' : 'Server')
+          debugRow('Connection', connectionLabel)
         ])}
         ${debugSection('Connection', [
           debugRow('Ping', `<strong>${pingMs === null ? '—' : `${pingMs} ms`}</strong>`),
           debugRow('Recent max / RTT', `${netDebug.maxRecentPingMs} / ~${netDebug.rttEstimateMs} ms`),
           debugRow('Jitter', `${netDebug.pingJitterMs.toFixed(1)} ms`),
+          ...(netDebug.connectionPath === 'direct' ? [
+            debugRow('Network RTT (ICE)', netDebug.networkRttMs == null ? 'Pending' : `${netDebug.networkRttMs.toFixed(1)} ms`),
+            debugRow('Direct route', escapeHtml([netDebug.networkProtocol?.toUpperCase(),
+              netDebug.localCandidateType && netDebug.remoteCandidateType ? `${netDebug.localCandidateType} / ${netDebug.remoteCandidateType}` : undefined].filter(Boolean).join(' · ') || 'Pending'))
+          ] : []),
+          ...(netDebug.connectionPath === 'relay' && netDebug.relayReason ? [
+            debugRow('Relay reason', escapeHtml(relayReasons[netDebug.relayReason] ?? netDebug.relayReason))
+          ] : []),
           debugRow('Snapshot recv / render', `${netDebug.snapshotRateHz.toFixed(1)} / ${netDebug.renderSnapshotRateHz.toFixed(1)} Hz`),
           debugRow('Ack age', netDebug.ackAgeMs === null ? '—' : `${netDebug.ackAgeMs} ms`),
           debugRow('Pong age / missed', `${netDebug.lastPongAgeMs === null ? '—' : `${netDebug.lastPongAgeMs} ms`} / ${netDebug.missedPongs}`),
@@ -783,6 +800,7 @@ export class Hud {
         ])}
       ` : `<dl class="hud-debug__compact">
         ${debugRow('FPS / frame', `<strong>${Math.round(fps)}</strong> / ${frameMs.toFixed(1)} ms`)}
+        ${debugRow('Connection', connectionLabel)}
         ${debugRow('Tick / snapshot', `${tickRateHz} / ${snapRateHz} Hz`)}
         ${debugRow('Ping / jitter', `${pingMs === null ? '—' : pingMs} / ${netDebug.pingJitterMs.toFixed(1)} ms`)}
         ${debugRow('Desync / max', `<span class="${desyncColor}">${netDebug.residualAfterReplayM.toFixed(3)} / ${netDebug.desyncRecentMaxM.toFixed(3)} m</span>`)}

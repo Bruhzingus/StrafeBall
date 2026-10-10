@@ -3690,6 +3690,12 @@ function coalesceQueuedInputs(commands) {
         const next = command.input;
         input.jumpPressed ||= next.jumpPressed;
         input.dashPressed ||= next.dashPressed;
+        if (next.dashPressed) {
+            // A delayed dash and a newer movement/look packet may arrive in the same tick. Keep the
+            // direction belonging to the dash edge, including the wish/facing fallback for a trimmed
+            // zero vector. Otherwise the server redirects a dash the client already predicted.
+            input.dashDirection = queuedDashDirection(next);
+        }
         input.crouchPressed ||= next.crouchPressed;
         input.slidePressed ||= next.slidePressed;
         input.activatePowerupPressed ||= next.activatePowerupPressed;
@@ -3731,6 +3737,17 @@ function coalesceQueuedInputs(commands) {
     if (catchTimes.length > 0)
         input.clientTimeMs = Math.min(...catchTimes);
     return { seq: newest.seq, input };
+}
+function queuedDashDirection(input) {
+    if (Math.hypot(input.dashDirection.x, input.dashDirection.z) > 0.001) {
+        return { ...input.dashDirection };
+    }
+    // Match MovementSim's zero-direction fallback using THIS command's look and movement.
+    const sin = Math.sin(input.lookYawRadians);
+    const cos = Math.cos(input.lookYawRadians);
+    const x = cos * input.moveX + sin * input.moveZ;
+    const z = -sin * input.moveX + cos * input.moveZ;
+    return Math.hypot(x, z) > 0.001 ? { x, y: 0, z } : { x: sin, y: 0, z: cos };
 }
 function defaultInput(yawRadians = 0) {
     return {

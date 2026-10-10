@@ -76,6 +76,9 @@ export class AdaptiveInterpDelay {
     if (underruns > this.underrunTolerance) {
       gap = Math.max(gap, this.delayMs + this.nominalIntervalMs);
     }
+    // A tab suspension/outage cannot be hidden by a buffer larger than the ceiling. Keeping its
+    // unbounded gap in the peak would punish a recovered connection for tens of extra seconds.
+    gap = Math.min(gap, Math.max(0, this.maxDelayMs - this.gapMarginMs));
     this.peakGapMs = Math.max(gap, this.peakGapMs * this.gapDecayPerWindow);
 
     const target = this.clamp(this.peakGapMs + this.gapMarginMs);

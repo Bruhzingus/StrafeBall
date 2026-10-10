@@ -342,8 +342,9 @@ export type ServerMessage =
        *  - outBufferedB: bytes the server has queued toward THIS client that the socket hasn't
        *    flushed yet. Balloons when the client's DOWNSTREAM path is congested/lossy (TCP
        *    retransmit stalls) even while the client's own WS buffer reads 0.
-       *  - loopP95Ms: server event-loop delay p95 over the current perf window. Elevated for
-       *    EVERYONE when the shared-CPU host stalls — high here + clean outBufferedB = the host.
+       *  - loopP95Ms: event-loop timer excess p95 above its sampling interval in the recent window.
+       *    Elevated for everyone during server stalls, but does not identify CPU steal versus
+       *    timer granularity, synchronous work, or other scheduling delays by itself.
        * Optional so mixed-version client/server pairs interop cleanly.
        */
       outBufferedB?: number;

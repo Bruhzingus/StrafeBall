@@ -3,7 +3,7 @@ import { mapEffectForPresentation } from '../../../shared/simulation/MapEffectSi
 import { Client, Room } from '@colyseus/sdk';
 import { isHostCode, RELAY_ERRORS, relayErrorMessage } from '../../../shared/relayTunnel';
 import { HostSessionClient, localHostConfig, localHostRoomId, publishHostRoom, hostSetupError } from './hostSession';
-import { joinPrivateHost, roomConnectionPath } from './directSession';
+import { joinPrivateHost, roomConnectionPath, roomConnectionDiagnostics } from './directSession';
 import type { ConnectionPath } from '../../../shared/directTransport';
 import { toWireInput } from '../../../shared/protocol';
 import type {
@@ -52,6 +52,13 @@ import {
 
 export type ConnectionStatus = 'offline' | 'connecting' | 'connected' | 'error';
 
+export interface ReceivedSnapshot {
+  snapshot: ServerSnapshot;
+  lanes: SnapshotLaneInfo;
+  /** Monotonic transport arrival time, independent of display frame rate. */
+  receivedAtMs: number;
+}
+
 /**
  * Resolves the Colyseus endpoint. `VITE_SERVER_URL` (set at build time) is an explicit override
  * for local dev against a standalone server. Otherwise, derive a same-origin URL from the page
@@ -75,6 +82,7 @@ const EMPTY_CATCH_EVENTS: readonly CatchEvent[] = [];
 const EMPTY_PARRY_EVENTS: readonly ParryEvent[] = [];
 const EMPTY_HIT_EVENTS: readonly HitEvent[] = [];
 const EMPTY_HIT_REVERT_EVENTS: readonly HitRevertEvent[] = [];
+const EMPTY_RECEIVED_SNAPSHOTS: readonly ReceivedSnapshot[] = [];
 
 export class MultiplayerClient {
   public connectionPath: ConnectionPath = 'public';
@@ -90,6 +98,8 @@ export class MultiplayerClient {
   public localPlayerId = '';
   public pingMs: number | null = null;
   public latestSnapshot: ServerSnapshot | null = null;
+  private receivedSnapshots: ReceivedSnapshot[] = [];
+  private combatEventMinTick = -1;
   private mapEffectSampleTimeMs: number | null = null;
   public powerupPrivate: PowerupPrivateMessage | null = null;
   private powerupEvents: PowerupEvent[] = [];
@@ -127,6 +137,7 @@ export class MultiplayerClient {
   // clock sync (immune to queue/stall spikes). Window peak of the raw RTT for the debug overlay.
   private rawPingMs = 0;
   private smoothedRttMs = 0;
+  private readonly rttSamples: { receivedAtMs: number; rttMs: number }[] = [];
   private maxRecentPingMs = 0;
   private maxRecentPingWindowStartedAtMs = 0;
   private missedPongs = 0;
@@ -196,8 +207,8 @@ export class MultiplayerClient {
         transport?: { ws?: { readyState?: number } };
       };
     };
-    return room.connection?.ws?.readyState
-      ?? room.connection?.transport?.ws?.readyState
+    return room?.connection?.ws?.readyState
+      ?? room?.connection?.transport?.ws?.readyState
       ?? WebSocket.CLOSED;
   }
 
@@ -212,7 +223,7 @@ export class MultiplayerClient {
    * Falls back to the raw ping until the floor estimate has a sample.
    */
   get rttEstimateMs(): number | null {
-    if (this.smoothedRttMs > 0) return this.smoothedRttMs;
+    if (this.rttSamples.length > 0) return this.smoothedRttMs;
     return this.pingMs;
   }
 
@@ -230,9 +241,15 @@ export class MultiplayerClient {
     lastSnapshotAgeMs: number | null;
     serverOutBufferedB: number | null;
     serverLoopP95Ms: number | null;
+    relayReason: string | null;
+    networkRttMs: number | null;
+    networkProtocol: string | null;
+    localCandidateType: string | null;
+    remoteCandidateType: string | null;
   } {
     const now = Date.now();
     const perfNow = performance.now();
+    const transport = this.room ? roomConnectionDiagnostics(this.room) : undefined;
     // Refresh the decayed peak even if no input was sent this tick (e.g. paused in a menu).
     this.sampleWsBufferedPeak();
     // Roll the "max recent ping" window every PERF_REPORT_INTERVAL_MS so the overlay shows the worst
@@ -245,6 +262,11 @@ export class MultiplayerClient {
     }
     return {
       connectionPath: this.connectionPath,
+      relayReason: transport?.relayReason ?? null,
+      networkRttMs: transport?.networkRttMs ?? null,
+      networkProtocol: transport?.networkProtocol ?? null,
+      localCandidateType: transport?.localCandidateType ?? null,
+      remoteCandidateType: transport?.remoteCandidateType ?? null,
       pingJitterMs: this.pingJitterMs,
       lastPongAgeMs: this.lastPongReceivedAtMs > 0 ? Math.max(0, now - this.lastPongReceivedAtMs) : null,
       missedPongs: this.missedPongs,
@@ -346,6 +368,14 @@ export class MultiplayerClient {
 
   dispose(): void {
     this.leave();
+  }
+
+  /** Preserve all received samples until the renderer runs, including lower-cadence lanes. */
+  drainReceivedSnapshots(): readonly ReceivedSnapshot[] {
+    if (this.receivedSnapshots.length === 0) return EMPTY_RECEIVED_SNAPSHOTS;
+    const received = this.receivedSnapshots;
+    this.receivedSnapshots = [];
+    return received;
   }
 
   sendInput(input: PlayerInput, previous?: PlayerInput): void {
@@ -573,8 +603,12 @@ export class MultiplayerClient {
   }
 
   private bindRoom(room: Room): void {
-    room.onMessage('powerup-private', (message: PowerupPrivateMessage) => { this.powerupPrivate = message; });
-    room.onMessage('powerup-event', (message: PowerupEvent) => { if (this.powerupEvents.length < 64) this.powerupEvents.push(message); });
+    room.onMessage('powerup-private', (message: PowerupPrivateMessage) => {
+      if (this.room === room) this.powerupPrivate = message;
+    });
+    room.onMessage('powerup-event', (message: PowerupEvent) => {
+      if (this.room === room && this.powerupEvents.length < 64) this.powerupEvents.push(message);
+    });
     room.onMessage('snapshot', (message: SnapshotPayload) => {
       if (this.room !== room) return;
       const decoded = isTieredCompactSnapshot(message)
@@ -588,8 +622,23 @@ export class MultiplayerClient {
         this.snapshotWindowStaleDropped += 1;
         return;
       }
+      if (this.latestSnapshot && snapshot.room.resetVote.resetSerial !== this.latestSnapshot.room.resetVote.resetSerial) {
+        // This baseline supersedes all earlier combat effects. Keep same-tick events, which the
+        // server sends before the snapshot, and new-round throws carrying an explicit serial.
+        const resetSerial = snapshot.room.resetVote.resetSerial;
+        this.combatEventMinTick = snapshot.tick;
+        this.receivedSnapshots = [];
+        this.throwEventQueue = this.throwEventQueue.filter(event => event.resetSerial >= resetSerial);
+        this.catchEventQueue = this.catchEventQueue.filter(event => event.serverTick >= snapshot.tick);
+        this.parryEventQueue = this.parryEventQueue.filter(event => event.serverTick >= snapshot.tick);
+        this.hitEventQueue = this.hitEventQueue.filter(event => event.serverTick >= snapshot.tick);
+        this.hitRevertEventQueue = this.hitRevertEventQueue.filter(event => event.serverTick >= snapshot.tick);
+      }
       this.latestSnapshot = snapshot;
       this.latestSnapshotLanes = decoded.lanes;
+      // Bound memory while the tab is paused. A fresh sample already contains merged world state.
+      if (this.receivedSnapshots.length >= 128) this.receivedSnapshots.shift();
+      this.receivedSnapshots.push({ snapshot, lanes: decoded.lanes, receivedAtMs: performance.now() });
       // Fast packets retain the previous world state, so its timer is still older.
       if (decoded.lanes.worldLane) this.mapEffectSampleTimeMs = snapshot.serverTimeMs;
       this.recordServerTimeSample(snapshot.serverTimeMs);
@@ -597,6 +646,7 @@ export class MultiplayerClient {
 
     room.onMessage('throw-event', (message: ThrowEvent) => {
       if (this.room !== room) return;
+      if (message.resetSerial < (this.latestSnapshot?.room.resetVote.resetSerial ?? 0)) return;
       // Cap the queue so a burst (or a frame the renderer didn't drain) can't grow unbounded.
       if (this.throwEventQueue.length >= 32) this.throwEventQueue.shift();
       this.throwEventQueue.push(message);
@@ -604,24 +654,28 @@ export class MultiplayerClient {
 
     room.onMessage('catch-event', (message: CatchEvent) => {
       if (this.room !== room) return;
+      if (message.serverTick < this.combatEventMinTick) return;
       if (this.catchEventQueue.length >= 16) this.catchEventQueue.shift();
       this.catchEventQueue.push(message);
     });
 
     room.onMessage('parry-event', (message: ParryEvent) => {
       if (this.room !== room) return;
+      if (message.serverTick < this.combatEventMinTick) return;
       if (this.parryEventQueue.length >= 16) this.parryEventQueue.shift();
       this.parryEventQueue.push(message);
     });
 
     room.onMessage('hit-event', (message: HitEvent) => {
       if (this.room !== room) return;
+      if (message.serverTick < this.combatEventMinTick) return;
       if (this.hitEventQueue.length >= 16) this.hitEventQueue.shift();
       this.hitEventQueue.push(message);
     });
 
     room.onMessage('hit-revert-event', (message: HitRevertEvent) => {
       if (this.room !== room) return;
+      if (message.serverTick < this.combatEventMinTick) return;
       if (this.hitRevertEventQueue.length >= 16) this.hitRevertEventQueue.shift();
       this.hitRevertEventQueue.push(message);
     });
@@ -700,16 +754,15 @@ export class MultiplayerClient {
         const delta = Math.abs(this.pingMs - previousPing);
         this.pingJitterMs = this.pingJitterMs === 0 ? delta : this.pingJitterMs * 0.8 + delta * 0.2;
       }
-      // Server-time estimate must NOT be jerked around by a queue/stall spike. Estimate true network
-      // RTT by tracking the FLOOR of recent samples: every spike (uplink queue, main-thread stall)
-      // only ADDS delay, so the minimum recent round-trip is the best estimate of real latency. The
-      // floor follows genuine latency increases slowly (it relaxes upward toward the live sample) but
-      // a single 3000ms outlier can't shove the render/server clock by ~1.5s.
-      this.smoothedRttMs = this.smoothedRttMs === 0
-        ? this.pingMs
-        : this.pingMs < this.smoothedRttMs
-          ? this.pingMs // snap down: a lower sample is real network latency, adopt it immediately
-          : this.smoothedRttMs + (this.pingMs - this.smoothedRttMs) * 0.1; // relax up slowly toward sustained higher RTT
+      // Use an actual recent minimum: the previous 10% EMA still moved the clock ~150ms on
+      // one 3000ms outlier. Old minima expire so a sustained route change is adopted within 10s.
+      const receivedAtMs = performance.now();
+      while (this.rttSamples.length > 0 && this.rttSamples[0].receivedAtMs <= receivedAtMs - 10_000) {
+        this.rttSamples.shift();
+      }
+      if (this.rttSamples.length >= 32) this.rttSamples.shift();
+      this.rttSamples.push({ receivedAtMs, rttMs: roundTrip });
+      this.smoothedRttMs = Math.min(...this.rttSamples.map((sample) => sample.rttMs));
       this.recordServerTimeSample(message.serverTimeMs, this.smoothedRttMs * 0.5);
     });
 
@@ -746,8 +799,8 @@ export class MultiplayerClient {
   }
 
   estimateServerTimeMs(): number | null {
-    if (this.lastServerTimeSampleMs === null || this.lastServerTimeSampleReceivedAtMs <= 0) return null;
-    return this.lastServerTimeSampleMs + Math.max(0, Date.now() - this.lastServerTimeSampleReceivedAtMs);
+    if (this.lastServerTimeSampleMs === null) return null;
+    return this.lastServerTimeSampleMs + Math.max(0, performance.now() - this.lastServerTimeSampleReceivedAtMs);
   }
 
   get presentedMapEffect() {
@@ -804,6 +857,8 @@ export class MultiplayerClient {
   }
 
   private resetSnapshotDebug(): void {
+    this.receivedSnapshots = [];
+    this.combatEventMinTick = -1;
     this.snapshotDebug = {
       receivedPerSecond: 0,
       uniqueTicksPerSecond: 0,
@@ -872,9 +927,10 @@ export class MultiplayerClient {
         transport?: { ws?: { bufferedAmount?: number } };
       };
     };
-    return room.connection?.ws?.bufferedAmount
-      ?? room.connection?.transport?.ws?.bufferedAmount
-      ?? 0;
+    return Math.max(
+      room?.connection?.ws?.bufferedAmount ?? room?.connection?.transport?.ws?.bufferedAmount ?? 0,
+      this.room ? roomConnectionDiagnostics(this.room)?.bufferedBytes ?? 0 : 0
+    );
   }
 
   private resetConnectionDebug(): void {
@@ -891,6 +947,8 @@ export class MultiplayerClient {
     this.lastPingSendBufferedBytes = 0;
     this.rawPingMs = 0;
     this.smoothedRttMs = 0;
+    this.rttSamples.length = 0;
+    this.pingMs = null;
     this.maxRecentPingMs = 0;
     this.maxRecentPingWindowStartedAtMs = 0;
     this.lastPingSentAtMs = 0;
@@ -900,10 +958,10 @@ export class MultiplayerClient {
     this.netFlightRecorderEnabled = false;
   }
 
-  private recordServerTimeSample(serverTimeMs: number, oneWayDelayMs = (this.pingMs ?? 0) * 0.5): void {
+  private recordServerTimeSample(serverTimeMs: number, oneWayDelayMs = (this.rttEstimateMs ?? 0) * 0.5): void {
     if (!Number.isFinite(serverTimeMs)) return;
     this.lastServerTimeSampleMs = serverTimeMs + Math.max(0, oneWayDelayMs);
-    this.lastServerTimeSampleReceivedAtMs = Date.now();
+    this.lastServerTimeSampleReceivedAtMs = performance.now();
   }
 }
 

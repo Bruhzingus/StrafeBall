@@ -230,3 +230,34 @@ describe('stale dashDirection never leaks into a later trimmed dash tick', () =>
     expect(afterNoMove.x).toBeGreaterThan(-0.1);
   });
 });
+
+describe.each(['1v1', '2v2'] as const)('bunched dash input in %s at 128Hz', (format) => {
+  it.each([
+    { name: 'explicit direction', moveX: -1, dashDirection: { x: -1, y: 0, z: 0 } },
+    { name: 'trimmed wish direction', moveX: -1, dashDirection: { x: 0, y: 0, z: 0 } },
+    { name: 'trimmed facing direction', moveX: 0, dashDirection: { x: 0, y: 0, z: 0 } }
+  ])('keeps the $name when newer inputs change look and movement', ({ moveX, dashDirection }) => {
+    const loop = new ServerGameLoop('jitter-dash', {
+      mode: format, playersPerTeam: format === '2v2' ? 2 : 1, netMode: 'A_128_128_96'
+    });
+    for (const id of format === '2v2' ? ['a', 'b', 'c', 'd'] : ['a', 'b']) loop.addPlayer(id, id);
+    loop.state.match = { ...loop.state.match, status: 'playing', countdownSeconds: 0 };
+    loop.state.players.a.movement.position = { x: 0, y: 0, z: 0 };
+    const dash = fullInput({ dashPressed: true, moveX, dashDirection, sequence: 1 });
+    loop.handleInput('a', toWireInput(dash) as Partial<PlayerInput>, 1);
+    loop.handleInput('a', toWireInput(fullInput({ lookYawRadians: Math.PI / 2, sequence: 2 })) as Partial<PlayerInput>, 2);
+    loop.advance();
+
+    const player = loop.state.players.a;
+    const expected = horizontalDir(velocityAfterInput(toWireInput(dash), 1));
+    const actual = horizontalDir(player.movement.velocity);
+    expect(actual.x).toBeCloseTo(expected.x, 6);
+    expect(actual.z).toBeCloseTo(expected.z, 6);
+    expect(player.movement.yawRadians).toBeCloseTo(Math.PI / 2);
+    expect(player.lastProcessedInputSeq).toBe(2);
+    const charges = player.dash.charges;
+    loop.advance();
+    expect(player.dash.charges).toBe(charges);
+    expect(loop.getDebugBufferStats().inputQueues).toBe(0);
+  });
+});

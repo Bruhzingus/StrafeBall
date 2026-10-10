@@ -7,6 +7,29 @@ import { RELAY_CLOSE, RELAY_ERRORS, SIGNAL_MAX_BYTES, SIGNAL_MAX_FRAMES } from '
 const paths = new WeakMap<Room, ConnectionPath>();
 export function roomConnectionPath(room: Room): ConnectionPath | undefined { return paths.get(room); }
 
+export type RelayReason = 'requested' | 'unsupported' | 'timeout' | 'signaling' | 'ice' | 'channel' | 'negotiation';
+const relayReasons = new WeakMap<Room, RelayReason>();
+export interface ConnectionDiagnostics {
+  relayReason?: RelayReason;
+  /** ICE connectivity-check RTT, independent of the game's ping/snapshot processing. */
+  networkRttMs: number | null;
+  bufferedBytes: number;
+  localCandidateType?: string;
+  remoteCandidateType?: string;
+  networkProtocol?: string;
+}
+export function roomConnectionDiagnostics(room: Room): ConnectionDiagnostics {
+  const transport = room.connection?.transport;
+  if (transport instanceof WebRTCTransport) return transport.diagnostics;
+  const buffered = (transport as unknown as { ws?: { bufferedAmount?: number } })?.ws?.bufferedAmount;
+  return { relayReason: relayReasons.get(room), networkRttMs: null,
+    bufferedBytes: typeof buffered === 'number' ? buffered : 0 };
+}
+
+class DirectNegotiationError extends Error {
+  constructor(readonly reason: RelayReason) { super('Direct negotiation unavailable'); }
+}
+
 export interface DirectLink { peer: RTCPeerConnection; channel: RTCDataChannel; close: () => void }
 
 /** Reliable transport only: tiered snapshots must not be put on a lossy channel. */
@@ -14,10 +37,40 @@ export class WebRTCTransport implements ITransport {
   private ended = false;
   private timer?: ReturnType<typeof setInterval>;
   private lastMessageAt = Date.now();
+  private statsPending = false;
+  private networkStats: Omit<ConnectionDiagnostics, 'bufferedBytes'> = { networkRttMs: null };
   constructor(readonly link: DirectLink, readonly events: ITransportEventMap) {}
   get isOpen(): boolean { return !this.ended && this.link.channel.readyState === 'open'; }
   get ws(): { readyState: number; bufferedAmount: number } {
     return { readyState: this.isOpen ? 1 : 3, bufferedAmount: this.link.channel.bufferedAmount };
+  }
+  get diagnostics(): ConnectionDiagnostics {
+    return { ...this.networkStats, bufferedBytes: this.link.channel.bufferedAmount };
+  }
+  private async sampleNetworkStats(): Promise<void> {
+    if (this.statsPending || this.ended) return;
+    this.statsPending = true;
+    try {
+      const stats = await this.link.peer.getStats();
+      if (this.ended) return;
+      let selectedId: string | undefined;
+      let nominated: RTCIceCandidatePairStats | undefined;
+      stats.forEach(stat => {
+        if (stat.type === 'transport' && stat.selectedCandidatePairId) selectedId = stat.selectedCandidatePairId;
+        if (stat.type === 'candidate-pair' && stat.state === 'succeeded' && stat.nominated) nominated = stat;
+      });
+      // Prefer the selected pair: another successful candidate may have a very different RTT.
+      const pair: RTCIceCandidatePairStats | undefined = selectedId ? stats.get(selectedId) : nominated;
+      const local = pair?.localCandidateId ? stats.get(pair.localCandidateId) : undefined;
+      const remote = pair?.remoteCandidateId ? stats.get(pair.remoteCandidateId) : undefined;
+      const rtt = pair?.currentRoundTripTime;
+      this.networkStats = {
+        networkRttMs: typeof rtt === 'number' && Number.isFinite(rtt) && rtt >= 0 ? rtt * 1000 : null,
+        localCandidateType: local?.candidateType, remoteCandidateType: remote?.candidateType,
+        networkProtocol: local?.protocol
+      };
+    } catch { /* Statistics are optional; an unavailable report must never interrupt gameplay. */ }
+    finally { this.statsPending = false; }
   }
   connect(endpoint: string): void {
     const channel = this.link.channel;
@@ -46,7 +99,9 @@ export class WebRTCTransport implements ITransport {
     if (!this.isOpen) { this.close(RELAY_CLOSE.disconnected, RELAY_ERRORS.disconnected); return; }
     this.timer = setInterval(() => {
       if (Date.now() - this.lastMessageAt > DIRECT_DEAD_MS) this.close(RELAY_CLOSE.disconnected, RELAY_ERRORS.disconnected);
+      else void this.sampleNetworkStats();
     }, 1000);
+    void this.sampleNetworkStats();
     const url = new URL(endpoint);
     const segments = url.pathname.split('/');
     try {
@@ -105,15 +160,20 @@ export async function joinPrivateHost(endpoint: string, code: string, name: stri
   options: { relayOnly?: boolean; stunUrls?: string[]; timeoutMs?: number } = {}): Promise<Room> {
   const hostEndpoint = `${endpoint.replace(/\/$/, '')}/relay/${code}`;
   let link: DirectLink | null = null;
+  let relayReason: RelayReason | undefined = options.relayOnly ? 'requested' : 'unsupported';
   if (!options.relayOnly && typeof RTCPeerConnection !== 'undefined') {
     try { link = await negotiateDirect(hostEndpoint, signal, options); }
-    catch { /* Direct failure before reserving a seat safely selects the byte relay. */ }
+    catch (error) {
+      // Direct failure before reserving a seat safely selects the byte relay, with a reason for diagnostics.
+      relayReason = error instanceof DirectNegotiationError ? error.reason : 'negotiation';
+    }
   }
   if (signal.aborted) { link?.close(); throw new Error(RELAY_ERRORS.unreachable); }
   try {
     const client = link ? new DirectSeatClient(hostEndpoint, signal, link) : new HostSessionClient(hostEndpoint, signal);
     const room = await client.joinById(code, { name });
     paths.set(room, link ? 'direct' : 'relay');
+    if (!link && relayReason) relayReasons.set(room, relayReason);
     return room;
   } catch (error) { link?.close(); throw error; }
 }
@@ -122,8 +182,16 @@ export function negotiateDirect(endpoint: string, signal: AbortSignal,
   options: { stunUrls?: string[]; timeoutMs?: number } = {}): Promise<DirectLink> {
   return new Promise((resolve, reject) => {
     const peer = new RTCPeerConnection({ iceServers: (options.stunUrls ?? DIRECT_STUN).map(urls => ({ urls })) });
-    const channel = peer.createDataChannel(DIRECT_CHANNEL, { ordered: true });
-    const socket = new WebSocket(`${endpoint}/signal`);
+    let channel: RTCDataChannel;
+    let socket: WebSocket;
+    try {
+      channel = peer.createDataChannel(DIRECT_CHANNEL, { ordered: true });
+      socket = new WebSocket(`${endpoint}/signal`);
+    } catch {
+      peer.close();
+      reject(new DirectNegotiationError('signaling'));
+      return;
+    }
     let settled = false;
     let offered = false;
     let answered = false;
@@ -132,28 +200,32 @@ export function negotiateDirect(endpoint: string, signal: AbortSignal,
     const incoming: RTCIceCandidateInit[] = [];
     let chain = Promise.resolve();
     const close = () => { channel.close(); peer.close(); };
-    const finish = (ok: boolean) => {
+    const finish = (ok: boolean, reason: RelayReason = 'negotiation') => {
       if (settled) return;
       settled = true;
       clearTimeout(timer);
       signal.removeEventListener('abort', aborted);
       peer.onicecandidate = null;
+      peer.oniceconnectionstatechange = null;
       socket.close();
       if (ok) resolve({ peer, channel, close });
-      else { close(); reject(new Error('Direct negotiation unavailable')); }
+      else { close(); reject(new DirectNegotiationError(reason)); }
     };
     const aborted = () => finish(false);
-    const timer = setTimeout(aborted, options.timeoutMs ?? DIRECT_CONNECT_MS);
+    const timer = setTimeout(() => finish(false, 'timeout'), options.timeoutMs ?? DIRECT_CONNECT_MS);
     const send = (payload: object) => {
       if (!settled && socket.readyState === WebSocket.OPEN) socket.send(JSON.stringify(payload));
     };
     signal.addEventListener('abort', aborted, { once: true });
     if (signal.aborted) { finish(false); return; }
     channel.onopen = () => finish(true);
-    channel.onclose = () => finish(false);
-    channel.onerror = () => finish(false);
-    socket.onerror = () => finish(false);
-    socket.onclose = () => finish(false);
+    channel.onclose = () => finish(false, 'channel');
+    channel.onerror = () => finish(false, 'channel');
+    socket.onerror = () => finish(false, 'signaling');
+    socket.onclose = () => finish(false, 'signaling');
+    peer.oniceconnectionstatechange = () => {
+      if (peer.iceConnectionState === 'failed') finish(false, 'ice');
+    };
     peer.onicecandidate = event => {
       if (!event.candidate) return;
       if (offered) send({ type: 'candidate', candidate: event.candidate.toJSON() });
