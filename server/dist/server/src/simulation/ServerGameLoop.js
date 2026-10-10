@@ -2313,7 +2313,7 @@ class ServerGameLoop {
             this.state.match = (0, RuleSim_1.applyHalfCourtRule)(this.state.match, player.id, player.teamId, player.legalHalf, player.movement.position, dt, constants_1.GAME_CONSTANTS, 
             // Unified lives model: boundary penalties cost the OFFENDER lives (applyHalfCourtPenalty),
             // never opponent score — so a half-court abuse can no longer "win" a 1v1 by score.
-            false);
+            false, this.state.mapEffect);
             if (this.state.match.boundary.lastEvent.type === 'half-court-elimination') {
                 this.eliminatePlayer(player.id);
                 this.refreshLastPlayerBuffs(this.stepNowMs);

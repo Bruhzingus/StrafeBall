@@ -10,6 +10,7 @@ exports.isLivePlayerOwnedBall = isLivePlayerOwnedBall;
 exports.isHitInRange = isHitInRange;
 exports.advanceNoBoundariesTimer = advanceNoBoundariesTimer;
 exports.isIllegalHalfCourtPosition = isIllegalHalfCourtPosition;
+exports.isHalfCourtOpen = isHalfCourtOpen;
 exports.applyHalfCourtRule = applyHalfCourtRule;
 const constants_1 = require("../constants");
 const CollisionMath_1 = require("./CollisionMath");
@@ -161,6 +162,10 @@ function isIllegalHalfCourtPosition(legalHalf, position, constants = constants_1
         return position.z > constants.match.neutralZoneHalfDepth;
     return position.z < -constants.match.neutralZoneHalfDepth;
 }
+/** Lava escape routes stay usable on either half, including its warning and retreat. */
+function isHalfCourtOpen(match, mapEffect) {
+    return match.boundary.noBoundaries || mapEffect?.kind === 'lava';
+}
 function applyHalfCourtRule(match, playerId, offenderTeamId, legalHalf, position, dt = 0, constants = constants_1.GAME_CONSTANTS, 
 /**
  * Whether a boundary penalty also awards score to the opponent. Legacy (offline / shared tests)
@@ -168,11 +173,13 @@ function applyHalfCourtRule(match, playerId, offenderTeamId, legalHalf, position
  * now cost the OFFENDER lives instead (applyHalfCourtPenalty), and score never decides victory.
  * The 'half-court-penalty' event still fires either way so the server can apply the life loss.
  */
-scorePenalties = true) {
+scorePenalties = true, mapEffect = null) {
     const existing = match.boundary.illegalCrossByPlayerId[playerId] ?? createHalfCourtViolationState(constants);
-    if (match.boundary.noBoundaries) {
+    if (isHalfCourtOpen(match, mapEffect)) {
         return setHalfCourtViolation(match, playerId, {
             ...existing,
+            // Give a fresh warning after lava clears; an old crossing must not queue a surprise hit.
+            warningsIssued: mapEffect?.kind === 'lava' ? 0 : existing.warningsIssued,
             wasAcross: false,
             deathCountdownActive: false,
             penaltyTickSeconds: constants.match.illegalCrossPenaltyIntervalSeconds,

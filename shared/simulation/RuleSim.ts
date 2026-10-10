@@ -4,6 +4,7 @@ import type {
   BoundaryEvent,
   HalfCourtViolationState,
   LegalHalf,
+  MapEffectState,
   MatchMode,
   MatchState,
   Vec3
@@ -184,6 +185,11 @@ export function isIllegalHalfCourtPosition(
   return position.z < -constants.match.neutralZoneHalfDepth;
 }
 
+/** Lava escape routes stay usable on either half, including its warning and retreat. */
+export function isHalfCourtOpen(match: MatchState, mapEffect?: MapEffectState | null): boolean {
+  return match.boundary.noBoundaries || mapEffect?.kind === 'lava';
+}
+
 export function applyHalfCourtRule(
   match: MatchState,
   playerId: string,
@@ -198,16 +204,19 @@ export function applyHalfCourtRule(
    * now cost the OFFENDER lives instead (applyHalfCourtPenalty), and score never decides victory.
    * The 'half-court-penalty' event still fires either way so the server can apply the life loss.
    */
-  scorePenalties = true
+  scorePenalties = true,
+  mapEffect: MapEffectState | null = null
 ): MatchState {
   const existing = match.boundary.illegalCrossByPlayerId[playerId] ?? createHalfCourtViolationState(constants);
 
-  if (match.boundary.noBoundaries) {
+  if (isHalfCourtOpen(match, mapEffect)) {
     return setHalfCourtViolation(
       match,
       playerId,
       {
         ...existing,
+        // Give a fresh warning after lava clears; an old crossing must not queue a surprise hit.
+        warningsIssued: mapEffect?.kind === 'lava' ? 0 : existing.warningsIssued,
         wasAcross: false,
         deathCountdownActive: false,
         penaltyTickSeconds: constants.match.illegalCrossPenaltyIntervalSeconds,

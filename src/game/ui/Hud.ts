@@ -1,4 +1,5 @@
 import { GAME_CONSTANTS } from '../../../shared/constants';
+import { isHalfCourtOpen } from '../../../shared/simulation/RuleSim';
 import { TUNING } from '../config/tuning';
 import { MatchRules } from '../rules/MatchRules';
 import { PlayerController } from '../player/PlayerController';
@@ -711,7 +712,8 @@ export class Hud {
     const players = Object.values(room.players).sort(compareHudPlayers);
     const local = room.players[localPlayerId];
     this.setPresentation(local?.combatState === 'eliminated' && room.match.status === 'playing' ? 'spectating' : room.match.status);
-    this.updateHalfCourtWarning(local ? room.match.boundary.illegalCrossByPlayerId[localPlayerId] : undefined);
+    const courtOpen = isHalfCourtOpen(room.match, room.mapEffect);
+    this.updateHalfCourtWarning(!courtOpen && local ? room.match.boundary.illegalCrossByPlayerId[localPlayerId] : undefined);
     const localTeamId = local?.teamId ?? room.match.teamIds[0] ?? 'blue';
     const isTeamElimination = room.match.mode === '2v2';
     const roomStatus = onlineRoomStatus(room);
@@ -833,8 +835,8 @@ export class Hud {
       roundCount: room.match.roundCount,
       countdownSeconds: room.match.countdownSeconds,
       scoreLabel: 'LIVES',
-      halfDropSecondsRemaining: room.match.boundary.noBoundaries ? 0 : noBoundariesTime,
-      noBoundaries: room.match.boundary.noBoundaries,
+      halfDropSecondsRemaining: courtOpen ? 0 : noBoundariesTime,
+      noBoundaries: courtOpen,
       blueTeam: {
         name: 'BLUE TEAM',
         color: 'blue',

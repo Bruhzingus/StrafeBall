@@ -92,7 +92,7 @@ function buildPages(): Page[] {
         <p>Sometimes the spawn clock doesn't drop an item at all — a glowing capsule appears instead, a banner warns everyone what's coming, and a few seconds later the whole court changes. Nobody picks these up; they hit both teams the same.</p>
         <div class="htp-items">
           <div><b>☾ Moon Gravity</b> — gravity goes way down for a bit. Huge floaty jumps, long hang time, balls sail further. Chaos, but the same chaos for everyone.</div>
-          <div><b>♨ Don't Touch the Lava</b> — the floor starts flooding. It rises until only the very top of the bleachers is dry, so get up there or keep moving — wall-runs keep you above it. Standing in it costs a life about every second. Loose balls float on top and drift out to the bleachers so you can still grab ammo from up high.</div>
+          <div><b>♨ Don't Touch the Lava</b> — the floor starts flooding. It rises until only the very top of the bleachers is dry, so get up there or keep moving — wall-runs keep you above it. Half-court penalties pause from the warning until the lava clears, so either side is safe to escape to. Standing in it costs a life about every second. Loose balls float on top and drift out to the bleachers so you can still grab ammo from up high.</div>
           <div><b>※ Ball Frenzy</b> — ${frenzyMult}× the balls rain down from the ceiling for ${frenzySeconds}s, and nothing dies on a bounce: a live throw stays live off the floor, walls, mats, all of it. Watch the ricochets.</div>
         </div>
       `

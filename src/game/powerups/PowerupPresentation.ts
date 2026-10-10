@@ -556,7 +556,8 @@ export class PowerupPresentation {
       this.effectCapsule.scaling.setAll(1 + 0.12 * Math.sin(this.time * 10));
     } else {
       this.effectCapsule?.setEnabled(false);
-      this.setBanner(`<b>${powerupIconMarkup(effect.kind)} ${info.name}</b><i>${effect.phase === 'ending' ? 'clearing' : secs}</i>`, info.color);
+      const escapeHint = effect.kind === 'lava' ? '<span>Full court open — get to high ground!</span>' : '';
+      this.setBanner(`<b>${powerupIconMarkup(effect.kind)} ${info.name}</b>${escapeHint}<i>${effect.phase === 'ending' ? 'clearing' : secs}</i>`, info.color);
     }
 
     // Opaque magma surface; the flat sheet matches the damage height.

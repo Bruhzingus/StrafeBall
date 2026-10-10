@@ -123,7 +123,7 @@ import {
 import { netModeConfig, LIVE_BALL_COMBAT_SUBSTEPS, SERVER_STEP_MS } from '../../../shared/netConfig';
 import { createBallCollisionBoxes, createPlayerCollisionBoxes, matSpecsForPreset, MAT_SPECS, type AABB } from '../../../shared/simulation/MapGeometry';
 import { recommendedRoomSettings } from '../../../shared/roomSettings';
-import { isIllegalHalfCourtPosition } from '../../../shared/simulation/RuleSim';
+import { isHalfCourtOpen, isIllegalHalfCourtPosition } from '../../../shared/simulation/RuleSim';
 import { sweptBallHitsBody } from '../../../shared/simulation/CollisionMath';
 import { playerBallHitRadius, playerHitCapsule } from '../../../shared/simulation/PlayerHitbox';
 import { cameraForward } from '../utils/vector';
@@ -1498,7 +1498,7 @@ export class ArenaScene {
     if (snapshot) {
       this.updateBoundaryClockSound(
         Math.max(0, snapshot.room.settings.halfCourtTimerSeconds - snapshot.room.match.boundary.elapsedSeconds),
-        snapshot.room.match.boundary.noBoundaries
+        isHalfCourtOpen(snapshot.room.match, snapshot.room.mapEffect)
       );
     }
 
@@ -3306,9 +3306,11 @@ export class ArenaScene {
   }
 
   private updateOnlineCourtLines(snapshot: ServerSnapshot): void {
+    const courtOpen = isHalfCourtOpen(snapshot.room.match, snapshot.room.mapEffect);
     let negativeHalfActive = false;
     let positiveHalfActive = false;
     for (const player of Object.values(snapshot.room.players)) {
+      if (courtOpen) break;
       if (!isIllegalHalfCourtPosition(player.legalHalf, player.movement.position)) continue;
       if (player.legalHalf === 'negativeZ') positiveHalfActive = true;
       else negativeHalfActive = true;
@@ -3316,7 +3318,7 @@ export class ArenaScene {
     this.gym.setCourtLineState({
       negativeHalfActive,
       positiveHalfActive,
-      suddenDeath: snapshot.room.match.boundary.noBoundaries
+      suddenDeath: courtOpen
     });
   }
 

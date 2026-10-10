@@ -346,16 +346,16 @@ describe('map effects', () => {
     expect(room.mapEffect).toBeNull();
   });
 
-  it('keeps fighters on the top bleacher tier safe in the actual game loop', () => {
+  it('keeps both fighters safe on dry bleachers even when escaping across half court', () => {
     const loop = new ServerGameLoop('lava-safe-tier');
     loop.addPlayer('a', 'A'); loop.addPlayer('b', 'B');
     loop.state.match.status = 'playing';
-    loop.state.match.boundary.noBoundaries = true;
+    loop.state.match.boundary.noBoundaries = false;
     const top = BLEACHER_LAYOUT.tierCount * BLEACHER_LAYOUT.tierRise;
     const topX = C.map.halfWidth - BLEACHER_LAYOUT.wallInset - BLEACHER_LAYOUT.tierRun / 2;
     for (const [id, side] of [['a', -1], ['b', 1]] as const) {
       const player = loop.state.players[id];
-      player.movement.position = v(side * topX, top, side * 6);
+      player.movement.position = v(side * topX, top, -side * 6);
       player.movement.velocity = v();
       player.movementInternal.groundHeight = top;
     }
@@ -370,6 +370,40 @@ describe('map effects', () => {
     advanceSeconds(loop, C.mapEffect.lavaFirstDamageSeconds + 0.05);
     expect(loop.state.players.a.lives).toBe(lives - 1);
     expect(loop.state.players.b.lives).toBe(lives);
+  });
+
+  it.each(['warning', 'ending'] as const)('pauses crossing penalties in lava %s, then resumes with a fresh warning', phase => {
+    const loop = new ServerGameLoop(`lava-boundary-${phase}`);
+    loop.addPlayer('a', 'A'); loop.addPlayer('b', 'B');
+    loop.state.match.status = 'playing';
+    const top = BLEACHER_LAYOUT.tierCount * BLEACHER_LAYOUT.tierRise;
+    const topX = C.map.halfWidth - BLEACHER_LAYOUT.wallInset - BLEACHER_LAYOUT.tierRun / 2;
+    const player = loop.state.players.a;
+    player.movement.position = v(topX, top, 6);
+    player.movementInternal.groundHeight = top;
+    loop.state.players.b.movement.position = v(-topX, top, 6);
+    loop.state.players.b.movementInternal.groundHeight = top;
+    loop.state.match.boundary.illegalCrossByPlayerId.a = {
+      illegalCrossCount: 1, warningsIssued: 1, penaltiesIssued: 0,
+      penaltyTickSeconds: 0.01, wasAcross: true, deathCountdownActive: true,
+      countdownSeconds: 0.01, eliminationIssued: false
+    };
+    loop.state.mapEffect = { kind: 'lava', phase, remainingSeconds: phase === 'warning' ? 3.5 : 2, lavaLevel: phase === 'warning' ? 0 : lavaMaxHeight(), spawnIndex: 0 };
+    const lives = player.lives;
+    advanceSeconds(loop, 0.2);
+    expect(player.lives).toBe(lives);
+    expect(loop.state.match.boundary.noBoundaries).toBe(false);
+    expect(loop.state.match.boundary.elapsedSeconds).toBeGreaterThan(0);
+    expect(loop.state.match.boundary.illegalCrossByPlayerId.a).toMatchObject({ warningsIssued: 0, deathCountdownActive: false });
+
+    loop.mapEffectSystem.reset(loop.state);
+    loop.advance();
+    expect(loop.state.match.boundary.illegalCrossByPlayerId.a.warningsIssued).toBe(1);
+    expect(player.lives).toBe(lives);
+    advanceSeconds(loop, 0.2);
+    expect(player.lives).toBe(lives);
+    advanceSeconds(loop, 1);
+    expect(player.lives).toBe(lives - 1);
   });
 
   it('frenzy drops extra balls one at a time over five seconds, keeps live bounces, then cleans up', () => {
